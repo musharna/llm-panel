@@ -137,6 +137,106 @@ class _Roster(dict):
                 or dict.__contains__(self, str(key).split(REPEAT_SEP, 1)[0]))
 
 
+# --- user roster ---------------------------------------------------------------
+# Everything above is the SHIPPED DEFAULT, not the truth. It names one person's
+# accounts -- a ChatGPT plan, a claude.ai subscription, an OpenRouter key, particular
+# local ollama pulls, and four HuggingFace entries that 402 until credits reset. For
+# anyone else the useful panel is a different set of judges, and "edit the installed
+# script" is how a tool stops being shareable.
+#
+# So the dict is a default that a config file may extend, override, or delete from:
+#
+#   ~/.config/llm-panel/roster.json   ($XDG_CONFIG_HOME honoured; $LLM_PANEL_CONFIG wins)
+#   {
+#     "judges": {
+#       "my-gpt":     {"transport": "opencode", "model": "openrouter/openai/gpt-5.6",
+#                      "family": "OpenAI"},
+#       "big-pickle": null                      // drop a shipped judge entirely
+#     },
+#     "default": ["codex", "my-gpt"]            // the panel run when --judges is absent
+#   }
+#
+# Absent config means byte-identical behaviour to before it existed. A MALFORMED config
+# is fatal and says exactly which key is wrong: silently falling back to the built-in
+# roster would run a panel the author did not ask for and bill them for it.
+SHIPPED_ROSTER = dict(ROSTER)
+CONFIG_PATH = pathlib.Path(
+    os.environ.get("LLM_PANEL_CONFIG")
+    or (pathlib.Path(os.environ.get("XDG_CONFIG_HOME") or os.path.expanduser("~/.config"))
+        / "llm-panel" / "roster.json"))
+# Derived, never a second hand-maintained list -- a literal set here would silently drift
+# out of step with the roster above the first time a transport is added.
+TRANSPORTS = {kind for kind, _ in SHIPPED_ROSTER.values()}
+FAMILY_OF = {}          # judge -> vendor, for judges a config declares one
+FROM_CONFIG = set()     # judges the config added or redefined; shown by --list
+
+
+def load_roster(path, roster, default, families, added):
+    """Apply the user's roster.json onto the shipped defaults, in place.
+
+    Returns the (possibly replaced) default panel list. Raises ValueError with a
+    message naming the offending key; the caller turns that into a clean exit.
+    """
+    try:
+        raw = path.read_text(encoding="utf-8")
+    except FileNotFoundError:
+        return default
+    except OSError as e:
+        raise ValueError(f"cannot read {path}: {e}") from None
+    try:
+        cfg = json.loads(raw)
+    except json.JSONDecodeError as e:
+        raise ValueError(f"{path} is not valid JSON: {e}") from None
+    if not isinstance(cfg, dict):
+        raise ValueError(f"{path}: top level must be an object, got {type(cfg).__name__}")
+    for key in cfg:
+        if key not in ("judges", "default"):
+            raise ValueError(f"{path}: unknown key {key!r} (expected 'judges' or 'default')")
+
+    judges = cfg.get("judges", {})
+    if not isinstance(judges, dict):
+        raise ValueError(f"{path}: 'judges' must be an object, got {type(judges).__name__}")
+    for name, spec in judges.items():
+        if spec is None:
+            roster.pop(name, None)
+            added.discard(name)
+            continue
+        if REPEAT_SEP in name:
+            _base = name.split(REPEAT_SEP, 1)[0]
+            raise ValueError(f"{path}: judge name {name!r} may not contain {REPEAT_SEP!r} "
+                             f"-- that suffix is reserved for repeat passes. Define "
+                             f"{_base!r} and ask for {_base}{REPEAT_SEP}2 at run time.")
+        if not isinstance(spec, dict):
+            raise ValueError(f"{path}: judge {name!r} must be an object or null, "
+                             f"got {type(spec).__name__}")
+        extra = set(spec) - {"transport", "model", "family"}
+        if extra:
+            raise ValueError(f"{path}: judge {name!r} has unknown field(s) "
+                             f"{', '.join(sorted(extra))}")
+        transport, model = spec.get("transport"), spec.get("model")
+        if transport not in TRANSPORTS:
+            raise ValueError(f"{path}: judge {name!r} has transport {transport!r}; "
+                             f"known transports are {', '.join(sorted(TRANSPORTS))}")
+        if not isinstance(model, str) or not model.strip():
+            raise ValueError(f"{path}: judge {name!r} needs a non-empty 'model' string")
+        roster[name] = (transport, model.strip())
+        added.add(name)
+        if spec.get("family"):
+            families[name] = str(spec["family"])
+
+    if "default" not in cfg:
+        return default
+    dflt = cfg["default"]
+    if not isinstance(dflt, list) or not all(isinstance(x, str) for x in dflt):
+        raise ValueError(f"{path}: 'default' must be a list of judge names")
+    if not dflt:
+        raise ValueError(f"{path}: 'default' is empty -- a panel needs at least one judge")
+    unknown = [x for x in dflt if x.split(REPEAT_SEP, 1)[0] not in roster]
+    if unknown:
+        raise ValueError(f"{path}: 'default' names unknown judge(s) {', '.join(unknown)}")
+    return list(dflt)
+
+
 ROSTER = _Roster(ROSTER)
 
 # A judge whose provider key is absent should say so in a second, not burn the whole
@@ -168,6 +268,16 @@ STATE = pathlib.Path(os.environ.get("XDG_CACHE_HOME") or os.path.expanduser("~/.
 
 def die(msg, code=1):
     sys.stderr.write(f"llm-panel: {msg}\n"); sys.exit(code)
+
+
+# Applied here rather than beside load_roster because a bad config should die() with the
+# tool's own prefix, and die() is defined just above. ROSTER is the _Roster instance by
+# now, so config judges get the `~N` repeat handling for free.
+SHIPPED_DEFAULT = list(DEFAULT)   # captured before a config can replace it
+try:
+    DEFAULT = load_roster(CONFIG_PATH, ROSTER, DEFAULT, FAMILY_OF, FROM_CONFIG)
+except ValueError as e:
+    die(str(e), 2)
 
 
 def now():
@@ -1517,6 +1627,10 @@ def _judge_record(name, r, rundir):
         "name": name,
         "transport": ROSTER[name][0],
         "model": ROSTER[name][1],
+        # Only present for judges a roster config gave a family to. panel-report has its
+        # own table for the shipped names; it cannot have one for a judge it has never
+        # heard of, so the vendor has to travel with the run.
+        "family": FAMILY_OF.get(name.split(REPEAT_SEP, 1)[0]),
         "status": r.get("status") or "unknown",
         "secs": r.get("secs") if isinstance(r.get("secs"), (int, float)) else None,
         "meta": meta,
@@ -1932,6 +2046,8 @@ def main():
     # the write-safety check had already passed on a smaller set.
     ap.add_argument("--judges", default=None)
     ap.add_argument("--list", action="store_true")
+    ap.add_argument("--help-config", action="store_true",
+                    help="print the roster config path and schema, then exit")
     ap.add_argument("--check", action="store_true",
                     help="ping every selected judge and report what actually happened")
     ap.add_argument("--show", action="store_true")
@@ -2026,6 +2142,27 @@ def main():
     # filesystem rather than the prompt.
     outdir = STATE / "runs" / repo_key(repo)
 
+    if a.help_config:
+        print(f"roster config: {CONFIG_PATH}")
+        print(f"     (exists: {'yes' if CONFIG_PATH.is_file() else 'no'};"
+              f"  override the location with $LLM_PANEL_CONFIG)\n")
+        print("The built-in roster is a DEFAULT, not a fixture: it names the author's own")
+        print("accounts. This file extends, overrides, or deletes from it.\n")
+        print(json.dumps({
+            "judges": {
+                "my-gpt": {"transport": "opencode",
+                           "model": "openrouter/openai/gpt-5.6", "family": "OpenAI"},
+                "big-pickle": None,
+            },
+            "default": ["codex", "my-gpt"],
+        }, indent=2))
+        print(f"\ntransport must be one of: {', '.join(sorted(TRANSPORTS))}")
+        print("family is optional and only labels the judge in panel-report.")
+        print("null deletes a shipped judge.  'default' replaces the panel run when")
+        print("--judges is absent.  A malformed config is fatal and names the bad key:")
+        print("falling back to the built-in roster would run a panel you did not ask for.")
+        return
+
     if a.list:
         print(f"{'judge':<15}{'transport':<11}model")
         for n, (k, m) in ROSTER.items():
@@ -2034,11 +2171,19 @@ def main():
                     next((PROVIDER_AUTH[pre] in stored_providers()
                           for pre in PROVIDER_AUTH if m.startswith(pre)), False)) if need else True
             flag = "" if not need or have else f"  [no {need} and no stored login]"
+            if n in FROM_CONFIG:
+                flag += "  [from config]"
             print(f"{'*' if n in DEFAULT else ' '}{n:<14}{k:<11}{m}{flag}")
         print("\n* = in the default roster.  This listing is OFFLINE -- it reports what is")
         print("configured, not what answers today.  Run --check to actually ping them.")
         print("codex/opencode judges can READ the repo; ollama judges answer from the")
         print("prompt alone (no tool loop), so they cannot verify a claim against code.")
+        if FROM_CONFIG:
+            print(f"\n[from config] = defined in {CONFIG_PATH}")
+        else:
+            print("\nNo roster config. The list above is the SHIPPED DEFAULT -- one person's")
+            print(f"accounts. Edit {CONFIG_PATH}")
+            print("to add or drop judges; --help-config prints the schema.")
         return
 
     if a.show:

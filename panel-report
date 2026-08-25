@@ -746,7 +746,12 @@ def load_run(d):
         j["rebuttal"] = rb.read_text(encoding="utf-8") if rb.is_file() else ""
         j["shown"] = ((d / f"{name}.prompt.md").read_text(encoding="utf-8")
                       if (d / f"{name}.prompt.md").is_file() else "")
-        j["family"] = FAMILY.get(name, "—")
+        # The run's own answer wins: FAMILY below can only cover the judges shipped with
+        # the tool, and a roster config can name judges this file has never heard of.
+        # `~N` repeats resolve to the base name, as everywhere else.
+        j["family"] = (j.get("family")
+                       or FAMILY.get(name)
+                       or FAMILY.get(name.split("~", 1)[0], "—"))
         j["labels"] = {k: 0 for k in KINDS}
         for p in scan_positions(j["rebuttal"]):
             j["labels"][p["kind"]] += 1
