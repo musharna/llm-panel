@@ -1,0 +1,68 @@
+{
+  "review": {
+    "comments": [
+      {
+        "content": "- **pkg/blockcontroller/blockcontroller.go:516** \u2014 A WSL command block with `cmd:nowsh=true` and `cmd:\"echo done\"` is routed to `StartWslShellProcNoWsh`, which ignores `cmdStr`; an interactive WSL shell opens instead of printing `done` and exiting.",
+        "path": "pkg/blockcontroller/blockcontroller.go",
+        "start_line": 516,
+        "end_line": 516,
+        "observation_id": "774878dfcbaa56a8",
+        "claimed_path": "pkg/blockcontroller/blockcontroller.go",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "- **pkg/shellexec/shellexec.go:554** \u2014 A local command block with `cmd:env:{\"FOO\":\"bar\"}` and `cmd:\"printf %s \\\"$FOO\\\"\"` now receives only the packed swap-token variable; noninteractive `bash -c` does not process shell integration, so it prints an empty string instead of `bar`.",
+        "path": "pkg/shellexec/shellexec.go",
+        "start_line": 554,
+        "end_line": 554,
+        "observation_id": "543aaa00eae7c9ac",
+        "claimed_path": "pkg/shellexec/shellexec.go",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "- **pkg/blockcontroller/blockcontroller.go:543** \u2014 For an SSH connection with WSH enabled and `cmd:nowsh=true`, the branch tests `conn.WshEnabled` instead of `connUnion.WshEnabled`. The integrated WSH process is started despite the explicit opt-out.",
+        "path": "pkg/blockcontroller/blockcontroller.go",
+        "start_line": 543,
+        "end_line": 543,
+        "observation_id": "501a907d8a54b81f",
+        "claimed_path": "pkg/blockcontroller/blockcontroller.go",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "- **pkg/blockcontroller/blockcontroller.go:401** \u2014 With a local block using `cmd:nowsh=true` and `term:localshellpath:\"/usr/bin/fish\"`, the early return leaves `ShellPath` empty. The process falls back to the detected default shell instead of starting fish.",
+        "path": "pkg/blockcontroller/blockcontroller.go",
+        "start_line": 401,
+        "end_line": 401,
+        "observation_id": "d7f507f4f37a0fec",
+        "claimed_path": "pkg/blockcontroller/blockcontroller.go",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "- **pkg/blockcontroller/blockcontroller.go:269** \u2014 Connection-specific environment overrides are ignored. Given `cmd:env:{\"MODE\":\"default\"}` and `\"[ssh://prod]\":{\"cmd:env\":{\"MODE\":\"production\"}}`, running on `ssh://prod` receives `MODE=default` rather than `MODE=production`.**DEFECT 1 (Medium): `getCustomInitScriptKeyCascade` omits the `sh` shell type \u2014 `cmd:initscript.sh` is never applied when the shell is `/bin/sh`.**\n\n**File:** `pkg/blockcontroller/blockcontroller.go`, within `getCustomInitScriptKeyCascade` (the new function body, around the lines added after the old `createCmdStrAndOpts`).\n\n**Failure scenario:** User sets `cmd:initscript.sh` to `\"export MYVAR=hello\"`. Their shell is `/bin/sh` (so `GetShellTypeFromShellPath` returns `\"sh\"`). The cascade for `\"sh\"` falls through to the default and returns only `[MetaKey_CmdInitScript]`. The key `MetaKey_CmdInitScriptSh` is never checked. `MYVAR` is not set.\n\nMeanwhile, if the same user had bash, the cascade `[.bash, .sh, generic]` *would* pick up `cmd:initscript.sh` as a fallback \u2014 the sh-specific key works for bash and zsh but not for sh itself. This is clearly inconsistent: the fix is:\n\n```go\nif shellType == \"sh\" {\n    return []string{waveobj.MetaKey_CmdInitScriptSh, waveobj.MetaKey_CmdInitScript}\n}\n```\n\n---",
+        "path": "pkg/blockcontroller/blockcontroller.go",
+        "start_line": 269,
+        "end_line": 269,
+        "observation_id": "dfab85b345e7ec6a",
+        "claimed_path": "pkg/blockcontroller/blockcontroller.go",
+        "path_resolution": "exact",
+        "merged_from": [
+          "ba5ac337278a2a68"
+        ]
+      }
+    ]
+  },
+  "rundir": "/home/user/.cache/llm-panel/runs/aacr-up-3m_wd2hm-a0292cd4ea4d/20260825-153904-1421905",
+  "extractor": "1",
+  "unlocated": [
+    {
+      "content": "**DEFECT 2 (Low\u2013Medium): `resolveEnvMap` accepts `connName` but never uses it \u2014 connection-specific env overrides are silently dropped.**\n\n**File:** `pkg/blockcontroller/blockcontroller.go`, `resolveEnvMap` function (new code).\n\n**Failure scenario:** User sets:\n```json\n{\n  \"cmd:env\": {\"GLOBAL\": \"1\"},\n  \"[myserver]\": { \"cmd:env\": {\"SERVER_ONLY\": \"2\"} }\n}\n```\nThey connect to `myserver`. `makeSwapTok",
+      "observation_id": "bdc0c87d7879c472",
+      "claimed_path": "pkg/blockcontroller/blockcontroller.go",
+      "path_resolution": "exact"
+    }
+  ]
+}

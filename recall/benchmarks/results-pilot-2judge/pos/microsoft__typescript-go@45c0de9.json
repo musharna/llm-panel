@@ -2,26 +2,6 @@
   "review": {
     "comments": [
       {
-        "content": "**DEFECT 1 (Severity: HIGH) \u2014 Nil converters passed to `toLSPDiagnostic`**\n\n**File:** `internal/ls/diagnostics.go`, **Line:** (the line inside `toLSPDiagnostics` reading `toLSPDiagnostic(diag, nil)`)\n\nThe original code always passed `l.converters` to `toLSPDiagnostic`. The new `toLSPDiagnostics` helper hardcodes `nil`:\n\n```go\nlspDiagnostics = append(lspDiagnostics, toLSPDiagnostic(diag, nil)) // converters can be nil if not needed\n```\n\n`toLSPDiagnostic` receives an `*ast.Diagnostic` whose source positions (start, end) are AST offsets that must be converted to LSP `{line, character}` positions via the `Converters`. If `toLSPDiagnostic` dereferences `converters` for this conversion (e.g. `converters.ToOffset(...)` or similar), this panics with a nil pointer dereference on **every diagnostic** \u2014 both the happy path and the syntax-error path. The comment \"converters can be nil if not needed\" is a hopeful assertion, not a guarantee; the existing callers always supplied real converters.\n\n**Failure scenario:** Any document opened in the language server that has diagnostics (semantic, suggestion, declaration, or syntactic) \u2192 `toLSPDiagnostics` is called \u2192 `toLSPDiagnostic(diag, nil)` \u2192 nil-pointer panic \u2192 entire `GetDocumentDiagnostics` call crashes, the LSP client receives no diagnostics and likely an error notification.\n\n---",
-        "path": "internal/ls/diagnostics.go",
-        "start_line": null,
-        "end_line": null,
-        "observation_id": "acb8fd5b24f58f13",
-        "claimed_path": "internal/ls/diagnostics.go",
-        "path_resolution": "exact",
-        "merged_from": []
-      },
-      {
-        "content": "**DEFECT 2 (Severity: MEDIUM) \u2014 `Kind` field removed from `FullDocumentDiagnosticReport`**\n\n**File:** `internal/ls/diagnostics.go`, **Lines:** the `FullDocumentDiagnosticReport` struct literal (was at the `Kind: lsproto.StringLiteralFull{}` line)\n\nThe old code set:\n```go\nKind: lsproto.StringLiteralFull{},\n```\n\nThe new code omits it entirely. Per the LSP specification, `FullDocumentDiagnosticReport` requires the `kind` field to be `\"full\"`. If the Go struct does not have a `json:\"kind\"` tag with a default/zero-value that serializes to `\"full\"`, the JSON sent to the client will be missing or have a zero-value for `kind`, causing the client to reject or misinterpret the response.\n\n**Failure scenario:** Language server sends a diagnostic report without `kind: \"full\"` \u2192 LSP client (e.g., VS Code, Neovim) cannot distinguish this from a `DocumentDiagnosticReport` with `kind: \"unchanged\"` \u2192 client ignores or misrenders the diagnostics for every document.",
-        "path": "internal/ls/diagnostics.go",
-        "start_line": null,
-        "end_line": null,
-        "observation_id": "4d50173f042c0c9d",
-        "claimed_path": "internal/ls/diagnostics.go",
-        "path_resolution": "exact",
-        "merged_from": []
-      },
-      {
         "content": "**DEFECT 1: `toLSPDiagnostic` called with `nil` converters \u2014 likely panic or incorrect conversion**\n\n**File:** `internal/ls/diagnostics.go`  \n**Line:** ~43 (in the new `toLSPDiagnostics` function, the call `toLSPDiagnostic(diag, nil)`)\n\nThe new helper `toLSPDiagnostics` passes `nil` for the `converters` parameter:\n```go\nlspDiagnostics = append(lspDiagnostics, toLSPDiagnostic(diag, nil)) // converters can be nil if not needed\n```\n\nBut the original code always passed `l.converters`:\n```go\nlspDiagnostics = append(lspDiagnostics, toLSPDiagnostic(diag, l.converters))\n```\n\nThe `toLSPDiagnostic` function (visible at the bottom of the diff) takes `converters *Converters` and uses it \u2014 the comment \"converters can be nil if not needed\" is an unverified assumption. If `toLSPDiagnostic` dereferences `converters` (e.g., for position/range conversion), this will **panic at runtime** on any diagnostic.\n\n**Failure scenario:** Any file with syntax/semantic/suggestion diagnostics triggers `GetDocumentDiagnostics` \u2192 `toLSPDiagnostics` \u2192 `toLSPDiagnostic(diag, nil)` \u2192 nil pointer dereference.\n\n---",
         "path": "internal/ls/diagnostics.go",
         "start_line": 43,
@@ -54,5 +34,19 @@
     ]
   },
   "rundir": "/home/user/.cache/llm-panel/runs/aacr-up-dj76msk1-e5d96c51296f/20260825-125540-1152106",
-  "extractor": "1"
+  "extractor": "1",
+  "unlocated": [
+    {
+      "content": "**DEFECT 1 (Severity: HIGH) \u2014 Nil converters passed to `toLSPDiagnostic`**\n\n**File:** `internal/ls/diagnostics.go`, **Line:** (the line inside `toLSPDiagnostics` reading `toLSPDiagnostic(diag, nil)`)\n\nThe original code always passed `l.converters` to `toLSPDiagnostic`. The new `toLSPDiagnostics` helper hardcodes `nil`:\n\n```go\nlspDiagnostics = append(lspDiagnostics, toLSPDiagnostic(diag, nil)) // c",
+      "observation_id": "acb8fd5b24f58f13",
+      "claimed_path": "internal/ls/diagnostics.go",
+      "path_resolution": "exact"
+    },
+    {
+      "content": "**DEFECT 2 (Severity: MEDIUM) \u2014 `Kind` field removed from `FullDocumentDiagnosticReport`**\n\n**File:** `internal/ls/diagnostics.go`, **Lines:** the `FullDocumentDiagnosticReport` struct literal (was at the `Kind: lsproto.StringLiteralFull{}` line)\n\nThe old code set:\n```go\nKind: lsproto.StringLiteralFull{},\n```\n\nThe new code omits it entirely. Per the LSP specification, `FullDocumentDiagnosticReport",
+      "observation_id": "4d50173f042c0c9d",
+      "claimed_path": "internal/ls/diagnostics.go",
+      "path_resolution": "exact"
+    }
+  ]
 }

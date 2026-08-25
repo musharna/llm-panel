@@ -1,0 +1,95 @@
+{
+  "review": {
+    "comments": [
+      {
+        "content": "**DEFECT 1: Telemetry timer never cleared on `ask()` success path in `flushBuffer` (missed hang telemetry)**\n\n**File:** `src/core/task/index.ts`, **Line:** 1509\u20131514 (the `bufferStuckTimer = setTimeout(...)` block)\n\nThe `bufferStuckTimer` is started right when `flushBuffer` fires, *before* the `await this.ask(\"command_output\", chunk)`. When `ask()` resolves successfully (the `if (response === \"yesButtonClicked\")` or `else` path), the `finally` block clears the timer. That part is fine.\n\n**However**, the timer represents \"the buffer is stuck\" \u2014 but the buffer isn't stuck; it was just flushed. The timer measures the time for `ask()` to resolve, not for the buffer to fill up again. This is a logic bug: the timer fires `BUFFER_STUCK` telemetry whenever `ask()` takes >30s for *any* reason (including normal user deliberation). A user who takes 45 seconds to decide whether to click \"Process while Running\" triggers a false `BUFFER_STUCK` telemetry event even though nothing is stuck.\n\n**Failure scenario:** User receives a `command_output` prompt and takes 35 seconds to respond \u2192 `bufferStuckTimer` fires \u2192 false `TerminalHangStage.BUFFER_STUCK` telemetry recorded.\n\n---",
+        "path": "src/core/task/index.ts",
+        "start_line": 1509,
+        "end_line": 1509,
+        "observation_id": "fe2e06c7e5cff703",
+        "claimed_path": "src/core/task/index.ts",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "**DEFECT 2: Timer leak when `flushBuffer` is re-entered while `chunkEnroute` is true**\n\n**File:** `src/core/task/index.ts`, **Line:** 1493\u20131497\n\n`bufferStuckTimer` is overwritten with a new `setTimeout` on each `flushBuffer` call without first clearing any existing timer. While the current early-return guard (`if (chunkEnroute ...)`) prevents this in the normal path, the `force` branch at line 1500\u20131504 allows `flushBuffer(true)` to proceed when `chunkEnroute` is false and `outputBuffer` has content \u2014 but there's no race guard. If the JS event loop interleaves such that `chunkEnroute` becomes `false` in the `finally` block and `flushBuffer(true)` is called (e.g., by the `onData` handler that queued more output), a *new* timer is started. The old timer reference was already cleared in `finally`, so this particular path is safe \u2014 but if the `force` flag path is entered and `chunkEnroute` was never true (initial call), no prior timer exists, so this is fine. On closer inspection this is not a real leak in practice due to the synchronous guard. **Retracting this one.**\n\n---\n\n**DEFECT 3 (confirmed): `completionTimer` double-cleared and leaks if `process.once(\"completed\")` fires after the post-`await process` cleanup**\n\n**File:** `src/core/task/index.ts`, **Line:** 1574\u20131616\n\nThe `completionTimer` is set at line 1578. It can be cleared in two places:\n1. Inside `process.once(\"completed\")` at line 1583\u20131587\n2. After `await process` at lines 1608\u20131611\n\nIf the \"completed\" event fires (clearing the timer in #1), then `await process` resolves and runs #2 \u2014 that's a harmless double-clear (`clearTimeout` on null is a no-op). That's fine.\n\n**But consider the failure path:** If `await process` *rejects* (throws), the code after `await process` (lines 1608\u20131611) is never reached. The `completed` event may or may not have fired. If it didn't fire, the timer is still pending and will fire 60 seconds later producing a false `WAITING_FOR_COMPLETION` telemetry event for a process that already failed/threw. There's no `try/catch` or `finally` around `await process` to guarantee cleanup.\n\n**Failure scenario:** The spawned process errors out / is killed \u2192 `await process` rejects \u2192 no code clears `completionTimer` \u2192 60 seconds later, false `TerminalHangStage.WAITING_FOR_COMPLETION` telemetry fires.\n\n---",
+        "path": "src/core/task/index.ts",
+        "start_line": 1493,
+        "end_line": 1493,
+        "observation_id": "fe2b1817d7fdf3c3",
+        "claimed_path": "src/core/task/index.ts",
+        "path_resolution": "exact",
+        "merged_from": [
+          "d186b6772a201d64",
+          "2ad82dd6b6badbcd",
+          "3678e0e87033d5db"
+        ]
+      },
+      {
+        "content": "**DEFECT 4 (confirmed): Unconditional `TIMEOUT` telemetry on empty shell-integration output**\n\n**File:** `src/integrations/terminal/TerminalProcess.ts`, **Line:** ~193\u2013194\n\n```typescript\nif (!this.fullOutput.trim()) {\n    telemetryService.captureTerminalOutputFailure(TerminalOutputFailureReason.TIMEOUT)\n```\n\nThe `TIMEOUT` reason is reported whenever shell integration produces no output \u2014 but there are other reasons shell integration could produce no output (e.g., the command produced no stdout and exited successfully, like `cd` or `true` or `: :`). Reporting `TIMEOUT` for these is misleading telemetry.\n\n**Failure scenario:** User runs `cd /tmp` via shell integration \u2192 `fullOutput` is empty \u2192 telemetry reports `TerminalOutputFailureReason.TIMEOUT` even though nothing timed out and the command succeeded.\n\n---",
+        "path": "src/integrations/terminal/TerminalProcess.ts",
+        "start_line": 193,
+        "end_line": 193,
+        "observation_id": "6435ec8dcca3d433",
+        "claimed_path": "src/integrations/terminal/TerminalProcess.ts",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "**DEFECT 5: Duplicate telemetry \u2014 `captureTerminalExecution` is always called alongside `captureTerminalOutputFailure`**\n\n**File:** `src/integrations/terminal/TerminalProcess.ts`, **Lines:** ~193\u2013208\n\nWhen shell integration fails (empty output), the code emits *both* `captureTerminalOutputFailure(TIMEOUT)` *and* `captureTerminalExecution(false, \"none\")` or `captureTerminalExecution(true, \"clipboard\")`. These are semantically overlapping events for the same outcome, making downstream telemetry analysis ambiguous: does a `TERMINAL_OUTPUT_FAILURE` with reason `TIMEOUT` mean the command failed, or just that it fell back? This is a data-quality defect.\n\n**Failure scenario:** Shell integration returns empty output, clipboard fallback succeeds \u2192 both `TERMINAL_OUTPUT_FAILURE(TIMEOUT)` and `TERMINAL_EXECUTION(success=true, clipboard)` are emitted, creating contradictory signals (failure reported alongside success).\n\n---\n\n**Summary of real defects, most severe first:**",
+        "path": "src/integrations/terminal/TerminalProcess.ts",
+        "start_line": 193,
+        "end_line": 193,
+        "observation_id": "cd4df3cb235b5bf5",
+        "claimed_path": "src/integrations/terminal/TerminalProcess.ts",
+        "path_resolution": "exact",
+        "merged_from": [
+          "3a4b7c128a44d3c3"
+        ]
+      },
+      {
+        "content": "1. **`src/core/task/index.ts`, line ~1578\u20131596:** `completionTimer` is not cleared if `await process` rejects \u2014 produces false `WAITING_FOR_COMPLETION` hang telemetry for failed processes.",
+        "path": "src/core/task/index.ts",
+        "start_line": 1578,
+        "end_line": 1578,
+        "observation_id": "8555b30e11af5ec4",
+        "claimed_path": "src/core/task/index.ts",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "2. **`src/integrations/terminal/TerminalProcess.ts`, line ~193:** Unconditional `TIMEOUT` failure reason when shell integration produces empty output \u2014 incorrect for commands that legitimately produce no output (e.g. `cd`, `true`).",
+        "path": "src/integrations/terminal/TerminalProcess.ts",
+        "start_line": 193,
+        "end_line": 193,
+        "observation_id": "1641f4bb1553478f",
+        "claimed_path": "src/integrations/terminal/TerminalProcess.ts",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "3. **`src/core/task/index.ts`, line ~1509:** `BUFFER_STUCK` timer measures `ask()` response time, not actual buffer staleness \u2014 fires false positives whenever the user takes >30s to respond.",
+        "path": "src/core/task/index.ts",
+        "start_line": 1509,
+        "end_line": 1509,
+        "observation_id": "0fb77ac7d4515be6",
+        "claimed_path": "src/core/task/index.ts",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "4. **`src/integrations/terminal/TerminalProcess.ts`, lines ~193\u2013208:** Redundant/contradictory telemetry \u2014 `captureTerminalOutputFailure` and `captureTerminalExecution` are both emitted for the same fallback event, producing conflicting data.",
+        "path": "src/integrations/terminal/TerminalProcess.ts",
+        "start_line": 193,
+        "end_line": 193,
+        "observation_id": "69d74739b828c3e0",
+        "claimed_path": "src/integrations/terminal/TerminalProcess.ts",
+        "path_resolution": "exact",
+        "merged_from": []
+      }
+    ]
+  },
+  "rundir": "/home/user/.cache/llm-panel/runs/aacr-up-tywkiyce-93a98b70ea2d/20260825-165102-1643086",
+  "extractor": "1",
+  "unlocated": []
+}
