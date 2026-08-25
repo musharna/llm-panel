@@ -1,0 +1,54 @@
+#!/usr/bin/env python3
+"""Classify each AACR reference comment: does it report a DEFECT, or suggest an IMPROVEMENT?
+
+The panel prompt demands "a concrete failure scenario (inputs -> wrong behaviour)" and says
+"do not propose refactors". If the benchmark's valid comments are substantially improvement
+suggestions, the prompt is excluding them by construction and recall is measuring my own
+instruction, not the panel's ability. Classified by the same judge family used for scoring,
+because this is a semantic question and a keyword list cannot answer it.
+"""
+import asyncio, json, os, pathlib, signal, sys
+signal.signal(signal.SIGALRM, lambda *_: (sys.stderr.write("walltime guard\n"), sys.exit(2)))
+signal.alarm(1800)
+E = pathlib.Path.home()/"aacr-bench"/"evaluation"; sys.path.insert(0,str(E)); os.chdir(E)
+import judge
+if judge.USE_MOCK_LLM: sys.exit("REFUSING: mock judge")
+
+PROMPT = ("Classify this code-review comment.\n\n"
+  "Answer DEFECT if it reports something that is WRONG: a crash, panic, incorrect result, "
+  "leak, race, security hole, logic error -- something with a concrete failure scenario.\n"
+  "Answer IMPROVEMENT if it suggests making the code better without claiming current "
+  "incorrect behaviour: refactoring, naming, clarity, dead code, style, defensive checks, "
+  "design or maintainability concerns, documentation.\n\n"
+  "Comment:\n{t}\n\nAnswer with exactly one word, DEFECT or IMPROVEMENT:")
+
+async def one(t):
+    try:
+        r = await judge._get_llm_client().chat.completions.create(
+            model=os.getenv("JUDGE_MODEL"), messages=[{"role":"user","content":PROMPT.format(t=t)}],
+            temperature=0, max_tokens=8)
+        a = r.choices[0].message.content.strip().upper()
+        return "DEFECT" if "DEFECT" in a else ("IMPROVEMENT" if "IMPROV" in a else None)
+    except Exception as e:
+        return f"ERR:{e}"
+
+async def main():
+    B = pathlib.Path.home()/'panel-recall/benchmarks/upstream/pos-seed42-n20.jsonl'
+    refs=[]
+    for l in B.read_text().splitlines():
+        if l.strip():
+            i=json.loads(l)
+            for r in i.get('reference_comments') or []:
+                refs.append({"instance_id":i['instance_id'],"path":r['path'],
+                             "start_line":r['start_line'],"text":r['text']})
+    sem = asyncio.Semaphore(6)
+    async def run(r):
+        async with sem: return await one(r['text'])
+    out = await asyncio.gather(*[run(r) for r in refs])
+    errs=[o for o in out if isinstance(o,str) and o.startswith("ERR")]
+    if errs: sys.exit(f"REFUSING: {len(errs)} classification calls failed. First: {errs[0][:200]}")
+    for r,o in zip(refs,out): r["category"]=o
+    pathlib.Path(sys.argv[1]).write_text(json.dumps(refs,indent=1))
+    import collections; c=collections.Counter(r["category"] for r in refs)
+    print(f"  classified {len(refs)} reference comments: {dict(c)}")
+asyncio.run(main())
