@@ -172,15 +172,36 @@ def separation(runs, pad=DEFAULT_PAD):
     the separation stays ~20pp throughout rather than sharpening as the match tightens.
     Both facts say the same thing: this matches WHERE a finding is, not WHAT it claims.
     """
+    # ONLY ISOLATED NEGATIVES COUNT. Measured on the 20-PR pilot: of 19 label-0
+    # annotations, 10 share a file with a label-1 annotation and among those the median
+    # line distance is 2, with 8/10 inside the default pad. A matcher that CORRECTLY
+    # identifies the valid finding at line N therefore cannot avoid also matching the
+    # rejected annotation at N+-2. Counting those made the invalid-hit rate structurally
+    # forced by the benchmark's layout rather than a property of the matcher -- which is
+    # exactly the mistake this function was written to catch, committed inside the function
+    # that catches it. A negative can only test discrimination if it is somewhere a correct
+    # answer would NOT be.
     hp = np_ = hn = nn = 0
     for obs, items in runs:
-        s = score(obs, items, pad)
+        pos = [t for t in items if t.get("label") == 1]
+        isolated = []
+        for t in items:
+            if t.get("label") != 0:
+                continue
+            near = [p for p in pos if p.get("path") == t.get("path")
+                    and abs((p.get("from_line") or 0) - (t.get("from_line") or 0)) <= pad]
+            if not near:
+                isolated.append(t)
+        s = score(obs, pos + isolated, pad)
         hp += s["hit_pos"]; np_ += s["n_pos"]
         hn += s["hit_neg"]; nn += s["n_neg"]
     v = 100 * hp / max(np_, 1)
     iv = 100 * hn / max(nn, 1)
     return {"valid_pct": v, "invalid_pct": iv, "separation_pp": v - iv,
-            "n_pos": np_, "n_neg": nn}
+            "n_pos": np_, "n_neg": nn,
+            # A separation computed on a handful of negatives is noise with a sign. Below
+            # this the figure is reported but must not be thresholded.
+            "powered": nn >= 30}
 
 
 # A recall figure is only reportable if the matcher can tell valid from invalid. Set from
@@ -365,8 +386,13 @@ def main():
         sep = separation(runs)
         print(f"\n  matched {tp}/{tn} valid annotations")
         print(f"  valid {sep['valid_pct']:.1f}%  vs  known-INVALID {sep['invalid_pct']:.1f}%"
-              f"   separation {sep['separation_pp']:+.1f} pp")
-        if sep["separation_pp"] < MIN_SEPARATION_PP:
+              f"   separation {sep['separation_pp']:+.1f} pp"
+              f"   (on {sep['n_neg']} ISOLATED negatives)")
+        if not sep["powered"]:
+            print(f"\n  *** SEPARATION IS UNDERPOWERED: {sep['n_neg']} isolated negatives ***")
+            print(f"  One item moves this figure by ~{100/max(sep['n_neg'],1):.0f} pp, so it cannot")
+            print(f"  license a recall claim in either direction. Reported, not thresholded.")
+        elif sep["separation_pp"] < MIN_SEPARATION_PP:
             print(f"\n  *** NOT REPORTABLE AS RECALL ***")
             print(f"  The matcher lands on comments a human REJECTED almost as often as on")
             print(f"  valid ones, so the figure above measures PROXIMITY, not identification.")
