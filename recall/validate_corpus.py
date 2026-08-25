@@ -50,16 +50,47 @@ check(
     not hasattr(m.Config(), "IMG_TYPES"),
 )
 m = mod("d04-catastrophic-backtracking")
-t = time.time()
-m.linkify("[x](https://a" * 4000)
-t1 = time.time() - t
-t = time.time()
-m.linkify("[x](https://a" * 16000)
-t4 = time.time() - t
+
+
+def _ratio(trials=1):
+    """Growth ratio from 4x the input, as the MINIMUM over `trials` samples of each size.
+
+    A single sample is a one-sided estimator -- contention only ever adds time, never
+    removes it -- and it inflates the SMALL measurement proportionally more, which drags
+    the ratio down toward the threshold. That is why this check twice declared the whole
+    corpus INVALID today while six judges were running panels. A validator that
+    intermittently lies about the corpus undermines every number measured against it.
+
+    Retried only ON FAILURE, not always. The 16000-element run alone takes ~14s, so an
+    unconditional best-of-3 would add ~30s to every corpus validation to defend against a
+    case that almost never occurs. The flake is a false FAILURE, so re-measurement belongs
+    exactly where a failure is claimed -- costing nothing on the common path.
+
+    The threshold stays at 8. Lowering it would hide the noise instead of removing it, and
+    would weaken the only thing asserted here: that growth is superlinear.
+    """
+
+    def fastest(n):
+        best = float("inf")
+        for _ in range(trials):
+            start = time.time()
+            m.linkify("[x](https://a" * n)
+            best = min(best, time.time() - start)
+        return best
+
+    return fastest(16000) / max(fastest(4000), 1e-6)
+
+
+_r4 = _ratio()
+_retried = False
+if not _r4 > 8:  # could be a real defect, or could be contention
+    _retried = True
+    _r4 = _ratio(trials=3)
 check(
     "d04-catastrophic-backtracking",
-    f"4x input costs {t4 / max(t1, 1e-6):.1f}x time (linear would be ~4)",
-    t4 > t1 * 8,
+    f"4x input costs {_r4:.1f}x time (linear would be ~4"
+    + (", best of 3 after a first-pass miss)" if _retried else ")"),
+    _r4 > 8,
 )
 m = mod("d05-explicit-null")
 f = pathlib.Path(tempfile.mkdtemp()) / "r.json"
