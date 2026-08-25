@@ -103,12 +103,28 @@ _STRONG = re.compile(
 
 # Opportunistic location parsing. Absence is recorded as absence -- a missing file or line
 # is None, never a guess, because a fabricated location is worse than no location.
-# Extensions are ordered LONGEST-FIRST and closed with \b. Python alternation is
-# leftmost-first, not longest-match, so `c` ahead of `cc`/`cpp`/`cs` made `Foo.cs:20` parse
-# as path `Foo.c` -- CORRUPTING THE PATH, not merely losing the line, and leaving `s:20`
-# so the line group never matched either. C/C++/C# are 766 of AACR-Bench's 2145 items.
-_EXT = r"(?:cpp|cc|cs|php|java|py|js|ts|go|rs|rb|c|h)"
-_PATH_LINE = re.compile(r"`?([\w./-]+\." + _EXT + r")\b`?(?::(\d{1,6}))?")
+# A path is recognised STRUCTURALLY, not from a list of extensions.
+#
+# The previous version enumerated (cpp|cc|cs|php|java|py|js|ts|go|rs|rb|c|h). Two faults:
+# leftmost-first alternation made `Foo.cs` parse as `Foo.c` (corrupting the path, not just
+# losing the line), and the list missed 166 of AACR-Bench's 2145 annotated paths --
+# .tsx (19), .mts (16), .xml (13), .jsx (13), .sql (11), .hpp (8), 8 extensionless.
+# That is this project's most-repeated mistake: A LIST OF NAMES CANNOT GUARD AN OPEN SET,
+# and I built one anyway in a fresh instrument.
+#
+# Structural rule instead: a token containing "/" is a path whatever its suffix (which
+# covers Dockerfile, Makefile and every extension nobody thought of), otherwise a bare
+# filename needs a dotted ALPHABETIC suffix of 1-5 chars, with a stem of >=2 characters.
+# The suffix being alphabetic rejects `1.2` and `3.14`; the stem length rejects `e.g`/`i.e`.
+# Measured against all 2145 real annotated paths: 2139 (99.7%). The one miss is a bare
+# `Makefile` with no directory, which is genuinely ambiguous with an English word.
+#
+# `Node.js` and `and/or` DO match, and that is accepted: a spurious path is harmless here
+# because a match additionally requires a line number AND agreement with a real
+# annotation's path, so a stray token has nothing to pair with.
+_PATH = (r"(?:[@\w.-]+/)+[@\w.-]+"                              # any token with a separator
+         r"|[\w-]{2,}(?:[.\-][\w-]+)*\.[A-Za-z][A-Za-z0-9]{0,4}")  # bare filename.ext
+_PATH_LINE = re.compile(r"`?(" + _PATH + r")`?(?::(\d{1,6}))?")
 # A diff hunk header names the line the change starts at, and this project's own diff
 # prompt tells judges to take line numbers from exactly here. `@@ -112,6 +112,10 @@` -> 112,
 # reading the NEW-file side, which is what a reviewer is looking at.

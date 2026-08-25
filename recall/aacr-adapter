@@ -116,6 +116,11 @@ def matches(obs, gt, pad=DEFAULT_PAD):
     an unlocated finding scores zero here, which is a real limitation of this matcher and
     is reported as `unlocated` rather than hidden.
     """
+    # AACR carries a `side` (left = deleted line, right = added). This matcher ignores it,
+    # which Codex flagged as inflating matches. MEASURED before acting: the dataset is 2134
+    # right to 11 left, so ignoring it can affect at most 0.5% of annotations. Recorded as a
+    # known and quantified limitation rather than implemented, because a judge reviewing a
+    # diff gives no side signal to compare against -- inferring one would be invention.
     loc = obs.get("location") or {}
     path = loc.get("path")
     if not path or not gt.get("path"):
@@ -174,15 +179,20 @@ def separation(runs, pad=DEFAULT_PAD):
         inside the pad, so correctly finding the valid item necessarily hits the invalid one.
       * Restricting to ISOLATED negatives -- leaves 11, where one item moves the figure ~9pp.
     Lexical content overlap was then measured as a tie-breaker and does not separate them
-    either: valid median 0.17 vs invalid 0.16, with the sign flipping across thresholds.
-    It cannot, for the reason above -- a wrong claim about line N shares its vocabulary with
-    a right one. Embedding similarity would fail identically; the distinction is correctness,
-    which no surface measure carries.
+    either: valid median 0.17 vs invalid 0.16, with the sign flipping across thresholds. That
+    is expected -- a wrong claim about line N shares its vocabulary with a right one.
+
+    ⚠️ I wrote here that EMBEDDINGS WOULD FAIL IDENTICALLY. That was over-reach and is
+    withdrawn. It conflates two tasks: text similarity cannot adjudicate CORRECTNESS, which
+    is what label-0 vs label-1 encodes, but it may well decide whether two texts express the
+    SAME CLAIM, which is what a matcher actually needs. Those are different questions and the
+    lexical null only speaks to the first. Embeddings, a cross-encoder and an NLI model
+    remain unvalidated CANDIDATE-RANKING options, not ruled-out ones.
 
     WHAT ACTUALLY DIAGNOSES THE MATCHER is the pad sweep below, which needs no negatives:
 
 
-    THE NUMBER THAT DECIDES WHETHER ANY RECALL FIGURE HERE MEANS ANYTHING. AACR-Bench
+    AACR-Bench
     carries annotations a human REJECTED (label 0). A matcher that lands on rejected
     comments as often as on valid ones is not identifying defects; it is reporting
     proximity, and its "recall" is a restatement of its own tolerance.
@@ -196,10 +206,17 @@ def separation(runs, pad=DEFAULT_PAD):
          20     94.3      73.7      +20.7
         200     98.1      78.9      +19.2
 
-    Recall climbs monotonically from 37.7% to 98.1% purely as the tolerance widens, and
-    the separation stays ~20pp throughout rather than sharpening as the match tightens.
-    Both facts say the same thing: this matches WHERE a finding is, not WHAT it claims --
-    and THAT is the finding that survives, because it rests on the 53 positives alone.
+    ⚠️ The CLIMB IS NOT EVIDENCE OF ANYTHING -- a wider window can only ADD matches, so
+    monotonicity is guaranteed by construction. I used it as the headline argument that this
+    matcher measures proximity; that argument was empty. What the curve legitimately shows is
+    its SHAPE: only 37.7% agree at the exact line while 83% agree within five. That is
+    suggestive rather than decisive, because a judge citing an approximate line is normal.
+
+    So the honest status of this matcher is not "proven loose" but "UNVALIDATED": it does
+    location-based CANDIDATE RETRIEVAL, and nothing here establishes that a retrieved pair
+    describes the same claim. Deciding that needs a pair-labelled set -- 511 same-PR pairs
+    exist, 127 survive the pad-5 filter -- scored against lexical, embedding, cross-encoder
+    and NLI baselines. Until then no figure from here is recall.
     """
     # ONLY ISOLATED NEGATIVES COUNT. Measured on the 20-PR pilot: of 19 label-0
     # annotations, 10 share a file with a label-1 annotation and among those the median
@@ -233,10 +250,6 @@ def separation(runs, pad=DEFAULT_PAD):
             "powered": nn >= 30}
 
 
-# A recall figure is only reportable if the matcher can tell valid from invalid. Set from
-# the pilot: at the pad in use the separation is ~25pp, and at pad=0 it is +0.9pp -- so any
-# threshold in between distinguishes "tolerance is doing the work" from "identity is".
-MIN_SEPARATION_PP = 15.0
 
 
 # ------------------------------------------------------------------ matcher self-test
