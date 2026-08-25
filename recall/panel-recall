@@ -65,6 +65,13 @@ def cases(only=None):
     cases still printed "wrote <path>" (see cmd_run). Accepting a list is half the fix;
     the other half is that an empty selection must be fatal, not silent.
     """
+    # "no filter given" and "a filter was given that parsed to nothing" are DIFFERENT.
+    # Collapsing them meant `--only ','` (or ',,' or '  ,  ') produced prefixes=[], which
+    # read as no-filter AND skipped the zero-match exit below -- so a typo'd filter
+    # silently ran the ENTIRE corpus and billed every judge for it. Found by the panel
+    # reviewing this very commit: the fix for one silent no-op introduced another.
+    if only is not None and only.strip() and not [p for p in only.split(",") if p.strip()]:
+        raise SystemExit(f"--only {only!r} contains no case names")
     prefixes = [p.strip() for p in (only or "").split(",") if p.strip()]
     found = []
     for d in sorted(CORPUS.iterdir()):

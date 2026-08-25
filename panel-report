@@ -2013,15 +2013,37 @@ def open_report(out):
                 (r"/mnt/c/Program Files (x86)/Microsoft/Edge/Application/msedge.exe", "Edge")]:
             if pathlib.Path(exe).is_file():
                 # Opens a TAB in the running instance. Never kill the browser to refresh.
-                subprocess.Popen([exe, win], stdout=subprocess.DEVNULL,
-                                 stderr=subprocess.DEVNULL)
+                # Same wait-then-ask as the POSIX branch below: a browser that hands off to
+                # an already-running instance exits 0 or keeps running, while one that
+                # cannot start exits non-zero -- and reporting "opened in Firefox" without
+                # looking is a success message tied to nothing.
+                proc = subprocess.Popen([exe, win], stdout=subprocess.DEVNULL,
+                                        stderr=subprocess.DEVNULL)
+                try:
+                    rc = proc.wait(timeout=1.0)
+                except subprocess.TimeoutExpired:
+                    rc = None
+                if rc not in (None, 0):
+                    return (f"--open: {label} exited {rc}; the report is at {win}")
                 return f"opened in {label}: {win}"
         return f"--open: no known browser under /mnt/c/Program Files; open it yourself: {win}"
     opener = "open" if sys.platform == "darwin" else "xdg-open"
     if shutil.which(opener) is None:
         return f"--open: no {opener} on PATH; open {out} yourself"
-    subprocess.Popen([opener, str(out)], stdout=subprocess.DEVNULL,
-                     stderr=subprocess.DEVNULL)
+    # Popen is deliberately not waited on -- the opener may outlive us. But returning
+    # "opened with xdg-open" the instant it is spawned reports a success nobody checked:
+    # on a headless host the binary EXISTS, the child exits non-zero immediately, and the
+    # message still claims the report is on screen. Give it a moment and ask. A process
+    # still alive after that has handed off to a viewer; one that already exited non-zero
+    # has failed and we know it.
+    proc = subprocess.Popen([opener, str(out)], stdout=subprocess.DEVNULL,
+                            stderr=subprocess.DEVNULL)
+    try:
+        rc = proc.wait(timeout=1.0)
+    except subprocess.TimeoutExpired:
+        rc = None                       # still running: handed off, which is success
+    if rc not in (None, 0):
+        return (f"--open: {opener} exited {rc} (no display?); the report is at {out}")
     return f"opened with {opener}: {out}"
 
 
