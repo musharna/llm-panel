@@ -1,0 +1,378 @@
+diff --git a/plugins/mapper-annotated-text/src/main/java/org/elasticsearch/index/mapper/annotatedtext/AnnotatedTextHighlighter.java b/plugins/mapper-annotated-text/src/main/java/org/elasticsearch/index/mapper/annotatedtext/AnnotatedTextHighlighter.java
+index 8b4a9d6544b75..f636335701da5 100644
+--- a/plugins/mapper-annotated-text/src/main/java/org/elasticsearch/index/mapper/annotatedtext/AnnotatedTextHighlighter.java
++++ b/plugins/mapper-annotated-text/src/main/java/org/elasticsearch/index/mapper/annotatedtext/AnnotatedTextHighlighter.java
+@@ -17,6 +17,7 @@
+ import org.elasticsearch.index.mapper.annotatedtext.AnnotatedTextFieldMapper.AnnotatedText;
+ import org.elasticsearch.index.query.SearchExecutionContext;
+ import org.elasticsearch.lucene.search.uhighlight.CustomUnifiedHighlighter;
++import org.elasticsearch.lucene.search.uhighlight.QueryMaxAnalyzedOffset;
+ import org.elasticsearch.search.fetch.FetchSubPhase.HitContext;
+ import org.elasticsearch.search.fetch.subphase.highlight.DefaultHighlighter;
+ import org.elasticsearch.search.fetch.subphase.highlight.SearchHighlightContext;
+@@ -52,7 +53,7 @@ protected List<Object> loadFieldValues(
+     }
+ 
+     @Override
+-    protected Analyzer wrapAnalyzer(Analyzer analyzer, Integer maxAnalyzedOffset) {
++    protected Analyzer wrapAnalyzer(Analyzer analyzer, QueryMaxAnalyzedOffset maxAnalyzedOffset) {
+         return new AnnotatedHighlighterAnalyzer(super.wrapAnalyzer(analyzer, maxAnalyzedOffset));
+     }
+ 
+diff --git a/plugins/mapper-annotated-text/src/test/java/org/elasticsearch/index/mapper/annotatedtext/AnnotatedTextHighlighterTests.java b/plugins/mapper-annotated-text/src/test/java/org/elasticsearch/index/mapper/annotatedtext/AnnotatedTextHighlighterTests.java
+index d4c4ccfaa442d..53bb87bdf0acb 100644
+--- a/plugins/mapper-annotated-text/src/test/java/org/elasticsearch/index/mapper/annotatedtext/AnnotatedTextHighlighterTests.java
++++ b/plugins/mapper-annotated-text/src/test/java/org/elasticsearch/index/mapper/annotatedtext/AnnotatedTextHighlighterTests.java
+@@ -39,6 +39,7 @@
+ import org.elasticsearch.index.mapper.annotatedtext.AnnotatedTextFieldMapper.AnnotatedText;
+ import org.elasticsearch.index.mapper.annotatedtext.AnnotatedTextFieldMapper.AnnotationAnalyzerWrapper;
+ import org.elasticsearch.lucene.search.uhighlight.CustomUnifiedHighlighter;
++import org.elasticsearch.lucene.search.uhighlight.QueryMaxAnalyzedOffset;
+ import org.elasticsearch.lucene.search.uhighlight.Snippet;
+ import org.elasticsearch.search.fetch.subphase.highlight.LimitTokenOffsetAnalyzer;
+ import org.elasticsearch.test.ESTestCase;
+@@ -85,7 +86,7 @@ private void assertHighlightOneDoc(
+         int noMatchSize,
+         String[] expectedPassages,
+         int maxAnalyzedOffset,
+-        Integer queryMaxAnalyzedOffset
++        Integer queryMaxAnalyzedOffsetIn
+     ) throws Exception {
+ 
+         try (Directory dir = newDirectory()) {
+@@ -116,8 +117,9 @@ private void assertHighlightOneDoc(
+                 for (int i = 0; i < markedUpInputs.length; i++) {
+                     annotations[i] = AnnotatedText.parse(markedUpInputs[i]);
+                 }
++                QueryMaxAnalyzedOffset queryMaxAnalyzedOffset = QueryMaxAnalyzedOffset.create(queryMaxAnalyzedOffsetIn, maxAnalyzedOffset);
+                 if (queryMaxAnalyzedOffset != null) {
+-                    wrapperAnalyzer = new LimitTokenOffsetAnalyzer(wrapperAnalyzer, queryMaxAnalyzedOffset);
++                    wrapperAnalyzer = new LimitTokenOffsetAnalyzer(wrapperAnalyzer, queryMaxAnalyzedOffset.getNotNull());
+                 }
+                 AnnotatedHighlighterAnalyzer hiliteAnalyzer = new AnnotatedHighlighterAnalyzer(wrapperAnalyzer);
+                 hiliteAnalyzer.setAnnotations(annotations);
+@@ -311,6 +313,19 @@ public void testExceedMaxAnalyzedOffset() throws Exception {
+             e.getMessage()
+         );
+ 
++        // Same as before, but force using index maxOffset (20) as queryMaxOffset by passing -1.
++        assertHighlightOneDoc(
++            "text",
++            new String[] { "[Long Text exceeds](Long+Text+exceeds) MAX analyzed offset)" },
++            query,
++            Locale.ROOT,
++            breakIterator,
++            0,
++            new String[] { "Long Text [exceeds](_hit_term=exceeds) MAX analyzed offset)" },
++            20,
++            -1
++        );
++
+         assertHighlightOneDoc(
+             "text",
+             new String[] { "[Long Text Exceeds](Long+Text+Exceeds) MAX analyzed offset [Long Text Exceeds](Long+Text+Exceeds)" },
+diff --git a/rest-api-spec/src/yamlRestTest/resources/rest-api-spec/test/search.highlight/30_max_analyzed_offset.yml b/rest-api-spec/src/yamlRestTest/resources/rest-api-spec/test/search.highlight/30_max_analyzed_offset.yml
+index d732fb084db3d..90a5765f86f27 100644
+--- a/rest-api-spec/src/yamlRestTest/resources/rest-api-spec/test/search.highlight/30_max_analyzed_offset.yml
++++ b/rest-api-spec/src/yamlRestTest/resources/rest-api-spec/test/search.highlight/30_max_analyzed_offset.yml
+@@ -115,7 +115,7 @@ setup:
+   - match: {hits.hits.0.highlight.field2.0: "The quick brown <em>fox</em> went to the forest and saw another fox."}
+ 
+ ---
+-"Plain highlighter with max_analyzed_offset < 0 should FAIL":
++"Plain highlighter with max_analyzed_offset < -1 should FAIL":
+ 
+   - requires:
+       cluster_features: ["gte_v7.12.0"]
+@@ -130,4 +130,4 @@ setup:
+   - match: { status: 400 }
+   - match: { error.root_cause.0.type: "x_content_parse_exception" }
+   - match: { error.caused_by.type: "illegal_argument_exception" }
+-  - match: { error.caused_by.reason: "[max_analyzed_offset] must be a positive integer" }
++  - match: { error.caused_by.reason: "[max_analyzed_offset] must be an integer >= -1" }
+diff --git a/server/src/internalClusterTest/java/org/elasticsearch/search/fetch/subphase/highlight/HighlighterSearchIT.java b/server/src/internalClusterTest/java/org/elasticsearch/search/fetch/subphase/highlight/HighlighterSearchIT.java
+index fc105d3d4fcd2..6f2b3da5279f8 100644
+--- a/server/src/internalClusterTest/java/org/elasticsearch/search/fetch/subphase/highlight/HighlighterSearchIT.java
++++ b/server/src/internalClusterTest/java/org/elasticsearch/search/fetch/subphase/highlight/HighlighterSearchIT.java
+@@ -2632,6 +2632,42 @@ public void testPostingsHighlighterOrderByScore() throws Exception {
+         });
+     }
+ 
++    public void testMaxQueryOffsetDefault() throws Exception {
++        assertAcked(
++            prepareCreate("test").setMapping(type1PostingsffsetsMapping())
++                .setSettings(Settings.builder().put("index.highlight.max_analyzed_offset", "10").build())
++        );
++        ensureGreen();
++
++        prepareIndex("test").setSource(
++            "field1",
++            new String[] {
++                "This sentence contains one match, not that short. This sentence contains zero sentence matches. "
++                    + "This one contains no matches.",
++                "This is the second value's first sentence. This one contains no matches. "
++                    + "This sentence contains three sentence occurrences (sentence).",
++                "One sentence match here and scored lower since the text is quite long, not that appealing. "
++                    + "This one contains no matches." }
++        ).get();
++        refresh();
++
++        logger.info("--> highlighting and searching on field1");
++        // Specific for this test: by passing "-1" as "maxAnalyzedOffset", the index highlight setting above will be used.
++        SearchSourceBuilder source = searchSource().query(termQuery("field1", "sentence"))
++            .highlighter(highlight().field("field1").order("score").maxAnalyzedOffset(-1));
++
++        assertResponse(client().search(new SearchRequest("test").source(source)), response -> {
++            Map<String, HighlightField> highlightFieldMap = response.getHits().getAt(0).getHighlightFields();
++            assertThat(highlightFieldMap.size(), equalTo(1));
++            HighlightField field1 = highlightFieldMap.get("field1");
++            assertThat(field1.fragments().length, equalTo(1));
++            assertThat(
++                field1.fragments()[0].string(),
++                equalTo("This <em>sentence</em> contains one match, not that short. This sentence contains zero sentence matches.")
++            );
++        });
++    }
++
+     public void testPostingsHighlighterEscapeHtml() throws Exception {
+         assertAcked(prepareCreate("test").setMapping("title", "type=text," + randomStoreField() + "index_options=offsets"));
+ 
+diff --git a/server/src/main/java/org/elasticsearch/lucene/search/uhighlight/CustomFieldHighlighter.java b/server/src/main/java/org/elasticsearch/lucene/search/uhighlight/CustomFieldHighlighter.java
+index 3e59814de0585..acf186faf20b2 100644
+--- a/server/src/main/java/org/elasticsearch/lucene/search/uhighlight/CustomFieldHighlighter.java
++++ b/server/src/main/java/org/elasticsearch/lucene/search/uhighlight/CustomFieldHighlighter.java
+@@ -34,7 +34,7 @@ class CustomFieldHighlighter extends FieldHighlighter {
+     private final Locale breakIteratorLocale;
+     private final int noMatchSize;
+     private String fieldValue;
+-    private final Integer queryMaxAnalyzedOffset;
++    private final QueryMaxAnalyzedOffset queryMaxAnalyzedOffset;
+ 
+     CustomFieldHighlighter(
+         String field,
+@@ -47,7 +47,7 @@ class CustomFieldHighlighter extends FieldHighlighter {
+         PassageFormatter passageFormatter,
+         Comparator<Passage> passageSortComparator,
+         int noMatchSize,
+-        Integer queryMaxAnalyzedOffset
++        QueryMaxAnalyzedOffset queryMaxAnalyzedOffset
+     ) {
+         super(
+             field,
+@@ -113,7 +113,7 @@ protected Passage[] getSummaryPassagesNoHighlight(int maxPassages) {
+     @Override
+     protected Passage[] highlightOffsetsEnums(OffsetsEnum off) throws IOException {
+         if (queryMaxAnalyzedOffset != null) {
+-            off = new LimitedOffsetsEnum(off, queryMaxAnalyzedOffset);
++            off = new LimitedOffsetsEnum(off, queryMaxAnalyzedOffset.getNotNull());
+         }
+         return super.highlightOffsetsEnums(off);
+     }
+diff --git a/server/src/main/java/org/elasticsearch/lucene/search/uhighlight/CustomUnifiedHighlighter.java b/server/src/main/java/org/elasticsearch/lucene/search/uhighlight/CustomUnifiedHighlighter.java
+index d1c7d0415ad15..59dffb73985ac 100644
+--- a/server/src/main/java/org/elasticsearch/lucene/search/uhighlight/CustomUnifiedHighlighter.java
++++ b/server/src/main/java/org/elasticsearch/lucene/search/uhighlight/CustomUnifiedHighlighter.java
+@@ -66,7 +66,7 @@ public final class CustomUnifiedHighlighter extends UnifiedHighlighter {
+     private final int noMatchSize;
+     private final CustomFieldHighlighter fieldHighlighter;
+     private final int maxAnalyzedOffset;
+-    private final Integer queryMaxAnalyzedOffset;
++    private final QueryMaxAnalyzedOffset queryMaxAnalyzedOffset;
+ 
+     /**
+      * Creates a new instance of {@link CustomUnifiedHighlighter}
+@@ -94,7 +94,7 @@ public CustomUnifiedHighlighter(
+         int noMatchSize,
+         int maxPassages,
+         int maxAnalyzedOffset,
+-        Integer queryMaxAnalyzedOffset,
++        QueryMaxAnalyzedOffset queryMaxAnalyzedOffset,
+         boolean requireFieldMatch,
+         boolean weightMatchesEnabled
+     ) {
+@@ -125,9 +125,9 @@ public Snippet[] highlightField(LeafReader reader, int docId, CheckedSupplier<St
+             return null;
+         }
+         int fieldValueLength = fieldValue.length();
+-        if (((queryMaxAnalyzedOffset == null || queryMaxAnalyzedOffset > maxAnalyzedOffset)
++        if ((queryMaxAnalyzedOffset == null || queryMaxAnalyzedOffset.getNotNull() > maxAnalyzedOffset)
+             && (getOffsetSource(field) == OffsetSource.ANALYSIS)
+-            && (fieldValueLength > maxAnalyzedOffset))) {
++            && (fieldValueLength > maxAnalyzedOffset)) {
+             throw new IllegalArgumentException(
+                 "The length ["
+                     + fieldValueLength
+diff --git a/server/src/main/java/org/elasticsearch/lucene/search/uhighlight/QueryMaxAnalyzedOffset.java b/server/src/main/java/org/elasticsearch/lucene/search/uhighlight/QueryMaxAnalyzedOffset.java
+new file mode 100644
+index 0000000000000..e74b11d4e1a91
+--- /dev/null
++++ b/server/src/main/java/org/elasticsearch/lucene/search/uhighlight/QueryMaxAnalyzedOffset.java
+@@ -0,0 +1,30 @@
++/*
++ * Copyright Elasticsearch B.V. and/or licensed to Elasticsearch B.V. under one
++ * or more contributor license agreements. Licensed under the "Elastic License
++ * 2.0", the "GNU Affero General Public License v3.0 only", and the "Server Side
++ * Public License v 1"; you may not use this file except in compliance with, at
++ * your election, the "Elastic License 2.0", the "GNU Affero General Public
++ * License v3.0 only", or the "Server Side Public License, v 1".
++ */
++
++package org.elasticsearch.lucene.search.uhighlight;
++
++public class QueryMaxAnalyzedOffset {
++    private final int queryMaxAnalyzedOffset;
++
++    private QueryMaxAnalyzedOffset(final int queryMaxAnalyzedOffset) {
++        // If we have a negative value, grab value for the actual maximum from the index.
++        this.queryMaxAnalyzedOffset = queryMaxAnalyzedOffset;
++    }
++
++    public static QueryMaxAnalyzedOffset create(final Integer queryMaxAnalyzedOffset, final int indexMaxAnalyzedOffset) {
++        if (queryMaxAnalyzedOffset == null) {
++            return null;
++        }
++        return new QueryMaxAnalyzedOffset(queryMaxAnalyzedOffset < 0 ? indexMaxAnalyzedOffset : queryMaxAnalyzedOffset);
++    }
++
++    public int getNotNull() {
++        return queryMaxAnalyzedOffset;
++    }
++}
+diff --git a/server/src/main/java/org/elasticsearch/search/fetch/subphase/highlight/AbstractHighlighterBuilder.java b/server/src/main/java/org/elasticsearch/search/fetch/subphase/highlight/AbstractHighlighterBuilder.java
+index a8db0f26d2966..3611c0e697826 100644
+--- a/server/src/main/java/org/elasticsearch/search/fetch/subphase/highlight/AbstractHighlighterBuilder.java
++++ b/server/src/main/java/org/elasticsearch/search/fetch/subphase/highlight/AbstractHighlighterBuilder.java
+@@ -561,13 +561,12 @@ public Integer phraseLimit() {
+     }
+ 
+     /**
+-     * Set to a non-negative value which represents the max offset used to analyze
+-     * the field thus avoiding exceptions if the field exceeds this limit.
++     * "maxAnalyzedOffset" might be non-negative int, null (unknown), or a negative int (defaulting to index analyzed offset).
+      */
+     @SuppressWarnings("unchecked")
+     public HB maxAnalyzedOffset(Integer maxAnalyzedOffset) {
+-        if (maxAnalyzedOffset != null && maxAnalyzedOffset <= 0) {
+-            throw new IllegalArgumentException("[" + MAX_ANALYZED_OFFSET_FIELD + "] must be a positive integer");
++        if (maxAnalyzedOffset != null && maxAnalyzedOffset < -1) {
++            throw new IllegalArgumentException("[" + MAX_ANALYZED_OFFSET_FIELD + "] must be an integer >= -1");
+         }
+         this.maxAnalyzedOffset = maxAnalyzedOffset;
+         return (HB) this;
+diff --git a/server/src/main/java/org/elasticsearch/search/fetch/subphase/highlight/DefaultHighlighter.java b/server/src/main/java/org/elasticsearch/search/fetch/subphase/highlight/DefaultHighlighter.java
+index 75f8e5588761a..62a6e4b8dae84 100644
+--- a/server/src/main/java/org/elasticsearch/search/fetch/subphase/highlight/DefaultHighlighter.java
++++ b/server/src/main/java/org/elasticsearch/search/fetch/subphase/highlight/DefaultHighlighter.java
+@@ -31,6 +31,7 @@
+ import org.elasticsearch.lucene.search.uhighlight.BoundedBreakIteratorScanner;
+ import org.elasticsearch.lucene.search.uhighlight.CustomPassageFormatter;
+ import org.elasticsearch.lucene.search.uhighlight.CustomUnifiedHighlighter;
++import org.elasticsearch.lucene.search.uhighlight.QueryMaxAnalyzedOffset;
+ import org.elasticsearch.lucene.search.uhighlight.Snippet;
+ import org.elasticsearch.search.fetch.FetchContext;
+ import org.elasticsearch.search.fetch.FetchSubPhase;
+@@ -121,7 +122,10 @@ CustomUnifiedHighlighter buildHighlighter(FieldHighlightContext fieldContext) {
+         int maxAnalyzedOffset = indexSettings.getHighlightMaxAnalyzedOffset();
+         boolean weightMatchesEnabled = indexSettings.isWeightMatchesEnabled();
+         int numberOfFragments = fieldContext.field.fieldOptions().numberOfFragments();
+-        Integer queryMaxAnalyzedOffset = fieldContext.field.fieldOptions().maxAnalyzedOffset();
++        QueryMaxAnalyzedOffset queryMaxAnalyzedOffset = QueryMaxAnalyzedOffset.create(
++            fieldContext.field.fieldOptions().maxAnalyzedOffset(),
++            maxAnalyzedOffset
++        );
+         Analyzer analyzer = wrapAnalyzer(
+             fieldContext.context.getSearchExecutionContext().getIndexAnalyzer(f -> Lucene.KEYWORD_ANALYZER),
+             queryMaxAnalyzedOffset
+@@ -171,7 +175,7 @@ CustomUnifiedHighlighter buildHighlighter(FieldHighlightContext fieldContext) {
+             fieldContext.field.fieldOptions().noMatchSize(),
+             highlighterNumberOfFragments,
+             maxAnalyzedOffset,
+-            fieldContext.field.fieldOptions().maxAnalyzedOffset(),
++            queryMaxAnalyzedOffset,
+             fieldContext.field.fieldOptions().requireFieldMatch(),
+             weightMatchesEnabled
+         );
+@@ -186,9 +190,9 @@ protected PassageFormatter getPassageFormatter(SearchHighlightContext.Field fiel
+         );
+     }
+ 
+-    protected Analyzer wrapAnalyzer(Analyzer analyzer, Integer maxAnalyzedOffset) {
++    protected Analyzer wrapAnalyzer(Analyzer analyzer, QueryMaxAnalyzedOffset maxAnalyzedOffset) {
+         if (maxAnalyzedOffset != null) {
+-            analyzer = new LimitTokenOffsetAnalyzer(analyzer, maxAnalyzedOffset);
++            analyzer = new LimitTokenOffsetAnalyzer(analyzer, maxAnalyzedOffset.getNotNull());
+         }
+         return analyzer;
+     }
+diff --git a/server/src/main/java/org/elasticsearch/search/fetch/subphase/highlight/PlainHighlighter.java b/server/src/main/java/org/elasticsearch/search/fetch/subphase/highlight/PlainHighlighter.java
+index 3dd3dd1b42c8c..e1c09e925c1b4 100644
+--- a/server/src/main/java/org/elasticsearch/search/fetch/subphase/highlight/PlainHighlighter.java
++++ b/server/src/main/java/org/elasticsearch/search/fetch/subphase/highlight/PlainHighlighter.java
+@@ -27,6 +27,7 @@
+ import org.elasticsearch.common.text.Text;
+ import org.elasticsearch.index.IndexSettings;
+ import org.elasticsearch.index.mapper.MappedFieldType;
++import org.elasticsearch.lucene.search.uhighlight.QueryMaxAnalyzedOffset;
+ import org.elasticsearch.search.fetch.FetchContext;
+ import org.elasticsearch.search.fetch.FetchSubPhase;
+ 
+@@ -107,7 +108,10 @@ public HighlightField highlight(FieldHighlightContext fieldContext) throws IOExc
+         ArrayList<OrderedTextFragment> fragsList = new ArrayList<>();
+         List<Object> textsToHighlight;
+         final int maxAnalyzedOffset = context.getSearchExecutionContext().getIndexSettings().getHighlightMaxAnalyzedOffset();
+-        Integer queryMaxAnalyzedOffset = fieldContext.field.fieldOptions().maxAnalyzedOffset();
++        QueryMaxAnalyzedOffset queryMaxAnalyzedOffset = QueryMaxAnalyzedOffset.create(
++            fieldContext.field.fieldOptions().maxAnalyzedOffset(),
++            maxAnalyzedOffset
++        );
+         Analyzer analyzer = wrapAnalyzer(
+             context.getSearchExecutionContext().getIndexAnalyzer(f -> Lucene.KEYWORD_ANALYZER),
+             queryMaxAnalyzedOffset
+@@ -119,7 +123,8 @@ public HighlightField highlight(FieldHighlightContext fieldContext) throws IOExc
+         for (Object textToHighlight : textsToHighlight) {
+             String text = convertFieldValue(fieldType, textToHighlight);
+             int textLength = text.length();
+-            if ((queryMaxAnalyzedOffset == null || queryMaxAnalyzedOffset > maxAnalyzedOffset) && (textLength > maxAnalyzedOffset)) {
++            if ((queryMaxAnalyzedOffset == null || queryMaxAnalyzedOffset.getNotNull() > maxAnalyzedOffset)
++                && (textLength > maxAnalyzedOffset)) {
+                 throw new IllegalArgumentException(
+                     "The length ["
+                         + textLength
+@@ -241,9 +246,9 @@ private static int findGoodEndForNoHighlightExcerpt(int noMatchSize, Analyzer an
+         }
+     }
+ 
+-    private static Analyzer wrapAnalyzer(Analyzer analyzer, Integer maxAnalyzedOffset) {
++    private static Analyzer wrapAnalyzer(Analyzer analyzer, QueryMaxAnalyzedOffset maxAnalyzedOffset) {
+         if (maxAnalyzedOffset != null) {
+-            return new LimitTokenOffsetAnalyzer(analyzer, maxAnalyzedOffset);
++            return new LimitTokenOffsetAnalyzer(analyzer, maxAnalyzedOffset.getNotNull());
+         }
+         return analyzer;
+     }
+diff --git a/server/src/test/java/org/elasticsearch/lucene/search/uhighlight/CustomUnifiedHighlighterTests.java b/server/src/test/java/org/elasticsearch/lucene/search/uhighlight/CustomUnifiedHighlighterTests.java
+index 126641037fde7..2c400fe7b9173 100644
+--- a/server/src/test/java/org/elasticsearch/lucene/search/uhighlight/CustomUnifiedHighlighterTests.java
++++ b/server/src/test/java/org/elasticsearch/lucene/search/uhighlight/CustomUnifiedHighlighterTests.java
+@@ -157,7 +157,7 @@ private void assertHighlightOneDoc(
+                     noMatchSize,
+                     expectedPassages.length,
+                     maxAnalyzedOffset,
+-                    queryMaxAnalyzedOffset,
++                    QueryMaxAnalyzedOffset.create(queryMaxAnalyzedOffset, maxAnalyzedOffset),
+                     true,
+                     true
+                 );
+diff --git a/server/src/test/java/org/elasticsearch/search/fetch/subphase/highlight/HighlightBuilderTests.java b/server/src/test/java/org/elasticsearch/search/fetch/subphase/highlight/HighlightBuilderTests.java
+index d1bbc1ec5910b..814a4d2d9c670 100644
+--- a/server/src/test/java/org/elasticsearch/search/fetch/subphase/highlight/HighlightBuilderTests.java
++++ b/server/src/test/java/org/elasticsearch/search/fetch/subphase/highlight/HighlightBuilderTests.java
+@@ -580,7 +580,7 @@ public void testInvalidMaxAnalyzedOffset() throws IOException {
+             "{ \"max_analyzed_offset\" : " + randomIntBetween(-100, 0) + "}"
+         );
+         assertThat(e.getMessage(), containsString("[highlight] failed to parse field [" + MAX_ANALYZED_OFFSET_FIELD.toString() + "]"));
+-        assertThat(e.getCause().getMessage(), containsString("[max_analyzed_offset] must be a positive integer"));
++        assertThat(e.getCause().getMessage(), containsString("[max_analyzed_offset] must be an integer >= -1"));
+     }
+ 
+     /**

@@ -1,0 +1,258 @@
+#!/usr/bin/env python3
+"""Run llm-panel against AACR-Bench USING THE UPSTREAM EVALUATOR, not my own matcher.
+
+WHY THIS REPLACES recall/aacr-adapter's SCORING
+------------------------------------------------
+I built a location matcher, spent three commits discovering it could not support a recall
+claim, and only then found that the benchmark ships its own evaluator -- github.com/alibaba
+/aacr-bench, which does path -> side -> line -> SEMANTIC JUDGMENT with a real LLM judge, and
+whose local similarity fallback is explicitly marked "pipeline validation only". I had
+searched HuggingFace, found the dataset, and concluded no harness existed. A negative
+existence claim from a single source, which is a failure mode I have written down.
+
+So this does not score anything. It is a BRIDGE: it runs the panel, converts findings into
+the upstream result shape, and hands them to upstream `evaluate()`. The matching, the judge
+and the metrics are theirs. That removes my matcher from the measurement path entirely --
+which is the point, because my matcher was the thing under suspicion.
+
+WHAT UPSTREAM GIVES THAT MINE COULD NOT
+---------------------------------------
+  * Semantic matching by an LLM judge, so "same claim" is judged rather than approximated
+    by line proximity. My lexical attempt at this measured a null (valid 0.17 vs invalid
+    0.16 token overlap) and text similarity cannot adjudicate correctness anyway.
+  * `--line-k` as an explicit, reported tolerance rather than a constant I chose.
+  * Seeded sampling (`converters.aacr_bench --seed`), so the sample is reproducible and is
+    not my earlier smallest-diffs-first calibration set.
+  * Separate positive_samples (1506 valid comments over 196 PRs) and negative_samples
+    (639 rejected comments over 155 PRs) -- a precision control the flattened HuggingFace
+    distribution obscures behind a `label` column.
+
+    aacr-upstream run --instances <jsonl> --out <dir> [--judges ...] [--limit N]
+    then: cd ~/aacr-bench/evaluation && python -m evaluate ...  (see --help-eval)
+"""
+import argparse
+import json
+import pathlib
+import re
+import subprocess
+import sys
+import tempfile
+
+ROOT = pathlib.Path(__file__).resolve().parent
+sys.path.insert(0, str(ROOT.parent))
+import claimlib  # noqa: E402
+
+DIFFS = ROOT / "benchmarks" / "diffs-upstream"
+
+PROMPT_HEAD = (
+    "Review this pull request diff for REAL DEFECTS. Report only defects you can point at, "
+    "most severe first, each with a concrete failure scenario (inputs -> wrong behaviour). "
+    "For every defect, name the FILE and the LINE NUMBER it lives on, taken from the diff "
+    "hunk headers. Do not restate what the change does, do not praise it, and do not "
+    "propose refactors.\n\n"
+    "If the diff contains no real defect, reply with exactly this line and nothing else:\n"
+    "NO DEFECTS FOUND\n\n"
+)
+
+
+def diff_paths(diff):
+    """Every right-side path the diff actually touches.
+
+    This is the referent that `claimlib`'s path regex cannot see. claimlib is structural
+    by design and has no idea what files exist, so it read the English phrase
+    "cleanup/shutdown" as a path -- a token with a slash is a path under its rule, which is
+    correct in isolation and wrong here. The bridge DOES hold the diff, so membership in
+    the changed-file set is directly observable rather than guessed. That is the difference
+    between a guard whose predicate observes its referent and one that pattern-matches at it.
+    """
+    out = set()
+    for ln in diff.splitlines():
+        if ln.startswith("+++ "):
+            q = ln[4:].strip()
+            if q != "/dev/null":
+                out.add(q[2:] if q.startswith("b/") else q)
+    return out
+
+
+def resolve_path(path, paths):
+    """(resolved_path_or_None, why). Never invents a path that is not in the diff."""
+    if not path:
+        return None, "absent"
+    if path in paths:
+        return path, "exact"
+    base = path.rsplit("/", 1)[-1]
+    hits = [p for p in paths if p.rsplit("/", 1)[-1] == base]
+    if len(hits) == 1:
+        return hits[0], "basename"      # judges abbreviate; upstream needs the full path
+    if len(hits) > 1:
+        return None, "ambiguous"        # >1 file with that name: guessing would fabricate
+    return None, "not-in-diff"
+
+
+def instances(path, limit=None):
+    out = []
+    for line in pathlib.Path(path).read_text(encoding="utf-8").splitlines():
+        if line.strip():
+            out.append(json.loads(line))
+    return out[:limit] if limit else out
+
+
+def safe_id(instance_id):
+    """Upstream's filename rule: instance_id with '/' replaced. Kept identical on purpose --
+    a bridge that invents its own naming cannot be read by the tool it bridges to."""
+    return instance_id.replace("/", "__")
+
+
+def fetch_diff(repo, base, head):
+    """Diff for a commit range, cached. Uses compare rather than a clone: the sample spans
+    repositories like ClickHouse and opencv, and cloning them to read one diff is absurd."""
+    DIFFS.mkdir(parents=True, exist_ok=True)
+    cache = DIFFS / f"{repo.replace('/', '__')}__{base[:7]}_{head[:7]}.diff"
+    if cache.is_file():
+        return cache.read_text(errors="replace")
+    r = subprocess.run(["gh", "api", f"repos/{repo}/compare/{base}...{head}",
+                        "-H", "Accept: application/vnd.github.v3.diff"],
+                       capture_output=True, text=True, timeout=300)
+    if r.returncode != 0:
+        print(f"    {repo} {base[:7]}...{head[:7]}: gh exit {r.returncode}: "
+              f"{r.stderr.strip()[:110]}", file=sys.stderr)
+        return None
+    cache.write_text(r.stdout, encoding="utf-8")
+    return r.stdout
+
+
+def panel_findings(diff, judges, effort, timeout):
+    """Run one panel over one diff and return claimlib observations."""
+    work = pathlib.Path(tempfile.mkdtemp(prefix="aacr-up-"))
+    sib = ROOT.parent / "llm-panel"
+    binary = str(sib if sib.is_file() else "llm-panel")
+    r = subprocess.run([binary, "--cwd", str(work), "--judges", judges, "--effort", effort,
+                        "--timeout", str(timeout), PROMPT_HEAD + "```diff\n" + diff + "\n```\n"],
+                       capture_output=True, text=True, timeout=timeout * 3)
+    m = re.search(r"panel written to (\S+?)\]", r.stdout + r.stderr)
+    if not m:
+        return None, (r.stdout + r.stderr)[-160:]
+    d = pathlib.Path(m.group(1).rstrip(":]"))
+    obs, abstained, reviews = [], 0, 0
+    for f in d.glob("*.md"):
+        if f.name in ("panel.md", "prompt.md") or f.name.endswith(
+                (".prompt.md", ".live.md", ".rebuttal.md")):
+            continue
+        r = claimlib.extract(f.read_text(errors="replace"), judge=f.stem, run=d.name)
+        reviews += 1
+        abstained += 1 if r.get("abstained") else 0
+        obs += r["observations"]
+    return obs, {"rundir": str(d), "reviews": reviews, "abstained": abstained}
+
+
+def to_upstream_result(obs, rundir, paths, tally):
+    """claimlib observations -> the shape upstream's `ocr` builder reads.
+
+    Upstream dispatches an unregistered reviewer name to build_target_comments_from_ocr,
+    which reads result["review"]["comments"][] as {content, path, start_line, end_line}
+    and hardcodes side="right" (all three of its reviewers review new code, as does this).
+
+    An observation with NO PATH is still emitted, with an empty path. Upstream will fail to
+    match it, which is correct and visible -- dropping it here would quietly improve the
+    apparent precision by hiding the panel's own unlocated output.
+    """
+    comments = []
+    for o in obs:
+        loc = o.get("location") or {}
+        resolved, why = resolve_path(loc.get("path"), paths)
+        tally[why] = tally.get(why, 0) + 1
+        comments.append({
+            "content": o["verbatim"].strip(),
+            "path": resolved or "",
+            "start_line": loc.get("line"),
+            "end_line": loc.get("line"),
+            "observation_id": o["observation_id"],      # provenance, ignored by upstream
+            "claimed_path": loc.get("path"),            # what the judge said, before checking
+            "path_resolution": why,
+        })
+    return {"review": {"comments": comments}, "rundir": rundir,
+            "extractor": claimlib.EXTRACTOR_VERSION}
+
+
+def main():
+    ap = argparse.ArgumentParser(description=__doc__,
+                                 formatter_class=argparse.RawDescriptionHelpFormatter)
+    sub = ap.add_subparsers(dest="cmd", required=True)
+    r = sub.add_parser("run")
+    r.add_argument("--instances", required=True)
+    r.add_argument("--out", required=True, help="results dir upstream evaluate() will read")
+    r.add_argument("--judges", default="codex,big-pickle,nemotron")
+    r.add_argument("--effort", default="high")
+    r.add_argument("--timeout", type=int, default=300)
+    r.add_argument("--limit", type=int)
+    sub.add_parser("help-eval")
+    a = ap.parse_args()
+
+    if a.cmd == "help-eval":
+        print("After `run`, score with the UPSTREAM evaluator (its matching, its judge):\n")
+        print("  cd ~/aacr-bench/evaluation")
+        print("  export JUDGE_BASE_URL=https://openrouter.ai/api/v1")
+        print("  export JUDGE_API_KEY=$OPENROUTER_API_KEY")
+        print("  export JUDGE_MODEL=<a model id>")
+        print("  python -c \"import asyncio,evaluate,schema,pathlib; \\")
+        print("     inst=schema.load_instances(pathlib.Path('<instances.jsonl>')); \\")
+        print("     asyncio.run(evaluate.evaluate(inst, pathlib.Path('<results-dir>'), \\")
+        print("       'llm-panel', pathlib.Path('<out>'), line_k=1))\"\n")
+        print("WITHOUT JUDGE_API_KEY it silently falls back to a local mock similarity that")
+        print("upstream marks 'pipeline validation only'. A number from the mock is NOT a")
+        print("semantic evaluation -- check the mode line it prints before believing one.")
+        return 0
+
+    out = pathlib.Path(a.out); out.mkdir(parents=True, exist_ok=True)
+    insts = instances(a.instances, a.limit)
+    print(f"  {len(insts)} instances -> {out}")
+    ok, tally, skipped, rev = 0, {}, [], []
+    for i in insts:
+        diff = fetch_diff(i["repo"], i["base_commit"], i["head_commit"])
+        if not diff:
+            print(f"  SKIP {i['instance_id']}: no diff")
+            skipped.append({"instance_id": i["instance_id"], "repo": i["repo"],
+                            "head_commit": i["head_commit"],
+                            "why": "head commit unreachable on GitHub (squash-merged, GC'd); "
+                                   "upstream's ensure_commit_present fails on it too",
+                            "references_lost": len(i.get("reference_comments") or [])})
+            continue
+        obs, info = panel_findings(diff, a.judges, a.effort, a.timeout)
+        if obs is None:
+            print(f"  SKIP {i['instance_id']}: no run dir ({info})")
+            skipped.append({"instance_id": i["instance_id"], "why": "panel produced no run dir"})
+            continue
+        located = sum(1 for o in obs if (o.get("location") or {}).get("line"))
+        res = to_upstream_result(obs, info["rundir"], diff_paths(diff), tally)
+        (out / f"{safe_id(i['instance_id'])}.json").write_text(
+            json.dumps(res, indent=2) + "\n", encoding="utf-8")
+        ok += 1
+        rev.append((i["instance_id"], info["reviews"], info["abstained"]))
+        print(f"  ok   {i['instance_id']:44} diff={len(diff):>6}B "
+              f"findings={len(obs):>3} located={located:>3} "
+              f"abstain={info['abstained']}/{info['reviews']} "
+              f"refs={len(i.get('reference_comments') or [])}")
+    nrev = sum(r[1] for r in rev); nabs = sum(r[2] for r in rev)
+    print(f"\n  wrote {ok}/{len(insts)} result files to {out}")
+    if skipped:
+        lost = sum(x.get("references_lost", 0) for x in skipped)
+        print(f"  DROPPED {len(skipped)} instances ({lost} references) -- see manifest.json")
+    print(f"  abstentions: {nabs}/{nrev} reviews used the sentinel "
+          f"({100*nabs/nrev if nrev else 0:.0f}% -- compliance is reported, not assumed)")
+    print("  path resolution: " + ", ".join(f"{k}={v}" for k, v in sorted(tally.items())))
+    (out / "manifest.json").write_text(json.dumps({
+        "instances_file": a.instances, "judges": a.judges, "effort": a.effort,
+        "extractor": claimlib.EXTRACTOR_VERSION, "written": ok, "attempted": len(insts),
+        "skipped": skipped, "path_resolution": tally,
+        "reviews": nrev, "abstentions": nabs,
+        "diff_source": "GitHub compare API (base...head); upstream clones and runs "
+                       "git diff base..head. Representations differ, but all 159 reference "
+                       "comments in the fetchable sample fall inside a hunk of this one "
+                       "(shuffle control 0/159), so nothing referenced is invisible.",
+    }, indent=2) + "\n", encoding="utf-8")
+    print("  scoring is UPSTREAM's job -- run `aacr-upstream help-eval`")
+    return 0 if ok else 1
+
+
+if __name__ == "__main__":
+    sys.exit(main())

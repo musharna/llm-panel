@@ -1,0 +1,138 @@
+diff --git a/src/Storages/ObjectStorageQueue/ObjectStorageQueueIFileMetadata.cpp b/src/Storages/ObjectStorageQueue/ObjectStorageQueueIFileMetadata.cpp
+index 3d6f064810cd..0a73d4979796 100644
+--- a/src/Storages/ObjectStorageQueue/ObjectStorageQueueIFileMetadata.cpp
++++ b/src/Storages/ObjectStorageQueue/ObjectStorageQueueIFileMetadata.cpp
+@@ -259,15 +259,33 @@ bool ObjectStorageQueueIFileMetadata::trySetProcessing()
+     return success;
+ }
+ 
+-ObjectStorageQueueIFileMetadata::SetProcessingResponseIndexes
++std::optional<ObjectStorageQueueIFileMetadata::SetProcessingResponseIndexes>
+ ObjectStorageQueueIFileMetadata::prepareSetProcessingRequests(Coordination::Requests & requests)
+ {
+-    [[maybe_unused]] auto state = file_status->state.load();
+-    chassert (!(state == FileStatus::State::Processing
++    std::unique_lock processing_lock(file_status->processing_lock, std::defer_lock);
++    if (!processing_lock.try_lock())
++    {
++        /// This is possible in case on the same server
++        /// there are more than one S3(Azure)Queue table processing the same keeper path.
++        LOG_TEST(log, "File {} is being processed on this server by another table on this server", path);
++        return std::nullopt;
++    }
++
++    auto state = file_status->state.load();
++    if (state == FileStatus::State::Processing
+         || state == FileStatus::State::Processed
+         || (state == FileStatus::State::Failed
+             && file_status->retries
+-            && file_status->retries >= max_loading_retries)), fmt::format("Oops something went wrong: {}", state));
++            && file_status->retries >= max_loading_retries))
++    {
++        LOG_TEST(log, "File {} has non-processable state `{}` (retries: {}/{})",
++                 path, state, file_status->retries, max_loading_retries);
++
++        /// This is possible in case on the same server
++        /// there are more than one S3(Azure)Queue table processing the same keeper path.
++        LOG_TEST(log, "File {} is being processed on this server by another table on this server", path);
++        return std::nullopt;
++    }
+ 
+     return prepareProcessingRequestsImpl(requests);
+ }
+diff --git a/src/Storages/ObjectStorageQueue/ObjectStorageQueueIFileMetadata.h b/src/Storages/ObjectStorageQueue/ObjectStorageQueueIFileMetadata.h
+index fe5f1f0c9eaa..8f90898133b5 100644
+--- a/src/Storages/ObjectStorageQueue/ObjectStorageQueueIFileMetadata.h
++++ b/src/Storages/ObjectStorageQueue/ObjectStorageQueueIFileMetadata.h
+@@ -94,7 +94,7 @@ class ObjectStorageQueueIFileMetadata
+         size_t create_processing_node_idx = 0;
+         size_t set_processing_id_node_idx = 0;
+     };
+-    SetProcessingResponseIndexes prepareSetProcessingRequests(Coordination::Requests & requests);
++    std::optional<SetProcessingResponseIndexes> prepareSetProcessingRequests(Coordination::Requests & requests);
+     void prepareResetProcessingRequests(Coordination::Requests & requests);
+ 
+     /// Do some work after prepared requests to set file as Processed succeeded.
+diff --git a/src/Storages/ObjectStorageQueue/ObjectStorageQueueSource.cpp b/src/Storages/ObjectStorageQueue/ObjectStorageQueueSource.cpp
+index ef6ce44922f6..9850a4b63ca7 100644
+--- a/src/Storages/ObjectStorageQueue/ObjectStorageQueueSource.cpp
++++ b/src/Storages/ObjectStorageQueue/ObjectStorageQueueSource.cpp
+@@ -148,6 +148,8 @@ ObjectStorageQueueSource::FileIterator::next()
+                 return {};
+             }
+ 
++            LOG_TEST(log, "Received batch of size: {}", result->size());
++
+             new_batch = std::move(result.value());
+             for (auto it = new_batch.begin(); it != new_batch.end();)
+             {
+@@ -187,13 +189,24 @@ ObjectStorageQueueSource::FileIterator::next()
+                 result_indexes.resize(new_batch.size());
+ 
+                 Coordination::Requests requests;
++                size_t num_successful_objects = 0;
+                 for (size_t i = 0; i < new_batch.size(); ++i)
+                 {
+                     const auto & object = new_batch[i];
+                     file_metadatas[i] = metadata->getFileMetadata(
+                         object->relative_path,
+                         /* bucket_info */{}); /// No buckets for Unordered mode.
+-                    result_indexes[i] = file_metadatas[i]->prepareSetProcessingRequests(requests);
++
++                    auto set_processing_result = file_metadatas[i]->prepareSetProcessingRequests(requests);
++                    if (set_processing_result.has_value())
++                    {
++                        result_indexes[i] = set_processing_result.value();
++                        ++num_successful_objects;
++                    }
++                    else
++                    {
++                        new_batch[i] = nullptr;
++                    }
+                 }
+ 
+                 Coordination::Responses responses;
+@@ -204,6 +217,9 @@ ObjectStorageQueueSource::FileIterator::next()
+                     LOG_TEST(log, "Successfully set {} files as processing", new_batch.size());
+                     for (size_t i = 0; i < new_batch.size(); ++i)
+                     {
++                        if (!new_batch[i])
++                            continue;
++
+                         const auto & response_indexes = result_indexes[i];
+                         const auto & set_response = dynamic_cast<const Coordination::SetResponse &>(
+                             *responses[response_indexes.set_processing_id_node_idx].get());
+@@ -220,6 +236,20 @@ ObjectStorageQueueSource::FileIterator::next()
+ 
+                     file_metadatas.clear();
+                 }
++
++                if (num_successful_objects != new_batch.size())
++                {
++                    Source::ObjectInfos new_batch_copy;
++                    new_batch_copy.resize(num_successful_objects);
++
++                    size_t i = 0;
++                    for (const auto & object : new_batch)
++                    {
++                        if (object)
++                            new_batch_copy[i++] = std::move(object);
++                    }
++                    new_batch = std::move(new_batch_copy);
++                }
+             }
+         }
+ 
+diff --git a/tests/integration/test_storage_s3_queue/test.py b/tests/integration/test_storage_s3_queue/test.py
+index 81339d25d4ac..4f43224b938b 100644
+--- a/tests/integration/test_storage_s3_queue/test.py
++++ b/tests/integration/test_storage_s3_queue/test.py
+@@ -732,7 +732,7 @@ def test_streaming_to_many_views(started_cluster, mode):
+     keeper_path = f"/clickhouse/test_{table_name}_{generate_random_string()}"
+     files_path = f"{table_name}_data"
+ 
+-    for i in range(3):
++    for i in range(10):
+         table = f"{table_name}_{i + 1}"
+         create_table(
+             started_cluster,

@@ -1,0 +1,85 @@
+diff --git a/src/draw/lv_draw_label.c b/src/draw/lv_draw_label.c
+index 02c4e7c3934f..6e84eb914d80 100644
+--- a/src/draw/lv_draw_label.c
++++ b/src/draw/lv_draw_label.c
+@@ -218,10 +218,7 @@ void lv_draw_label_iterate_characters(lv_draw_task_t * t, const lv_draw_label_ds
+     }
+     else {
+         /*If EXPAND is enabled then not limit the text's width to the object's width*/
+-        lv_point_t p;
+-        lv_text_get_size(&p, dsc->text, dsc->font, dsc->letter_space, dsc->line_space, LV_COORD_MAX,
+-                         dsc->flag);
+-        w = p.x;
++        w = dsc->text_size.x;
+     }
+ 
+     int32_t line_height_font = lv_font_get_line_height(font);
+diff --git a/src/draw/lv_draw_label.h b/src/draw/lv_draw_label.h
+index f2cc6daadbb6..3420bd5b2616 100644
+--- a/src/draw/lv_draw_label.h
++++ b/src/draw/lv_draw_label.h
+@@ -35,6 +35,9 @@ typedef struct {
+     /**The text to draw*/
+     const char * text;
+ 
++    /**The size of the text*/
++    lv_point_t text_size;
++
+     /**The font to use. Fallback fonts are also handled.*/
+     const lv_font_t * font;
+ 
+diff --git a/src/widgets/label/lv_label.c b/src/widgets/label/lv_label.c
+index 28164a299292..8fa790ab5691 100644
+--- a/src/widgets/label/lv_label.c
++++ b/src/widgets/label/lv_label.c
+@@ -823,6 +823,7 @@ static void draw_main(lv_event_t * e)
+     label_draw_dsc.text_static = label->static_txt;
+     label_draw_dsc.ofs_x = label->offset.x;
+     label_draw_dsc.ofs_y = label->offset.y;
++    label_draw_dsc.text_size = label->text_size;
+ #if LV_LABEL_LONG_TXT_HINT
+     if(label->long_mode != LV_LABEL_LONG_MODE_SCROLL_CIRCULAR &&
+        lv_area_get_height(&txt_coords) >= LV_LABEL_HINT_HEIGHT_LIMIT) {
+@@ -852,9 +853,7 @@ static void draw_main(lv_event_t * e)
+      * (In addition, they will create misalignment in this situation)*/
+     if((label->long_mode == LV_LABEL_LONG_MODE_SCROLL || label->long_mode == LV_LABEL_LONG_MODE_SCROLL_CIRCULAR) &&
+        (label_draw_dsc.align == LV_TEXT_ALIGN_CENTER || label_draw_dsc.align == LV_TEXT_ALIGN_RIGHT)) {
+-        lv_point_t size;
+-        lv_text_get_size(&size, label->text, label_draw_dsc.font, label_draw_dsc.letter_space, label_draw_dsc.line_space,
+-                         LV_COORD_MAX, flag);
++        lv_point_t size = label->text_size;
+         if(size.x > lv_area_get_width(&txt_coords)) {
+ #if LV_USE_BIDI
+             const lv_base_dir_t base_dir = lv_obj_get_style_base_dir(obj, LV_PART_MAIN);
+@@ -892,9 +891,7 @@ static void draw_main(lv_event_t * e)
+     layer->_clip_area = txt_clip;
+ 
+     if(label->long_mode == LV_LABEL_LONG_MODE_SCROLL_CIRCULAR) {
+-        lv_point_t size;
+-        lv_text_get_size(&size, label->text, label_draw_dsc.font, label_draw_dsc.letter_space, label_draw_dsc.line_space,
+-                         LV_COORD_MAX, flag);
++        lv_point_t size = label->text_size;
+ 
+         /*Draw the text again on label to the original to make a circular effect */
+         if(size.x > lv_area_get_width(&txt_coords)) {
+@@ -968,6 +965,7 @@ static void lv_label_refr_text(lv_obj_t * obj)
+ 
+     lv_label_revert_dots(obj);
+     lv_text_get_size(&size, label->text, font, letter_space, line_space, max_w, flag);
++    label->text_size = size;
+ 
+     lv_obj_refresh_self_size(obj);
+ 
+diff --git a/src/widgets/label/lv_label_private.h b/src/widgets/label/lv_label_private.h
+index d14ec75b46c1..6f1e715bc0f3 100644
+--- a/src/widgets/label/lv_label_private.h
++++ b/src/widgets/label/lv_label_private.h
+@@ -50,6 +50,8 @@ struct _lv_label_t {
+     uint8_t recolor : 1;                /**< Enable in-line letter re-coloring*/
+     uint8_t expand : 1;                 /**< Ignore real width (used by the library with LV_LABEL_LONG_MODE_SCROLL) */
+     uint8_t invalid_size_cache : 1;     /**< 1: Recalculate size and update cache */
++
++    lv_point_t text_size;
+ };
+ 
+ 

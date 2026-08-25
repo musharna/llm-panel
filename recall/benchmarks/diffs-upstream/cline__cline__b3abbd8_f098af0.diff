@@ -1,0 +1,285 @@
+diff --git a/src/core/task/index.ts b/src/core/task/index.ts
+index 9955d746c75..2d299bae4d3 100644
+--- a/src/core/task/index.ts
++++ b/src/core/task/index.ts
+@@ -70,7 +70,7 @@ import type { SystemPromptContext } from "@/core/prompts/system-prompt"
+ import { getSystemPrompt } from "@/core/prompts/system-prompt"
+ import { HostProvider } from "@/hosts/host-provider"
+ import { errorService } from "@/services/error"
+-import { telemetryService } from "@/services/telemetry"
++import { TerminalHangStage, TerminalUserInterventionAction, telemetryService } from "@/services/telemetry"
+ import { ShowMessageType } from "@/shared/proto/index.host"
+ import { isInTestMode } from "../../services/test/TestMode"
+ import { ensureLocalClineDirExists } from "../context/instructions/user-instructions/rule-helpers"
+@@ -1491,6 +1491,10 @@ export class Task {
+ 		let chunkTimer: NodeJS.Timeout | null = null
+ 		let chunkEnroute = false
+ 
++		// Track if buffer gets stuck
++		let bufferStuckTimer: NodeJS.Timeout | null = null
++		const BUFFER_STUCK_TIMEOUT_MS = 30000 // 30 seconds
++
+ 		const flushBuffer = async (force = false) => {
+ 			if (chunkEnroute || outputBuffer.length === 0) {
+ 				if (force && !chunkEnroute && outputBuffer.length > 0) {
+@@ -1503,9 +1507,18 @@ export class Task {
+ 			outputBuffer = []
+ 			outputBufferSize = 0
+ 			chunkEnroute = true
++
++			// Start timer to detect if buffer gets stuck
++			bufferStuckTimer = setTimeout(() => {
++				telemetryService.captureTerminalHang(TerminalHangStage.BUFFER_STUCK)
++				bufferStuckTimer = null
++			}, BUFFER_STUCK_TIMEOUT_MS)
++
+ 			try {
+ 				const { response, text, images, files } = await this.ask("command_output", chunk)
+ 				if (response === "yesButtonClicked") {
++					// Track when user clicks "Process while Running"
++					telemetryService.captureTerminalUserIntervention(TerminalUserInterventionAction.PROCESS_WHILE_RUNNING)
+ 					// proceed while running - but still capture user feedback if provided
+ 					if (text || (images && images.length > 0) || (files && files.length > 0)) {
+ 						userFeedback = { text, images, files }
+@@ -1517,7 +1530,13 @@ export class Task {
+ 				process.continue()
+ 			} catch {
+ 				Logger.error("Error while asking for command output")
++				telemetryService.captureTerminalHang(TerminalHangStage.STREAM_TIMEOUT)
+ 			} finally {
++				// Clear the stuck timer
++				if (bufferStuckTimer) {
++					clearTimeout(bufferStuckTimer)
++					bufferStuckTimer = null
++				}
+ 				chunkEnroute = false
+ 				// If more output accumulated while chunkEnroute, flush again
+ 				if (outputBuffer.length > 0) {
+@@ -1552,8 +1571,24 @@ export class Task {
+ 		})
+ 
+ 		let completed = false
++		let completionTimer: NodeJS.Timeout | null = null
++		const COMPLETION_TIMEOUT_MS = 60000 // 60 seconds
++
++		// Start timer to detect if waiting for completion takes too long
++		completionTimer = setTimeout(() => {
++			if (!completed) {
++				telemetryService.captureTerminalHang(TerminalHangStage.WAITING_FOR_COMPLETION)
++				completionTimer = null
++			}
++		}, COMPLETION_TIMEOUT_MS)
++
+ 		process.once("completed", async () => {
+ 			completed = true
++			// Clear the completion timer
++			if (completionTimer) {
++				clearTimeout(completionTimer)
++				completionTimer = null
++			}
+ 			// Flush any remaining buffered output
+ 			if (!didContinue && outputBuffer.length > 0) {
+ 				if (chunkTimer) {
+@@ -1570,6 +1605,12 @@ export class Task {
+ 
+ 		await process
+ 
++		// Clear timer if process completes normally
++		if (completionTimer) {
++			clearTimeout(completionTimer)
++			completionTimer = null
++		}
++
+ 		// Wait for a short delay to ensure all messages are sent to the webview
+ 		// This delay allows time for non-awaited promises to be created and
+ 		// for their associated messages to be sent to the webview, maintaining
+diff --git a/src/integrations/terminal/TerminalProcess.ts b/src/integrations/terminal/TerminalProcess.ts
+index 4f754b163af..1d1d8f113ae 100644
+--- a/src/integrations/terminal/TerminalProcess.ts
++++ b/src/integrations/terminal/TerminalProcess.ts
+@@ -1,3 +1,4 @@
++import { TerminalOutputFailureReason, telemetryService } from "@services/telemetry"
+ import { EventEmitter } from "events"
+ import * as vscode from "vscode"
+ import { stripAnsi } from "./ansiUtils"
+@@ -39,6 +40,7 @@ export class TerminalProcess extends EventEmitter<TerminalProcessEvents> {
+ 		}
+ 
+ 		if (terminal.shellIntegration && terminal.shellIntegration.executeCommand) {
++			// Track that we're using shell integration
+ 			const execution = terminal.shellIntegration.executeCommand(command)
+ 			const stream = execution.read()
+ 			// todo: need to handle errors
+@@ -189,7 +191,19 @@ export class TerminalProcess extends EventEmitter<TerminalProcessEvents> {
+ 
+ 			// the command process is finished, let's check the output to see if we need to use the terminal capture fallback
+ 			if (!this.fullOutput.trim()) {
++				// No output captured via shell integration, trying fallback
++				telemetryService.captureTerminalOutputFailure(TerminalOutputFailureReason.TIMEOUT)
+ 				await returnCurrentTerminalContents()
++				// Check if fallback worked
++				const terminalSnapshot = await getLatestTerminalOutput()
++				if (terminalSnapshot && terminalSnapshot.trim()) {
++					telemetryService.captureTerminalExecution(true, "clipboard")
++				} else {
++					telemetryService.captureTerminalExecution(false, "none")
++				}
++			} else {
++				// Shell integration worked
++				telemetryService.captureTerminalExecution(true, "shell_integration")
+ 			}
+ 
+ 			// for now we don't want this delaying requests since we don't send diagnostics automatically anymore (previous: "even though the command is finished, we still want to consider it 'hot' in case so that api request stalls to let diagnostics catch up")
+@@ -203,6 +217,7 @@ export class TerminalProcess extends EventEmitter<TerminalProcessEvents> {
+ 			this.emit("continue")
+ 		} else {
+ 			// no shell integration detected, we'll fallback to running the command and capturing the terminal's output after some time
++			telemetryService.captureTerminalOutputFailure(TerminalOutputFailureReason.NO_SHELL_INTEGRATION)
+ 			terminal.sendText(command, true)
+ 
+ 			// wait 3 seconds for the command to run
+@@ -210,6 +225,13 @@ export class TerminalProcess extends EventEmitter<TerminalProcessEvents> {
+ 
+ 			// For terminals without shell integration, also try to capture terminal content
+ 			await returnCurrentTerminalContents()
++			// Check if clipboard fallback worked
++			const terminalSnapshot = await getLatestTerminalOutput()
++			if (terminalSnapshot && terminalSnapshot.trim()) {
++				telemetryService.captureTerminalExecution(true, "clipboard")
++			} else {
++				telemetryService.captureTerminalExecution(false, "none")
++			}
+ 			// For terminals without shell integration, we can't know when the command completes
+ 			// So we'll just emit the continue event after a delay
+ 			this.emit("completed")
+diff --git a/src/services/telemetry/TelemetryService.ts b/src/services/telemetry/TelemetryService.ts
+index 1c976209f3c..a4ae086c7dd 100644
+--- a/src/services/telemetry/TelemetryService.ts
++++ b/src/services/telemetry/TelemetryService.ts
+@@ -18,6 +18,33 @@ import { TelemetryProviderFactory } from "./TelemetryProviderFactory"
+  */
+ type TelemetryCategory = "checkpoints" | "browser" | "focus_chain"
+ 
++/**
++ * Enum for terminal output failure reasons
++ */
++export enum TerminalOutputFailureReason {
++	TIMEOUT = "timeout",
++	NO_SHELL_INTEGRATION = "no_shell_integration",
++	CLIPBOARD_FAILED = "clipboard_failed",
++}
++
++/**
++ * Enum for terminal user intervention actions
++ */
++export enum TerminalUserInterventionAction {
++	PROCESS_WHILE_RUNNING = "process_while_running",
++	MANUAL_PASTE = "manual_paste",
++	CANCELLED = "cancelled",
++}
++
++/**
++ * Enum for terminal hang stages
++ */
++export enum TerminalHangStage {
++	WAITING_FOR_COMPLETION = "waiting_for_completion",
++	BUFFER_STUCK = "buffer_stuck",
++	STREAM_TIMEOUT = "stream_timeout",
++}
++
+ export type TelemetryMetadata = {
+ 	/** The extension or cline-core version. */
+ 	extension_version: string
+@@ -126,6 +153,11 @@ export class TelemetryService {
+ 			AUTO_CONDENSE_TOGGLED: "task.auto_condense_toggled",
+ 			// Tracks task initialization timing
+ 			INITIALIZATION: "task.initialization",
++			// Terminal execution telemetry events
++			TERMINAL_EXECUTION: "task.terminal_execution",
++			TERMINAL_OUTPUT_FAILURE: "task.terminal_output_failure",
++			TERMINAL_USER_INTERVENTION: "task.terminal_user_intervention",
++			TERMINAL_HANG: "task.terminal_hang",
+ 		},
+ 		// UI interaction events for tracking user engagement
+ 		UI: {
+@@ -917,6 +949,62 @@ export class TelemetryService {
+ 		})
+ 	}
+ 
++	// Terminal telemetry methods
++
++	/**
++	 * Records terminal command execution outcomes
++	 * @param success Whether the command output was successfully captured
++	 * @param method The method used to capture output ("shell_integration" | "clipboard" | "none")
++	 */
++	public captureTerminalExecution(success: boolean, method: string) {
++		this.capture({
++			event: TelemetryService.EVENTS.TASK.TERMINAL_EXECUTION,
++			properties: {
++				success,
++				method,
++			},
++		})
++	}
++
++	/**
++	 * Records when terminal output capture fails
++	 * @param reason The reason for failure
++	 */
++	public captureTerminalOutputFailure(reason: TerminalOutputFailureReason) {
++		this.capture({
++			event: TelemetryService.EVENTS.TASK.TERMINAL_OUTPUT_FAILURE,
++			properties: {
++				reason,
++			},
++		})
++	}
++
++	/**
++	 * Records when user has to intervene with terminal execution
++	 * @param action The user action
++	 */
++	public captureTerminalUserIntervention(action: TerminalUserInterventionAction) {
++		this.capture({
++			event: TelemetryService.EVENTS.TASK.TERMINAL_USER_INTERVENTION,
++			properties: {
++				action,
++			},
++		})
++	}
++
++	/**
++	 * Records when terminal execution hangs or gets stuck
++	 * @param stage Where the hang occurred
++	 */
++	public captureTerminalHang(stage: TerminalHangStage) {
++		this.capture({
++			event: TelemetryService.EVENTS.TASK.TERMINAL_HANG,
++			properties: {
++				stage,
++			},
++		})
++	}
++
+ 	/**
+ 	 * Checks if a specific telemetry category is enabled
+ 	 * @param category The telemetry category to check
+diff --git a/src/services/telemetry/index.ts b/src/services/telemetry/index.ts
+index b8000377650..57c66ea5f89 100644
+--- a/src/services/telemetry/index.ts
++++ b/src/services/telemetry/index.ts
+@@ -9,6 +9,13 @@ export {
+ 	type TelemetryProviderType,
+ } from "./TelemetryProviderFactory"
+ 
++// Export the enums for terminal telemetry
++export {
++	TerminalHangStage,
++	TerminalOutputFailureReason,
++	TerminalUserInterventionAction,
++} from "./TelemetryService"
++
+ // Create a singleton instance for easy access throughout the application
+ import { TelemetryService } from "./TelemetryService"
+ 
