@@ -301,9 +301,10 @@ def main():
             res = to_upstream_result(obs, str(d), diff_paths(diff), tally)
             f.write_text(json.dumps(res, indent=2) + "\n", encoding="utf-8")
             rebuilt += 1
+            nwritten = len(res["review"]["comments"])
             deg = info.get("degraded") or []
             rev.append((iid, info["reviews"], info["abstained"], info.get("judges_total", 0), deg))
-            print(f"  re   {iid:44} findings={len(obs):>3} "
+            print(f"  re   {iid:44} findings={nwritten:>3} "
                   f"judges={info['reviews']}/{info.get('judges_total', 0)}"
                   + (f"  DEGRADED[{','.join(deg)}]" if deg else ""))
         nrev = sum(r[1] for r in rev); ntot = sum(r[3] for r in rev)
@@ -347,8 +348,12 @@ def main():
             print(f"  SKIP {i['instance_id']}: no run dir ({info})")
             skipped.append({"instance_id": i["instance_id"], "why": "panel produced no run dir"})
             continue
-        located = sum(1 for o in obs if (o.get("location") or {}).get("line"))
         res = to_upstream_result(obs, info["rundir"], diff_paths(diff), tally)
+        # Count what was WRITTEN. Reporting the pre-merge extraction count made the log
+        # claim 107 findings where 65 comments were written -- a ledger that does not
+        # report its own output is the instrument defect this project keeps rediscovering.
+        written = res["review"]["comments"]
+        located = sum(1 for c in written if c["path"] and c["start_line"])
         (out / f"{safe_id(i['instance_id'])}.json").write_text(
             json.dumps(res, indent=2) + "\n", encoding="utf-8")
         ok += 1
@@ -356,7 +361,7 @@ def main():
                     info.get("judges_total", 0), info.get("degraded") or []))
         deg = info.get("degraded") or []
         print(f"  ok   {i['instance_id']:44} diff={len(diff):>6}B "
-              f"findings={len(obs):>3} located={located:>3} "
+              f"findings={len(written):>3} located={located:>3} "
               f"judges={info['reviews']}/{info.get('judges_total', 0)} "
               f"abstain={info['abstained']} "
               f"refs={len(i.get('reference_comments') or [])}"
