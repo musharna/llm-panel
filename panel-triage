@@ -1,0 +1,232 @@
+#!/usr/bin/env python3
+"""Triage panel runs: find the ones that went WRONG, across every run root.
+
+`panel-report --list` answers "what ran". This answers "what broke", which is a
+different question and the one worth asking after a batch of testing. It exists
+because a panel can fail quietly in several ways that a listing shows as a normal
+row -- a judge that returned nothing, a review truncated mid-sentence, a rebuttal
+round that silently produced no rebuttals, a run where every judge failed and the
+panel still wrote a report.
+
+    panel-triage                  # every run, newest first, problems flagged
+    panel-triage --since 6        # only the last 6 hours
+    panel-triage --repo myproj    # only runs launched from a matching directory
+    panel-triage --bad            # only runs that have at least one problem
+    panel-triage --json           # machine-readable, for diffing across sessions
+
+Exit code is 0 always: this is a report, not a gate. A non-zero exit would make it
+unusable in the pipelines people actually paste it into.
+"""
+import argparse
+import collections
+import datetime
+import json
+import pathlib
+import sys
+
+# Both roots, for the same reason panel-report reads both: llm-panel refuses to write
+# inside the reviewed repo (judges can read their cwd, which would leak rivals' answers)
+# and falls back to ~/.llm-panel. A single-root reader reports "no runs" for panels that
+# plainly exist -- that bug is already on record, so this tool does not reintroduce it.
+ROOTS = [pathlib.Path.home() / ".cache" / "llm-panel" / "runs",
+         pathlib.Path.home() / ".llm-panel" / "runs"]
+
+# Grounded in what the tool actually emits, counted over the runs on this machine
+# (221 ok, 11 harness, 1 unavailable, 1 incomplete) rather than guessed from the source.
+GOOD_STATUS = {"ok"}
+CLEAN_FINISH = {None, "stop"}
+
+# There is deliberately NO "review looks too short" flag.
+#
+# The first draft had one at 200 chars, with a comment claiming the number came from the
+# observed distribution. It did not -- the number was written first and the justification
+# after. Measuring properly (221 ok-status reviews on this machine: 1st percentile 2 chars,
+# 10th 89, median 853) killed the idea rather than calibrating it: the shortest reviews are
+# the two-byte answer `OK`, which is a COMPLETE reply to a yes/no question, while a
+# thousand-character reply can be a total non-answer. Length cannot tell those apart, so it
+# cannot be trusted to report "the judge did not answer" -- and a guard whose predicate
+# does not observe its referent produces confident noise.
+#
+# What IS observable is a review file that is absent, or present and empty. Those are
+# flagged. Length is printed as information on the judge line instead, where a human can
+# apply the judgement the predicate cannot.
+
+
+def runs(roots=ROOTS):
+    """Every run directory under every root, newest first, deduped by resolved path."""
+    seen, out = set(), []
+    for root in roots:
+        if not root.is_dir():
+            continue
+        for d in root.glob("*/*/"):
+            r = d.resolve()
+            if r in seen or not (d / "run.json").is_file():
+                continue
+            seen.add(r)
+            out.append(d)
+    return sorted(out, key=lambda d: d.stat().st_mtime, reverse=True)
+
+
+def problems(run, d):
+    """Every way this run is not a clean panel. Each entry is one short sentence.
+
+    Deliberately reports the JUDGE-LEVEL failures separately from the RUN-LEVEL ones:
+    'or-glm returned nothing' is a roster/credential issue the user can fix, whereas
+    'every judge failed and a report was still written' is a defect in this tool.
+    """
+    out = []
+    judges = run.get("judges") or []
+    if not judges:
+        return ["no judges recorded at all"]
+
+    bad = []
+    for j in judges:
+        name = j.get("name", "?")
+        st = j.get("status")
+        meta = j.get("meta") or {}
+        fin = meta.get("finish")
+        if st not in GOOD_STATUS:
+            note = meta.get("note")
+            bad.append(name)
+            out.append(f"{name}: status {st}" + (f" -- {note}" if note else ""))
+        elif fin not in CLEAN_FINISH:
+            # ok + a non-stop finish is the quiet one: the review reads complete and is not.
+            bad.append(name)
+            out.append(f"{name}: status ok but finish={fin} (answer was cut off)")
+        review = d / f"{name}.md"
+        if st in GOOD_STATUS:
+            if not review.is_file():
+                out.append(f"{name}: status ok but {name}.md was never written")
+            elif not review.read_text(encoding="utf-8", errors="replace").strip():
+                out.append(f"{name}: status ok but the review file is empty")
+
+    if len(set(bad)) == len(judges):
+        out.append(f"EVERY judge failed ({len(judges)}/{len(judges)}) -- "
+                   f"a panel with no answers is not a panel")
+
+    # A rebuttal round needs someone to rebut. With fewer than two answering judges there
+    # is nothing to disagree with, so an absent rebuttal is correct behaviour, not a defect
+    # -- flagging it made every single-judge smoke test look broken.
+    answered = [j.get("name") for j in judges if j.get("status") in GOOD_STATUS]
+    if run.get("rebut") and len(answered) >= 2:
+        got = [n for n in answered if (d / f"{n}.rebuttal.md").is_file()]
+        if not got:
+            out.append(f"--rebut was requested and {len(answered)} judges answered, "
+                       f"but no rebuttal file exists")
+        elif len(got) < len(answered):
+            out.append(f"rebuttal missing for {', '.join(n for n in answered if n not in got)}")
+
+    syn = run.get("synthesize")
+    if syn and not (d / "panel.md").is_file():
+        out.append(f"--synthesize {syn} was requested but panel.md is absent")
+    return out
+
+
+def review_len(d, name):
+    """Characters in a judge's round-one review, or None when there is no file."""
+    p = d / f"{name}.md"
+    if not p.is_file():
+        return None
+    return len(p.read_text(encoding="utf-8", errors="replace").strip())
+
+
+def load(d):
+    try:
+        return json.loads((d / "run.json").read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as e:
+        # Reported, never skipped: an unreadable run.json is itself worth seeing.
+        return {"_unreadable": f"{type(e).__name__}: {e}"}
+
+
+def main():
+    ap = argparse.ArgumentParser(description=__doc__,
+                                 formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap.add_argument("--since", type=float, metavar="HOURS",
+                    help="only runs modified in the last N hours")
+    ap.add_argument("--repo", metavar="SUBSTR",
+                    help="only runs launched from a directory matching this")
+    ap.add_argument("--bad", action="store_true", help="only runs with at least one problem")
+    ap.add_argument("--json", action="store_true", dest="as_json")
+    ap.add_argument("--limit", type=int, default=0, help="stop after N runs (0 = no cap)")
+    a = ap.parse_args()
+
+    cutoff = None
+    if a.since is not None:
+        cutoff = datetime.datetime.now().timestamp() - a.since * 3600
+
+    rows, counts = [], collections.Counter()
+    for d in runs():
+        if cutoff is not None and d.stat().st_mtime < cutoff:
+            continue
+        run = load(d)
+        if "_unreadable" in run:
+            rows.append({"dir": str(d), "problems": [run["_unreadable"]], "judges": []})
+            continue
+        repo = run.get("repo") or ""
+        if a.repo and a.repo.lower() not in repo.lower():
+            continue
+        probs = problems(run, d)
+        for j in run.get("judges") or []:
+            counts[j.get("status")] += 1
+        if a.bad and not probs:
+            continue
+        rows.append({
+            "dir": str(d),
+            "when": datetime.datetime.fromtimestamp(d.stat().st_mtime)
+                            .astimezone().strftime("%Y-%m-%d %H:%M:%S %Z"),
+            "tag": d.parent.name,
+            "repo": repo,
+            "effort": run.get("effort"),
+            "rebut": bool(run.get("rebut")),
+            "judges": [{"name": j.get("name"), "status": j.get("status"),
+                        "secs": j.get("secs"),
+                        "finish": (j.get("meta") or {}).get("finish"),
+                        "cost": j.get("cost"),
+                        # Information, never a verdict -- see the note on THIN_REVIEW above.
+                        "chars": review_len(d, j.get("name"))}
+                       for j in run.get("judges") or []],
+            "prompt": (run.get("prompt") or "").strip().split("\n")[0][:100],
+            "problems": probs,
+        })
+        if a.limit and len(rows) >= a.limit:
+            break
+
+    if a.as_json:
+        json.dump({"runs": rows, "status_counts": dict(counts)}, sys.stdout, indent=2)
+        print()
+        return 0
+
+    if not rows:
+        print("no runs matched.  roots searched:")
+        for r in ROOTS:
+            print(f"  {r}  ({'exists' if r.is_dir() else 'ABSENT'})")
+        return 0
+
+    for r in rows:
+        flag = "!!" if r["problems"] else "  "
+        print(f"{flag} {r.get('when','?')}   {r.get('tag','?')}")
+        print(f"     from: {r.get('repo') or '(not recorded)'}")
+        if r.get("prompt"):
+            print(f"     ask:  {r['prompt']}")
+        js = "  ".join(
+            f"{j['name']}={j['status']}"
+            + (f"/{j['finish']}" if j["finish"] not in CLEAN_FINISH else "")
+            + (f" {j['secs']:.0f}s" if isinstance(j["secs"], (int, float)) else "")
+            + (f" {j['chars']}c" if j.get("chars") is not None else "")
+            for j in r["judges"])
+        if js:
+            print(f"     {js}")
+        for p in r["problems"]:
+            print(f"     ** {p}")
+        print(f"     {r['dir']}")
+        print()
+
+    tot = sum(counts.values())
+    bad = sum(v for k, v in counts.items() if k not in GOOD_STATUS)
+    print(f"{len(rows)} run(s).  judge-calls: {tot}, "
+          f"not-ok: {bad} ({', '.join(f'{k}={v}' for k, v in sorted(counts.items()) if k not in GOOD_STATUS) or 'none'})")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
