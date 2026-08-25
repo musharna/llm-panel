@@ -129,13 +129,26 @@ Three results worth knowing before you trust any of the output:
   25/27. The repeat-passes idea is well supported in the literature and did not reproduce
   here. An earlier grader bug reported +1 and it was an artifact. Adding a _different
   vendor_ did what adding a second pass of the same one could not.
-- **Telling judges they may say "nothing is wrong here" costs real findings.** Removing
-  one sentence of abstention licence moved findings from 0.42 to 2.17 per fixture and
-  abstention from 67% to 0%. But the licence bought that abstention by suppressing
-  _verified-true_ findings — one judge went 3.00 → 0.00 on files that do contain real
-  defects. Whether it suppresses _false_ findings is **untested**, because no fixture here
-  has proven absence of defects. On a file whose defects aren't enumerated, "abstained"
-  and "missed" are the same observation.
+- **Letting judges say "nothing is wrong here" is a precision/recall trade, not a free
+  win either way.** One sentence of abstention licence is the whole difference.
+
+  |             | findings/fixture | false positives       |
+  | ----------- | ---------------- | --------------------- |
+  | licence on  | 0.42             | 0 / 6 judges          |
+  | licence off | 2.17             | 2, from 1 of 5 judges |
+
+  Findings-per-fixture is measured on fixtures that _do_ contain defects, where the extra
+  findings were verified **true** — so the licence suppresses real findings (one judge went
+  3.00 → 0.00 on files with genuine defects). False positives are measured on
+  `p01-exhaustive-codec`, the one fixture with **proven** absence rather than verified
+  scope — which is what makes a false-positive rate computable at all. There, the same
+  judge on the same code abstained with the licence and produced two demonstrably false
+  findings without it (it claimed int and str subclasses were rejected; `encode(MyInt(1))`
+  returns `'A'`).
+
+  So: the licence costs true findings and prevents false ones. Which you want depends on
+  whether chasing a false lead costs you more than missing a real defect. Caveat worth
+  stating: one proven fixture, eleven reviews.
 
 ## Tests
 
@@ -160,9 +173,14 @@ nothing.
   code, tests, and execution is still yours to do.
 - **Recall is measured on a 27-defect Python corpus.** That number does not transfer to
   other languages or to defect classes the corpus doesn't contain.
-- **The abstention behaviour above is unresolved**, and it is the honest open question:
-  no fixture here proves absence, so the false-positive rate is not something this repo
-  can currently report.
+- **The false-positive rate rests on one fixture and eleven reviews.** `p01` is the only
+  case with proven absence, so it is the only place a false finding can be shown false.
+  One fixture of one shape (a pure function over a finite domain) is a signal, not a
+  result — a second proven fixture that is stateful or I/O-bearing is what would settle it.
+- **Every other fixture has verified _scope_, not proven absence.** Their known unplanted
+  defects are recorded in each `truth.json` and re-checked by execution in
+  `validate_corpus.py`, so a judge that finds one is not scored as wrong. Anything not yet
+  recorded still depresses the recall floor by making a true finding look like noise.
 
 ## License
 
