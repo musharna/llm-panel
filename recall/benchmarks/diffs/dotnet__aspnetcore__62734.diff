@@ -1,0 +1,28 @@
+diff --git a/src/Identity/Extensions.Core/src/PasswordHasher.cs b/src/Identity/Extensions.Core/src/PasswordHasher.cs
+index cdd9a1ff3cec..a8115f68eefc 100644
+--- a/src/Identity/Extensions.Core/src/PasswordHasher.cs
++++ b/src/Identity/Extensions.Core/src/PasswordHasher.cs
+@@ -264,8 +264,7 @@ private static bool VerifyHashedPasswordV3(byte[] hashedPassword, string passwor
+             {
+                 return false;
+             }
+-            byte[] salt = new byte[saltLength];
+-            Buffer.BlockCopy(hashedPassword, 13, salt, 0, salt.Length);
++            byte[] salt = hashedPassword.AsSpan(13, saltLength).ToArray();
+ 
+             // Read the subkey (the rest of the payload): must be >= 128 bits
+             int subkeyLength = hashedPassword.Length - 13 - salt.Length;
+diff --git a/src/Identity/test/Identity.Test/PasswordHasherTest.cs b/src/Identity/test/Identity.Test/PasswordHasherTest.cs
+index e31a877e67f5..74cf2d152dad 100644
+--- a/src/Identity/test/Identity.Test/PasswordHasherTest.cs
++++ b/src/Identity/test/Identity.Test/PasswordHasherTest.cs
+@@ -112,6 +112,9 @@ public void HashPassword_Version3()
+     [InlineData("AQAAAAAAAAD6AAAAEAhftMyfTJyAAAAAAAAAAAAAAAAAAAih5WsjXaR3PA9M")] // incorrect password
+     [InlineData("AQAAAAIAAAAyAAAAEOMwvh3+FZxqkdMBz2ekgGhwQ4A=")] // too short
+     [InlineData("AQAAAAIAAAAyAAAAEOMwvh3+FZxqkdMBz2ekgGhwQ4B6pZWND6zgESBuWiHwAAAAAAAAAAAA")] // extra data at end
++    [InlineData("AQAAAAIAAYagAP///wABAgMEBQYHCAkKCwwNDg/Q8A0WMKbtHQJQ2DHCdoEeeFBrgNlldq6vH4qX/CGqGQ==")] // salt length greater than data length
++    [InlineData("AQAAAAEAACcQf////4r8+J3NDEnMWKlHbhJQ6N5oooZ7hUi3cr/qAjd7Lc1Sv6GhorP7Ly0AzCv9PAmKww==")] // salt length is Int32.MaxValue
++    [InlineData("AQAAAAIAAYagAAAACAABAgMEBQYH4qLSh7iNSI12qySxAkyR0XgpXpvNiwqhBJFNLbJKKFw=")] // salt length (8 bytes) less than minimum allowed
+     public void VerifyHashedPassword_FailureCases(string hashedPassword)
+     {
+         // Arrange

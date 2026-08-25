@@ -273,6 +273,63 @@ PROVIDER_AUTH = {"openrouter/": "openrouter", "huggingface/": "huggingface"}
 HOST_AUTH = (pathlib.Path(os.environ.get("XDG_DATA_HOME") or os.path.expanduser("~/.local/share"))
              / "opencode" / "auth.json")
 
+# --- credentials that are on disk but not in the environment -----------------------------
+# ROOT CAUSE this fixes: the tool depended on SHELL INITIALISATION IT DOES NOT CONTROL.
+# Keys commonly live in a file that ~/.zshrc sources -- which is interactive-only, so a
+# non-interactive shell, a hook, a cron job or any long-running process started before the
+# file changed has no key, while the key sits on the same disk the whole time. Observed:
+# every panel in every background session degraded to `harness` on four judges, reporting
+# "no credential", on a machine where the credential was present and readable.
+#
+# NOT a hardcoded path like the one removed from `--open` today. The default list is XDG
+# CONVENTION, and $LLM_PANEL_CREDENTIALS (colon-separated) replaces it outright. The
+# environment always WINS -- this only fills a gap, never overrides a deliberate export.
+CREDENTIAL_FILES = [pathlib.Path(p).expanduser() for p in (
+    os.environ.get("LLM_PANEL_CREDENTIALS", "").split(os.pathsep)
+    if os.environ.get("LLM_PANEL_CREDENTIALS") else
+    [f"{os.environ.get('XDG_CONFIG_HOME') or '~/.config'}/openrouter/credentials",
+     f"{os.environ.get('XDG_CONFIG_HOME') or '~/.config'}/huggingface/credentials",
+     f"{os.environ.get('XDG_CONFIG_HOME') or '~/.config'}/secrets/api-keys.env"]) if p]
+
+_LOADED_FROM = {}          # VAR -> file it came from, for --list/--check to show
+
+
+def load_credentials(wanted, files=None, env=None):
+    """Fill in missing provider keys from disk. Returns {VAR: source path}.
+
+    Values are never printed or logged anywhere -- only WHICH variable came from WHICH
+    file, because a user needs to know a key was picked up without the key appearing in a
+    terminal, a transcript, or a bug report.
+    """
+    env = os.environ if env is None else env
+    got = {}
+    for f in (CREDENTIAL_FILES if files is None else files):
+        missing = [v for v in wanted if not env.get(v)]
+        if not missing:
+            break
+        try:
+            text = pathlib.Path(f).read_text(encoding="utf-8")
+        except OSError:
+            continue                       # absent or unreadable is normal, not an error
+        for line in text.splitlines():
+            line = line.strip()
+            if not line or line.startswith("#"):
+                continue
+            if line.startswith("export "):
+                line = line[7:].lstrip()
+            key, sep, val = line.partition("=")
+            key = key.strip()
+            if not sep or key not in missing:
+                continue
+            val = val.strip().strip("'\"")
+            if val:
+                env[key] = val
+                got[key] = str(f)
+    return got
+
+
+_LOADED_FROM = load_credentials(sorted(set(PROVIDER_ENV.values())))
+
 
 def stored_providers():
     """Providers with a credential in the host auth.json. Empty on any read failure."""

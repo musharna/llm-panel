@@ -1,0 +1,42 @@
+diff --git a/dotnet/samples/Demos/ModelContextProtocolPlugin/ModelContextProtocolPlugin.csproj b/dotnet/samples/Demos/ModelContextProtocolPlugin/ModelContextProtocolPlugin.csproj
+index 20d6d6b81dbc..8b872e1db766 100644
+--- a/dotnet/samples/Demos/ModelContextProtocolPlugin/ModelContextProtocolPlugin.csproj
++++ b/dotnet/samples/Demos/ModelContextProtocolPlugin/ModelContextProtocolPlugin.csproj
+@@ -19,6 +19,8 @@
+   </ItemGroup>
+   
+   <ItemGroup>
++    <ProjectReference Include="..\..\..\src\Agents\Abstractions\Agents.Abstractions.csproj" />
++    <ProjectReference Include="..\..\..\src\Agents\Core\Agents.Core.csproj" />
+     <ProjectReference Include="..\..\..\src\Connectors\Connectors.AzureOpenAI\Connectors.AzureOpenAI.csproj" />
+     <ProjectReference Include="..\..\..\src\SemanticKernel.Abstractions\SemanticKernel.Abstractions.csproj" />
+     <ProjectReference Include="..\..\..\src\SemanticKernel.Core\SemanticKernel.Core.csproj" />
+diff --git a/dotnet/samples/Demos/ModelContextProtocolPlugin/Program.cs b/dotnet/samples/Demos/ModelContextProtocolPlugin/Program.cs
+index 989df9856be6..6bca66c66b3f 100644
+--- a/dotnet/samples/Demos/ModelContextProtocolPlugin/Program.cs
++++ b/dotnet/samples/Demos/ModelContextProtocolPlugin/Program.cs
+@@ -4,6 +4,7 @@
+ using Microsoft.Extensions.DependencyInjection;
+ using Microsoft.Extensions.Logging;
+ using Microsoft.SemanticKernel;
++using Microsoft.SemanticKernel.Agents;
+ using Microsoft.SemanticKernel.Connectors.OpenAI;
+ using ModelContextProtocol;
+ using ModelContextProtocol.Client;
+@@ -70,3 +71,16 @@
+ var prompt = "Summarize the last four commits to the microsoft/semantic-kernel repository?";
+ var result = await kernel.InvokePromptAsync(prompt, new(executionSettings)).ConfigureAwait(false);
+ Console.WriteLine($"\n\n{prompt}\n{result}");
++
++// Define the agent
++ChatCompletionAgent agent = new()
++{
++    Instructions = "Answer questions about GitHub repositories.",
++    Name = "GitHubAgent",
++    Kernel = kernel,
++    Arguments = new KernelArguments(new PromptExecutionSettings() { FunctionChoiceBehavior = FunctionChoiceBehavior.Auto() }),
++};
++
++// Respond to user input, invoking functions where appropriate.
++ChatMessageContent response = await agent.InvokeAsync("Summarize the last four commits to the microsoft/semantic-kernel repository?").FirstAsync();
++Console.WriteLine($"\n\nResponse from GitHubAgent:\n{response.Content}");

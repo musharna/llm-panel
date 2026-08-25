@@ -1199,6 +1199,69 @@ with section("cli.8 `-f -` still reads stdin (regression guard on the form that 
     _r = _run_cli(["-f", "-", "--judges", "nonexistent-judge"], stdin_text="a real question\n")
     check("cli.8 got past prompt resolution", "no prompt given" not in _r.stderr, True)
 
+# --- credentials that are on disk but not in the environment ----------------------------
+# Every panel in every background session degraded to `harness` on four judges reporting
+# "no credential", on a machine where the credential was present and readable the whole
+# time: ~/.zshrc sources it, and .zshrc is interactive-only. The tool depended on shell
+# initialisation it does not control.
+#
+# The environment must always WIN. This fills a gap; it must never override a deliberate
+# export, or a caller who exported a scratch key would silently get the file's key instead.
+with section("cred.1 a missing var is filled from a file"):
+    with tempfile.TemporaryDirectory() as _td:
+        _f = pathlib.Path(_td) / "creds"
+        _f.write_text("OPENROUTER_API_KEY=from-file\n", encoding="utf-8")
+        _env = {}
+        _got = lp.load_credentials(["OPENROUTER_API_KEY"], files=[_f], env=_env)
+        check("cred.1 value loaded", _env.get("OPENROUTER_API_KEY"), "from-file")
+        check("cred.1 source recorded", _got.get("OPENROUTER_API_KEY"), str(_f))
+
+with section("cred.2 THE ENVIRONMENT WINS -- a set var is never overridden"):
+    with tempfile.TemporaryDirectory() as _td:
+        _f = pathlib.Path(_td) / "creds"
+        _f.write_text("OPENROUTER_API_KEY=from-file\n", encoding="utf-8")
+        _env = {"OPENROUTER_API_KEY": "from-env"}
+        _got = lp.load_credentials(["OPENROUTER_API_KEY"], files=[_f], env=_env)
+        check("cred.2 env value survives", _env["OPENROUTER_API_KEY"], "from-env")
+        check("cred.2 nothing claimed as loaded", _got, {})
+
+with section("cred.3 shell-file syntax is handled, comments and blanks skipped"):
+    with tempfile.TemporaryDirectory() as _td:
+        _f = pathlib.Path(_td) / "creds"
+        _f.write_text('# a comment\n\nexport HF_TOKEN="quoted-value"\n', encoding="utf-8")
+        _env = {}
+        lp.load_credentials(["HF_TOKEN"], files=[_f], env=_env)
+        check("cred.3 export stripped and quotes removed", _env.get("HF_TOKEN"), "quoted-value")
+
+with section("cred.4 an absent or unreadable file is normal, not an error"):
+    _env = {}
+    _got = lp.load_credentials(["HF_TOKEN"], files=[pathlib.Path("/nonexistent/creds")], env=_env)
+    check("cred.4 no exception, nothing loaded", (_got, _env), ({}, {}))
+
+with section("cred.5 the FIRST file wins, and later files do not clobber it"):
+    with tempfile.TemporaryDirectory() as _td:
+        _a = pathlib.Path(_td) / "a"; _a.write_text("HF_TOKEN=first\n", encoding="utf-8")
+        _b = pathlib.Path(_td) / "b"; _b.write_text("HF_TOKEN=second\n", encoding="utf-8")
+        _env = {}
+        lp.load_credentials(["HF_TOKEN"], files=[_a, _b], env=_env)
+        check("cred.5 first wins", _env.get("HF_TOKEN"), "first")
+
+with section("cred.6 only the WANTED vars are read -- a creds file is not a dotenv loader"):
+    # These files hold other secrets (FAL_KEY, REPLICATE_API_TOKEN...). Loading everything
+    # would import unrelated credentials into the process for no reason.
+    with tempfile.TemporaryDirectory() as _td:
+        _f = pathlib.Path(_td) / "creds"
+        _f.write_text("HF_TOKEN=wanted\nFAL_KEY=unrelated\n", encoding="utf-8")
+        _env = {}
+        lp.load_credentials(["HF_TOKEN"], files=[_f], env=_env)
+        check("cred.6 wanted loaded", _env.get("HF_TOKEN"), "wanted")
+        check("cred.6 unrelated NOT loaded", "FAL_KEY" in _env, False)
+
+with section("cred.7 the default file list is XDG convention, not a hardcoded path"):
+    _src = SRC.read_text(encoding="utf-8")
+    check("cred.7 honours XDG_CONFIG_HOME", "XDG_CONFIG_HOME" in _src, True)
+    check("cred.7 overridable outright", "LLM_PANEL_CREDENTIALS" in _src, True)
+
 with section("cli.3 ollama is NOT treated as a CLI transport"):
     # It speaks HTTP. Judges were once refused for want of a CLI this program no longer
     # uses; asserting the absence keeps that fix from being undone by a tidy-up.
