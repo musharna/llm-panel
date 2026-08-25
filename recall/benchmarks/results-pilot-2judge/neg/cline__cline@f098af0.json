@@ -1,0 +1,44 @@
+{
+  "review": {
+    "comments": [
+      {
+        "content": "**DEFECT 1: False positive hang telemetry due to race condition in completion timer registration**  \n**File:** `src/core/task/index.ts` **Line:** 1574 (new file line from hunk `@@ -1552,8 +1571,24 @@`)  \n**Failure scenario:** A terminal command completes synchronously (or near-instantly) between when the completion timer is started (line 1574) and when the `\"completed\"` event listener is registered (line 1582). The `\"completed\"` event fires before `process.once(\"completed\", ...)` attaches, so the listener misses it. `completed` remains `false`, the timer fires at 60s, and `captureTerminalHang(WAITING_FOR_COMPLETION)` is incorrectly recorded despite the process having already finished.  \n**Why it's a defect:** `EventEmitter.once()` only catches future events. If the process completes before registration, the event is lost. The `await process` at line 1604 still resolves (the process is done), but the timer callback has no way to know.\n\n---",
+        "path": "src/core/task/index.ts",
+        "start_line": 1574,
+        "end_line": 1574,
+        "observation_id": "28920a25073f98bc",
+        "claimed_path": "src/core/task/index.ts",
+        "path_resolution": "exact"
+      },
+      {
+        "content": "**DEFECT 2: Misclassified telemetry reason \u2014 empty shell integration output reported as TIMEOUT**  \n**File:** `src/integrations/terminal/TerminalProcess.ts` **Line:** 193 (new file line from hunk `@@ -189,7 +191,19 @@`)  \n**Failure scenario:** Shell integration executes successfully but produces no output (e.g., a command like `true` or `cd /`). The code treats this as `TerminalOutputFailureReason.TIMEOUT` (line 193), but no timeout occurred \u2014 the command finished, output was just empty. This pollutes telemetry with incorrect failure reasons.\n\n---",
+        "path": "src/integrations/terminal/TerminalProcess.ts",
+        "start_line": 193,
+        "end_line": 193,
+        "observation_id": "226a6714fb7d2b16",
+        "claimed_path": "src/integrations/terminal/TerminalProcess.ts",
+        "path_resolution": "exact"
+      },
+      {
+        "content": "**DEFECT 3: Spurious \"output failure\" telemetry when clipboard fallback succeeds**  \n**File:** `src/integrations/terminal/TerminalProcess.ts` **Line:** 217 (new file line from hunk `@@ -203,6 +217,7 @@`)  \n**Failure scenario:** Terminal has no shell integration. The code unconditionally calls `captureTerminalOutputFailure(NO_SHELL_INTEGRATION)` at line 217, then attempts clipboard fallback. If fallback succeeds (lines 228-231), `captureTerminalExecution(true, \"clipboard\")` is also called. Result: one command generates both a \"failure\" event (reason: no shell integration) and a \"success\" event (method: clipboard) \u2014 contradictory telemetry for a successful capture.\n\n---",
+        "path": "src/integrations/terminal/TerminalProcess.ts",
+        "start_line": 217,
+        "end_line": 217,
+        "observation_id": "763bbb9f2f292034",
+        "claimed_path": "src/integrations/terminal/TerminalProcess.ts",
+        "path_resolution": "exact"
+      },
+      {
+        "content": "**DEFECT 4: Same command emits both failure and success telemetry in shell integration fallback path**  \n**File:** `src/integrations/terminal/TerminalProcess.ts` **Lines:** 193, 198 (new file lines from hunk `@@ -189,7 +191,19 @@`)  \n**Failure scenario:** Shell integration returns empty output. Line 193 emits `TERMINAL_OUTPUT_FAILURE` with reason `TIMEOUT`. Lines 194-198 attempt clipboard fallback; if it works, line 198 emits `TERMINAL_EXECUTION` with `success=true, method=\"clipboard\"`. One command produces a \"timeout failure\" event and a \"clipboard success\" event \u2014 the failure reason is wrong (not a timeout) and the dual events are inconsistent.",
+        "path": "src/integrations/terminal/TerminalProcess.ts",
+        "start_line": 193,
+        "end_line": 193,
+        "observation_id": "bb7f84ce1293a9cf",
+        "claimed_path": "src/integrations/terminal/TerminalProcess.ts",
+        "path_resolution": "exact"
+      }
+    ]
+  },
+  "rundir": "/home/user/.cache/llm-panel/runs/aacr-up-rxiwyv_f-97636f601e59/20260825-140958-1210034",
+  "extractor": "1"
+}

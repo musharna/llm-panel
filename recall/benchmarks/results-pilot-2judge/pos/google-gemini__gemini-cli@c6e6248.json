@@ -1,0 +1,80 @@
+{
+  "review": {
+    "comments": [
+      {
+        "content": "**Defect 1 (Medium): Missing `error` event handler on spawned child process**\n\n**File:** `integration-tests/test-helper.ts`, in the `runCommand` method (diff lines 313\u2013316, the `spawn()` call through to the `});` closing it).\n\n`spawn('node', commandArgs, ...)` is called but no `child.on('error', ...)` is ever registered. In Node.js, if `spawn` itself fails (e.g., `node` binary not on PATH in a CI container, or permission denied), the child emits an `error` event. Two consequences:",
+        "path": "integration-tests/test-helper.ts",
+        "start_line": 313,
+        "end_line": 313,
+        "observation_id": "0182cf7267794e9d",
+        "claimed_path": "integration-tests/test-helper.ts",
+        "path_resolution": "exact"
+      },
+      {
+        "content": "1. **Unhandled `error` event \u2192 uncaught exception.** Node.js throws `ERR_UNHANDLED_ERROR` on any EventEmitter that emits `error` with no listener, regardless of whether a `close` listener is registered.",
+        "path": "",
+        "start_line": null,
+        "end_line": null,
+        "observation_id": "8c49757ac0d80933",
+        "claimed_path": "Node.js",
+        "path_resolution": "not-in-diff"
+      },
+      {
+        "content": "2. **If only `error` fires and `close` never fires** (some spawn-failure modes in certain Node versions), the Promise returned by `runCommand` never settles \u2192 the test hangs indefinitely, timing out with no useful diagnostic.\n\n**Failure scenario:** Run the test suite in a container/sandbox where `node` is not on `PATH` \u2192 `spawn` emits `error` \u2192 uncaught exception thrown, or test hangs forever instead of failing with a clear message.\n\n**Concrete fix:** Add `child.on('error', (err) => reject(err))` inside the `Promise` constructor, before the `close` listener (or just after `spawn`, wiring it to the same `reject`).",
+        "path": "",
+        "start_line": null,
+        "end_line": null,
+        "observation_id": "47643dc64e9896b7",
+        "claimed_path": "container/sandbox",
+        "path_resolution": "not-in-diff"
+      },
+      {
+        "content": "**Defect 1: Test resource leak on assertion failure**  \n**File:** `integration-tests/extensions-install.test.ts`  \n**Lines:** 47\u201351 (cleanup only runs if all assertions pass)  \n**Failure scenario:** Any `expect()` fails (e.g., `updateResult` doesn't contain `'0.0.2'`) \u2192 `rig.cleanup()` and `rmSync()` never execute \u2192 test directory persists, polluting subsequent runs and exhausting disk space in CI.\n\n---",
+        "path": "integration-tests/extensions-install.test.ts",
+        "start_line": 47,
+        "end_line": 47,
+        "observation_id": "950dbbf00c8d2c22",
+        "claimed_path": "integration-tests/extensions-install.test.ts",
+        "path_resolution": "exact"
+      },
+      {
+        "content": "**Defect 2: Race condition writing stdin to spawned process**  \n**File:** `integration-tests/test-helper.ts`  \n**Lines:** 322\u2013324 (stdin write/end immediately after `spawn`)  \n**Failure scenario:** Child process hasn't yet set up its stdin listener \u2192 `child.stdin.write()` throws \"write after end\" or data is lost \u2192 command requiring confirmation (like `extensions install` with `stdin: 'y\\n'`) hangs or fails non-deterministically.\n\n---",
+        "path": "integration-tests/test-helper.ts",
+        "start_line": 322,
+        "end_line": 322,
+        "observation_id": "8d31a6973558e028",
+        "claimed_path": "integration-tests/test-helper.ts",
+        "path_resolution": "exact"
+      },
+      {
+        "content": "**Defect 3: No timeout on child process \u2192 indefinite hang**  \n**File:** `integration-tests/test-helper.ts`  \n**Lines:** 312\u2013344 (entire `runCommand` promise)  \n**Failure scenario:** CLI command deadlocks or waits for input not provided \u2192 test hangs forever, blocking CI pipeline with no timeout backstop.\n\n---",
+        "path": "integration-tests/test-helper.ts",
+        "start_line": 312,
+        "end_line": 312,
+        "observation_id": "f47d9d60be5d39c9",
+        "claimed_path": "integration-tests/test-helper.ts",
+        "path_resolution": "exact"
+      },
+      {
+        "content": "**Defect 4: Shared `TestRig` instance breaks test isolation**  \n**File:** `integration-tests/extensions-install.test.ts`  \n**Line:** 13 (`const rig = new TestRig();` at module scope)  \n**Failure scenario:** Adding a second `test()` in this file reuses the same `rig` instance \u2192 `testDir` and `bundlePath` state from first test contaminates second test \u2192 flaky/intermittent failures.\n\n---",
+        "path": "integration-tests/extensions-install.test.ts",
+        "start_line": 13,
+        "end_line": 13,
+        "observation_id": "8f64fff917f46c38",
+        "claimed_path": "integration-tests/extensions-install.test.ts",
+        "path_resolution": "exact"
+      },
+      {
+        "content": "**Defect 5: Silent error swallowing in try/catch**  \n**File:** `integration-tests/extensions-install.test.ts`  \n**Lines:** 21\u201323 (empty catch block)  \n**Failure scenario:** `extensions uninstall` fails for a real reason (permission denied, missing binary, etc.) \u2192 error discarded \u2192 subsequent `install` may behave differently (e.g., \"already installed\" path) \u2192 test passes for wrong reason or fails mysteriously later.",
+        "path": "",
+        "start_line": 21,
+        "end_line": 21,
+        "observation_id": "381508b96c0c42f2",
+        "claimed_path": "try/catch",
+        "path_resolution": "not-in-diff"
+      }
+    ]
+  },
+  "rundir": "/home/user/.cache/llm-panel/runs/aacr-up-vldr8mfs-d92bfb929cf9/20260825-123928-1053431",
+  "extractor": "1"
+}

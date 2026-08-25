@@ -1,0 +1,71 @@
+{
+  "review": {
+    "comments": [
+      {
+        "content": "**DEFECT 1 \u2014 Time precision silently truncated on `lastModifiedAssetTimestamp`**\n\n**File:** `server/src/repositories/album.repository.ts`\n**Line:** 164 (the `::date` cast in the new `lastModifiedAssetTimestamp` SQL expression)\n\n**What the old code did:** `getLastUpdatedAssetForAlbumId` returned the full `AssetEntity`, and the service used `lastModifiedAsset?.updatedAt` \u2014 a precise datetime (e.g. `2025-06-15T14:32:07.000Z`).\n\n**What the new code does:** The SQL expression is:\n```sql\n(\"assets\".\"updatedAt\" AT TIME ZONE 'UTC'::text)::date\n```\nThe `::date` cast truncates `updatedAt` to day precision (e.g. `2025-06-15T00:00:00.000Z`).\n\n**Failure scenario:** The mobile app compares `lastModifiedAssetTimestamp` to detect whether an album has changed since last sync. Album X has asset A updated at `2025-06-15 09:00` and asset B updated at `2025-06-15 17:00`. Old code: timestamp resolves to `2025-06-15T17:00:00Z`. New code: timestamp resolves to `2025-06-15T00:00:00Z`. If the mobile app received `2025-06-15T17:00:00Z` on a previous sync and requests updates \"since that timestamp\", the new value `2025-06-15T00:00:00Z` is *earlier*, so the change at 17:00 would be missed on the next poll \u2014 or the app would always see \"no change\" for same-day modifications.\n\nThe field name itself (`lastModifiedAsset**Timestamp**`) signals datetime-level precision was intended; the `::date` cast defeats it.",
+        "path": "server/src/repositories/album.repository.ts",
+        "start_line": 164,
+        "end_line": 164,
+        "observation_id": "cef00f0031259997",
+        "claimed_path": "server/src/repositories/album.repository.ts",
+        "path_resolution": "exact"
+      },
+      {
+        "content": "**DEFECT 1: Type mismatch \u2014 SQL returns `DATE` but TypeScript interface expects `Date` (timestamp)**\n\n**File:** `server/src/repositories/album.repository.ts`  \n**Lines:** ~141\u2013172 (in the new query, per hunk `@@ -132,18 +133,53 @@`)\n\nThe rewritten `getMetadataForIds` query casts all three timestamp columns to `::date`:\n```typescript\nsql`(\"assets\".\"localDateTime\" AT TIME ZONE 'UTC'::text)::date`  // startDate\nsql`(\"assets\".\"localDateTime\" AT TIME ZONE 'UTC'::text)::date`  // endDate\nsql`(\"assets\".\"updatedAt\" AT TIME ZONE 'UTC'::text)::date`      // lastModifiedAssetTimestamp\n```\n\nBut the interface `AlbumAssetCount` (lines 12\u201316 in the diff) declares:\n```typescript\nstartDate: Date | null;\nendDate: Date | null;\nlastModifiedAssetTimestamp: Date | null;\n```",
+        "path": "server/src/repositories/album.repository.ts",
+        "start_line": 141,
+        "end_line": 141,
+        "observation_id": "9dc564fdd1cfdf61",
+        "claimed_path": "server/src/repositories/album.repository.ts",
+        "path_resolution": "exact"
+      },
+      {
+        "content": "**Failure scenario:**  \nAn album has assets with `localDateTime = '2024-06-15 14:30:00+00'`. The query returns `'2024-06-15'` (DATE, no time). The service layer receives a `Date` object at midnight UTC (`2024-06-15T00:00:00.000Z`) instead of the actual timestamp. Any client logic comparing/sorting by `startDate`/`endDate`/`lastModifiedAssetTimestamp` will see all times as 00:00:00, breaking chronological ordering and date-range filters.\n\n---",
+        "path": "",
+        "start_line": null,
+        "end_line": null,
+        "observation_id": "3bb078657e97aab2",
+        "claimed_path": "comparing/sorting",
+        "path_resolution": "not-in-diff"
+      },
+      {
+        "content": "**DEFECT 2: Silent data loss for albums with no assets**\n\n**File:** `server/src/repositories/album.repository.ts`  \n**Lines:** ~135\u2013180 (same hunk)\n\nThe new query selects **from `assets`** then joins to `albums_assets_assets`:\n```typescript\nthis.db.selectFrom('assets').innerJoin('albums_assets_assets as album_assets', ...)\n```\n\nThe original query selected **from `albums`** then joined inward. Both use `innerJoin`, so albums with zero assets are excluded in both \u2014 **but** the new `WHERE` clause filters on `album_assets.albumsId` *after* the join, while the old query filtered on `albums.id` *before* joins. With the new structure, if the `ids` array contains album IDs that have no assets, those albums simply disappear from the result set (no row returned). The service code at `album.service.ts:65` (`albumMetadata[album.id]?.startDate ?? undefined`) handles missing entries gracefully, but **the caller has no way to distinguish \"album not found\" from \"album has no assets\"** \u2014 both yield `undefined` metadata.",
+        "path": "server/src/repositories/album.repository.ts",
+        "start_line": 135,
+        "end_line": 135,
+        "observation_id": "d4028395fa6661f6",
+        "claimed_path": "server/src/repositories/album.repository.ts",
+        "path_resolution": "exact"
+      },
+      {
+        "content": "**Failure scenario:**  \nClient requests metadata for `[albumWithAssets, emptyAlbum]`. `getMetadataForIds` returns only one row. `getAlbumsForUser` maps both albums but `emptyAlbum` gets `startDate: undefined, assetCount: 0` \u2014 indistinguishable from an album that was never in the input.\n\n---",
+        "path": "",
+        "start_line": null,
+        "end_line": null,
+        "observation_id": "137444c3fbe88207",
+        "claimed_path": null,
+        "path_resolution": "absent"
+      },
+      {
+        "content": "**DEFECT 3: `getAlbumsForUser` returns synchronous array from `async` function \u2014 breaks callers expecting `Promise` resolution semantics**\n\n**File:** `server/src/services/album.service.ts`  \n**Lines:** 58\u201370 (per hunk `@@ -58,19 +58,15 @@`)\n\nOriginal:\n```typescript\nreturn Promise.all(albums.map(async (album) => { ... }));\n```\n\nNew:\n```typescript\nreturn albums.map((album) => ({ ... }));\n```\n\nThe method is `async` (implied by `await` on line 56), so the bare array return **is wrapped in a resolved Promise** \u2014 but callers that relied on the intermediate `await` inside the map (e.g., for error propagation per-album) now get all-or-nothing resolution. More critically, **TypeScript compiles this to a `Promise<AlbumResponseDto[]>` return type**, so callers `await` it and receive the array \u2014 **no runtime crash**, but the *semantics changed*: previously each album's metadata fetch could fail independently; now the single `getMetadataForIds` call fails for all or succeeds for all. This is a behavioral change, not a bug per se, but it's an **untested contract change** with no migration.\n\n---",
+        "path": "server/src/services/album.service.ts",
+        "start_line": 58,
+        "end_line": 58,
+        "observation_id": "7aaf5b5ef45ef36e",
+        "claimed_path": "server/src/services/album.service.ts",
+        "path_resolution": "exact"
+      },
+      {
+        "content": "**DEFECT 4: `lastModifiedAssetTimestamp` comment indicates dead code / unclear ownership**\n\n**File:** `server/src/repositories/album.repository.ts` line ~162 and `server/src/services/album.service.ts` line ~66\n\n```typescript\n// lastModifiedAssetTimestamp is only used in mobile app, please remove if not need\n```\n\nThis comment in production code signals **unclear feature ownership** and **no test coverage** for this field. If the mobile app stops using it, the column remains in the query and interface forever. No defect *today*, but a maintenance hazard.",
+        "path": "server/src/repositories/album.repository.ts",
+        "start_line": 162,
+        "end_line": 162,
+        "observation_id": "ff3b62ec21c7b4a1",
+        "claimed_path": "server/src/repositories/album.repository.ts",
+        "path_resolution": "exact"
+      }
+    ]
+  },
+  "rundir": "/home/user/.cache/llm-panel/runs/aacr-up-_uauggta-ba03f7625791/20260825-141710-1228938",
+  "extractor": "1"
+}

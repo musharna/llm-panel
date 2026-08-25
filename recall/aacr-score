@@ -1,0 +1,79 @@
+#!/usr/bin/env python3
+"""Score a bridge results dir with UPSTREAM's evaluator. Scoring logic is entirely theirs.
+
+  aacr-score <results-dir> <instances.jsonl> <out-dir> [line_k]
+
+Run it with upstream's OWN interpreter -- they pin openai==2.41.0 in
+evaluation/requirements.txt, so use ~/aacr-bench/.venv/bin/python, not a bare python3.
+
+TWO GUARDS, both earned:
+
+1. Mock refusal. judge.py silently enables a local similarity fallback whenever
+   JUDGE_API_KEY is absent, and upstream marks that fallback "pipeline validation only".
+
+2. Dead-judge refusal. judge.match_semantic catches EVERY exception and returns
+   {"is_similar": False}. So a judge that cannot run at all is arithmetically identical to
+   a judge that ran and found no match -- the aggregate reads 0 semantic matches either
+   way. That is exactly what happened: upstream declares openai==2.41.0, I had never
+   installed their requirements, and every call died with ModuleNotFoundError while the
+   harness printed "LLM (real judge model)" and produced a clean-looking zero.
+   So: one live judge call BEFORE scoring as a positive control, and a wrapper that counts
+   failures during scoring and refuses to report a number if any occurred.
+"""
+import asyncio, json, os, pathlib, signal, sys
+
+signal.signal(signal.SIGALRM, lambda *_: (sys.stderr.write("aborting: walltime guard\n"), sys.exit(2)))
+signal.alarm(5400)
+
+E = pathlib.Path.home() / "aacr-bench" / "evaluation"
+sys.path.insert(0, str(E))
+os.chdir(E)
+
+import judge, schema, evaluate as ev, config  # noqa: E402
+
+if judge.USE_MOCK_LLM:
+    sys.exit("REFUSING: upstream is in Mock mode (JUDGE_API_KEY unset). Its own docs call "
+             "the local similarity fallback 'pipeline validation only'.")
+print(f"  judge mode: {ev.judge_mode_description()}")
+
+# --- positive control: the judge must actually answer before anything is scored ----------
+probe = asyncio.run(judge.match_semantic("the loop is off by one", "this loop is off by one"))
+if "评估过程出错" in str(probe.get("reason", "")):
+    sys.exit(f"REFUSING: the judge cannot run -- {probe['reason']}\n"
+             "Every match would silently score False and the run would report 0 semantic "
+             "matches that mean nothing. Install upstream's deps (evaluation/requirements.txt).")
+print(f"  judge probe: is_similar={probe['is_similar']} (identical claims -> expect True)")
+if not probe["is_similar"]:
+    sys.exit("REFUSING: the judge answered but called two identical claims different. "
+             "A judge that cannot recognise an exact paraphrase cannot be trusted to "
+             "adjudicate the real ones.")
+
+# --- count failures during the run -------------------------------------------------------
+FAILED = []
+_real = judge.match_semantic
+async def counting(ref, gen):
+    r = await _real(ref, gen)
+    if "评估过程出错" in str(r.get("reason", "")):
+        FAILED.append(r["reason"])
+    return r
+# match_semantic is called from a module-global inside judge.py itself (judge.py:218),
+# so rebinding it on the judge module is both necessary and sufficient.
+judge.match_semantic = counting
+
+results, insts_path, out = pathlib.Path(sys.argv[1]), pathlib.Path(sys.argv[2]), pathlib.Path(sys.argv[3])
+line_k = int(sys.argv[4]) if len(sys.argv) > 4 else 1
+insts = schema.load_instances(insts_path)
+have = [i for i in insts if config.result_path(results, i.instance_id).is_file()]
+print(f"  {len(have)}/{len(insts)} instances have result files; line_k={line_k}")
+
+s = asyncio.run(ev.evaluate(have, results, "llm-panel", out, line_k=line_k))
+
+if FAILED:
+    print(f"\n  !! {len(FAILED)} judge calls FAILED during scoring. Upstream scores a failed "
+          f"call as 'not similar', so these numbers UNDERSTATE semantic matches and must "
+          f"not be reported. First: {FAILED[0][:200]}")
+    sys.exit(3)
+print("\n  judge failures during scoring: 0")
+for k in ("total_instances","evaluated_instances","missing_instances","expected_notes",
+          "generated_notes","matched_line_notes","matched_semantic_notes"):
+    if k in s: print(f"    {k:24} {s[k]}")

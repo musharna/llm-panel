@@ -1,0 +1,35 @@
+{
+  "review": {
+    "comments": [
+      {
+        "content": "**DEFECT 1: Use-after-free / dangling pointer during parser destruction**  \n**File:** `src/Base/Parameter.cpp` **Line:** 1876 (hunk `@@ -1866,49 +1876,47 @@`)  \n**Failure scenario:** `entityBlocker` (constructed second) is destroyed *before* `parser` (constructed first) due to reverse destruction order of local `unique_ptr`s. `parser` holds a raw pointer to the entity resolver via `setEntityResolver(entityBlocker.get())`. If `XercesDOMParser::~XercesDOMParser()` accesses the entity resolver (e.g., for cleanup), it reads freed memory.  \n**Concrete inputs:** Any XML document parsed via `LoadDocument(InputSource&)` triggers the code path; the defect manifests at function exit during stack unwinding.\n\n---",
+        "path": "src/Base/Parameter.cpp",
+        "start_line": 1876,
+        "end_line": 1876,
+        "observation_id": "b3db4115f3f49892",
+        "claimed_path": "src/Base/Parameter.cpp",
+        "path_resolution": "exact"
+      },
+      {
+        "content": "**DEFECT 2: `NoOpEntityResolver` lacks virtual destructor**  \n**File:** `src/Base/Parameter.cpp` **Line:** 1860 (hunk `@@ -1859,6 +1860,15 @@`)  \n**Failure scenario:** Class inherits from `XERCES_CPP_NAMESPACE_QUALIFIER EntityResolver` (polymorphic base) but has no virtual destructor. If Xerces ever assumes ownership and deletes through the base pointer (unlikely but possible in future versions or atypical configurations), undefined behavior occurs.  \n**Concrete inputs:** Any parse operation; risk materializes only if ownership semantics change.\n\n---",
+        "path": "src/Base/Parameter.cpp",
+        "start_line": 1860,
+        "end_line": 1860,
+        "observation_id": "c0a8695b8cd122d0",
+        "claimed_path": "src/Base/Parameter.cpp",
+        "path_resolution": "exact"
+      },
+      {
+        "content": "**DEFECT 3: `resolveEntity` returning `nullptr` may not block external entities**  \n**File:** `src/Base/Parameter.cpp` **Line:** 1865 (hunk `@@ -1859,6 +1860,15 @@`)  \n**Failure scenario:** Comment claims \"Block all external entity resolution\" but returning `nullptr` from `EntityResolver::resolveEntity` tells Xerces to fall back to default resolution (system ID). With `setDisableDefaultEntityResolution(true)` set, behavior is ambiguous \u2014 may still resolve or may error. Does not reliably prevent XXE.  \n**Concrete inputs:** XML with `<!ENTITY xxe SYSTEM \"file:///etc/passwd\">` \u2014 external entity may still be resolved, enabling XXE attacks.",
+        "path": "src/Base/Parameter.cpp",
+        "start_line": 1865,
+        "end_line": 1865,
+        "observation_id": "5777c1444a7eafa8",
+        "claimed_path": "src/Base/Parameter.cpp",
+        "path_resolution": "exact"
+      }
+    ]
+  },
+  "rundir": "/home/user/.cache/llm-panel/runs/aacr-up-ebac4fd5-0de35179b3ed/20260825-122106-854676",
+  "extractor": "1"
+}
