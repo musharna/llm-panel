@@ -68,6 +68,39 @@ FINDING_START = re.compile(
     re.M | re.X,
 )
 
+# A bold BULLET is a finding only when bullets are the document's TOP LEVEL.
+#
+# Why this exists: asked for file and line, a judge answered in exactly the shape the
+# prompt requested --
+#     **Defect 1: `windows_os()` is undefined**
+#     - **File:** `src/.../MigrateMakeCommand.php`
+#     - **Line:** 114
+#     - **Failure scenario:** ...
+# -- and the bullet rule tore one finding into four, so the path landed in one observation
+# and the line in another and they never co-occurred. The matcher needs both, so a
+# correctly-formatted review scored zero. The same locality defect as the `detected()` bug,
+# reproduced inside the instrument built to remove it.
+#
+# The obvious fix -- "a bold span ending in ':' is an attribute label" -- was MEASURED
+# against 376 bold bullets in 351 real reviews and REFUTED: colon-terminated spans include
+# real findings (`High — \`Index.summarise\`:`), and non-colon spans include real attribute
+# labels (`Function`, `Defect`, `Concrete failure scenario`). Neither side is clean, which
+# is the open-set failure this project keeps hitting. A vocabulary of labels would not have
+# worked either.
+#
+# What DOES separate them is HIERARCHY, not wording. If a document already carries a
+# stronger header form -- numbered, `##`, or a bold line alone -- then its bullets are
+# subordinate to those headers, which is what a Markdown outline means. Bullets are
+# promoted to findings only when nothing stronger is present.
+_STRONG = re.compile(
+    r"""^(?:
+          [ \t]{0,3}\d{1,2}[.)][ \t]+
+        | [ \t]{0,3}\#{1,4}[ \t]+
+        | [ \t]{0,3}\*\*[^\n*][^\n]*\*\*[ \t]*$
+      )""",
+    re.M | re.X,
+)
+
 # Opportunistic location parsing. Absence is recorded as absence -- a missing file or line
 # is None, never a guess, because a fabricated location is worse than no location.
 _PATH_LINE = re.compile(
@@ -75,7 +108,10 @@ _PATH_LINE = re.compile(
     r"(?::(\d{1,6}))?"
 )
 _BACKTICK = re.compile(r"`([^`\n]{1,80})`")
-_LINE_ONLY = re.compile(r"\bline[s]?[ \t]+(\d{1,6})\b", re.I)
+# `line 114`, `Line: 114`, `- **Line:** 114` -- the last is the shape this project's
+# own prompt ASKS for, and the original `line[ \t]+\d` could not read it because of the
+# markup and colon in between. Bounded to 12 non-digit chars so it cannot leap a sentence.
+_LINE_ONLY = re.compile(r"\bline[s]?\b[^\d\n]{0,12}?(\d{1,6})\b", re.I)
 
 
 def _fence_spans(text):
@@ -140,10 +176,13 @@ def extract(text, judge="?", run="?"):
     """
     text = text or ""
     fences = _fence_spans(text)
+    # Bullets are boundaries only when nothing stronger is present -- see _STRONG above.
+    strong_present = any(
+        not _in_spans(m.start(), fences) for m in _STRONG.finditer(text)
+    )
+    pattern = _STRONG if strong_present else FINDING_START
     starts = [
-        m.start()
-        for m in FINDING_START.finditer(text)
-        if not _in_spans(m.start(), fences)
+        m.start() for m in pattern.finditer(text) if not _in_spans(m.start(), fences)
     ]
 
     obs = []

@@ -140,6 +140,59 @@ with section("5.3 spans point back into the ORIGINAL text"):
     check("5.3 the span reproduces the verbatim", t[o["start"]:o["end"]], o["verbatim"])
 
 
+# --- 8. hierarchy: a finding's own attribute bullets are not findings -------------------
+# Asked for file and line, a judge answered in exactly the shape the prompt requested and
+# the bullet rule tore ONE finding into FOUR -- path in one observation, line in another,
+# never co-occurring, so the location matcher scored a correct review at zero.
+ATTRS = (
+    "**Defect 1: `windows_os()` is undefined**\n"
+    "- **File:** `src/App/MigrateMakeCommand.php`\n"
+    "- **Line:** 114\n"
+    "- **Failure scenario:** it dies on every platform\n"
+    "\n"
+    "**Defect 2: separator replacement breaks paths**\n"
+    "- **File:** `src/App/MigrateMakeCommand.php`\n"
+    "- **Line:** 115\n"
+)
+with section("8.1 attribute bullets stay inside their finding"):
+    check("8.1 two findings, not seven", len(claimlib.extract(ATTRS)["observations"]), 2)
+
+with section("8.2 and the location survives, which is the whole point"):
+    o = claimlib.extract(ATTRS)["observations"][0]["location"]
+    check("8.2 path", o["path"], "src/App/MigrateMakeCommand.php")
+    check("8.2 line", o["line"], 114)
+
+with section("8.3 bullets ARE findings when nothing stronger is present"):
+    # The rule is hierarchy, not "bullets never count". A review whose top level IS
+    # bullets must still be segmented by them.
+    check("8.3 two findings",
+          len(claimlib.extract("- **Alpha is wrong** detail\n- **Beta is wrong** d\n")["observations"]), 2)
+
+with section("8.4 the discriminator is HIERARCHY, not a colon or a label vocabulary"):
+    # Measured over 376 bold bullets in 351 real reviews: colon-terminated spans include
+    # real findings and non-colon spans include real attribute labels, so neither side is
+    # clean. These assert the rule does not secretly depend on wording.
+    check("8.4 a colon-terminated bullet under a number is subordinate",
+          len(claimlib.extract("1. First\nbody\n\n- **High — `x`:** it is wrong\n")["observations"]), 1)
+    check("8.4 label-like bullets with no colon are top level when nothing outranks",
+          len(claimlib.extract("- **Function** `foo`\n- **Defect** it breaks\n")["observations"]), 2)
+
+
+# --- 9. the line parser reads the shape the prompt asks for -----------------------------
+with section("9.1 `- **Line:** 114` is read"):
+    check("9.1", claimlib._location("- **Line:** 114 (from hunk)")["line"], 114)
+
+with section("9.2 plain prose forms still read"):
+    check("9.2 bare", claimlib._location("line 42 of the file")["line"], 42)
+    check("9.2 plural range takes the first", claimlib._location("**Lines:** 7-9")["line"], 7)
+
+with section("9.3 it does not leap across a sentence to find a number"):
+    check("9.3", claimlib._location("no line here. Meanwhile 500 users complained")["line"], None)
+
+with section("9.4 absence is still absence"):
+    check("9.4", claimlib._location("something is wrong somewhere")["line"], None)
+
+
 # --- 6. location is parsed, never invented ----------------------------------------------
 with section("6.1 file and line are read when stated"):
     loc = claimlib.extract("1. **Bug** in `panel.py:42` -- it breaks\n")["observations"][0]["location"]
