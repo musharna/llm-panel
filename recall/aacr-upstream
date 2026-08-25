@@ -44,15 +44,51 @@ import claimlib  # noqa: E402
 
 DIFFS = ROOT / "benchmarks" / "diffs-upstream"
 
-PROMPT_HEAD = (
-    "Review this pull request diff for REAL DEFECTS. Report only defects you can point at, "
-    "most severe first, each with a concrete failure scenario (inputs -> wrong behaviour). "
-    "For every defect, name the FILE and the LINE NUMBER it lives on, taken from the diff "
-    "hunk headers. Do not restate what the change does, do not praise it, and do not "
-    "propose refactors.\n\n"
-    "If the diff contains no real defect, reply with exactly this line and nothing else:\n"
+# TWO PROMPTS, because the first one was measuring itself.
+#
+# `defect` is the panel's own house style: a defect with a concrete failure scenario, and
+# explicitly NO refactors. Scored against AACR-Bench it returns 10.6% semantic recall --
+# but that pooled number is a blend of two very different things. Classifying all 135
+# reference comments by what they ASK FOR (same judge family used for scoring, because a
+# keyword list cannot answer a semantic question) splits them 74 DEFECT / 61 IMPROVEMENT,
+# and recall splits with them:
+#
+#     DEFECT       12/65 = 18.5%
+#     IMPROVEMENT   1/58 =  1.7%      Fisher exact p = 0.0025
+#
+# So 47% of the benchmark's valid comments are maintainability, naming, dead-code and
+# design suggestions that this prompt TELLS THE JUDGES NOT TO MAKE. The pooled figure was
+# measuring my own instruction, not the panel.
+#
+# `broad` removes that exclusion and invites the improvement classes, keeping the location
+# requirement because upstream cannot match a finding it cannot place. Both are kept so the
+# comparison stays runnable: the house style is a deliberate product choice (nitpick noise
+# is a real cost), and whether to change it should be decided on measured precision and
+# recall rather than on which one flatters the benchmark.
+_LOCATION_RULE = (
+    "For every item, name the FILE and the LINE NUMBER it lives on, taken from the diff "
+    "hunk headers.\n\n"
+    "If the diff needs no comment at all, reply with exactly this line and nothing else:\n"
     "NO DEFECTS FOUND\n\n"
 )
+
+PROMPTS = {
+    "defect": (
+        "Review this pull request diff for REAL DEFECTS. Report only defects you can point "
+        "at, most severe first, each with a concrete failure scenario (inputs -> wrong "
+        "behaviour). Do not restate what the change does, do not praise it, and do not "
+        "propose refactors.\n\n" + _LOCATION_RULE),
+    "broad": (
+        "Review this pull request diff the way a careful maintainer would in a code review. "
+        "Report anything you would actually raise, most severe first. That includes real "
+        "defects -- crashes, wrong results, leaks, races, security holes -- each with a "
+        "concrete failure scenario. It ALSO includes things that are not yet wrong but are "
+        "worth raising: dead or unused code, a name that misleads, a missing validation or "
+        "defensive check, duplicated state, an abstraction that will not hold, unclear "
+        "logic, and refactors that would prevent a future bug. Say which kind each item is. "
+        "Do not restate what the change does and do not praise it.\n\n" + _LOCATION_RULE),
+}
+PROMPT_HEAD = PROMPTS["defect"]
 
 
 def diff_paths(diff):
@@ -121,13 +157,14 @@ def fetch_diff(repo, base, head):
     return r.stdout
 
 
-def panel_findings(diff, judges, effort, timeout):
+def panel_findings(diff, judges, effort, timeout, style="defect"):
     """Run one panel over one diff and return claimlib observations."""
     work = pathlib.Path(tempfile.mkdtemp(prefix="aacr-up-"))
     sib = ROOT.parent / "llm-panel"
     binary = str(sib if sib.is_file() else "llm-panel")
     r = subprocess.run([binary, "--cwd", str(work), "--judges", judges, "--effort", effort,
-                        "--timeout", str(timeout), PROMPT_HEAD + "```diff\n" + diff + "\n```\n"],
+                        "--timeout", str(timeout),
+                        PROMPTS[style] + "```diff\n" + diff + "\n```\n"],
                        capture_output=True, text=True, timeout=timeout * 3)
     m = re.search(r"panel written to (\S+?)\]", r.stdout + r.stderr)
     if not m:
@@ -296,6 +333,9 @@ def main():
     r.add_argument("--judges", default="codex,big-pickle,nemotron")
     r.add_argument("--effort", default="high")
     r.add_argument("--timeout", type=int, default=300)
+    r.add_argument("--prompt-style", choices=sorted(PROMPTS), default="defect",
+                   help="defect = the panel's house style; broad = also invite the "
+                        "maintainability/naming/dead-code classes AACR scores as valid")
     r.add_argument("--limit", type=int)
     x = sub.add_parser("reextract", help="rebuild result files from recorded run dirs")
     x.add_argument("--out", required=True, help="results dir written by `run`; rebuilt in place")
@@ -371,7 +411,7 @@ def main():
                                    "upstream's ensure_commit_present fails on it too",
                             "references_lost": len(i.get("reference_comments") or [])})
             continue
-        obs, info = panel_findings(diff, a.judges, a.effort, a.timeout)
+        obs, info = panel_findings(diff, a.judges, a.effort, a.timeout, a.prompt_style)
         if obs is None:
             print(f"  SKIP {i['instance_id']}: no run dir ({info})")
             skipped.append({"instance_id": i["instance_id"], "why": "panel produced no run dir"})
@@ -414,6 +454,7 @@ def main():
     print("  path resolution: " + ", ".join(f"{k}={v}" for k, v in sorted(tally.items())))
     (out / "manifest.json").write_text(json.dumps({
         "instances_file": a.instances, "judges": a.judges, "effort": a.effort,
+        "prompt_style": a.prompt_style,
         "extractor": claimlib.EXTRACTOR_VERSION, "written": ok, "attempted": len(insts),
         "skipped": skipped, "path_resolution": tally,
         "reviews": nrev, "abstentions": nabs, "judge_slots": ntot,
