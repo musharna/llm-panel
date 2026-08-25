@@ -1351,6 +1351,100 @@ with section("39.3 a heading after only blank lines still counts as first"):
           pr.page_title(_trun("\n\n# Auditing the rebuttal parser\n\nbody\n")),
           "Auditing the rebuttal parser")
 
+# --- 40. --open must not assert facts about the host ------------------------------
+# `--open` shipped with the author's own Downloads folder pasted in twice: once as
+# /mnt/c/Users/<name>/Downloads and once as the C:\ string it rebuilt by hand. It had
+# ZERO controls, which is why it survived six audit rounds -- nothing that only ever
+# runs on the machine it was written on can be caught by a suite run on that machine.
+#
+# 40.1 is deliberately STRUCTURAL rather than a list of forbidden names. A control
+# spelling out "a2b32" would pass the moment the next hardcode used a different user,
+# which is the open-set failure this codebase has hit repeatedly. The property that
+# actually matters is that NO concrete Windows profile is named in the source at all.
+# The scan is INSIDE the section and reads only the source text -- never `pr.<constant>`.
+# First draft computed it at module level against pr.WIN_SYSTEM_DIRS, so on the pre-fix
+# binary (which has no such constant) the AttributeError escaped `section()`, killed the
+# suite before any section 40 output, and printed no FAILED line at all. Exit 1 with an
+# empty report is indistinguishable from a broken harness -- which is precisely what the
+# section() docstring at the top of this file exists to warn about. Reproduced, then fixed.
+_WIN_SYSTEM_DIRS = {"All Users", "Default", "Default User", "Public", "desktop.ini"}
+_HARDCODED_PROFILE = re.compile(
+    r"""(?:/mnt/[a-z]/Users/|[A-Za-z]:\\\\Users\\\\)(?!%|\{|\$|<)[A-Za-z0-9._-]+""")
+
+with section("40.1 no concrete Windows profile is hardcoded in the source"):
+    _offenders = [m.group(0) for m in _HARDCODED_PROFILE.finditer(SRC.read_text(encoding="utf-8"))
+                  if m.group(0).rsplit("/", 1)[-1].rsplit("\\", 1)[-1] not in _WIN_SYSTEM_DIRS]
+    check("40.1 offending literals", _offenders, [])
+
+# 40.2/40.3 drive open_report through a FAKE profile, so the assertion is about the
+# code's choice and not about this machine happening to have Firefox installed.
+
+
+class _Spawned:
+    def __init__(self):
+        self.calls = []
+
+    def __call__(self, argv, **kw):
+        self.calls.append(argv)
+        return None
+
+
+def _open_with(tmp, profile, exes, platform="linux", which=lambda n: "/usr/bin/" + n):
+    """Run open_report with the host facts stubbed, returning (message, spawned argv)."""
+    spy = _Spawned()
+    old = (pr.win_profile, pr.to_win_path, pr.subprocess.Popen, pr.shutil.which,
+           pr.sys.platform, pr.pathlib.Path.is_file)
+    try:
+        pr.win_profile = lambda: profile
+        pr.to_win_path = lambda p: "W:\\" + pathlib.PurePosixPath(p).name
+        pr.subprocess.Popen = spy
+        pr.shutil.which = which
+        pr.sys.platform = platform
+        # Authoritative for the browser candidates: this box really does have Firefox,
+        # so falling through to the real is_file() made 40.2 assert about THIS machine's
+        # installed software instead of about open_report's preference order.
+        pr.pathlib.Path.is_file = lambda self: (
+            str(self) in exes if str(self).startswith("/mnt/c/Program Files")
+            else old[5](self))
+        return pr.open_report(tmp), spy.calls
+    finally:
+        (pr.win_profile, pr.to_win_path, pr.subprocess.Popen, pr.shutil.which,
+         pr.sys.platform, pr.pathlib.Path.is_file) = old
+
+
+import tempfile  # noqa: E402  (only section 40 needs it)
+
+with section("40.2 on WSL the report is copied and handed to a browser as a Windows path"):
+    with tempfile.TemporaryDirectory() as _td:
+        _prof = pathlib.Path(_td) / "profile"
+        (_prof / "Downloads").mkdir(parents=True)
+        _rep = pathlib.Path(_td) / "panel-x.html"
+        _rep.write_text("<html></html>", encoding="utf-8")
+        _chrome = r"/mnt/c/Program Files/Google/Chrome/Application/chrome.exe"
+        _msg, _calls = _open_with(_rep, _prof, {_chrome})
+        check("40.2 copied into Downloads", (_prof / "Downloads" / "panel-x.html").is_file(), True)
+        check("40.2 browser got the wslpath-derived path", _calls, [[_chrome, "W:\\panel-x.html"]])
+        check("40.2 reports which browser", _msg.startswith("opened in Chrome:"), True)
+
+with section("40.3 off WSL it falls back to the platform opener, not a WSL path"):
+    with tempfile.TemporaryDirectory() as _td:
+        _rep = pathlib.Path(_td) / "panel-y.html"
+        _rep.write_text("<html></html>", encoding="utf-8")
+        # Spawned by NAME, not by which()'s resolved path: which() is an existence probe
+        # so the missing-opener case can be reported, and Popen resolves PATH identically.
+        _msg, _calls = _open_with(_rep, None, set(), platform="linux")
+        check("40.3 used xdg-open", _calls, [["xdg-open", str(_rep)]])
+        _msg, _calls = _open_with(_rep, None, set(), platform="darwin")
+        check("40.3 used open on macOS", _calls, [["open", str(_rep)]])
+
+with section("40.4 a missing opener is REPORTED, never silently swallowed"):
+    with tempfile.TemporaryDirectory() as _td:
+        _rep = pathlib.Path(_td) / "panel-z.html"
+        _rep.write_text("<html></html>", encoding="utf-8")
+        _msg, _calls = _open_with(_rep, None, set(), which=lambda n: None)
+        check("40.4 nothing was spawned", _calls, [])
+        check("40.4 the failure is stated", _msg.startswith("--open: no xdg-open on PATH"), True)
+
 print(f"\n{'FAILED' if FAILED else 'all controls green'}"
       f" ({len(FAILED)} failing)" if FAILED else "\nall controls green")
 for f in FAILED:
