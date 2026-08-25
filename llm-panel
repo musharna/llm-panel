@@ -2020,7 +2020,12 @@ def thread_key(name, repo):
     also separates names that sanitise identically ("a/b" and "a_b").
     """
     safe = re.sub(r"[^A-Za-z0-9._-]", "_", name)[:40]
-    return f"{safe}-{hashlib.sha256(f'{name}\0{_real(repo)}'.encode()).hexdigest()[:12]}"
+    # The NUL separator is built outside the f-string on purpose. Inline, a backslash in
+    # an f-string EXPRESSION is a SyntaxError before 3.12 (PEP 701 relaxed it), which made
+    # this one line the whole tool's version floor -- and a SyntaxError is not a graceful
+    # degradation, the program simply does not exist on 3.11. Same bytes hashed either way.
+    keyed = name + "\0" + _real(repo)
+    return f"{safe}-{hashlib.sha256(keyed.encode()).hexdigest()[:12]}"
 
 
 def run_check(judges, repo, timeout, agent):
