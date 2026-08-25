@@ -322,6 +322,61 @@ check(
     "c03/known-negative-delay", "a negative delay masks the callable's exception", _ok
 )
 
+# --- unplanted defects found 2026-08-25 by mining every stored review ------------------
+# These are REAL and they are NOT what their fixtures plant. Recording them is what stops a
+# correct finding from reading as noise and silently depressing the recall floor -- the
+# grader's uncredited list is where a true detection goes to be miscounted. Each is
+# EXECUTED here for the same reason the provers are: an unexecuted `known_unplanted` entry
+# is a prose claim, and prose claims decay while the file they describe gets edited.
+m = mod("c01-clean-parse")
+check(
+    "c01/known-inline-comment",
+    "an inline '#' stays in the value, though the docstring says comments are ignored",
+    m.parse_kv(["a = 1  # c"]) == {"a": "1  # c"},
+)
+m = mod("c02-clean-spend")
+_nan_total, _nan_unmeasured = m.total_spend(
+    [{"cost": 1.0}, {"cost": float("nan")}, {"cost": None}]
+)
+check(
+    "c02/known-nan",
+    "a NaN cost poisons the total AND is not counted as unmeasured",
+    _nan_total != _nan_total and _nan_unmeasured == 1,
+)  # x != x is the NaN test
+
+m = mod("h01-render-summary")
+_d = pathlib.Path(tempfile.mkdtemp())
+(_d / "run.json").write_text('{"judges": [{"name": "a", "secs": null, "cost": 1}]}')
+try:
+    m.summarise(str(_d))
+    _ok = False
+except TypeError:
+    _ok = True
+check(
+    "h01/known-secs-null",
+    "the planted null-defect's CLASS recurs at summarise(): explicit secs=null raises",
+    _ok,
+)
+_d = pathlib.Path(tempfile.mkdtemp())
+(_d / "run.json").write_text(
+    '{"judges": [{"name": "g", "cost": 1.0, "secs": 2.0},'
+    ' {"name": "g", "cost": 2.0, "secs": 3.0}]}'
+)
+check(
+    "h01/known-duplicate-names",
+    "load_meta keys by name, so a duplicate judge is dropped: cost 2.0, not 3.0",
+    m.total_cost(m.load_meta(str(_d))) == 2.0,
+)
+
+m = mod("h04-index-cache")
+_bad = pathlib.Path(tempfile.mkdtemp()) / "i.json"
+_bad.write_text("[]")
+check(
+    "h04/known-non-object-json",
+    "valid-but-non-object JSON is accepted by load(), breaking the NEXT write instead",
+    m.Index(_bad).load() == [],
+)
+
 print("\n  --- proven-absence fixtures: RE-RUN the proof, never trust the claim ---")
 # A fixture whose truth.json says "proven" and whose prover is not executed here is a
 # prose claim, and prose claims decay silently -- the file gets edited, the sentence
