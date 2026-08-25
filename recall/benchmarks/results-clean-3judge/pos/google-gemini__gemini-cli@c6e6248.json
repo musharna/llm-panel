@@ -1,0 +1,108 @@
+{
+  "review": {
+    "comments": [
+      {
+        "content": "- **P1 \u2014 `integration-tests/extensions-install.test.ts:27`**: The command inherits the caller\u2019s home directory, so an existing user extension named `test-extension` is uninstalled. Input: run the suite while that extension is installed \u2192 the real extension is deleted, replaced by the fixture, then the fixture is deleted; the original is permanently lost.",
+        "path": "integration-tests/extensions-install.test.ts",
+        "start_line": 27,
+        "end_line": 27,
+        "observation_id": "804eec3486caa00c",
+        "claimed_path": "integration-tests/extensions-install.test.ts",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "- **P2 \u2014 `integration-tests/extensions-install.test.ts:31`**: Cleanup is not protected by `finally`. Input: installation succeeds, then `extensions update` exits nonzero or an assertion fails \u2192 execution skips the uninstall and `rig.cleanup()`, leaving the fixture globally installed and the temporary directory behind, contaminating later runs.## DEFECT",
+        "path": "integration-tests/extensions-install.test.ts",
+        "start_line": 31,
+        "end_line": 31,
+        "observation_id": "f0088f686f57adcb",
+        "claimed_path": "integration-tests/extensions-install.test.ts",
+        "path_resolution": "exact",
+        "merged_from": [
+          "f7c595c258c8f219"
+        ]
+      },
+      {
+        "content": "**Missing `error` event handler on spawned child process**\n\n**File:** `integration-tests/test-helper.ts`, **Line:** new code at approximately line 322 (the `child.on('close', ...)` block \u2014 there is no corresponding `child.on('error', ...)`)\n\n**Failure scenario:** If the `spawn('node', ...)` call fails (e.g., `node` binary not found, or `this.bundlePath` points to a missing file), the `ChildProcess` emits an `'error'` event. `EventEmitter` throws on unhandled `'error'` events (Node.js default since forever). Because the error fires asynchronously (next tick after `spawn()` returns), no surrounding `try`/`catch` can intercept it. This causes an **uncaught exception that crashes the test runner process** rather than allowing the test to fail gracefully.\n\nConcrete reproduction:\n1. `rig.bundlePath` points to a file that doesn't exist (e.g., build artifact missing).\n2. `await rig.runCommand(['extensions', 'install', ...])` calls `spawn('node', ['/missing/path', ...])`.\n3. Next tick: `'error'` event fires on `child` \u2192 no listener \u2192 `EventEmitter` throws \u2192 uncaught exception kills the process.\n4. The `close` event (which would have caused `reject()` with a useful error message) never fires, or fires after the crash.\n\n**Fix:** Add `child.on('error', (err) => reject(err))` inside the `Promise` constructor, alongside the existing `child.on('close', ...)` handler.",
+        "path": "integration-tests/test-helper.ts",
+        "start_line": 322,
+        "end_line": 322,
+        "observation_id": "f6a1f3bdabed5bfc",
+        "claimed_path": "integration-tests/test-helper.ts",
+        "path_resolution": "exact",
+        "merged_from": [
+          "94637989073afe11",
+          "6b5f1934941e736c",
+          "3e46bf5e84b24f02",
+          "58db5490ce6c793d"
+        ]
+      },
+      {
+        "content": "**DEFECT 1: Missing 'error' event handler on spawned child process**  \n**File:** `integration-tests/test-helper.ts` **Line:** ~320 (inside `runCommand`, after `spawn` call)  \n**Failure scenario:** If `node` binary is not found, or `this.bundlePath` doesn't exist, or spawn fails for any reason (EMFILE, ENOENT, etc.), the `'error'` event fires on the child process. No handler is attached \u2192 the returned Promise never resolves or rejects \u2192 test hangs indefinitely.\n\n---",
+        "path": "integration-tests/test-helper.ts",
+        "start_line": 320,
+        "end_line": 320,
+        "observation_id": "f8a4be41c59eba85",
+        "claimed_path": "integration-tests/test-helper.ts",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "**DEFECT 2: `code` can be `null` on signal termination**  \n**File:** `integration-tests/test-helper.ts` **Line:** 347  \n**Code:** `if (code === 0) { ... } else { reject(new Error(...)) }`  \n**Failure scenario:** If the child process is killed by a signal (SIGTERM, SIGKILL, OOM killer), `code` is `null`. The `else` branch runs but the error message says `exited with code null`, which is misleading and loses the signal information.\n\n---",
+        "path": "integration-tests/test-helper.ts",
+        "start_line": 347,
+        "end_line": 347,
+        "observation_id": "3b4ee9a123a359d3",
+        "claimed_path": "integration-tests/test-helper.ts",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "**DEFECT 3: No timeout / hang protection**  \n**File:** `integration-tests/test-helper.ts` **Line:** 308\u2013360 (entire `runCommand` method)  \n**Failure scenario:** A buggy extension command that blocks forever on I/O or enters an infinite loop will hang the test runner permanently. No `signal.alarm` equivalent or `setTimeout` guard exists.\n\n---",
+        "path": "integration-tests/test-helper.ts",
+        "start_line": 308,
+        "end_line": 308,
+        "observation_id": "d72f2688fbd02c5a",
+        "claimed_path": "integration-tests/test-helper.ts",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "**DEFECT 4: Module-level `TestRig` instance shares state across tests**  \n**File:** `integration-tests/extensions-install.test.ts` **Line:** 13  \n**Code:** `const rig = new TestRig();` (top-level, outside any `test`/`beforeEach`)  \n**Failure scenario:** If a second test is added to this file, it reuses the same `rig` instance. `rig.setup()` / `rig.cleanup()` state leaks between tests \u2192 flaky, order-dependent failures.\n\n---",
+        "path": "integration-tests/extensions-install.test.ts",
+        "start_line": 13,
+        "end_line": 13,
+        "observation_id": "5d6a77af6f98fc81",
+        "claimed_path": "integration-tests/extensions-install.test.ts",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "**DEFECT 5: Double cleanup of test directory**  \n**File:** `integration-tests/extensions-install.test.ts` **Lines:** 49\u201350  \n**Code:**  \n```ts\nawait rig.cleanup();\nrmSync(rig.testDir!, { recursive: true, force: true });\n```  \n**Failure scenario:** If `rig.cleanup()` already removes `rig.testDir`, the `rmSync` throws `ENOENT` (harmless but noisy). If `rig.cleanup()` *doesn't* remove it, the `rmSync` works \u2014 but the intent is unclear and one call is redundant.\n\n---",
+        "path": "integration-tests/extensions-install.test.ts",
+        "start_line": 49,
+        "end_line": 49,
+        "observation_id": "931a73b1f1c1c54a",
+        "claimed_path": "integration-tests/extensions-install.test.ts",
+        "path_resolution": "exact",
+        "merged_from": [
+          "cba14fc811c37b25"
+        ]
+      },
+      {
+        "content": "**DEFECT 6: `_lastRunStdout` assigned but not declared in class**  \n**File:** `integration-tests/test-helper.ts` **Line:** 339  \n**Code:** `this._lastRunStdout = stdout;`  \n**Failure scenario:** TypeScript will error `Property '_lastRunStdout' does not exist on type 'TestRig'` unless the property is declared elsewhere in the class (not visible in this diff hunk).",
+        "path": "integration-tests/test-helper.ts",
+        "start_line": 339,
+        "end_line": 339,
+        "observation_id": "6540f230c2d15303",
+        "claimed_path": "integration-tests/test-helper.ts",
+        "path_resolution": "exact",
+        "merged_from": []
+      }
+    ]
+  },
+  "rundir": "/home/mjarnold/.cache/llm-panel/runs/aacr-up-y7b1modi-0563b032bc7a/20260825-155048-1452372",
+  "extractor": "1",
+  "unlocated": []
+}

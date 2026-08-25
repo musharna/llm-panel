@@ -1,0 +1,63 @@
+{
+  "review": {
+    "comments": [
+      {
+        "content": "- **P0 \u2014 `src/Storages/ObjectStorageQueue/ObjectStorageQueueIFileMetadata.cpp:283`**: `file_status->retries` is a `std::atomic<size_t>`, which `fmt` cannot format directly. Compiling this translation unit instantiates the new `LOG_TEST` call and fails, preventing the server binary from building.",
+        "path": "src/Storages/ObjectStorageQueue/ObjectStorageQueueIFileMetadata.cpp",
+        "start_line": 283,
+        "end_line": 283,
+        "observation_id": "d95aa97afcfc4fb0",
+        "claimed_path": "src/Storages/ObjectStorageQueue/ObjectStorageQueueIFileMetadata.cpp",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "- **P1 \u2014 `src/Storages/ObjectStorageQueue/ObjectStorageQueueIFileMetadata.cpp:275`**: A stale local `Processed` state now suppresses the file without consulting Keeper. Example: server X processes key K; server Y expires K\u2019s processed znode via `tracked_file_ttl_sec`; K is uploaded again and routed to X. X still has `Processed` cached, returns `nullopt`, and silently never ingests the new object.",
+        "path": "src/Storages/ObjectStorageQueue/ObjectStorageQueueIFileMetadata.cpp",
+        "start_line": 275,
+        "end_line": 275,
+        "observation_id": "21339cf13282ca50",
+        "claimed_path": "src/Storages/ObjectStorageQueue/ObjectStorageQueueIFileMetadata.cpp",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "- **P1 \u2014 `src/Storages/ObjectStorageQueue/ObjectStorageQueueSource.cpp:251`**: The code compacts `new_batch` but leaves the parallel `file_metadatas` vector unchanged. For batch `[A, B, C]`, if A returns `nullopt` while B and C succeed, the resulting objects are `[B, C]` but their metadata remains `[A, B, C]`; `next()` pairs B with A\u2019s metadata and raises the path-mismatch `LOGICAL_ERROR`, stopping ingestion.",
+        "path": "src/Storages/ObjectStorageQueue/ObjectStorageQueueSource.cpp",
+        "start_line": 251,
+        "end_line": 251,
+        "observation_id": "8d2f9d998000054e",
+        "claimed_path": "src/Storages/ObjectStorageQueue/ObjectStorageQueueSource.cpp",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "**Defect 1: Misleading log message for non-Processing states**  \n**File:** `src/Storages/ObjectStorageQueue/ObjectStorageQueueIFileMetadata.cpp`  \n**Line:** ~277-279 (in the `+33` line hunk starting at `@@ -259,15 +259,33 @@`)  \n\n**Failure scenario:**  \nA file has `state == FileStatus::State::Processed` (or `Failed` with retries exhausted). The code logs:  \n`\"File <path> is being processed on this server by another table on this server\"`  \nThis is factually incorrect \u2014 the file is *not* being processed; it is already processed or permanently failed. Operators debugging stuck/duplicate processing will be misdirected.\n\n---",
+        "path": "src/Storages/ObjectStorageQueue/ObjectStorageQueueIFileMetadata.cpp",
+        "start_line": 277,
+        "end_line": 277,
+        "observation_id": "2ce332b1b1fc676c",
+        "claimed_path": "src/Storages/ObjectStorageQueue/ObjectStorageQueueIFileMetadata.cpp",
+        "path_resolution": "exact",
+        "merged_from": [
+          "5e2892b5225126b5"
+        ]
+      },
+      {
+        "content": "**Defect 2: Copy instead of move due to `const` range variable**  \n**File:** `src/Storages/ObjectStorageQueue/ObjectStorageQueueSource.cpp`  \n**Line:** ~247 (in the `+20` line hunk starting at `@@ -220,6 +236,20 @@`)  \n\n**Failure scenario:**  \n`new_batch` contains `std::shared_ptr` (or similar movable-but-cheap-to-copy types). The loop:  \n```cpp\nfor (const auto & object : new_batch) {\n    if (object)\n        new_batch_copy[i++] = std::move(object);  // object is const&, std::move yields const&&\n}\n```  \n`std::move(object)` produces `const T&&`, which binds to `shared_ptr`\u2019s *copy* assignment operator, not move assignment. Each iteration increments/decrements the atomic refcount unnecessarily. Under high throughput (many files, frequent batches), this adds measurable contention on the control block.",
+        "path": "src/Storages/ObjectStorageQueue/ObjectStorageQueueSource.cpp",
+        "start_line": 247,
+        "end_line": 247,
+        "observation_id": "0f58dd97bb2837ce",
+        "claimed_path": "src/Storages/ObjectStorageQueue/ObjectStorageQueueSource.cpp",
+        "path_resolution": "exact",
+        "merged_from": [
+          "1771e18f5c13f9f4"
+        ]
+      }
+    ]
+  },
+  "rundir": "/home/mjarnold/.cache/llm-panel/runs/aacr-up-e56byn5n-ca39a5778fc2/20260825-163541-1623245",
+  "extractor": "1",
+  "unlocated": []
+}

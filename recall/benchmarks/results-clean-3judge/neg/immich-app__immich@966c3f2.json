@@ -1,0 +1,48 @@
+{
+  "review": {
+    "comments": [
+      {
+        "content": "- **server/src/repositories/album.repository.ts:167** \u2014 Casting `max(updatedAt)` to `date` discards the time. If an album asset is updated at `2026-08-25T15:30:00Z`, the API returns `2026-08-25`/midnight instead of the actual timestamp; multiple updates on the same day therefore produce an unchanged `lastModifiedAssetTimestamp`, so mobile clients can miss album changes.",
+        "path": "server/src/repositories/album.repository.ts",
+        "start_line": 167,
+        "end_line": 167,
+        "observation_id": "bebfa8ea611faf72",
+        "claimed_path": "server/src/repositories/album.repository.ts",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "- **server/src/repositories/album.repository.ts:146** \u2014 Casting asset `localDateTime` values to `date` truncates the album\u2019s start and end times. For assets captured at `2026-08-25T10:00:00` and `2026-08-25T18:00:00`, the API reports both boundaries as `2026-08-25`/midnight rather than the actual minimum and maximum timestamps.",
+        "path": "server/src/repositories/album.repository.ts",
+        "start_line": 146,
+        "end_line": 146,
+        "observation_id": "cbc5ebe51dcb8329",
+        "claimed_path": "server/src/repositories/album.repository.ts",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "**DEFECT 1: Loss of time precision for `startDate`, `endDate`, and `lastModifiedAssetTimestamp` due to `::date` cast in SQL query**\n\n**File:** `server/src/repositories/album.repository.ts`  \n**Lines:** ~141\u2013163 (within the hunk starting at line 133)\n\nThe new query casts timestamp columns to `::date`, discarding hours/minutes/seconds:\n```typescript\nsql`(\"assets\".\"localDateTime\" AT TIME ZONE 'UTC'::text)::date`  // startDate, endDate\nsql`(\"assets\".\"updatedAt\" AT TIME ZONE 'UTC'::text)::date`      // lastModifiedAssetTimestamp\n```\n\n**Failure scenario:**  \n- Album has an asset with `localDateTime = '2024-06-15 14:30:00'` (2:30 PM)  \n- Expected `startDate`: `Date` representing `2024-06-15T14:30:00Z`  \n- Actual `startDate`: `Date` representing `2024-06-15T00:00:00Z` (midnight UTC)  \n\nThe old query returned full timestamps (`eb.fn.min('assets.localDateTime')`). The `AlbumAssetCount` interface declares `Date | null` (full timestamp), but the query now returns date-only values. This affects both `getMany` and `get` in `album.service.ts` which consume this metadata.\n\n---",
+        "path": "server/src/repositories/album.repository.ts",
+        "start_line": 141,
+        "end_line": 141,
+        "observation_id": "a06f97b9bb61944c",
+        "claimed_path": "server/src/repositories/album.repository.ts",
+        "path_resolution": "exact",
+        "merged_from": [
+          "cf4be488a52cdbb5"
+        ]
+      }
+    ]
+  },
+  "rundir": "/home/mjarnold/.cache/llm-panel/runs/aacr-up-gp_0io9w-14c27c95e051/20260825-165800-1664649",
+  "extractor": "1",
+  "unlocated": [
+    {
+      "content": "**DEFECT 2: Potential off-by-one-day error from timezone conversion before date cast**\n\n**File:** `server/src/repositories/album.repository.ts`  \n**Lines:** Same as above\n\nThe expression `(\"assets\".\"localDateTime\" AT TIME ZONE 'UTC'::text)::date` converts to UTC *then* extracts the date. If `localDateTime` is stored in a non-UTC timezone (e.g., `2024-06-15 23:00:00` in UTC-5), the UTC conversion y",
+      "observation_id": "1f85b39c7422d251",
+      "claimed_path": "server/src/repositories/album.repository.ts",
+      "path_resolution": "exact"
+    }
+  ]
+}

@@ -1,0 +1,41 @@
+{
+  "review": {
+    "comments": [
+      {
+        "content": "**DEFECT 1: Signature mismatch \u2014 header declaration does not match implementation**\n\n**File:** `src/Mod/TechDraw/App/DrawViewPart.h` (lines at `+239`) vs `src/Mod/TechDraw/App/DrawViewPart.cpp` (lines at `+1498`)\n\nThe header declares all three functions as **static** with **two parameters** (`App::DocumentObject* owner, std::string element`), but the implementations are **non-static** member functions with **one parameter** (`std::string element`).\n\nHeader (DrawViewPart.h):\n```cpp\nstatic bool isCosmeticVertex(App::DocumentObject* owner, std::string element);\nstatic bool isCosmeticEdge(App::DocumentObject* owner, std::string element);\nstatic bool isCenterLine(App::DocumentObject* owner, std::string element);\n```\n\nImplementation (DrawViewPart.cpp):\n```cpp\nbool DrawViewPart::isCosmeticVertex(std::string element)  // non-static, one param\nbool DrawViewPart::isCosmeticEdge(std::string element)     // non-static, one param\nbool DrawViewPart::isCenterLine(std::string element)       // non-static, one param\n```\n\n**Failure scenario:** Any translation unit that `#include`s `DrawViewPart.h` will see the static two-parameter declarations. The linker then cannot find definitions matching that signature (only the non-static one-parameter definitions exist). This **will not compile/link**. Specifically, any call like `DrawViewPart::isCosmeticVertex(someView, elementName)` \u2014 matching the header's static signature \u2014 will fail with an undefined reference. And any existing callers from `DrawUtil::isCosmeticVertex(owner, element)` that were updated to call `DrawViewPart::isCosmeticVertex(owner, element)` will fail at compile time due to wrong arity.\n\nThe implementations clearly intend to be non-static member functions using `this` (they call `getProjVertexByIndex()` and `getEdge()` implicitly), but the header was not updated to match \u2014 the static keyword and `App::DocumentObject* owner` parameter were left in the declarations.**DEFECT 1: Declaration/definition signature mismatch in DrawViewPart**",
+        "path": "src/Mod/TechDraw/App/DrawViewPart.h",
+        "start_line": 239,
+        "end_line": 239,
+        "observation_id": "35c1c20b4557b0cc",
+        "claimed_path": "src/Mod/TechDraw/App/DrawViewPart.h",
+        "path_resolution": "exact",
+        "merged_from": [
+          "a3a7b884a72c74a6"
+        ]
+      },
+      {
+        "content": "**File: `src/Mod/TechDraw/App/DrawViewPart.h` (lines 242-244)**",
+        "path": "src/Mod/TechDraw/App/DrawViewPart.h",
+        "start_line": 242,
+        "end_line": 242,
+        "observation_id": "5eb255e6eb554f7d",
+        "claimed_path": "src/Mod/TechDraw/App/DrawViewPart.h",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "**File: `src/Mod/TechDraw/App/DrawViewPart.cpp` (lines 1501, 1514, 1527)**\n\nThe header declares three methods as `static` with an `App::DocumentObject* owner` parameter:\n```cpp\nstatic bool isCosmeticVertex(App::DocumentObject* owner, std::string element);\nstatic bool isCosmeticEdge(App::DocumentObject* owner, std::string element);\nstatic bool isCenterLine(App::DocumentObject* owner, std::string element);\n```\n\nBut the `.cpp` defines them as non-static member functions **without** the `owner` parameter:\n```cpp\nbool DrawViewPart::isCosmeticVertex(std::string element)  // missing static, missing owner\nbool DrawViewPart::isCosmeticEdge(std::string element)\nbool DrawViewPart::isCenterLine(std::string element)\n```\n\n**Failure scenario:** Any compilation unit including `DrawViewPart.h` and calling these methods (e.g., `DrawViewPart::isCosmeticVertex(obj, \"Vertex1\")`) will fail to link \u2014 the declared symbols don't match the defined symbols. The code will not compile/link.",
+        "path": "src/Mod/TechDraw/App/DrawViewPart.cpp",
+        "start_line": 1501,
+        "end_line": 1501,
+        "observation_id": "f37451c2b29a320f",
+        "claimed_path": "src/Mod/TechDraw/App/DrawViewPart.cpp",
+        "path_resolution": "exact",
+        "merged_from": []
+      }
+    ]
+  },
+  "rundir": "/home/mjarnold/.cache/llm-panel/runs/aacr-up-wn2vjo15-bad008aaa30a/20260825-155451-1459148",
+  "extractor": "1",
+  "unlocated": []
+}

@@ -1,0 +1,41 @@
+{
+  "review": {
+    "comments": [
+      {
+        "content": "1. `server/src/main/java/org/elasticsearch/search/SearchService.java:552` \u2014 Scroll continuations use the original shard request\u2019s transport version instead of the current channel\u2019s version. During a rolling upgrade, an initial scroll created through a new coordinator and continued through an old coordinator with `error_trace=true` sees the header as absent, clears the exception stack trace, and returns an error without the requested trace.",
+        "path": "server/src/main/java/org/elasticsearch/search/SearchService.java",
+        "start_line": 552,
+        "end_line": 552,
+        "observation_id": "592ecf7eb2aae3a3",
+        "claimed_path": "server/src/main/java/org/elasticsearch/search/SearchService.java",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "2. `x-pack/plugin/async-search/src/internalClusterTest/java/org/elasticsearch/xpack/search/AsyncSearchErrorTraceIT.java:180` \u2014 The captured async search uses `wait_for_completion_timeout=0ms` and assertions run immediately after submission without polling that execution. On a busy node, the request returns before shard execution logs anything, so the \u201cseen\u201d tests fail intermittently; the \u201cunseen\u201d test can pass before an incorrect log is emitted.",
+        "path": "x-pack/plugin/async-search/src/internalClusterTest/java/org/elasticsearch/xpack/search/AsyncSearchErrorTraceIT.java",
+        "start_line": 180,
+        "end_line": 180,
+        "observation_id": "6a39e49af5468b27",
+        "claimed_path": "x-pack/plugin/async-search/src/internalClusterTest/java/org/elasticsearch/xpack/search/AsyncSearchErrorTraceIT.java",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "**DEFECT FOUND**\n\n**File:** `server/src/test/java/org/elasticsearch/search/SearchServiceTests.java`  \n**Line:** The line containing `format(\"\\[node\\]\\[%s\\]\\[%d\\] Clearing stack trace before transport:\", index, shardId)` (in the `testMaybeWrapListenerForStackTraceLogs` method, ~line 180 in the new file)\n\n**Failure Scenario:**  \nThe test `testMaybeWrapListenerForStackTraceLogs` registers a `MockLog` expectation with a regex pattern `\\[node\\]\\[index\\]\\[0\\] Clearing stack trace before transport:` (literal `\"node\"`). However, the production code in `SearchService.maybeWrapListenerForStackTrace` (line 558-562) logs:\n```java\nlogger.debug(() -> format(\"[%s]%s Clearing stack trace before transport:\", \n    clusterService.localNode().getId(), request.shardId()), e);\n```\n`clusterService.localNode().getId()` returns the actual node ID (e.g., `\"node1\"`, `\"node2\"`), not the literal string `\"node\"`. The actual log message is therefore `[node1][index][0] Clearing stack trace before transport:`.\n\nThe regex `\\[node\\]\\[index\\]\\[0\\]` requires the literal character sequence `node` inside the first brackets. It will not match `node1`, `node2`, etc. The test's `mockLog.assertAllExpectationsMatched()` will fail (or time out waiting for the expectation) because the pattern never matches the actual log output.\n\n**Contrast:** The helper methods in `ErrorTraceHelper.java` (`addSeenLoggingExpectations` / `addUnseenLoggingExpectations`) correctly use the actual node IDs (via `getNodeId` or a disjunction of all node IDs), so the integration tests in `SearchErrorTraceIT.java` and `AsyncSearchErrorTraceIT.java` are not affected. Only the single-node unit test in `SearchServiceTests.java` has this defect.",
+        "path": "server/src/test/java/org/elasticsearch/search/SearchServiceTests.java",
+        "start_line": 180,
+        "end_line": 180,
+        "observation_id": "b0d6cddf70529867",
+        "claimed_path": "server/src/test/java/org/elasticsearch/search/SearchServiceTests.java",
+        "path_resolution": "exact",
+        "merged_from": [
+          "3d144a342356672c"
+        ]
+      }
+    ]
+  },
+  "rundir": "/home/mjarnold/.cache/llm-panel/runs/aacr-up-0c1nothn-69fb8b589ee8/20260825-160737-1497437",
+  "extractor": "1",
+  "unlocated": []
+}

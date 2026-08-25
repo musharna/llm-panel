@@ -226,16 +226,41 @@ def to_upstream_result(obs, rundir, paths, tally):
     which reads result["review"]["comments"][] as {content, path, start_line, end_line}
     and hardcodes side="right" (all three of its reviewers review new code, as does this).
 
-    An observation with NO PATH is still emitted, with an empty path. Upstream will fail to
-    match it, which is correct and visible -- dropping it here would quietly improve the
-    apparent precision by hiding the panel's own unlocated output.
+    AN UNLOCATED OBSERVATION IS WITHHELD FROM UPSTREAM, AND COUNTED.
+
+    This used to emit it with an empty path, on the stated reasoning that "upstream will
+    fail to match it, which is correct and visible". That reasoning was WRONG about
+    upstream, and wrong in the direction that flatters us. Its matcher reads:
+
+        if ref_path and gen_path and ref_path != gen_path: continue
+        if all(x is not None for x in [...gen_from_line, gen_to_line]): <line check>
+
+    An empty `gen_path` is falsy, so the path filter is SKIPPED; a None line makes the
+    `all(...)` false, so the line filter is SKIPPED too. A comment with no location
+    therefore matches EVERY reference and goes straight to semantic judging -- a wildcard,
+    not a non-match. Verified directly against upstream: an unlocated comment line-matches
+    a reference it has nothing to do with (True), while a genuinely WRONG location
+    correctly does not (False).
+
+    Matching is also one-to-one (`matched_gen_ids_by_line`), so every surplus wildcard lets
+    one more reference claim a matcher. On the first pilot scoring, 43 of 107 comments were
+    unlocated and the run reported 50 line matches; with the wildcards gone it reports 20.
+
+    So they are kept OUT of `review.comments`, where they would corrupt upstream's metric
+    in our favour, and reported in `unlocated` instead -- which preserves the visibility the
+    original reasoning wanted without paying for it in a fabricated score.
     """
     obs = merge_fragments(obs, paths)
-    comments = []
+    comments, unlocated = [], []
     for o in obs:
         loc = o.get("location") or {}
         resolved, why = resolve_path(loc.get("path"), paths)
         tally[why] = tally.get(why, 0) + 1
+        if not (resolved and loc.get("line")):
+            unlocated.append({"content": o["verbatim"].strip()[:400],
+                              "observation_id": o["observation_id"],
+                              "claimed_path": loc.get("path"), "path_resolution": why})
+            continue
         comments.append({
             "content": o["verbatim"].strip(),
             "path": resolved or "",
@@ -247,7 +272,10 @@ def to_upstream_result(obs, rundir, paths, tally):
             "merged_from": o.get("merged_from", []),    # fragments reassembled into this one
         })
     return {"review": {"comments": comments}, "rundir": rundir,
-            "extractor": claimlib.EXTRACTOR_VERSION}
+            "extractor": claimlib.EXTRACTOR_VERSION,
+            # Withheld from upstream because an empty path is a WILDCARD there, not a
+            # non-match. Recorded so the panel's unlocated output stays visible.
+            "unlocated": unlocated}
 
 
 def main():

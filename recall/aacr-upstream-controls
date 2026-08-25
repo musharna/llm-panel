@@ -165,17 +165,44 @@ with section("4.1 to_upstream_result emits what build_target_comments_from_ocr r
     check("4.1 provenance kept", c["observation_id"], "abc123")
     check("4.1 tallied", tally, {"exact": 1})
 
-with section("4.2 an UNLOCATED finding is still emitted, with an empty path"):
-    # Dropping it here would quietly raise apparent precision by hiding the panel's own
-    # unlocated output. Upstream will fail to match it, which is correct and visible.
+with section("4.2 an UNLOCATED finding is WITHHELD from upstream and counted"):
+    # This control used to assert the opposite, on the reasoning that "upstream will fail
+    # to match it, which is correct and visible". That was wrong about upstream, in the
+    # direction that flatters us. Its path filter is skipped when gen_path is falsy and its
+    # line filter is skipped when the line is None, so a location-less comment matches
+    # EVERY reference and goes on to semantic judging. It is a wildcard, not a non-match,
+    # and matching is one-to-one, so each surplus wildcard lets another reference claim a
+    # matcher. Verified against upstream directly: unlocated -> line_match True on an
+    # unrelated reference; a WRONG location -> False.
     tally = {}
     r = ns["to_upstream_result"](
         [{"verbatim": "no location", "observation_id": "z", "location": {}}],
         "/run/dir", ns["diff_paths"](DIFF), tally)
-    check("4.2 still present", len(r["review"]["comments"]), 1)
-    check("4.2 empty path, not dropped", r["review"]["comments"][0]["path"], "")
-    check("4.2 reason recorded", tally, {"absent": 1})
+    check("4.2 not handed to upstream", len(r["review"]["comments"]), 0)
+    check("4.2 but still reported", len(r["unlocated"]), 1)
+    check("4.2 with its reason", r["unlocated"][0]["path_resolution"], "absent")
+    check("4.2 tallied either way", tally, {"absent": 1})
 
+with section("4.3 a finding whose path is real but line unknown is also withheld"):
+    # Same wildcard hazard: upstream skips the line filter when the line is None, so a
+    # path-only comment matches every reference in that file regardless of line.
+    tally = {}
+    r = ns["to_upstream_result"](
+        [{"verbatim": "path but no line", "observation_id": "y",
+          "location": {"path": "src/app/main.py", "line": None}}],
+        "/run/dir", ns["diff_paths"](DIFF), tally)
+    check("4.3 withheld", len(r["review"]["comments"]), 0)
+    check("4.3 reported", len(r["unlocated"]), 1)
+
+with section("4.4 POSITIVE CONTROL: a fully located finding IS handed over"):
+    # Without this, 4.2/4.3 would pass on a to_upstream_result that emitted nothing at all.
+    tally = {}
+    r = ns["to_upstream_result"](
+        [{"verbatim": "real", "observation_id": "a",
+          "location": {"path": "src/app/main.py", "line": 10}}],
+        "/run/dir", ns["diff_paths"](DIFF), tally)
+    check("4.4 handed over", len(r["review"]["comments"]), 1)
+    check("4.4 nothing withheld", len(r["unlocated"]), 0)
 
 # --- 5. one finding torn apart is reassembled --------------------------------------------
 # Shipped: `**File: ...**` and `**Failure Scenario:**` both end in `**` so both match the

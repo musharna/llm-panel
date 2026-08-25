@@ -1,0 +1,89 @@
+{
+  "review": {
+    "comments": [
+      {
+        "content": "- **High \u2014 `internal/parser/reparser.go:120`**: `importTag.ImportClause` is optional but is dereferenced unconditionally. Input `/** @import \"./side-effects.js\" */` produces a tag without an import clause, causing a nil-pointer panic instead of normal compilation.",
+        "path": "internal/parser/reparser.go",
+        "start_line": 120,
+        "end_line": 120,
+        "observation_id": "a5b15e9573bfed1c",
+        "claimed_path": "internal/parser/reparser.go",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "- **High \u2014 `internal/parser/reparser.go:123`**: The original module specifier and attributes retain the `JSDocImportTag` as their parent when inserted into the synthetic declaration. Given a conditionally exported package and `/** @import {Require} from \"pkg\" with {\"resolution-mode\":\"require\"} */`, resolution does not associate the attribute with the synthetic import and selects the default/wrong package condition, producing missing-export or value/type errors.",
+        "path": "internal/parser/reparser.go",
+        "start_line": 123,
+        "end_line": 123,
+        "observation_id": "2174e5e2a7b33018",
+        "claimed_path": "internal/parser/reparser.go",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "- **Medium \u2014 `internal/parser/reparser.go:120`**: `Clone` is shallow, so a default-import identifier remains parented to the original JSDoc import clause while the binder attaches the alias to the cloned clause. For `/** @import Foo from \"./types\" */` followed by `/** @param {Foo} x */`, type display reports `x: default` instead of `x: Foo`, and symbol navigation on the imported `Foo` cannot reach the bound alias.",
+        "path": "internal/parser/reparser.go",
+        "start_line": 120,
+        "end_line": 120,
+        "observation_id": "51db1f76b4eee80b",
+        "claimed_path": "internal/parser/reparser.go",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "- **Medium \u2014 `internal/parser/reparser.go:122`**: Marking the synthetic clause as an ordinary `import type` applies grammar restrictions that do not apply to JSDoc imports. Input `/** @import Foo, { I } from \"./a\" */` is valid JSDoc import syntax but incorrectly produces TS1363 (\u201cA type-only import can specify a default import or named bindings, but not both\u201d).",
+        "path": "internal/parser/reparser.go",
+        "start_line": 122,
+        "end_line": 122,
+        "observation_id": "16a8c6eb5d35ab79",
+        "claimed_path": "internal/parser/reparser.go",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "**DEFECT 1: `internal/ast/ast.go` line 4056 (`UpdateImportDeclaration`)**\nMissing `UpdateJSImportDeclaration` factory method. `UpdateImportDeclaration` likely creates a new node via `NewImportDeclaration`, which hardcodes `KindImportDeclaration`. If a transformer updates a `JSImportDeclaration` node (e.g., adding/removing import specifiers), the kind changes to `ImportDeclaration`, causing the type-only JSDoc import to be emitted as a regular import at runtime.\n- **Failure scenario**: Transform `import { Foo } from \"mod\"` (from `@import` JSDoc) \u2192 `UpdateImportDeclaration` adds a specifier \u2192 node kind becomes `ImportDeclaration` \u2192 CommonJS/ESM transformer emits `require(\"mod\")` instead of eliding \u2192 runtime error importing types.",
+        "path": "internal/ast/ast.go",
+        "start_line": 4056,
+        "end_line": 4056,
+        "observation_id": "39d05e8f860a768a",
+        "claimed_path": "internal/ast/ast.go",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "**DEFECT 2: `internal/ast/ast.go` line 751 (`ModuleSpecifier` method)**\nRemoved `KindJSDocImportTag` case. Any `JSDocImportTag` node reaching this method (e.g., during early parsing before reparser runs, or in a code path skipping reparser) panics: `panic(\"Unhandled case in Node.ModuleSpecifier: KindJSDocImportTag\")`.\n- **Failure scenario**: Parse a `.js` file with `/** @import {Foo} from \"./mod\" */`; before reparser runs, call `node.ModuleSpecifier()` on the JSDoc tag \u2192 panic.",
+        "path": "internal/ast/ast.go",
+        "start_line": 751,
+        "end_line": 751,
+        "observation_id": "1e99d87d1e8c7869",
+        "claimed_path": "internal/ast/ast.go",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "**DEFECT 3: `internal/ast/utilities.go` line 2362 (`IsDefaultImport` function)**\nComment declares handling `ImportEqualsDeclaration | ExportDeclaration` but implementation only handles `KindImportDeclaration, KindJSImportDeclaration` and returns `false` for others. Callers passing `ImportEqualsDeclaration` (e.g., `import Foo = require(\"foo\")`) or `ExportDeclaration` get incorrect `false`.\n- **Failure scenario**: Checker calls `IsDefaultImport` on `ImportEqualsDeclaration` expecting `true` for default-like namespace import \u2192 gets `false` \u2192 incorrect diagnostic or symbol resolution.",
+        "path": "internal/ast/utilities.go",
+        "start_line": 2362,
+        "end_line": 2362,
+        "observation_id": "1d0e06e4be1de57b",
+        "claimed_path": "internal/ast/utilities.go",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "**DEFECT 4: `internal/transformers/commonjsmodule.go` line 65-66 and `internal/transformers/esmodule.go` line 41-42**\n`KindJSImportDeclaration` returns `nil` without visiting children. If `ImportClause` contains expressions needing transformation (e.g., computed property names in named bindings), they are skipped.\n- **Failure scenario**: `@import { [Symbol.for(\"x\")] as X } from \"mod\"` \u2192 `JSImportDeclaration` created with computed binding \u2192 CommonJS transformer drops node without visiting computed expression \u2192 symbol registration missed \u2192 incorrect output.",
+        "path": "internal/transformers/commonjsmodule.go",
+        "start_line": 65,
+        "end_line": 65,
+        "observation_id": "1da2ea470571d778",
+        "claimed_path": "internal/transformers/commonjsmodule.go",
+        "path_resolution": "exact",
+        "merged_from": []
+      }
+    ]
+  },
+  "rundir": "/home/mjarnold/.cache/llm-panel/runs/aacr-up-hqp77kda-109b5300ba80/20260825-152911-1373392",
+  "extractor": "1",
+  "unlocated": []
+}
