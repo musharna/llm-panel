@@ -1,0 +1,829 @@
+diff --git a/CONTRIBUTING.md b/CONTRIBUTING.md
+index 5f7999e243777..3e7281cf7053a 100644
+--- a/CONTRIBUTING.md
++++ b/CONTRIBUTING.md
+@@ -467,7 +467,7 @@ expensive messages that will usually be discarded:
+ 
+ Logging is an important behaviour of the system and sometimes deserves its own
+ unit tests, especially if there is complex logic for computing what is logged
+-and when to log it. You can use a `org.elasticsearch.test.MockLogAppender` to
++and when to log it. You can use a `org.elasticsearch.test.MockLog` to
+ make assertions about the logs that are being emitted.
+ 
+ Logging is a powerful diagnostic technique, but it is not the only possibility.
+diff --git a/docs/changelog/125732.yaml b/docs/changelog/125732.yaml
+new file mode 100644
+index 0000000000000..e375921ade280
+--- /dev/null
++++ b/docs/changelog/125732.yaml
+@@ -0,0 +1,5 @@
++pr: 125732
++summary: Log stack traces on data nodes before they are cleared for transport
++area: Search
++type: bug
++issues: []
+diff --git a/qa/smoke-test-http/src/internalClusterTest/java/org/elasticsearch/http/SearchErrorTraceIT.java b/qa/smoke-test-http/src/internalClusterTest/java/org/elasticsearch/http/SearchErrorTraceIT.java
+index d91a395c7f3ba..cc572e87fbdb0 100644
+--- a/qa/smoke-test-http/src/internalClusterTest/java/org/elasticsearch/http/SearchErrorTraceIT.java
++++ b/qa/smoke-test-http/src/internalClusterTest/java/org/elasticsearch/http/SearchErrorTraceIT.java
+@@ -11,16 +11,23 @@
+ 
+ import org.apache.http.entity.ContentType;
+ import org.apache.http.nio.entity.NByteArrayEntity;
++import org.apache.logging.log4j.Level;
++import org.apache.logging.log4j.core.config.Configurator;
+ import org.elasticsearch.action.search.MultiSearchRequest;
+ import org.elasticsearch.action.search.SearchRequest;
+ import org.elasticsearch.client.Request;
++import org.elasticsearch.cluster.metadata.IndexMetadata;
++import org.elasticsearch.common.settings.Settings;
+ import org.elasticsearch.common.util.CollectionUtils;
+ import org.elasticsearch.plugins.Plugin;
+ import org.elasticsearch.search.ErrorTraceHelper;
++import org.elasticsearch.search.SearchService;
+ import org.elasticsearch.search.builder.SearchSourceBuilder;
++import org.elasticsearch.test.MockLog;
+ import org.elasticsearch.test.transport.MockTransportService;
+ import org.elasticsearch.xcontent.XContentType;
+ import org.junit.Before;
++import org.junit.BeforeClass;
+ 
+ import java.io.IOException;
+ import java.nio.charset.Charset;
+@@ -37,19 +44,27 @@ protected Collection<Class<? extends Plugin>> nodePlugins() {
+         return CollectionUtils.appendToCopyNoNullElements(super.nodePlugins(), MockTransportService.TestPlugin.class);
+     }
+ 
++    @BeforeClass
++    public static void setDebugLogLevel() {
++        Configurator.setLevel("org.elasticsearch.search.SearchService", Level.DEBUG);
++    }
++
+     @Before
+     public void setupMessageListener() {
+         hasStackTrace = ErrorTraceHelper.setupErrorTraceListener(internalCluster());
+     }
+ 
+-    private void setupIndexWithDocs() {
+-        createIndex("test1", "test2");
++    private int setupIndexWithDocs() {
++        int numShards = between(DEFAULT_MIN_NUM_SHARDS, DEFAULT_MAX_NUM_SHARDS);
++        createIndex("test1", Settings.builder().put(IndexMetadata.SETTING_NUMBER_OF_SHARDS, numShards).build());
++        createIndex("test2", Settings.builder().put(IndexMetadata.SETTING_NUMBER_OF_SHARDS, numShards).build());
+         indexRandom(
+             true,
+             prepareIndex("test1").setId("1").setSource("field", "foo"),
+             prepareIndex("test2").setId("10").setSource("field", 5)
+         );
+         refresh();
++        return numShards;
+     }
+ 
+     public void testSearchFailingQueryErrorTraceDefault() throws IOException {
+@@ -108,6 +123,80 @@ public void testSearchFailingQueryErrorTraceFalse() throws IOException {
+         assertFalse(hasStackTrace.getAsBoolean());
+     }
+ 
++    public void testLoggingInSearchFailingQueryErrorTraceDefault() throws IOException {
++        int numShards = setupIndexWithDocs();
++
++        Request searchRequest = new Request("POST", "/_search");
++        searchRequest.setJsonEntity("""
++            {
++                "query": {
++                    "simple_query_string" : {
++                        "query": "foo",
++                        "fields": ["field"]
++                    }
++                }
++            }
++            """);
++
++        String errorTriggeringIndex = "test2";
++        try (var mockLog = MockLog.capture(SearchService.class)) {
++            ErrorTraceHelper.addSeenLoggingExpectations(numShards, mockLog, errorTriggeringIndex);
++
++            getRestClient().performRequest(searchRequest);
++            mockLog.assertAllExpectationsMatched();
++        }
++    }
++
++    public void testNoLoggingInSearchFailingQueryErrorTraceTrue() throws IOException {
++        int numShards = setupIndexWithDocs();
++
++        Request searchRequest = new Request("POST", "/_search");
++        searchRequest.setJsonEntity("""
++            {
++                "query": {
++                    "simple_query_string" : {
++                        "query": "foo",
++                        "fields": ["field"]
++                    }
++                }
++            }
++            """);
++
++        String errorTriggeringIndex = "test2";
++        try (var mockLog = MockLog.capture(SearchService.class)) {
++            ErrorTraceHelper.addUnseenLoggingExpectations(numShards, mockLog, errorTriggeringIndex);
++
++            searchRequest.addParameter("error_trace", "true");
++            getRestClient().performRequest(searchRequest);
++            mockLog.assertAllExpectationsMatched();
++        }
++    }
++
++    public void testLoggingInSearchFailingQueryErrorTraceFalse() throws IOException {
++        int numShards = setupIndexWithDocs();
++
++        Request searchRequest = new Request("POST", "/_search");
++        searchRequest.setJsonEntity("""
++            {
++                "query": {
++                    "simple_query_string" : {
++                        "query": "foo",
++                        "fields": ["field"]
++                    }
++                }
++            }
++            """);
++
++        String errorTriggeringIndex = "test2";
++        try (var mockLog = MockLog.capture(SearchService.class)) {
++            ErrorTraceHelper.addSeenLoggingExpectations(numShards, mockLog, errorTriggeringIndex);
++
++            searchRequest.addParameter("error_trace", "false");
++            getRestClient().performRequest(searchRequest);
++            mockLog.assertAllExpectationsMatched();
++        }
++    }
++
+     public void testMultiSearchFailingQueryErrorTraceDefault() throws IOException {
+         setupIndexWithDocs();
+ 
+@@ -158,4 +247,73 @@ public void testMultiSearchFailingQueryErrorTraceFalse() throws IOException {
+ 
+         assertFalse(hasStackTrace.getAsBoolean());
+     }
++
++    public void testLoggingInMultiSearchFailingQueryErrorTraceDefault() throws IOException {
++        int numShards = setupIndexWithDocs();
++
++        XContentType contentType = XContentType.JSON;
++        MultiSearchRequest multiSearchRequest = new MultiSearchRequest().add(
++            new SearchRequest("test*").source(new SearchSourceBuilder().query(simpleQueryStringQuery("foo").field("field")))
++        );
++        Request searchRequest = new Request("POST", "/_msearch");
++        byte[] requestBody = MultiSearchRequest.writeMultiLineFormat(multiSearchRequest, contentType.xContent());
++        searchRequest.setEntity(
++            new NByteArrayEntity(requestBody, ContentType.create(contentType.mediaTypeWithoutParameters(), (Charset) null))
++        );
++
++        String errorTriggeringIndex = "test2";
++        try (var mockLog = MockLog.capture(SearchService.class)) {
++            ErrorTraceHelper.addSeenLoggingExpectations(numShards, mockLog, errorTriggeringIndex);
++
++            getRestClient().performRequest(searchRequest);
++            mockLog.assertAllExpectationsMatched();
++        }
++    }
++
++    public void testLoggingInMultiSearchFailingQueryErrorTraceTrue() throws IOException {
++        int numShards = setupIndexWithDocs();
++
++        XContentType contentType = XContentType.JSON;
++        MultiSearchRequest multiSearchRequest = new MultiSearchRequest().add(
++            new SearchRequest("test*").source(new SearchSourceBuilder().query(simpleQueryStringQuery("foo").field("field")))
++        );
++        Request searchRequest = new Request("POST", "/_msearch");
++        byte[] requestBody = MultiSearchRequest.writeMultiLineFormat(multiSearchRequest, contentType.xContent());
++        searchRequest.setEntity(
++            new NByteArrayEntity(requestBody, ContentType.create(contentType.mediaTypeWithoutParameters(), (Charset) null))
++        );
++
++        searchRequest.addParameter("error_trace", "true");
++
++        String errorTriggeringIndex = "test2";
++        try (var mockLog = MockLog.capture(SearchService.class)) {
++            ErrorTraceHelper.addUnseenLoggingExpectations(numShards, mockLog, errorTriggeringIndex);
++
++            getRestClient().performRequest(searchRequest);
++            mockLog.assertAllExpectationsMatched();
++        }
++    }
++
++    public void testLoggingInMultiSearchFailingQueryErrorTraceFalse() throws IOException {
++        int numShards = setupIndexWithDocs();
++
++        XContentType contentType = XContentType.JSON;
++        MultiSearchRequest multiSearchRequest = new MultiSearchRequest().add(
++            new SearchRequest("test*").source(new SearchSourceBuilder().query(simpleQueryStringQuery("foo").field("field")))
++        );
++        Request searchRequest = new Request("POST", "/_msearch");
++        byte[] requestBody = MultiSearchRequest.writeMultiLineFormat(multiSearchRequest, contentType.xContent());
++        searchRequest.setEntity(
++            new NByteArrayEntity(requestBody, ContentType.create(contentType.mediaTypeWithoutParameters(), (Charset) null))
++        );
++        searchRequest.addParameter("error_trace", "false");
++
++        String errorTriggeringIndex = "test2";
++        try (var mockLog = MockLog.capture(SearchService.class)) {
++            ErrorTraceHelper.addSeenLoggingExpectations(numShards, mockLog, errorTriggeringIndex);
++
++            getRestClient().performRequest(searchRequest);
++            mockLog.assertAllExpectationsMatched();
++        }
++    }
+ }
+diff --git a/server/src/main/java/org/elasticsearch/action/search/SearchTransportService.java b/server/src/main/java/org/elasticsearch/action/search/SearchTransportService.java
+index 2041754bc2bcc..cfc2e1bcdaf2b 100644
+--- a/server/src/main/java/org/elasticsearch/action/search/SearchTransportService.java
++++ b/server/src/main/java/org/elasticsearch/action/search/SearchTransportService.java
+@@ -456,8 +456,7 @@ public static void registerRequestHandler(TransportService transportService, Sea
+             (request, channel, task) -> searchService.executeQueryPhase(
+                 request,
+                 (SearchShardTask) task,
+-                new ChannelActionListener<>(channel),
+-                channel.getVersion()
++                new ChannelActionListener<>(channel)
+             )
+         );
+         TransportActionProxy.registerProxyAction(transportService, QUERY_ID_ACTION_NAME, true, QuerySearchResult::new);
+@@ -469,8 +468,7 @@ public static void registerRequestHandler(TransportService transportService, Sea
+             (request, channel, task) -> searchService.executeQueryPhase(
+                 request,
+                 (SearchShardTask) task,
+-                new ChannelActionListener<>(channel),
+-                channel.getVersion()
++                new ChannelActionListener<>(channel)
+             )
+         );
+         TransportActionProxy.registerProxyAction(transportService, QUERY_SCROLL_ACTION_NAME, true, ScrollQuerySearchResult::new);
+diff --git a/server/src/main/java/org/elasticsearch/search/SearchService.java b/server/src/main/java/org/elasticsearch/search/SearchService.java
+index 865d95ad4b8c3..eba96329ebb2d 100644
+--- a/server/src/main/java/org/elasticsearch/search/SearchService.java
++++ b/server/src/main/java/org/elasticsearch/search/SearchService.java
+@@ -18,7 +18,6 @@
+ import org.apache.lucene.search.TopDocs;
+ import org.elasticsearch.ElasticsearchException;
+ import org.elasticsearch.ExceptionsHelper;
+-import org.elasticsearch.TransportVersion;
+ import org.elasticsearch.action.ActionListener;
+ import org.elasticsearch.action.ActionRunnable;
+ import org.elasticsearch.action.ResolvedIndices;
+@@ -156,6 +155,7 @@
+ import java.util.function.Supplier;
+ 
+ import static org.elasticsearch.TransportVersions.ERROR_TRACE_IN_TRANSPORT_HEADER;
++import static org.elasticsearch.common.Strings.format;
+ import static org.elasticsearch.core.TimeValue.timeValueHours;
+ import static org.elasticsearch.core.TimeValue.timeValueMillis;
+ import static org.elasticsearch.core.TimeValue.timeValueMinutes;
+@@ -537,21 +537,27 @@ protected void doClose() {
+      *
+      * @param <T>            the type of the response
+      * @param listener       the action listener to be wrapped
+-     * @param version        channel version of the request
++     * @param request        the shard request being executed
+      * @param threadPool     with context where to write the new header
++     * @param clusterService the cluster service
+      * @return the wrapped action listener
+      */
+     static <T> ActionListener<T> maybeWrapListenerForStackTrace(
+         ActionListener<T> listener,
+-        TransportVersion version,
+-        ThreadPool threadPool
++        ShardSearchRequest request,
++        ThreadPool threadPool,
++        ClusterService clusterService
+     ) {
+         boolean header = true;
+-        if (version.onOrAfter(ERROR_TRACE_IN_TRANSPORT_HEADER) && threadPool.getThreadContext() != null) {
++        if (request.getChannelVersion().onOrAfter(ERROR_TRACE_IN_TRANSPORT_HEADER) && threadPool.getThreadContext() != null) {
+             header = Boolean.parseBoolean(threadPool.getThreadContext().getHeaderOrDefault("error_trace", "false"));
+         }
+         if (header == false) {
+             return listener.delegateResponse((l, e) -> {
++                logger.debug(
++                    () -> format("[%s]%s Clearing stack trace before transport:", clusterService.localNode().getId(), request.shardId()),
++                    e
++                );
+                 ExceptionsHelper.unwrapCausesAndSuppressed(e, err -> {
+                     err.setStackTrace(EMPTY_STACK_TRACE_ARRAY);
+                     return false;
+@@ -563,7 +569,7 @@ static <T> ActionListener<T> maybeWrapListenerForStackTrace(
+     }
+ 
+     public void executeDfsPhase(ShardSearchRequest request, SearchShardTask task, ActionListener<SearchPhaseResult> listener) {
+-        listener = maybeWrapListenerForStackTrace(listener, request.getChannelVersion(), threadPool);
++        listener = maybeWrapListenerForStackTrace(listener, request, threadPool, clusterService);
+         final IndexShard shard = getShard(request);
+         rewriteAndFetchShardRequest(shard, request, listener.delegateFailure((l, rewritten) -> {
+             // fork the execution in the search thread pool
+@@ -607,7 +613,7 @@ public void executeQueryPhase(ShardSearchRequest request, CancellableTask task,
+         rewriteAndFetchShardRequest(
+             shard,
+             request,
+-            maybeWrapListenerForStackTrace(listener, request.getChannelVersion(), threadPool).delegateFailure((l, orig) -> {
++            maybeWrapListenerForStackTrace(listener, request, threadPool, clusterService).delegateFailure((l, orig) -> {
+                 // check if we can shortcut the query phase entirely.
+                 if (orig.canReturnNullResponseIfMatchNoDocs()) {
+                     assert orig.scroll() == null;
+@@ -805,9 +811,9 @@ private SearchPhaseResult executeQueryPhase(ShardSearchRequest request, Cancella
+     }
+ 
+     public void executeRankFeaturePhase(RankFeatureShardRequest request, SearchShardTask task, ActionListener<RankFeatureResult> listener) {
+-        listener = maybeWrapListenerForStackTrace(listener, request.getShardSearchRequest().getChannelVersion(), threadPool);
+         final ReaderContext readerContext = findReaderContext(request.contextId(), request);
+         final ShardSearchRequest shardSearchRequest = readerContext.getShardSearchRequest(request.getShardSearchRequest());
++        listener = maybeWrapListenerForStackTrace(listener, shardSearchRequest, threadPool, clusterService);
+         final Releasable markAsUsed = readerContext.markAsUsed(getKeepAlive(shardSearchRequest));
+         runAsync(getExecutor(readerContext.indexShard()), () -> {
+             try (SearchContext searchContext = createContext(readerContext, shardSearchRequest, task, ResultsType.RANK_FEATURE, false)) {
+@@ -853,11 +859,11 @@ private QueryFetchSearchResult executeFetchPhase(ReaderContext reader, SearchCon
+     public void executeQueryPhase(
+         InternalScrollSearchRequest request,
+         SearchShardTask task,
+-        ActionListener<ScrollQuerySearchResult> listener,
+-        TransportVersion version
++        ActionListener<ScrollQuerySearchResult> listener
+     ) {
+-        listener = maybeWrapListenerForStackTrace(listener, version, threadPool);
+         final LegacyReaderContext readerContext = (LegacyReaderContext) findReaderContext(request.contextId(), request);
++        final ShardSearchRequest shardSearchRequest = readerContext.getShardSearchRequest(null);
++        listener = maybeWrapListenerForStackTrace(listener, shardSearchRequest, threadPool, clusterService);
+         final Releasable markAsUsed;
+         try {
+             markAsUsed = readerContext.markAsUsed(getScrollKeepAlive(request.scroll()));
+@@ -867,7 +873,6 @@ public void executeQueryPhase(
+             throw e;
+         }
+         runAsync(getExecutor(readerContext.indexShard()), () -> {
+-            final ShardSearchRequest shardSearchRequest = readerContext.getShardSearchRequest(null);
+             try (SearchContext searchContext = createContext(readerContext, shardSearchRequest, task, ResultsType.QUERY, false);) {
+                 var opsListener = searchContext.indexShard().getSearchOperationListener();
+                 final long beforeQueryTime = System.nanoTime();
+@@ -899,15 +904,10 @@ public void executeQueryPhase(
+      * It is the responsibility of the caller to ensure that the ref count is correctly decremented
+      * when the object is no longer needed.
+      */
+-    public void executeQueryPhase(
+-        QuerySearchRequest request,
+-        SearchShardTask task,
+-        ActionListener<QuerySearchResult> listener,
+-        TransportVersion version
+-    ) {
+-        listener = maybeWrapListenerForStackTrace(listener, version, threadPool);
++    public void executeQueryPhase(QuerySearchRequest request, SearchShardTask task, ActionListener<QuerySearchResult> listener) {
+         final ReaderContext readerContext = findReaderContext(request.contextId(), request.shardSearchRequest());
+         final ShardSearchRequest shardSearchRequest = readerContext.getShardSearchRequest(request.shardSearchRequest());
++        listener = maybeWrapListenerForStackTrace(listener, shardSearchRequest, threadPool, clusterService);
+         final Releasable markAsUsed = readerContext.markAsUsed(getKeepAlive(shardSearchRequest));
+         rewriteAndFetchShardRequest(readerContext.indexShard(), shardSearchRequest, listener.delegateFailure((l, rewritten) -> {
+             // fork the execution in the search thread pool
+diff --git a/server/src/test/java/org/elasticsearch/search/SearchServiceSingleNodeTests.java b/server/src/test/java/org/elasticsearch/search/SearchServiceSingleNodeTests.java
+index 66b9e69aea906..445d241ccbd94 100644
+--- a/server/src/test/java/org/elasticsearch/search/SearchServiceSingleNodeTests.java
++++ b/server/src/test/java/org/elasticsearch/search/SearchServiceSingleNodeTests.java
+@@ -2630,8 +2630,7 @@ public void testDfsQueryPhaseRewrite() {
+         service.executeQueryPhase(
+             new QuerySearchRequest(null, context.id(), request, new AggregatedDfs(Map.of(), Map.of(), 10)),
+             new SearchShardTask(42L, "", "", "", null, emptyMap()),
+-            plainActionFuture,
+-            TransportVersion.current()
++            plainActionFuture
+         );
+ 
+         plainActionFuture.actionGet();
+diff --git a/server/src/test/java/org/elasticsearch/search/SearchServiceTests.java b/server/src/test/java/org/elasticsearch/search/SearchServiceTests.java
+index d041121b8a96b..fefe586efd930 100644
+--- a/server/src/test/java/org/elasticsearch/search/SearchServiceTests.java
++++ b/server/src/test/java/org/elasticsearch/search/SearchServiceTests.java
+@@ -9,11 +9,12 @@
+ 
+ package org.elasticsearch.search;
+ 
++import org.apache.logging.log4j.Level;
++import org.apache.logging.log4j.core.config.Configurator;
+ import org.apache.lucene.index.LeafReaderContext;
+ import org.apache.lucene.search.IndexSearcher;
+ import org.apache.lucene.search.SortField;
+ import org.apache.lucene.util.BytesRef;
+-import org.elasticsearch.TransportVersion;
+ import org.elasticsearch.action.ActionListener;
+ import org.elasticsearch.action.OriginalIndices;
+ import org.elasticsearch.action.search.SearchRequest;
+@@ -51,6 +52,7 @@
+ import org.elasticsearch.search.sort.BucketedSort;
+ import org.elasticsearch.search.sort.MinAndMax;
+ import org.elasticsearch.search.sort.SortOrder;
++import org.elasticsearch.test.MockLog;
+ import org.elasticsearch.xcontent.XContentParserConfiguration;
+ 
+ import java.io.IOException;
+@@ -59,7 +61,9 @@
+ import java.util.function.BiFunction;
+ import java.util.function.Predicate;
+ 
++import static org.elasticsearch.common.Strings.format;
+ import static org.elasticsearch.search.SearchService.maybeWrapListenerForStackTrace;
++import static org.elasticsearch.test.ClusterServiceUtils.createClusterService;
+ import static org.hamcrest.CoreMatchers.is;
+ import static org.hamcrest.Matchers.not;
+ 
+@@ -125,6 +129,18 @@ public Type getType() {
+     }
+ 
+     public void testMaybeWrapListenerForStackTrace() {
++        ShardSearchRequest shardRequest = new ShardSearchRequest(
++            OriginalIndices.NONE,
++            new SearchRequest().allowPartialSearchResults(false).source(new SearchSourceBuilder().query(new MatchAllQueryBuilder())),
++            new ShardId("index", "index", 0),
++            0,
++            1,
++            AliasFilter.EMPTY,
++            1.0f,
++            0,
++            null
++        );
++
+         // Tests that the same listener has stack trace if is not wrapped or does not have stack trace if it is wrapped.
+         AtomicBoolean isWrapped = new AtomicBoolean(false);
+         ActionListener<SearchPhaseResult> listener = new ActionListener<>() {
+@@ -146,11 +162,58 @@ public void onFailure(Exception e) {
+         e.fillInStackTrace();
+         assertThat(e.getStackTrace().length, is(not(0)));
+         listener.onFailure(e);
+-        listener = maybeWrapListenerForStackTrace(listener, TransportVersion.current(), threadPool);
++        listener = maybeWrapListenerForStackTrace(listener, shardRequest, threadPool, createClusterService(threadPool));
+         isWrapped.set(true);
+         listener.onFailure(e);
+     }
+ 
++    public void testMaybeWrapListenerForStackTraceLogs() {
++        final String index = "index";
++        final int shardId = 0;
++        ShardSearchRequest shardRequest = new ShardSearchRequest(
++            OriginalIndices.NONE,
++            new SearchRequest().allowPartialSearchResults(false).source(new SearchSourceBuilder().query(new MatchAllQueryBuilder())),
++            new ShardId(index, index, shardId),
++            0,
++            1,
++            AliasFilter.EMPTY,
++            1.0f,
++            0,
++            null
++        );
++
++        try (var mockLog = MockLog.capture(SearchService.class)) {
++            Configurator.setLevel("org.elasticsearch.search.SearchService", Level.DEBUG);
++            final String exceptionMessage = "test exception message";
++            mockLog.addExpectation(
++                new MockLog.PatternAndExceptionSeenEventExpectation(
++                    format("Tracking information ([node][%s][%d]) and exception logged before stack trace cleared", index, shardId),
++                    SearchService.class.getCanonicalName(),
++                    Level.DEBUG,
++                    format("\\[node\\]\\[%s\\]\\[%d\\] Clearing stack trace before transport:", index, shardId),
++                    Exception.class,
++                    exceptionMessage
++                )
++            );
++
++            // Tests the listener has logged if it is wrapped
++            ActionListener<SearchPhaseResult> listener = new ActionListener<>() {
++                @Override
++                public void onResponse(SearchPhaseResult searchPhaseResult) {
++                    // noop - we only care about failure scenarios
++                }
++
++                @Override
++                public void onFailure(Exception e) {
++                    mockLog.assertAllExpectationsMatched();
++                }
++            };
++            Exception e = new Exception(exceptionMessage);
++            listener = maybeWrapListenerForStackTrace(listener, shardRequest, threadPool, createClusterService(threadPool));
++            listener.onFailure(e);
++        }
++    }
++
+     private void doTestCanMatch(
+         SearchRequest searchRequest,
+         SortField sortField,
+diff --git a/test/framework/src/main/java/org/elasticsearch/search/ErrorTraceHelper.java b/test/framework/src/main/java/org/elasticsearch/search/ErrorTraceHelper.java
+index 5a69674b341b4..90ed440473ee0 100644
+--- a/test/framework/src/main/java/org/elasticsearch/search/ErrorTraceHelper.java
++++ b/test/framework/src/main/java/org/elasticsearch/search/ErrorTraceHelper.java
+@@ -9,16 +9,25 @@
+ 
+ package org.elasticsearch.search;
+ 
++import org.apache.logging.log4j.Level;
+ import org.elasticsearch.ExceptionsHelper;
++import org.elasticsearch.index.query.QueryShardException;
++import org.elasticsearch.test.ESIntegTestCase;
+ import org.elasticsearch.test.InternalTestCluster;
++import org.elasticsearch.test.MockLog;
+ import org.elasticsearch.test.transport.MockTransportService;
+ import org.elasticsearch.transport.TransportMessageListener;
+ import org.elasticsearch.transport.TransportService;
+ 
++import java.util.Arrays;
+ import java.util.Optional;
+ import java.util.concurrent.atomic.AtomicBoolean;
+ import java.util.function.BooleanSupplier;
++import java.util.stream.Collectors;
+ 
++import static org.elasticsearch.common.Strings.format;
++import static org.elasticsearch.test.ESIntegTestCase.getNodeId;
++import static org.elasticsearch.test.ESIntegTestCase.internalCluster;
+ import static org.elasticsearch.test.ESTestCase.asInstanceOf;
+ 
+ /**
+@@ -45,4 +54,63 @@ public void onResponseSent(long requestId, String action, Exception error) {
+             }));
+         return transportMessageHasStackTrace::get;
+     }
++
++    /**
++     * Adds expectations for debug logging of a message and exception on each shard of the given index.
++     *
++     * @param numShards                 the number of shards in the index (an expectation will be added for each shard)
++     * @param mockLog                   the mock log
++     * @param errorTriggeringIndex      the name of the index that will trigger the error
++     */
++    public static void addSeenLoggingExpectations(int numShards, MockLog mockLog, String errorTriggeringIndex) {
++        String nodesDisjunction = format(
++            "(%s)",
++            Arrays.stream(internalCluster().getNodeNames()).map(ESIntegTestCase::getNodeId).collect(Collectors.joining("|"))
++        );
++        for (int shard = 0; shard < numShards; shard++) {
++            mockLog.addExpectation(
++                new MockLog.PatternAndExceptionSeenEventExpectation(
++                    format(
++                        "Tracking information ([%s][%s][%d]) and exception logged before stack trace cleared",
++                        nodesDisjunction,
++                        errorTriggeringIndex,
++                        shard
++                    ),
++                    SearchService.class.getCanonicalName(),
++                    Level.DEBUG,
++                    format(
++                        "\\[%s\\]\\[%s\\]\\[%d\\] Clearing stack trace before transport:",
++                        nodesDisjunction,
++                        errorTriggeringIndex,
++                        shard
++                    ),
++                    QueryShardException.class,
++                    "failed to create query: For input string: \"foo\""
++                )
++            );
++        }
++    }
++
++    /**
++     * Adds expectations for the _absence_ of debug logging of a message. An unseen expectation is added for each
++     * combination of node in the internal cluster and shard in the index.
++     *
++     * @param numShards                 the number of shards in the index (an expectation will be added for each shard)
++     * @param mockLog                   the mock log
++     * @param errorTriggeringIndex      the name of the index that will trigger the error
++     */
++    public static void addUnseenLoggingExpectations(int numShards, MockLog mockLog, String errorTriggeringIndex) {
++        for (String nodeName : internalCluster().getNodeNames()) {
++            for (int shard = 0; shard < numShards; shard++) {
++                mockLog.addExpectation(
++                    new MockLog.UnseenEventExpectation(
++                        "Tracking information ([nodeId][indexName][shard]) and exception logged before stack trace cleared",
++                        SearchService.class.getCanonicalName(),
++                        Level.DEBUG,
++                        format("[%s][%s][%d] Clearing stack trace before transport:", getNodeId(nodeName), errorTriggeringIndex, shard)
++                    )
++                );
++            }
++        }
++    }
+ }
+diff --git a/test/framework/src/main/java/org/elasticsearch/test/MockLog.java b/test/framework/src/main/java/org/elasticsearch/test/MockLog.java
+index 4a012bb361e65..8fcafb31751f2 100644
+--- a/test/framework/src/main/java/org/elasticsearch/test/MockLog.java
++++ b/test/framework/src/main/java/org/elasticsearch/test/MockLog.java
+@@ -316,6 +316,43 @@ public void awaitMatched(long millis) throws InterruptedException {
+         }
+     }
+ 
++    public static class PatternAndExceptionSeenEventExpectation extends SeenEventExpectation {
++
++        private final Pattern pattern;
++        private final Class<? extends Exception> clazz;
++        private final String exceptionMessage;
++
++        public PatternAndExceptionSeenEventExpectation(
++            String name,
++            String logger,
++            Level level,
++            String pattern,
++            Class<? extends Exception> clazz,
++            String exceptionMessage
++        ) {
++            super(name, logger, level, pattern);
++            this.pattern = Pattern.compile(pattern);
++            this.clazz = clazz;
++            this.exceptionMessage = exceptionMessage;
++        }
++
++        @Override
++        public void match(LogEvent event) {
++            if (event.getLevel().equals(level) && event.getLoggerName().equals(logger)) {
++                boolean patternMatches = pattern.matcher(event.getMessage().getFormattedMessage()).matches();
++                boolean exceptionMatches = event.getThrown() != null
++                    && event.getThrown().getClass() == clazz
++                    && event.getThrown().getMessage().equals(exceptionMessage);
++
++                if (exceptionMatches) {
++                    if (patternMatches) {
++                        seenLatch.countDown();
++                    }
++                }
++            }
++        }
++    }
++
+     /**
+      * A wrapper around {@link LoggingExpectation} to detect if the assertMatched method has been called
+      */
+diff --git a/x-pack/plugin/async-search/src/internalClusterTest/java/org/elasticsearch/xpack/search/AsyncSearchErrorTraceIT.java b/x-pack/plugin/async-search/src/internalClusterTest/java/org/elasticsearch/xpack/search/AsyncSearchErrorTraceIT.java
+index ba06de652dc70..ca9c6194eb151 100644
+--- a/x-pack/plugin/async-search/src/internalClusterTest/java/org/elasticsearch/xpack/search/AsyncSearchErrorTraceIT.java
++++ b/x-pack/plugin/async-search/src/internalClusterTest/java/org/elasticsearch/xpack/search/AsyncSearchErrorTraceIT.java
+@@ -7,17 +7,24 @@
+ 
+ package org.elasticsearch.xpack.search;
+ 
++import org.apache.logging.log4j.Level;
++import org.apache.logging.log4j.core.config.Configurator;
+ import org.elasticsearch.client.Request;
+ import org.elasticsearch.client.Response;
++import org.elasticsearch.cluster.metadata.IndexMetadata;
++import org.elasticsearch.common.settings.Settings;
+ import org.elasticsearch.common.util.CollectionUtils;
+ import org.elasticsearch.common.xcontent.XContentHelper;
+ import org.elasticsearch.core.TimeValue;
+ import org.elasticsearch.plugins.Plugin;
+ import org.elasticsearch.search.ErrorTraceHelper;
++import org.elasticsearch.search.SearchService;
+ import org.elasticsearch.test.ESIntegTestCase;
++import org.elasticsearch.test.MockLog;
+ import org.elasticsearch.test.transport.MockTransportService;
+ import org.elasticsearch.xcontent.XContentType;
+ import org.junit.Before;
++import org.junit.BeforeClass;
+ 
+ import java.io.IOException;
+ import java.util.Collection;
+@@ -25,6 +32,7 @@
+ import java.util.function.BooleanSupplier;
+ 
+ public class AsyncSearchErrorTraceIT extends ESIntegTestCase {
++    private BooleanSupplier transportMessageHasStackTrace;
+ 
+     @Override
+     protected boolean addMockHttpTransport() {
+@@ -37,21 +45,27 @@ protected Collection<Class<? extends Plugin>> nodePlugins() {
+         return CollectionUtils.appendToCopyNoNullElements(super.nodePlugins(), AsyncSearch.class, MockTransportService.TestPlugin.class);
+     }
+ 
+-    private BooleanSupplier transportMessageHasStackTrace;
++    @BeforeClass
++    public static void setDebugLogLevel() {
++        Configurator.setLevel("org.elasticsearch.search.SearchService", Level.DEBUG);
++    }
+ 
+     @Before
+     public void setupMessageListener() {
+         transportMessageHasStackTrace = ErrorTraceHelper.setupErrorTraceListener(internalCluster());
+     }
+ 
+-    private void setupIndexWithDocs() {
+-        createIndex("test1", "test2");
++    private int setupIndexWithDocs() {
++        int numShards = between(DEFAULT_MIN_NUM_SHARDS, DEFAULT_MAX_NUM_SHARDS);
++        createIndex("test1", Settings.builder().put(IndexMetadata.SETTING_NUMBER_OF_SHARDS, numShards).build());
++        createIndex("test2", Settings.builder().put(IndexMetadata.SETTING_NUMBER_OF_SHARDS, numShards).build());
+         indexRandom(
+             true,
+             prepareIndex("test1").setId("1").setSource("field", "foo"),
+             prepareIndex("test2").setId("10").setSource("field", 5)
+         );
+         refresh();
++        return numShards;
+     }
+ 
+     public void testAsyncSearchFailingQueryErrorTraceDefault() throws IOException, InterruptedException {
+@@ -136,6 +150,106 @@ public void testAsyncSearchFailingQueryErrorTraceFalse() throws IOException, Int
+         assertFalse(transportMessageHasStackTrace.getAsBoolean());
+     }
+ 
++    public void testLoggingInAsyncSearchFailingQueryErrorTraceDefault() throws IOException, InterruptedException {
++        int numShards = setupIndexWithDocs();
++
++        Request searchRequest = new Request("POST", "/_async_search");
++        searchRequest.setJsonEntity("""
++            {
++                "query": {
++                    "simple_query_string" : {
++                        "query": "foo",
++                        "fields": ["field"]
++                    }
++                }
++            }
++            """);
++        searchRequest.addParameter("keep_on_completion", "true");
++        searchRequest.addParameter("wait_for_completion_timeout", "0ms");
++        Map<String, Object> responseEntity = performRequestAndGetResponseEntityAfterDelay(searchRequest, TimeValue.ZERO);
++        String asyncExecutionId = (String) responseEntity.get("id");
++        Request request = new Request("GET", "/_async_search/" + asyncExecutionId);
++        while (responseEntity.get("is_running") instanceof Boolean isRunning && isRunning) {
++            responseEntity = performRequestAndGetResponseEntityAfterDelay(request, TimeValue.timeValueSeconds(1L));
++        }
++
++        String errorTriggeringIndex = "test2";
++        try (var mockLog = MockLog.capture(SearchService.class)) {
++            ErrorTraceHelper.addSeenLoggingExpectations(numShards, mockLog, errorTriggeringIndex);
++
++            getRestClient().performRequest(searchRequest);
++            mockLog.assertAllExpectationsMatched();
++        }
++    }
++
++    public void testLoggingInAsyncSearchFailingQueryErrorTraceTrue() throws IOException, InterruptedException {
++        int numShards = setupIndexWithDocs();
++
++        Request searchRequest = new Request("POST", "/_async_search");
++        searchRequest.setJsonEntity("""
++            {
++                "query": {
++                    "simple_query_string" : {
++                        "query": "foo",
++                        "fields": ["field"]
++                    }
++                }
++            }
++            """);
++        searchRequest.addParameter("error_trace", "true");
++        searchRequest.addParameter("keep_on_completion", "true");
++        searchRequest.addParameter("wait_for_completion_timeout", "0ms");
++        Map<String, Object> responseEntity = performRequestAndGetResponseEntityAfterDelay(searchRequest, TimeValue.ZERO);
++        String asyncExecutionId = (String) responseEntity.get("id");
++        Request request = new Request("GET", "/_async_search/" + asyncExecutionId);
++        request.addParameter("error_trace", "true");
++        while (responseEntity.get("is_running") instanceof Boolean isRunning && isRunning) {
++            responseEntity = performRequestAndGetResponseEntityAfterDelay(request, TimeValue.timeValueSeconds(1L));
++        }
++
++        String errorTriggeringIndex = "test2";
++        try (var mockLog = MockLog.capture(SearchService.class)) {
++            ErrorTraceHelper.addUnseenLoggingExpectations(numShards, mockLog, errorTriggeringIndex);
++
++            getRestClient().performRequest(searchRequest);
++            mockLog.assertAllExpectationsMatched();
++        }
++    }
++
++    public void testLoggingInAsyncSearchFailingQueryErrorTraceFalse() throws IOException, InterruptedException {
++        int numShards = setupIndexWithDocs();
++
++        Request searchRequest = new Request("POST", "/_async_search");
++        searchRequest.setJsonEntity("""
++            {
++                "query": {
++                    "simple_query_string" : {
++                        "query": "foo",
++                        "fields": ["field"]
++                    }
++                }
++            }
++            """);
++        searchRequest.addParameter("error_trace", "false");
++        searchRequest.addParameter("keep_on_completion", "true");
++        searchRequest.addParameter("wait_for_completion_timeout", "0ms");
++        Map<String, Object> responseEntity = performRequestAndGetResponseEntityAfterDelay(searchRequest, TimeValue.ZERO);
++        String asyncExecutionId = (String) responseEntity.get("id");
++        Request request = new Request("GET", "/_async_search/" + asyncExecutionId);
++        request.addParameter("error_trace", "false");
++        while (responseEntity.get("is_running") instanceof Boolean isRunning && isRunning) {
++            responseEntity = performRequestAndGetResponseEntityAfterDelay(request, TimeValue.timeValueSeconds(1L));
++        }
++
++        String errorTriggeringIndex = "test2";
++        try (var mockLog = MockLog.capture(SearchService.class)) {
++            ErrorTraceHelper.addSeenLoggingExpectations(numShards, mockLog, errorTriggeringIndex);
++
++            getRestClient().performRequest(searchRequest);
++            mockLog.assertAllExpectationsMatched();
++        }
++    }
++
+     public void testAsyncSearchFailingQueryErrorTraceFalseOnSubmitAndTrueOnGet() throws IOException, InterruptedException {
+         setupIndexWithDocs();
+ 

@@ -1,0 +1,1600 @@
+diff --git a/internal/api/encoder/encoder.go b/internal/api/encoder/encoder.go
+index 5a1502eba3a..55812fd2ba8 100644
+--- a/internal/api/encoder/encoder.go
++++ b/internal/api/encoder/encoder.go
+@@ -459,7 +459,7 @@ func getChildrenPropertyMask(node *ast.Node) uint8 {
+ 	case ast.KindImportEqualsDeclaration:
+ 		n := node.AsImportEqualsDeclaration()
+ 		return (boolToByte(n.Modifiers() != nil) << 0) | (boolToByte(n.Name() != nil) << 1) | (boolToByte(n.ModuleReference != nil) << 2)
+-	case ast.KindImportDeclaration:
++	case ast.KindImportDeclaration, ast.KindJSImportDeclaration:
+ 		n := node.AsImportDeclaration()
+ 		return (boolToByte(n.Modifiers() != nil) << 0) | (boolToByte(n.ImportClause != nil) << 1) | (boolToByte(n.ModuleSpecifier != nil) << 2) | (boolToByte(n.Attributes != nil) << 3)
+ 	case ast.KindImportSpecifier:
+@@ -468,7 +468,7 @@ func getChildrenPropertyMask(node *ast.Node) uint8 {
+ 	case ast.KindImportClause:
+ 		n := node.AsImportClause()
+ 		return (boolToByte(n.Name() != nil) << 0) | (boolToByte(n.NamedBindings != nil) << 1)
+-	case ast.KindExportAssignment:
++	case ast.KindExportAssignment, ast.KindJSExportAssignment:
+ 		n := node.AsExportAssignment()
+ 		return (boolToByte(n.Modifiers() != nil) << 0) | (boolToByte(n.Expression != nil) << 1)
+ 	case ast.KindNamespaceExportDeclaration:
+diff --git a/internal/ast/ast.go b/internal/ast/ast.go
+index 67f0afc4e30..083837d2a34 100644
+--- a/internal/ast/ast.go
++++ b/internal/ast/ast.go
+@@ -751,12 +751,10 @@ func (n *Node) Children() *NodeList {
+ 
+ func (n *Node) ModuleSpecifier() *Expression {
+ 	switch n.Kind {
+-	case KindImportDeclaration:
++	case KindImportDeclaration, KindJSImportDeclaration:
+ 		return n.AsImportDeclaration().ModuleSpecifier
+ 	case KindExportDeclaration:
+ 		return n.AsExportDeclaration().ModuleSpecifier
+-	case KindJSDocImportTag:
+-		return n.AsJSDocImportTag().ModuleSpecifier
+ 	}
+ 	panic("Unhandled case in Node.ModuleSpecifier: " + n.Kind.String())
+ }
+@@ -4036,13 +4034,21 @@ type ImportDeclaration struct {
+ 	Attributes      *ImportAttributesNode // ImportAttributesNode. Optional
+ }
+ 
+-func (f *NodeFactory) NewImportDeclaration(modifiers *ModifierList, importClause *ImportClauseNode, moduleSpecifier *Expression, attributes *ImportAttributesNode) *Node {
++func (f *NodeFactory) newImportOrJSImportDeclaration(kind Kind, modifiers *ModifierList, importClause *ImportClauseNode, moduleSpecifier *Expression, attributes *ImportAttributesNode) *Node {
+ 	data := &ImportDeclaration{}
+ 	data.modifiers = modifiers
+ 	data.ImportClause = importClause
+ 	data.ModuleSpecifier = moduleSpecifier
+ 	data.Attributes = attributes
+-	return f.newNode(KindImportDeclaration, data)
++	return f.newNode(kind, data)
++}
++
++func (f *NodeFactory) NewImportDeclaration(modifiers *ModifierList, importClause *ImportClauseNode, moduleSpecifier *Expression, attributes *ImportAttributesNode) *Node {
++	return f.newImportOrJSImportDeclaration(KindImportDeclaration, modifiers, importClause, moduleSpecifier, attributes)
++}
++
++func (f *NodeFactory) NewJSImportDeclaration(modifiers *ModifierList, importClause *ImportClauseNode, moduleSpecifier *Expression, attributes *ImportAttributesNode) *Node {
++	return f.newImportOrJSImportDeclaration(KindJSImportDeclaration, modifiers, importClause, moduleSpecifier, attributes)
+ }
+ 
+ func (f *NodeFactory) UpdateImportDeclaration(node *ImportDeclaration, modifiers *ModifierList, importClause *ImportClauseNode, moduleSpecifier *Expression, attributes *ImportAttributesNode) *Node {
+diff --git a/internal/ast/kind.go b/internal/ast/kind.go
+index 3107c895bd6..aa06256c71a 100644
+--- a/internal/ast/kind.go
++++ b/internal/ast/kind.go
+@@ -381,6 +381,7 @@ const (
+ 	KindJSTypeAliasDeclaration
+ 	KindJSExportAssignment
+ 	KindCommonJSExport
++	KindJSImportDeclaration
+ 	// Transformation nodes
+ 	KindNotEmittedStatement
+ 	KindPartiallyEmittedExpression
+diff --git a/internal/ast/kind_stringer_generated.go b/internal/ast/kind_stringer_generated.go
+index 329adfa55de..3e02addd2d5 100644
+--- a/internal/ast/kind_stringer_generated.go
++++ b/internal/ast/kind_stringer_generated.go
+@@ -356,16 +356,17 @@ func _() {
+ 	_ = x[KindJSTypeAliasDeclaration-345]
+ 	_ = x[KindJSExportAssignment-346]
+ 	_ = x[KindCommonJSExport-347]
+-	_ = x[KindNotEmittedStatement-348]
+-	_ = x[KindPartiallyEmittedExpression-349]
+-	_ = x[KindCommaListExpression-350]
+-	_ = x[KindSyntheticReferenceExpression-351]
+-	_ = x[KindCount-352]
++	_ = x[KindJSImportDeclaration-348]
++	_ = x[KindNotEmittedStatement-349]
++	_ = x[KindPartiallyEmittedExpression-350]
++	_ = x[KindCommaListExpression-351]
++	_ = x[KindSyntheticReferenceExpression-352]
++	_ = x[KindCount-353]
+ }
+ 
+-const _Kind_name = "KindUnknownKindEndOfFileKindSingleLineCommentTriviaKindMultiLineCommentTriviaKindNewLineTriviaKindWhitespaceTriviaKindConflictMarkerTriviaKindNonTextFileMarkerTriviaKindNumericLiteralKindBigIntLiteralKindStringLiteralKindJsxTextKindJsxTextAllWhiteSpacesKindRegularExpressionLiteralKindNoSubstitutionTemplateLiteralKindTemplateHeadKindTemplateMiddleKindTemplateTailKindOpenBraceTokenKindCloseBraceTokenKindOpenParenTokenKindCloseParenTokenKindOpenBracketTokenKindCloseBracketTokenKindDotTokenKindDotDotDotTokenKindSemicolonTokenKindCommaTokenKindQuestionDotTokenKindLessThanTokenKindLessThanSlashTokenKindGreaterThanTokenKindLessThanEqualsTokenKindGreaterThanEqualsTokenKindEqualsEqualsTokenKindExclamationEqualsTokenKindEqualsEqualsEqualsTokenKindExclamationEqualsEqualsTokenKindEqualsGreaterThanTokenKindPlusTokenKindMinusTokenKindAsteriskTokenKindAsteriskAsteriskTokenKindSlashTokenKindPercentTokenKindPlusPlusTokenKindMinusMinusTokenKindLessThanLessThanTokenKindGreaterThanGreaterThanTokenKindGreaterThanGreaterThanGreaterThanTokenKindAmpersandTokenKindBarTokenKindCaretTokenKindExclamationTokenKindTildeTokenKindAmpersandAmpersandTokenKindBarBarTokenKindQuestionTokenKindColonTokenKindAtTokenKindQuestionQuestionTokenKindBacktickTokenKindHashTokenKindEqualsTokenKindPlusEqualsTokenKindMinusEqualsTokenKindAsteriskEqualsTokenKindAsteriskAsteriskEqualsTokenKindSlashEqualsTokenKindPercentEqualsTokenKindLessThanLessThanEqualsTokenKindGreaterThanGreaterThanEqualsTokenKindGreaterThanGreaterThanGreaterThanEqualsTokenKindAmpersandEqualsTokenKindBarEqualsTokenKindBarBarEqualsTokenKindAmpersandAmpersandEqualsTokenKindQuestionQuestionEqualsTokenKindCaretEqualsTokenKindIdentifierKindPrivateIdentifierKindJSDocCommentTextTokenKindBreakKeywordKindCaseKeywordKindCatchKeywordKindClassKeywordKindConstKeywordKindContinueKeywordKindDebuggerKeywordKindDefaultKeywordKindDeleteKeywordKindDoKeywordKindElseKeywordKindEnumKeywordKindExportKeywordKindExtendsKeywordKindFalseKeywordKindFinallyKeywordKindForKeywordKindFunctionKeywordKindIfKeywordKindImportKeywordKindInKeywordKindInstanceOfKeywordKindNewKeywordKindNullKeywordKindReturnKeywordKindSuperKeywordKindSwitchKeywordKindThisKeywordKindThrowKeywordKindTrueKeywordKindTryKeywordKindTypeOfKeywordKindVarKeywordKindVoidKeywordKindWhileKeywordKindWithKeywordKindImplementsKeywordKindInterfaceKeywordKindLetKeywordKindPackageKeywordKindPrivateKeywordKindProtectedKeywordKindPublicKeywordKindStaticKeywordKindYieldKeywordKindAbstractKeywordKindAccessorKeywordKindAsKeywordKindAssertsKeywordKindAssertKeywordKindAnyKeywordKindAsyncKeywordKindAwaitKeywordKindBooleanKeywordKindConstructorKeywordKindDeclareKeywordKindGetKeywordKindImmediateKeywordKindInferKeywordKindIntrinsicKeywordKindIsKeywordKindKeyOfKeywordKindModuleKeywordKindNamespaceKeywordKindNeverKeywordKindOutKeywordKindReadonlyKeywordKindRequireKeywordKindNumberKeywordKindObjectKeywordKindSatisfiesKeywordKindSetKeywordKindStringKeywordKindSymbolKeywordKindTypeKeywordKindUndefinedKeywordKindUniqueKeywordKindUnknownKeywordKindUsingKeywordKindFromKeywordKindGlobalKeywordKindBigIntKeywordKindOverrideKeywordKindOfKeywordKindQualifiedNameKindComputedPropertyNameKindTypeParameterKindParameterKindDecoratorKindPropertySignatureKindPropertyDeclarationKindMethodSignatureKindMethodDeclarationKindClassStaticBlockDeclarationKindConstructorKindGetAccessorKindSetAccessorKindCallSignatureKindConstructSignatureKindIndexSignatureKindTypePredicateKindTypeReferenceKindFunctionTypeKindConstructorTypeKindTypeQueryKindTypeLiteralKindArrayTypeKindTupleTypeKindOptionalTypeKindRestTypeKindUnionTypeKindIntersectionTypeKindConditionalTypeKindInferTypeKindParenthesizedTypeKindThisTypeKindTypeOperatorKindIndexedAccessTypeKindMappedTypeKindLiteralTypeKindNamedTupleMemberKindTemplateLiteralTypeKindTemplateLiteralTypeSpanKindImportTypeKindObjectBindingPatternKindArrayBindingPatternKindBindingElementKindArrayLiteralExpressionKindObjectLiteralExpressionKindPropertyAccessExpressionKindElementAccessExpressionKindCallExpressionKindNewExpressionKindTaggedTemplateExpressionKindTypeAssertionExpressionKindParenthesizedExpressionKindFunctionExpressionKindArrowFunctionKindDeleteExpressionKindTypeOfExpressionKindVoidExpressionKindAwaitExpressionKindPrefixUnaryExpressionKindPostfixUnaryExpressionKindBinaryExpressionKindConditionalExpressionKindTemplateExpressionKindYieldExpressionKindSpreadElementKindClassExpressionKindOmittedExpressionKindExpressionWithTypeArgumentsKindAsExpressionKindNonNullExpressionKindMetaPropertyKindSyntheticExpressionKindSatisfiesExpressionKindTemplateSpanKindSemicolonClassElementKindBlockKindEmptyStatementKindVariableStatementKindExpressionStatementKindIfStatementKindDoStatementKindWhileStatementKindForStatementKindForInStatementKindForOfStatementKindContinueStatementKindBreakStatementKindReturnStatementKindWithStatementKindSwitchStatementKindLabeledStatementKindThrowStatementKindTryStatementKindDebuggerStatementKindVariableDeclarationKindVariableDeclarationListKindFunctionDeclarationKindClassDeclarationKindInterfaceDeclarationKindTypeAliasDeclarationKindEnumDeclarationKindModuleDeclarationKindModuleBlockKindCaseBlockKindNamespaceExportDeclarationKindImportEqualsDeclarationKindImportDeclarationKindImportClauseKindNamespaceImportKindNamedImportsKindImportSpecifierKindExportAssignmentKindExportDeclarationKindNamedExportsKindNamespaceExportKindExportSpecifierKindMissingDeclarationKindExternalModuleReferenceKindJsxElementKindJsxSelfClosingElementKindJsxOpeningElementKindJsxClosingElementKindJsxFragmentKindJsxOpeningFragmentKindJsxClosingFragmentKindJsxAttributeKindJsxAttributesKindJsxSpreadAttributeKindJsxExpressionKindJsxNamespacedNameKindCaseClauseKindDefaultClauseKindHeritageClauseKindCatchClauseKindImportAttributesKindImportAttributeKindPropertyAssignmentKindShorthandPropertyAssignmentKindSpreadAssignmentKindEnumMemberKindSourceFileKindBundleKindJSDocTypeExpressionKindJSDocNameReferenceKindJSDocMemberNameKindJSDocAllTypeKindJSDocNullableTypeKindJSDocNonNullableTypeKindJSDocOptionalTypeKindJSDocVariadicTypeKindJSDocKindJSDocTextKindJSDocTypeLiteralKindJSDocSignatureKindJSDocLinkKindJSDocLinkCodeKindJSDocLinkPlainKindJSDocTagKindJSDocAugmentsTagKindJSDocImplementsTagKindJSDocDeprecatedTagKindJSDocPublicTagKindJSDocPrivateTagKindJSDocProtectedTagKindJSDocReadonlyTagKindJSDocOverrideTagKindJSDocCallbackTagKindJSDocOverloadTagKindJSDocParameterTagKindJSDocReturnTagKindJSDocThisTagKindJSDocTypeTagKindJSDocTemplateTagKindJSDocTypedefTagKindJSDocSeeTagKindJSDocPropertyTagKindJSDocSatisfiesTagKindJSDocImportTagKindSyntaxListKindJSTypeAliasDeclarationKindJSExportAssignmentKindCommonJSExportKindNotEmittedStatementKindPartiallyEmittedExpressionKindCommaListExpressionKindSyntheticReferenceExpressionKindCount"
++const _Kind_name = "KindUnknownKindEndOfFileKindSingleLineCommentTriviaKindMultiLineCommentTriviaKindNewLineTriviaKindWhitespaceTriviaKindConflictMarkerTriviaKindNonTextFileMarkerTriviaKindNumericLiteralKindBigIntLiteralKindStringLiteralKindJsxTextKindJsxTextAllWhiteSpacesKindRegularExpressionLiteralKindNoSubstitutionTemplateLiteralKindTemplateHeadKindTemplateMiddleKindTemplateTailKindOpenBraceTokenKindCloseBraceTokenKindOpenParenTokenKindCloseParenTokenKindOpenBracketTokenKindCloseBracketTokenKindDotTokenKindDotDotDotTokenKindSemicolonTokenKindCommaTokenKindQuestionDotTokenKindLessThanTokenKindLessThanSlashTokenKindGreaterThanTokenKindLessThanEqualsTokenKindGreaterThanEqualsTokenKindEqualsEqualsTokenKindExclamationEqualsTokenKindEqualsEqualsEqualsTokenKindExclamationEqualsEqualsTokenKindEqualsGreaterThanTokenKindPlusTokenKindMinusTokenKindAsteriskTokenKindAsteriskAsteriskTokenKindSlashTokenKindPercentTokenKindPlusPlusTokenKindMinusMinusTokenKindLessThanLessThanTokenKindGreaterThanGreaterThanTokenKindGreaterThanGreaterThanGreaterThanTokenKindAmpersandTokenKindBarTokenKindCaretTokenKindExclamationTokenKindTildeTokenKindAmpersandAmpersandTokenKindBarBarTokenKindQuestionTokenKindColonTokenKindAtTokenKindQuestionQuestionTokenKindBacktickTokenKindHashTokenKindEqualsTokenKindPlusEqualsTokenKindMinusEqualsTokenKindAsteriskEqualsTokenKindAsteriskAsteriskEqualsTokenKindSlashEqualsTokenKindPercentEqualsTokenKindLessThanLessThanEqualsTokenKindGreaterThanGreaterThanEqualsTokenKindGreaterThanGreaterThanGreaterThanEqualsTokenKindAmpersandEqualsTokenKindBarEqualsTokenKindBarBarEqualsTokenKindAmpersandAmpersandEqualsTokenKindQuestionQuestionEqualsTokenKindCaretEqualsTokenKindIdentifierKindPrivateIdentifierKindJSDocCommentTextTokenKindBreakKeywordKindCaseKeywordKindCatchKeywordKindClassKeywordKindConstKeywordKindContinueKeywordKindDebuggerKeywordKindDefaultKeywordKindDeleteKeywordKindDoKeywordKindElseKeywordKindEnumKeywordKindExportKeywordKindExtendsKeywordKindFalseKeywordKindFinallyKeywordKindForKeywordKindFunctionKeywordKindIfKeywordKindImportKeywordKindInKeywordKindInstanceOfKeywordKindNewKeywordKindNullKeywordKindReturnKeywordKindSuperKeywordKindSwitchKeywordKindThisKeywordKindThrowKeywordKindTrueKeywordKindTryKeywordKindTypeOfKeywordKindVarKeywordKindVoidKeywordKindWhileKeywordKindWithKeywordKindImplementsKeywordKindInterfaceKeywordKindLetKeywordKindPackageKeywordKindPrivateKeywordKindProtectedKeywordKindPublicKeywordKindStaticKeywordKindYieldKeywordKindAbstractKeywordKindAccessorKeywordKindAsKeywordKindAssertsKeywordKindAssertKeywordKindAnyKeywordKindAsyncKeywordKindAwaitKeywordKindBooleanKeywordKindConstructorKeywordKindDeclareKeywordKindGetKeywordKindImmediateKeywordKindInferKeywordKindIntrinsicKeywordKindIsKeywordKindKeyOfKeywordKindModuleKeywordKindNamespaceKeywordKindNeverKeywordKindOutKeywordKindReadonlyKeywordKindRequireKeywordKindNumberKeywordKindObjectKeywordKindSatisfiesKeywordKindSetKeywordKindStringKeywordKindSymbolKeywordKindTypeKeywordKindUndefinedKeywordKindUniqueKeywordKindUnknownKeywordKindUsingKeywordKindFromKeywordKindGlobalKeywordKindBigIntKeywordKindOverrideKeywordKindOfKeywordKindQualifiedNameKindComputedPropertyNameKindTypeParameterKindParameterKindDecoratorKindPropertySignatureKindPropertyDeclarationKindMethodSignatureKindMethodDeclarationKindClassStaticBlockDeclarationKindConstructorKindGetAccessorKindSetAccessorKindCallSignatureKindConstructSignatureKindIndexSignatureKindTypePredicateKindTypeReferenceKindFunctionTypeKindConstructorTypeKindTypeQueryKindTypeLiteralKindArrayTypeKindTupleTypeKindOptionalTypeKindRestTypeKindUnionTypeKindIntersectionTypeKindConditionalTypeKindInferTypeKindParenthesizedTypeKindThisTypeKindTypeOperatorKindIndexedAccessTypeKindMappedTypeKindLiteralTypeKindNamedTupleMemberKindTemplateLiteralTypeKindTemplateLiteralTypeSpanKindImportTypeKindObjectBindingPatternKindArrayBindingPatternKindBindingElementKindArrayLiteralExpressionKindObjectLiteralExpressionKindPropertyAccessExpressionKindElementAccessExpressionKindCallExpressionKindNewExpressionKindTaggedTemplateExpressionKindTypeAssertionExpressionKindParenthesizedExpressionKindFunctionExpressionKindArrowFunctionKindDeleteExpressionKindTypeOfExpressionKindVoidExpressionKindAwaitExpressionKindPrefixUnaryExpressionKindPostfixUnaryExpressionKindBinaryExpressionKindConditionalExpressionKindTemplateExpressionKindYieldExpressionKindSpreadElementKindClassExpressionKindOmittedExpressionKindExpressionWithTypeArgumentsKindAsExpressionKindNonNullExpressionKindMetaPropertyKindSyntheticExpressionKindSatisfiesExpressionKindTemplateSpanKindSemicolonClassElementKindBlockKindEmptyStatementKindVariableStatementKindExpressionStatementKindIfStatementKindDoStatementKindWhileStatementKindForStatementKindForInStatementKindForOfStatementKindContinueStatementKindBreakStatementKindReturnStatementKindWithStatementKindSwitchStatementKindLabeledStatementKindThrowStatementKindTryStatementKindDebuggerStatementKindVariableDeclarationKindVariableDeclarationListKindFunctionDeclarationKindClassDeclarationKindInterfaceDeclarationKindTypeAliasDeclarationKindEnumDeclarationKindModuleDeclarationKindModuleBlockKindCaseBlockKindNamespaceExportDeclarationKindImportEqualsDeclarationKindImportDeclarationKindImportClauseKindNamespaceImportKindNamedImportsKindImportSpecifierKindExportAssignmentKindExportDeclarationKindNamedExportsKindNamespaceExportKindExportSpecifierKindMissingDeclarationKindExternalModuleReferenceKindJsxElementKindJsxSelfClosingElementKindJsxOpeningElementKindJsxClosingElementKindJsxFragmentKindJsxOpeningFragmentKindJsxClosingFragmentKindJsxAttributeKindJsxAttributesKindJsxSpreadAttributeKindJsxExpressionKindJsxNamespacedNameKindCaseClauseKindDefaultClauseKindHeritageClauseKindCatchClauseKindImportAttributesKindImportAttributeKindPropertyAssignmentKindShorthandPropertyAssignmentKindSpreadAssignmentKindEnumMemberKindSourceFileKindBundleKindJSDocTypeExpressionKindJSDocNameReferenceKindJSDocMemberNameKindJSDocAllTypeKindJSDocNullableTypeKindJSDocNonNullableTypeKindJSDocOptionalTypeKindJSDocVariadicTypeKindJSDocKindJSDocTextKindJSDocTypeLiteralKindJSDocSignatureKindJSDocLinkKindJSDocLinkCodeKindJSDocLinkPlainKindJSDocTagKindJSDocAugmentsTagKindJSDocImplementsTagKindJSDocDeprecatedTagKindJSDocPublicTagKindJSDocPrivateTagKindJSDocProtectedTagKindJSDocReadonlyTagKindJSDocOverrideTagKindJSDocCallbackTagKindJSDocOverloadTagKindJSDocParameterTagKindJSDocReturnTagKindJSDocThisTagKindJSDocTypeTagKindJSDocTemplateTagKindJSDocTypedefTagKindJSDocSeeTagKindJSDocPropertyTagKindJSDocSatisfiesTagKindJSDocImportTagKindSyntaxListKindJSTypeAliasDeclarationKindJSExportAssignmentKindCommonJSExportKindJSImportDeclarationKindNotEmittedStatementKindPartiallyEmittedExpressionKindCommaListExpressionKindSyntheticReferenceExpressionKindCount"
+ 
+-var _Kind_index = [...]uint16{0, 11, 24, 51, 77, 94, 114, 138, 165, 183, 200, 217, 228, 253, 281, 314, 330, 348, 364, 382, 401, 419, 438, 458, 479, 491, 509, 527, 541, 561, 578, 600, 620, 643, 669, 690, 716, 743, 775, 801, 814, 828, 845, 870, 884, 900, 917, 936, 961, 992, 1034, 1052, 1064, 1078, 1098, 1112, 1139, 1154, 1171, 1185, 1196, 1221, 1238, 1251, 1266, 1285, 1305, 1328, 1359, 1379, 1401, 1432, 1469, 1517, 1541, 1559, 1580, 1613, 1644, 1664, 1678, 1699, 1724, 1740, 1755, 1771, 1787, 1803, 1822, 1841, 1859, 1876, 1889, 1904, 1919, 1936, 1954, 1970, 1988, 2002, 2021, 2034, 2051, 2064, 2085, 2099, 2114, 2131, 2147, 2164, 2179, 2195, 2210, 2224, 2241, 2255, 2270, 2286, 2301, 2322, 2342, 2356, 2374, 2392, 2412, 2429, 2446, 2462, 2481, 2500, 2513, 2531, 2548, 2562, 2578, 2594, 2612, 2634, 2652, 2666, 2686, 2702, 2722, 2735, 2751, 2768, 2788, 2804, 2818, 2837, 2855, 2872, 2889, 2909, 2923, 2940, 2957, 2972, 2992, 3009, 3027, 3043, 3058, 3075, 3092, 3111, 3124, 3141, 3165, 3182, 3195, 3208, 3229, 3252, 3271, 3292, 3323, 3338, 3353, 3368, 3385, 3407, 3425, 3442, 3459, 3475, 3494, 3507, 3522, 3535, 3548, 3564, 3576, 3589, 3609, 3628, 3641, 3662, 3674, 3690, 3711, 3725, 3740, 3760, 3783, 3810, 3824, 3848, 3871, 3889, 3915, 3942, 3970, 3997, 4015, 4032, 4060, 4087, 4114, 4136, 4153, 4173, 4193, 4211, 4230, 4255, 4281, 4301, 4326, 4348, 4367, 4384, 4403, 4424, 4455, 4471, 4492, 4508, 4531, 4554, 4570, 4595, 4604, 4622, 4643, 4666, 4681, 4696, 4714, 4730, 4748, 4766, 4787, 4805, 4824, 4841, 4860, 4880, 4898, 4914, 4935, 4958, 4985, 5008, 5028, 5052, 5076, 5095, 5116, 5131, 5144, 5174, 5201, 5222, 5238, 5257, 5273, 5292, 5312, 5333, 5349, 5368, 5387, 5409, 5436, 5450, 5475, 5496, 5517, 5532, 5554, 5576, 5592, 5609, 5631, 5648, 5669, 5683, 5700, 5718, 5733, 5753, 5772, 5794, 5825, 5845, 5859, 5873, 5883, 5906, 5928, 5947, 5963, 5984, 6008, 6029, 6050, 6059, 6072, 6092, 6110, 6123, 6140, 6158, 6170, 6190, 6212, 6234, 6252, 6271, 6292, 6312, 6332, 6352, 6372, 6393, 6411, 6427, 6443, 6463, 6482, 6497, 6517, 6538, 6556, 6570, 6596, 6618, 6636, 6659, 6689, 6712, 6744, 6753}
++var _Kind_index = [...]uint16{0, 11, 24, 51, 77, 94, 114, 138, 165, 183, 200, 217, 228, 253, 281, 314, 330, 348, 364, 382, 401, 419, 438, 458, 479, 491, 509, 527, 541, 561, 578, 600, 620, 643, 669, 690, 716, 743, 775, 801, 814, 828, 845, 870, 884, 900, 917, 936, 961, 992, 1034, 1052, 1064, 1078, 1098, 1112, 1139, 1154, 1171, 1185, 1196, 1221, 1238, 1251, 1266, 1285, 1305, 1328, 1359, 1379, 1401, 1432, 1469, 1517, 1541, 1559, 1580, 1613, 1644, 1664, 1678, 1699, 1724, 1740, 1755, 1771, 1787, 1803, 1822, 1841, 1859, 1876, 1889, 1904, 1919, 1936, 1954, 1970, 1988, 2002, 2021, 2034, 2051, 2064, 2085, 2099, 2114, 2131, 2147, 2164, 2179, 2195, 2210, 2224, 2241, 2255, 2270, 2286, 2301, 2322, 2342, 2356, 2374, 2392, 2412, 2429, 2446, 2462, 2481, 2500, 2513, 2531, 2548, 2562, 2578, 2594, 2612, 2634, 2652, 2666, 2686, 2702, 2722, 2735, 2751, 2768, 2788, 2804, 2818, 2837, 2855, 2872, 2889, 2909, 2923, 2940, 2957, 2972, 2992, 3009, 3027, 3043, 3058, 3075, 3092, 3111, 3124, 3141, 3165, 3182, 3195, 3208, 3229, 3252, 3271, 3292, 3323, 3338, 3353, 3368, 3385, 3407, 3425, 3442, 3459, 3475, 3494, 3507, 3522, 3535, 3548, 3564, 3576, 3589, 3609, 3628, 3641, 3662, 3674, 3690, 3711, 3725, 3740, 3760, 3783, 3810, 3824, 3848, 3871, 3889, 3915, 3942, 3970, 3997, 4015, 4032, 4060, 4087, 4114, 4136, 4153, 4173, 4193, 4211, 4230, 4255, 4281, 4301, 4326, 4348, 4367, 4384, 4403, 4424, 4455, 4471, 4492, 4508, 4531, 4554, 4570, 4595, 4604, 4622, 4643, 4666, 4681, 4696, 4714, 4730, 4748, 4766, 4787, 4805, 4824, 4841, 4860, 4880, 4898, 4914, 4935, 4958, 4985, 5008, 5028, 5052, 5076, 5095, 5116, 5131, 5144, 5174, 5201, 5222, 5238, 5257, 5273, 5292, 5312, 5333, 5349, 5368, 5387, 5409, 5436, 5450, 5475, 5496, 5517, 5532, 5554, 5576, 5592, 5609, 5631, 5648, 5669, 5683, 5700, 5718, 5733, 5753, 5772, 5794, 5825, 5845, 5859, 5873, 5883, 5906, 5928, 5947, 5963, 5984, 6008, 6029, 6050, 6059, 6072, 6092, 6110, 6123, 6140, 6158, 6170, 6190, 6212, 6234, 6252, 6271, 6292, 6312, 6332, 6352, 6372, 6393, 6411, 6427, 6443, 6463, 6482, 6497, 6517, 6538, 6556, 6570, 6596, 6618, 6636, 6659, 6682, 6712, 6735, 6767, 6776}
+ 
+ func (i Kind) String() string {
+ 	if i < 0 || i >= Kind(len(_Kind_index)-1) {
+diff --git a/internal/ast/utilities.go b/internal/ast/utilities.go
+index 53ee669474d..eb50485361d 100644
+--- a/internal/ast/utilities.go
++++ b/internal/ast/utilities.go
+@@ -646,6 +646,7 @@ func isDeclarationStatementKind(kind Kind) bool {
+ 		KindEnumDeclaration,
+ 		KindModuleDeclaration,
+ 		KindImportDeclaration,
++		KindJSImportDeclaration,
+ 		KindImportEqualsDeclaration,
+ 		KindExportDeclaration,
+ 		KindExportAssignment,
+@@ -1036,7 +1037,7 @@ func CanHaveIllegalDecorators(node *Node) bool {
+ 		KindMissingDeclaration, KindVariableStatement,
+ 		KindInterfaceDeclaration, KindTypeAliasDeclaration,
+ 		KindEnumDeclaration, KindModuleDeclaration,
+-		KindImportEqualsDeclaration, KindImportDeclaration,
++		KindImportEqualsDeclaration, KindImportDeclaration, KindJSImportDeclaration,
+ 		KindNamespaceExportDeclaration, KindExportDeclaration,
+ 		KindExportAssignment:
+ 		return true
+@@ -1081,6 +1082,7 @@ func CanHaveModifiers(node *Node) bool {
+ 		KindModuleDeclaration,
+ 		KindImportEqualsDeclaration,
+ 		KindImportDeclaration,
++		KindJSImportDeclaration,
+ 		KindExportAssignment,
+ 		KindExportDeclaration:
+ 		return true
+@@ -1662,7 +1664,7 @@ func IsAnyImportOrReExport(node *Node) bool {
+ }
+ 
+ func IsAnyImportSyntax(node *Node) bool {
+-	return NodeKindIs(node, KindImportDeclaration, KindImportEqualsDeclaration)
++	return NodeKindIs(node, KindImportDeclaration, KindJSImportDeclaration, KindImportEqualsDeclaration)
+ }
+ 
+ func IsJsonSourceFile(file *SourceFile) bool {
+@@ -1675,12 +1677,10 @@ func IsInJsonFile(node *Node) bool {
+ 
+ func GetExternalModuleName(node *Node) *Expression {
+ 	switch node.Kind {
+-	case KindImportDeclaration:
++	case KindImportDeclaration, KindJSImportDeclaration:
+ 		return node.AsImportDeclaration().ModuleSpecifier
+ 	case KindExportDeclaration:
+ 		return node.AsExportDeclaration().ModuleSpecifier
+-	case KindJSDocImportTag:
+-		return node.AsJSDocImportTag().ModuleSpecifier
+ 	case KindImportEqualsDeclaration:
+ 		if node.AsImportEqualsDeclaration().ModuleReference.Kind == KindExternalModuleReference {
+ 			return node.AsImportEqualsDeclaration().ModuleReference.AsExternalModuleReference().Expression
+@@ -1701,7 +1701,7 @@ func GetExternalModuleName(node *Node) *Expression {
+ 
+ func GetImportAttributes(node *Node) *Node {
+ 	switch node.Kind {
+-	case KindImportDeclaration:
++	case KindImportDeclaration, KindJSImportDeclaration:
+ 		return node.AsImportDeclaration().Attributes
+ 	case KindExportDeclaration:
+ 		return node.AsExportDeclaration().Attributes
+@@ -2053,6 +2053,7 @@ func GetMeaningFromDeclaration(node *Node) SemanticMeaning {
+ 		KindImportSpecifier,
+ 		KindImportEqualsDeclaration,
+ 		KindImportDeclaration,
++		KindJSImportDeclaration,
+ 		KindExportAssignment,
+ 		KindJSExportAssignment,
+ 		KindExportDeclaration:
+@@ -2168,7 +2169,7 @@ func getModuleInstanceStateWorker(node *Node, ancestors []*Node, visited map[Nod
+ 		if IsEnumConst(node) {
+ 			return ModuleInstanceStateConstEnumOnly
+ 		}
+-	case KindImportDeclaration, KindImportEqualsDeclaration:
++	case KindImportDeclaration, KindJSImportDeclaration, KindImportEqualsDeclaration:
+ 		if !HasSyntacticModifier(node, ModifierFlagsExport) {
+ 			return ModuleInstanceStateNonInstantiated
+ 		}
+@@ -2339,7 +2340,7 @@ func GetFirstIdentifier(node *Node) *Node {
+ 
+ func GetNamespaceDeclarationNode(node *Node) *Node {
+ 	switch node.Kind {
+-	case KindImportDeclaration:
++	case KindImportDeclaration, KindJSImportDeclaration:
+ 		importClause := node.AsImportDeclaration().ImportClause
+ 		if importClause != nil && importClause.AsImportClause().NamedBindings != nil && IsNamespaceImport(importClause.AsImportClause().NamedBindings) {
+ 			return importClause.AsImportClause().NamedBindings
+@@ -2361,15 +2362,13 @@ func ModuleExportNameIsDefault(node *Node) bool {
+ 	return node.Text() == InternalSymbolNameDefault
+ }
+ 
+-func IsDefaultImport(node *Node /*ImportDeclaration | ImportEqualsDeclaration | ExportDeclaration | JSDocImportTag*/) bool {
+-	var importClause *Node
++func IsDefaultImport(node *Node /*ImportDeclaration | ImportEqualsDeclaration | ExportDeclaration*/) bool {
+ 	switch node.Kind {
+-	case KindImportDeclaration:
+-		importClause = node.AsImportDeclaration().ImportClause
+-	case KindJSDocImportTag:
+-		importClause = node.AsJSDocImportTag().ImportClause
++	case KindImportDeclaration, KindJSImportDeclaration:
++		importClause := node.AsImportDeclaration().ImportClause
++		return importClause != nil && importClause.AsImportClause().name != nil
+ 	}
+-	return importClause != nil && importClause.AsImportClause().name != nil
++	return false
+ }
+ 
+ func GetImpliedNodeFormatForFile(path string, packageJsonType string) core.ModuleKind {
+@@ -2554,13 +2553,6 @@ func ForEachDynamicImportOrRequireCall(
+ 			if cb(node, node.AsImportTypeNode().Argument.AsLiteralTypeNode().Literal) {
+ 				return true
+ 			}
+-		} else if includeTypeSpaceImports && node.Kind == KindJSDocImportTag {
+-			moduleNameExpr := GetExternalModuleName(node)
+-			if moduleNameExpr != nil && IsStringLiteral(moduleNameExpr) && moduleNameExpr.Text() != "" {
+-				if cb(node, moduleNameExpr) {
+-					return true
+-				}
+-			}
+ 		}
+ 		// skip past import/require
+ 		lastIndex += size
+diff --git a/internal/checker/checker.go b/internal/checker/checker.go
+index 3383971d34c..b1523e4e243 100644
+--- a/internal/checker/checker.go
++++ b/internal/checker/checker.go
+@@ -2205,7 +2205,7 @@ func (c *Checker) checkSourceElementWorker(node *ast.Node) {
+ 		c.checkEnumMember(node)
+ 	case ast.KindModuleDeclaration:
+ 		c.checkModuleDeclaration(node)
+-	case ast.KindImportDeclaration:
++	case ast.KindImportDeclaration, ast.KindJSImportDeclaration:
+ 		c.checkImportDeclaration(node)
+ 	case ast.KindImportEqualsDeclaration:
+ 		c.checkImportEqualsDeclaration(node)
+@@ -4898,7 +4898,7 @@ func (c *Checker) checkModuleAugmentationElement(node *ast.Node) {
+ 			break
+ 		}
+ 		fallthrough
+-	case ast.KindImportDeclaration:
++	case ast.KindImportDeclaration, ast.KindJSImportDeclaration:
+ 		c.grammarErrorOnFirstToken(node, diagnostics.Imports_are_not_permitted_in_module_augmentations_Consider_moving_them_to_the_enclosing_external_module)
+ 	case ast.KindBindingElement, ast.KindVariableDeclaration:
+ 		name := node.Name()
+@@ -5080,14 +5080,10 @@ func isExclusivelyTypeOnlyImportOrExport(node *ast.Node) bool {
+ 	switch node.Kind {
+ 	case ast.KindExportDeclaration:
+ 		return node.AsExportDeclaration().IsTypeOnly
+-	case ast.KindImportDeclaration:
++	case ast.KindImportDeclaration, ast.KindJSImportDeclaration:
+ 		if importClause := node.AsImportDeclaration().ImportClause; importClause != nil {
+ 			return importClause.AsImportClause().IsTypeOnly
+ 		}
+-	case ast.KindJSDocImportTag:
+-		if importClause := node.AsJSDocImportTag().ImportClause; importClause != nil {
+-			return importClause.AsImportClause().IsTypeOnly
+-		}
+ 	}
+ 	return false
+ }
+@@ -14173,7 +14169,7 @@ func (c *Checker) getModuleSpecifierForImportOrExport(node *ast.Node) *ast.Node
+ 
+ func getModuleSpecifierFromNode(node *ast.Node) *ast.Node {
+ 	switch node.Kind {
+-	case ast.KindImportDeclaration:
++	case ast.KindImportDeclaration, ast.KindJSImportDeclaration:
+ 		return node.AsImportDeclaration().ModuleSpecifier
+ 	case ast.KindExportDeclaration:
+ 		return node.AsExportDeclaration().ModuleSpecifier
+@@ -29387,7 +29383,7 @@ func (c *Checker) getSymbolAtLocation(node *ast.Node, ignoreErrors bool) *ast.Sy
+ 		// 3). Require in Javascript
+ 		// 4). type A = import("./f/*gotToDefinitionHere*/oo")
+ 		if (ast.IsExternalModuleImportEqualsDeclaration(grandParent) && getExternalModuleImportEqualsDeclarationExpression(grandParent) == node) ||
+-			((parent.Kind == ast.KindImportDeclaration || parent.Kind == ast.KindExportDeclaration) && parent.AsImportDeclaration().ModuleSpecifier == node) ||
++			((parent.Kind == ast.KindImportDeclaration || parent.Kind == ast.KindJSImportDeclaration || parent.Kind == ast.KindExportDeclaration) && parent.AsImportDeclaration().ModuleSpecifier == node) ||
+ 			ast.IsVariableDeclarationInitializedToRequire(grandParent) ||
+ 			(ast.IsLiteralTypeNode(parent) && ast.IsLiteralImportTypeNode(grandParent) && grandParent.AsImportTypeNode().Argument == parent) {
+ 			return c.resolveExternalModuleName(node, node, ignoreErrors)
+diff --git a/internal/checker/grammarchecks.go b/internal/checker/grammarchecks.go
+index 6e61fdaaf8f..3a6363e5675 100644
+--- a/internal/checker/grammarchecks.go
++++ b/internal/checker/grammarchecks.go
+@@ -547,7 +547,7 @@ func (c *Checker) checkGrammarModifiers(node *ast.Node /*Union[HasModifiers, Has
+ 			return c.grammarErrorOnNode(lastAsync, diagnostics.X_0_modifier_cannot_appear_on_a_constructor_declaration, "async")
+ 		}
+ 		return false
+-	} else if (node.Kind == ast.KindImportDeclaration || node.Kind == ast.KindImportEqualsDeclaration) && flags&ast.ModifierFlagsAmbient != 0 {
++	} else if (node.Kind == ast.KindImportDeclaration || node.Kind == ast.KindJSImportDeclaration || node.Kind == ast.KindImportEqualsDeclaration) && flags&ast.ModifierFlagsAmbient != 0 {
+ 		return c.grammarErrorOnNode(lastDeclare, diagnostics.A_0_modifier_cannot_be_used_with_an_import_declaration, "declare")
+ 	} else if node.Kind == ast.KindParameter && (flags&ast.ModifierFlagsParameterPropertyModifier != 0) && ast.IsBindingPattern(node.Name()) {
+ 		return c.grammarErrorOnNode(node, diagnostics.A_parameter_property_may_not_be_declared_using_a_binding_pattern)
+@@ -598,6 +598,7 @@ func (c *Checker) findFirstIllegalModifier(node *ast.Node) *ast.Node {
+ 		ast.KindIndexSignature,
+ 		ast.KindModuleDeclaration,
+ 		ast.KindImportDeclaration,
++		ast.KindJSImportDeclaration,
+ 		ast.KindImportEqualsDeclaration,
+ 		ast.KindExportDeclaration,
+ 		ast.KindExportAssignment,
+@@ -2021,7 +2022,7 @@ func (c *Checker) checkGrammarTopLevelElementForRequiredDeclareModifier(node *as
+ 	//     export_opt   AmbientDeclaration
+ 	//
+ 	// TODO: The spec needs to be amended to reflect this grammar.
+-	if node.Kind == ast.KindInterfaceDeclaration || node.Kind == ast.KindTypeAliasDeclaration || node.Kind == ast.KindImportDeclaration || node.Kind == ast.KindImportEqualsDeclaration || node.Kind == ast.KindExportDeclaration || node.Kind == ast.KindExportAssignment || node.Kind == ast.KindJSExportAssignment || node.Kind == ast.KindNamespaceExportDeclaration || ast.HasSyntacticModifier(node, ast.ModifierFlagsAmbient|ast.ModifierFlagsExport|ast.ModifierFlagsDefault) {
++	if node.Kind == ast.KindInterfaceDeclaration || node.Kind == ast.KindTypeAliasDeclaration || node.Kind == ast.KindImportDeclaration || node.Kind == ast.KindJSImportDeclaration || node.Kind == ast.KindImportEqualsDeclaration || node.Kind == ast.KindExportDeclaration || node.Kind == ast.KindExportAssignment || node.Kind == ast.KindJSExportAssignment || node.Kind == ast.KindNamespaceExportDeclaration || ast.HasSyntacticModifier(node, ast.ModifierFlagsAmbient|ast.ModifierFlagsExport|ast.ModifierFlagsDefault) {
+ 		return false
+ 	}
+ 
+diff --git a/internal/ls/utilities.go b/internal/ls/utilities.go
+index 6c642513a3c..4d3455e1d97 100644
+--- a/internal/ls/utilities.go
++++ b/internal/ls/utilities.go
+@@ -20,7 +20,7 @@ func isInString(file *ast.SourceFile, position int, previousToken *ast.Node) boo
+ 
+ func tryGetImportFromModuleSpecifier(node *ast.StringLiteralLike) *ast.Node {
+ 	switch node.Parent.Kind {
+-	case ast.KindImportDeclaration, ast.KindExportDeclaration, ast.KindJSDocImportTag:
++	case ast.KindImportDeclaration, ast.KindJSImportDeclaration, ast.KindExportDeclaration:
+ 		return node.Parent
+ 	case ast.KindExternalModuleReference:
+ 		return node.Parent.Parent
+diff --git a/internal/parser/reparser.go b/internal/parser/reparser.go
+index 0292d43484e..e6c804e426c 100644
+--- a/internal/parser/reparser.go
++++ b/internal/parser/reparser.go
+@@ -115,7 +115,16 @@ func (p *Parser) reparseTags(parent *ast.Node, jsDoc []*ast.Node) {
+ 				typeAlias.Loc = core.NewTextRange(tag.Pos(), tag.End())
+ 				typeAlias.Flags = p.contextFlags | ast.NodeFlagsReparsed
+ 				p.reparseList = append(p.reparseList, typeAlias)
+-				// !!! @overload and other unattached tags (@callback, @import et al) support goes here
++			case ast.KindJSDocImportTag:
++				importTag := tag.AsJSDocImportTag()
++				importClause := importTag.ImportClause.Clone(&p.factory)
++				importClause.Flags |= ast.NodeFlagsReparsed
++				importClause.AsImportClause().IsTypeOnly = true
++				importDeclaration := p.factory.NewJSImportDeclaration(importTag.Modifiers(), importClause, importTag.ModuleSpecifier, importTag.Attributes)
++				importDeclaration.Loc = core.NewTextRange(tag.Pos(), tag.End())
++				importDeclaration.Flags = p.contextFlags | ast.NodeFlagsReparsed
++				p.reparseList = append(p.reparseList, importDeclaration)
++				// !!! @overload and other unattached tags (@callback et al) support goes here
+ 			}
+ 			if !isLast {
+ 				continue
+diff --git a/internal/printer/namegenerator.go b/internal/printer/namegenerator.go
+index 274e68ebc05..376b2bc3228 100644
+--- a/internal/printer/namegenerator.go
++++ b/internal/printer/namegenerator.go
+@@ -158,7 +158,7 @@ func (g *NameGenerator) generateNameForNode(node *ast.Node, privateName bool, fl
+ 			panic("Generated name for a module or enum cannot be private and may have neither a prefix nor suffix")
+ 		}
+ 		return g.generateNameForModuleOrEnum(node)
+-	case ast.KindImportDeclaration, ast.KindExportDeclaration:
++	case ast.KindImportDeclaration, ast.KindJSImportDeclaration, ast.KindExportDeclaration:
+ 		if privateName || len(prefix) > 0 || len(suffix) > 0 {
+ 			panic("Generated name for an import or export cannot be private and may have neither a prefix nor suffix")
+ 		}
+diff --git a/internal/printer/printer.go b/internal/printer/printer.go
+index a88f2af8746..513b7b178c0 100644
+--- a/internal/printer/printer.go
++++ b/internal/printer/printer.go
+@@ -3953,7 +3953,7 @@ func (p *Printer) emitStatement(node *ast.Statement) {
+ 		p.emitNamespaceExportDeclaration(node.AsNamespaceExportDeclaration())
+ 	case ast.KindImportEqualsDeclaration:
+ 		p.emitImportEqualsDeclaration(node.AsImportEqualsDeclaration())
+-	case ast.KindImportDeclaration:
++	case ast.KindImportDeclaration, ast.KindJSImportDeclaration:
+ 		p.emitImportDeclaration(node.AsImportDeclaration())
+ 	case ast.KindExportAssignment, ast.KindJSExportAssignment:
+ 		p.emitExportAssignment(node.AsExportAssignment())
+@@ -5605,7 +5605,7 @@ func (p *Printer) generateNames(node *ast.Node) {
+ 		}
+ 	case ast.KindObjectBindingPattern, ast.KindArrayBindingPattern:
+ 		p.generateAllNames(node.AsBindingPattern().Elements)
+-	case ast.KindImportDeclaration:
++	case ast.KindImportDeclaration, ast.KindJSImportDeclaration:
+ 		p.generateNames(node.AsImportDeclaration().ImportClause)
+ 	case ast.KindImportClause:
+ 		p.generateNameIfNeeded(node.AsImportClause().Name())
+diff --git a/internal/transformers/commonjsmodule.go b/internal/transformers/commonjsmodule.go
+index a97dda2785f..eb670bda9ec 100644
+--- a/internal/transformers/commonjsmodule.go
++++ b/internal/transformers/commonjsmodule.go
+@@ -63,6 +63,8 @@ func (tx *CommonJSModuleTransformer) visitTopLevel(node *ast.Node) *ast.Node {
+ 	switch node.Kind {
+ 	case ast.KindImportDeclaration:
+ 		node = tx.visitTopLevelImportDeclaration(node.AsImportDeclaration())
++	case ast.KindJSImportDeclaration:
++		node = nil
+ 	case ast.KindImportEqualsDeclaration:
+ 		node = tx.visitTopLevelImportEqualsDeclaration(node.AsImportEqualsDeclaration())
+ 	case ast.KindExportDeclaration:
+diff --git a/internal/transformers/esmodule.go b/internal/transformers/esmodule.go
+index bd1ad3ccf8a..7335edce6dc 100644
+--- a/internal/transformers/esmodule.go
++++ b/internal/transformers/esmodule.go
+@@ -39,6 +39,8 @@ func (tx *ESModuleTransformer) visit(node *ast.Node) *ast.Node {
+ 		node = tx.visitSourceFile(node.AsSourceFile())
+ 	case ast.KindImportDeclaration:
+ 		node = tx.visitImportDeclaration(node.AsImportDeclaration())
++	case ast.KindJSImportDeclaration:
++		node = nil
+ 	case ast.KindImportEqualsDeclaration:
+ 		node = tx.visitImportEqualsDeclaration(node.AsImportEqualsDeclaration())
+ 	case ast.KindExportAssignment:
+diff --git a/internal/transformers/esnext.go b/internal/transformers/esnext.go
+index 9d49a1a40db..61b0710aba0 100644
+--- a/internal/transformers/esnext.go
++++ b/internal/transformers/esnext.go
+@@ -368,6 +368,7 @@ func (tx *ESNextTransformer) transformUsingDeclarations(statementsIn []*ast.Stat
+ 
+ 		switch node.Kind {
+ 		case ast.KindImportDeclaration,
++			ast.KindJSImportDeclaration,
+ 			ast.KindImportEqualsDeclaration,
+ 			ast.KindExportDeclaration,
+ 			ast.KindFunctionDeclaration:
+diff --git a/internal/transformers/externalmoduleinfo.go b/internal/transformers/externalmoduleinfo.go
+index 911a2ac52ad..d8e9a890f55 100644
+--- a/internal/transformers/externalmoduleinfo.go
++++ b/internal/transformers/externalmoduleinfo.go
+@@ -47,11 +47,12 @@ func (c *externalModuleInfoCollector) collect() *externalModuleInfo {
+ 	hasImportDefault := false
+ 	for _, node := range c.sourceFile.Statements.Nodes {
+ 		switch node.Kind {
+-		case ast.KindImportDeclaration:
++		case ast.KindImportDeclaration, ast.KindJSImportDeclaration:
+ 			// import "mod"
+ 			// import x from "mod"
+ 			// import * as x from "mod"
+ 			// import { x, y } from "mod"
++			// @import versions of above
+ 			n := node.AsImportDeclaration()
+ 			c.addExternalImport(node)
+ 			if !hasImportStar && getImportNeedsImportStarHelper(n) {
+diff --git a/internal/transformers/importelision.go b/internal/transformers/importelision.go
+index f7f91ca135b..70bb6912c6f 100644
+--- a/internal/transformers/importelision.go
++++ b/internal/transformers/importelision.go
+@@ -28,7 +28,7 @@ func (tx *ImportElisionTransformer) visit(node *ast.Node) *ast.Node {
+ 			return nil
+ 		}
+ 		return tx.visitor.VisitEachChild(node)
+-	case ast.KindImportDeclaration:
++	case ast.KindImportDeclaration, ast.KindJSImportDeclaration:
+ 		if !tx.isElisionBlocked(node) {
+ 			n := node.AsImportDeclaration()
+ 			// Do not elide a side-effect only import declaration.
+@@ -166,7 +166,7 @@ func (tx *ImportElisionTransformer) isElisionBlocked(node *ast.Node /*ImportDecl
+ 	}
+ 
+ 	switch node.Kind {
+-	case ast.KindImportDeclaration:
++	case ast.KindImportDeclaration, ast.KindJSImportDeclaration:
+ 		n := node.AsImportDeclaration()
+ 		p := parsed.AsImportDeclaration()
+ 		if n.ImportClause != p.ImportClause {
+diff --git a/internal/transformers/typeeraser.go b/internal/transformers/typeeraser.go
+index c2eaa6d7485..34b37065d65 100644
+--- a/internal/transformers/typeeraser.go
++++ b/internal/transformers/typeeraser.go
+@@ -255,7 +255,7 @@ func (tx *TypeEraserTransformer) visit(node *ast.Node) *ast.Node {
+ 		}
+ 		return tx.visitor.VisitEachChild(node)
+ 
+-	case ast.KindImportDeclaration:
++	case ast.KindImportDeclaration, ast.KindJSImportDeclaration:
+ 		n := node.AsImportDeclaration()
+ 		if n.ImportClause == nil {
+ 			// Do not elide a side-effect only import declaration.
+diff --git a/testdata/baselines/reference/submodule/conformance/importTag1.errors.txt b/testdata/baselines/reference/submodule/conformance/importTag1.errors.txt
+deleted file mode 100644
+index bfac61ad4a1..00000000000
+--- a/testdata/baselines/reference/submodule/conformance/importTag1.errors.txt
++++ /dev/null
+@@ -1,20 +0,0 @@
+-/foo.js(6,13): error TS2304: Cannot find name 'Foo'.
+-
+-
+-==== /types.ts (0 errors) ====
+-    export interface Foo {
+-        a: number;
+-    }
+-    
+-==== /foo.js (1 errors) ====
+-    /**
+-     * @import { Foo } from "./types"
+-     */
+-    
+-    /**
+-     * @param { Foo } foo
+-                ~~~
+-!!! error TS2304: Cannot find name 'Foo'.
+-     */
+-    function f(foo) {}
+-    
+\ No newline at end of file
+diff --git a/testdata/baselines/reference/submodule/conformance/importTag15(module=es2015).errors.txt b/testdata/baselines/reference/submodule/conformance/importTag15(module=es2015).errors.txt
+index 021e5864c6a..13a7dedcf22 100644
+--- a/testdata/baselines/reference/submodule/conformance/importTag15(module=es2015).errors.txt
++++ b/testdata/baselines/reference/submodule/conformance/importTag15(module=es2015).errors.txt
+@@ -1,15 +1,24 @@
+-1.js(4,13): error TS2304: Cannot find name 'I'.
++1.js(1,30): error TS2823: Import attributes are only supported when the '--module' option is set to 'esnext', 'nodenext', or 'preserve'.
++1.js(1,30): error TS2857: Import attributes cannot be used with type-only imports or exports.
++1.js(2,33): error TS2823: Import attributes are only supported when the '--module' option is set to 'esnext', 'nodenext', or 'preserve'.
++1.js(2,33): error TS2857: Import attributes cannot be used with type-only imports or exports.
+ 
+ 
+ ==== 0.ts (0 errors) ====
+     export interface I { }
+     
+-==== 1.js (1 errors) ====
++==== 1.js (4 errors) ====
+     /** @import { I } from './0' with { type: "json" } */
++                                 ~~~~~~~~~~~~~~~~~~~~~
++!!! error TS2823: Import attributes are only supported when the '--module' option is set to 'esnext', 'nodenext', or 'preserve'.
++                                 ~~~~~~~~~~~~~~~~~~~~~
++!!! error TS2857: Import attributes cannot be used with type-only imports or exports.
+     /** @import * as foo from './0' with { type: "json" } */
++                                    ~~~~~~~~~~~~~~~~~~~~~
++!!! error TS2823: Import attributes are only supported when the '--module' option is set to 'esnext', 'nodenext', or 'preserve'.
++                                    ~~~~~~~~~~~~~~~~~~~~~
++!!! error TS2857: Import attributes cannot be used with type-only imports or exports.
+     
+     /** @param {I} a */
+-                ~
+-!!! error TS2304: Cannot find name 'I'.
+     function f(a) {}
+     
+\ No newline at end of file
+diff --git a/testdata/baselines/reference/submodule/conformance/importTag15(module=esnext).errors.txt b/testdata/baselines/reference/submodule/conformance/importTag15(module=esnext).errors.txt
+index 021e5864c6a..3b98c15768b 100644
+--- a/testdata/baselines/reference/submodule/conformance/importTag15(module=esnext).errors.txt
++++ b/testdata/baselines/reference/submodule/conformance/importTag15(module=esnext).errors.txt
+@@ -1,15 +1,18 @@
+-1.js(4,13): error TS2304: Cannot find name 'I'.
++1.js(1,30): error TS2857: Import attributes cannot be used with type-only imports or exports.
++1.js(2,33): error TS2857: Import attributes cannot be used with type-only imports or exports.
+ 
+ 
+ ==== 0.ts (0 errors) ====
+     export interface I { }
+     
+-==== 1.js (1 errors) ====
++==== 1.js (2 errors) ====
+     /** @import { I } from './0' with { type: "json" } */
++                                 ~~~~~~~~~~~~~~~~~~~~~
++!!! error TS2857: Import attributes cannot be used with type-only imports or exports.
+     /** @import * as foo from './0' with { type: "json" } */
++                                    ~~~~~~~~~~~~~~~~~~~~~
++!!! error TS2857: Import attributes cannot be used with type-only imports or exports.
+     
+     /** @param {I} a */
+-                ~
+-!!! error TS2304: Cannot find name 'I'.
+     function f(a) {}
+     
+\ No newline at end of file
+diff --git a/testdata/baselines/reference/submodule/conformance/importTag16.errors.txt b/testdata/baselines/reference/submodule/conformance/importTag16.errors.txt
+index 152fcdec231..53c5cae41da 100644
+--- a/testdata/baselines/reference/submodule/conformance/importTag16.errors.txt
++++ b/testdata/baselines/reference/submodule/conformance/importTag16.errors.txt
+@@ -1,21 +1,18 @@
+-b.js(4,12): error TS2304: Cannot find name 'Foo'.
+-b.js(5,12): error TS2304: Cannot find name 'I'.
++b.js(1,13): error TS1363: A type-only import can specify a default import or named bindings, but not both.
+ 
+ 
+ ==== a.ts (0 errors) ====
+     export default interface Foo {}
+     export interface I {}
+     
+-==== b.js (2 errors) ====
++==== b.js (1 errors) ====
+     /** @import Foo, { I } from "./a" */
++                ~~~~~~~~~~
++!!! error TS1363: A type-only import can specify a default import or named bindings, but not both.
+     
+     /**
+      * @param {Foo} a
+-               ~~~
+-!!! error TS2304: Cannot find name 'Foo'.
+      * @param {I} b
+-               ~
+-!!! error TS2304: Cannot find name 'I'.
+      */
+     export function foo(a, b) {}
+     
+\ No newline at end of file
+diff --git a/testdata/baselines/reference/submodule/conformance/importTag16.types b/testdata/baselines/reference/submodule/conformance/importTag16.types
+index 13356e92a76..a842a52c562 100644
+--- a/testdata/baselines/reference/submodule/conformance/importTag16.types
++++ b/testdata/baselines/reference/submodule/conformance/importTag16.types
+@@ -13,7 +13,7 @@ export interface I {}
+  * @param {I} b
+  */
+ export function foo(a, b) {}
+->foo : (a: Foo, b: I) => void
+->a : Foo
++>foo : (a: default, b: I) => void
++>a : default
+ >b : I
+ 
+diff --git a/testdata/baselines/reference/submodule/conformance/importTag17.errors.txt b/testdata/baselines/reference/submodule/conformance/importTag17.errors.txt
+index 049012688da..66949a08677 100644
+--- a/testdata/baselines/reference/submodule/conformance/importTag17.errors.txt
++++ b/testdata/baselines/reference/submodule/conformance/importTag17.errors.txt
+@@ -1,5 +1,5 @@
+-/a.js(5,15): error TS2304: Cannot find name 'Import'.
+-/a.js(12,15): error TS2552: Cannot find name 'Require'. Did you mean 'Required'?
++/a.js(1,15): error TS2305: Module '"/node_modules/@types/foo/index"' has no exported member 'Import'.
++/a.js(12,15): error TS2749: 'Require' refers to a value, but is being used as a type here. Did you mean 'typeof Require'?
+ 
+ 
+ ==== /node_modules/@types/foo/package.json (0 errors) ====
+@@ -22,12 +22,12 @@
+     
+ ==== /a.js (2 errors) ====
+     /** @import { Import } from 'foo' with { 'resolution-mode': 'import' } */
++                  ~~~~~~
++!!! error TS2305: Module '"/node_modules/@types/foo/index"' has no exported member 'Import'.
+     /** @import { Require } from 'foo' with { 'resolution-mode': 'require' } */
+     
+     /**
+      * @returns { Import }
+-                  ~~~~~~
+-!!! error TS2304: Cannot find name 'Import'.
+      */
+     export function f1() {
+         return 1;
+@@ -36,7 +36,7 @@
+     /**
+      * @returns { Require }
+                   ~~~~~~~
+-!!! error TS2552: Cannot find name 'Require'. Did you mean 'Required'?
++!!! error TS2749: 'Require' refers to a value, but is being used as a type here. Did you mean 'typeof Require'?
+      */
+     export function f2() {
+         return 1;
+diff --git a/testdata/baselines/reference/submodule/conformance/importTag18.errors.txt b/testdata/baselines/reference/submodule/conformance/importTag18.errors.txt
+deleted file mode 100644
+index 843e5470b90..00000000000
+--- a/testdata/baselines/reference/submodule/conformance/importTag18.errors.txt
++++ /dev/null
+@@ -1,20 +0,0 @@
+-b.js(8,12): error TS2304: Cannot find name 'Foo'.
+-
+-
+-==== a.ts (0 errors) ====
+-    export interface Foo {}
+-    
+-==== b.js (1 errors) ====
+-    /**
+-     * @import {
+-     *    Foo
+-     * } from "./a"
+-     */
+-    
+-    /**
+-     * @param {Foo} a
+-               ~~~
+-!!! error TS2304: Cannot find name 'Foo'.
+-     */
+-    export function foo(a) {}
+-    
+\ No newline at end of file
+diff --git a/testdata/baselines/reference/submodule/conformance/importTag19.errors.txt b/testdata/baselines/reference/submodule/conformance/importTag19.errors.txt
+deleted file mode 100644
+index 1adc07dfbe0..00000000000
+--- a/testdata/baselines/reference/submodule/conformance/importTag19.errors.txt
++++ /dev/null
+@@ -1,19 +0,0 @@
+-b.js(7,12): error TS2304: Cannot find name 'Foo'.
+-
+-
+-==== a.ts (0 errors) ====
+-    export interface Foo {}
+-    
+-==== b.js (1 errors) ====
+-    /**
+-     * @import { Foo }
+-     * from "./a"
+-     */
+-    
+-    /**
+-     * @param {Foo} a
+-               ~~~
+-!!! error TS2304: Cannot find name 'Foo'.
+-     */
+-    export function foo(a) {}
+-    
+\ No newline at end of file
+diff --git a/testdata/baselines/reference/submodule/conformance/importTag2.errors.txt b/testdata/baselines/reference/submodule/conformance/importTag2.errors.txt
+deleted file mode 100644
+index 75e50ed1324..00000000000
+--- a/testdata/baselines/reference/submodule/conformance/importTag2.errors.txt
++++ /dev/null
+@@ -1,20 +0,0 @@
+-/foo.js(6,13): error TS2503: Cannot find namespace 'types'.
+-
+-
+-==== /types.ts (0 errors) ====
+-    export interface Foo {
+-        a: number;
+-    }
+-    
+-==== /foo.js (1 errors) ====
+-    /**
+-     * @import * as types from "./types"
+-     */
+-    
+-    /**
+-     * @param { types.Foo } foo
+-                ~~~~~
+-!!! error TS2503: Cannot find namespace 'types'.
+-     */
+-    export function f(foo) {}
+-    
+\ No newline at end of file
+diff --git a/testdata/baselines/reference/submodule/conformance/importTag20.errors.txt b/testdata/baselines/reference/submodule/conformance/importTag20.errors.txt
+deleted file mode 100644
+index 2ec34959d16..00000000000
+--- a/testdata/baselines/reference/submodule/conformance/importTag20.errors.txt
++++ /dev/null
+@@ -1,20 +0,0 @@
+-b.js(8,12): error TS2304: Cannot find name 'Foo'.
+-
+-
+-==== a.ts (0 errors) ====
+-    export interface Foo {}
+-    
+-==== b.js (1 errors) ====
+-    /**
+-     * @import
+-     * { Foo
+-     * } from './a'
+-     */
+-    
+-    /**
+-     * @param {Foo} a
+-               ~~~
+-!!! error TS2304: Cannot find name 'Foo'.
+-     */
+-    export function foo(a) {}
+-    
+\ No newline at end of file
+diff --git a/testdata/baselines/reference/submodule/conformance/importTag3.errors.txt b/testdata/baselines/reference/submodule/conformance/importTag3.errors.txt
+deleted file mode 100644
+index 74ccb4534f8..00000000000
+--- a/testdata/baselines/reference/submodule/conformance/importTag3.errors.txt
++++ /dev/null
+@@ -1,20 +0,0 @@
+-/foo.js(6,13): error TS2304: Cannot find name 'Foo'.
+-
+-
+-==== /types.ts (0 errors) ====
+-    export default interface Foo {
+-        a: number;
+-    }
+-    
+-==== /foo.js (1 errors) ====
+-    /**
+-     * @import Foo from "./types"
+-     */
+-    
+-    /**
+-     * @param { Foo } foo
+-                ~~~
+-!!! error TS2304: Cannot find name 'Foo'.
+-     */
+-    export function f(foo) {}
+-    
+\ No newline at end of file
+diff --git a/testdata/baselines/reference/submodule/conformance/importTag3.types b/testdata/baselines/reference/submodule/conformance/importTag3.types
+index da6d62466da..8803d77cc47 100644
+--- a/testdata/baselines/reference/submodule/conformance/importTag3.types
++++ b/testdata/baselines/reference/submodule/conformance/importTag3.types
+@@ -15,6 +15,6 @@ export default interface Foo {
+  * @param { Foo } foo
+  */
+ export function f(foo) {}
+->f : (foo: Foo) => void
+->foo : Foo
++>f : (foo: default) => void
++>foo : default
+ 
+diff --git a/testdata/baselines/reference/submodule/conformance/importTag4.errors.txt b/testdata/baselines/reference/submodule/conformance/importTag4.errors.txt
+index 23e58203faf..dbfd8ad5b41 100644
+--- a/testdata/baselines/reference/submodule/conformance/importTag4.errors.txt
++++ b/testdata/baselines/reference/submodule/conformance/importTag4.errors.txt
+@@ -1,4 +1,5 @@
+-/foo.js(10,13): error TS2304: Cannot find name 'Foo'.
++/foo.js(2,14): error TS2300: Duplicate identifier 'Foo'.
++/foo.js(6,14): error TS2300: Duplicate identifier 'Foo'.
+ 
+ 
+ ==== /types.ts (0 errors) ====
+@@ -6,19 +7,21 @@
+         a: number;
+     }
+     
+-==== /foo.js (1 errors) ====
++==== /foo.js (2 errors) ====
+     /**
+      * @import { Foo } from "./types"
++                 ~~~
++!!! error TS2300: Duplicate identifier 'Foo'.
+      */
+     
+     /**
+      * @import { Foo } from "./types"
++                 ~~~
++!!! error TS2300: Duplicate identifier 'Foo'.
+      */
+     
+     /**
+      * @param { Foo } foo
+-                ~~~
+-!!! error TS2304: Cannot find name 'Foo'.
+      */
+     function f(foo) {}
+     
+\ No newline at end of file
+diff --git a/testdata/baselines/reference/submodule/conformance/importTag5.errors.txt b/testdata/baselines/reference/submodule/conformance/importTag5.errors.txt
+deleted file mode 100644
+index bfac61ad4a1..00000000000
+--- a/testdata/baselines/reference/submodule/conformance/importTag5.errors.txt
++++ /dev/null
+@@ -1,20 +0,0 @@
+-/foo.js(6,13): error TS2304: Cannot find name 'Foo'.
+-
+-
+-==== /types.ts (0 errors) ====
+-    export interface Foo {
+-        a: number;
+-    }
+-    
+-==== /foo.js (1 errors) ====
+-    /**
+-     * @import { Foo } from "./types"
+-     */
+-    
+-    /**
+-     * @param { Foo } foo
+-                ~~~
+-!!! error TS2304: Cannot find name 'Foo'.
+-     */
+-    function f(foo) {}
+-    
+\ No newline at end of file
+diff --git a/testdata/baselines/reference/submodule/conformance/importTag6.errors.txt b/testdata/baselines/reference/submodule/conformance/importTag6.errors.txt
+deleted file mode 100644
+index 6a1ec95cebc..00000000000
+--- a/testdata/baselines/reference/submodule/conformance/importTag6.errors.txt
++++ /dev/null
+@@ -1,30 +0,0 @@
+-/foo.js(9,13): error TS2304: Cannot find name 'A'.
+-/foo.js(10,13): error TS2304: Cannot find name 'B'.
+-
+-
+-==== /types.ts (0 errors) ====
+-    export interface A {
+-        a: number;
+-    }
+-    export interface B {
+-        a: number;
+-    }
+-    
+-==== /foo.js (2 errors) ====
+-    /**
+-     * @import {
+-     *     A,
+-     *     B,
+-     * } from "./types"
+-     */
+-    
+-    /**
+-     * @param { A } a
+-                ~
+-!!! error TS2304: Cannot find name 'A'.
+-     * @param { B } b
+-                ~
+-!!! error TS2304: Cannot find name 'B'.
+-     */
+-    function f(a, b) {}
+-    
+\ No newline at end of file
+diff --git a/testdata/baselines/reference/submodule/conformance/importTag7.errors.txt b/testdata/baselines/reference/submodule/conformance/importTag7.errors.txt
+deleted file mode 100644
+index 90936c18140..00000000000
+--- a/testdata/baselines/reference/submodule/conformance/importTag7.errors.txt
++++ /dev/null
+@@ -1,29 +0,0 @@
+-/foo.js(8,13): error TS2304: Cannot find name 'A'.
+-/foo.js(9,13): error TS2304: Cannot find name 'B'.
+-
+-
+-==== /types.ts (0 errors) ====
+-    export interface A {
+-        a: number;
+-    }
+-    export interface B {
+-        a: number;
+-    }
+-    
+-==== /foo.js (2 errors) ====
+-    /**
+-     * @import {
+-     * A,
+-     * B } from "./types"
+-     */
+-    
+-    /**
+-     * @param { A } a
+-                ~
+-!!! error TS2304: Cannot find name 'A'.
+-     * @param { B } b
+-                ~
+-!!! error TS2304: Cannot find name 'B'.
+-     */
+-    function f(a, b) {}
+-    
+\ No newline at end of file
+diff --git a/testdata/baselines/reference/submodule/conformance/importTag8.errors.txt b/testdata/baselines/reference/submodule/conformance/importTag8.errors.txt
+deleted file mode 100644
+index dadfa9424ef..00000000000
+--- a/testdata/baselines/reference/submodule/conformance/importTag8.errors.txt
++++ /dev/null
+@@ -1,29 +0,0 @@
+-/foo.js(8,13): error TS2304: Cannot find name 'A'.
+-/foo.js(9,13): error TS2304: Cannot find name 'B'.
+-
+-
+-==== /types.ts (0 errors) ====
+-    export interface A {
+-        a: number;
+-    }
+-    export interface B {
+-        a: number;
+-    }
+-    
+-==== /foo.js (2 errors) ====
+-    /**
+-     * @import
+-     * { A, B }
+-     * from "./types"
+-     */
+-    
+-    /**
+-     * @param { A } a
+-                ~
+-!!! error TS2304: Cannot find name 'A'.
+-     * @param { B } b
+-                ~
+-!!! error TS2304: Cannot find name 'B'.
+-     */
+-    function f(a, b) {}
+-    
+\ No newline at end of file
+diff --git a/testdata/baselines/reference/submodule/conformance/importTag9.errors.txt b/testdata/baselines/reference/submodule/conformance/importTag9.errors.txt
+deleted file mode 100644
+index 44b7a7c5ba6..00000000000
+--- a/testdata/baselines/reference/submodule/conformance/importTag9.errors.txt
++++ /dev/null
+@@ -1,29 +0,0 @@
+-/foo.js(8,13): error TS2503: Cannot find namespace 'types'.
+-/foo.js(9,13): error TS2503: Cannot find namespace 'types'.
+-
+-
+-==== /types.ts (0 errors) ====
+-    export interface A {
+-        a: number;
+-    }
+-    export interface B {
+-        a: number;
+-    }
+-    
+-==== /foo.js (2 errors) ====
+-    /**
+-     * @import
+-     * * as types
+-     * from "./types"
+-     */
+-    
+-    /**
+-     * @param { types.A } a
+-                ~~~~~
+-!!! error TS2503: Cannot find namespace 'types'.
+-     * @param { types.B } b
+-                ~~~~~
+-!!! error TS2503: Cannot find namespace 'types'.
+-     */
+-    function f(a, b) {}
+-    
+\ No newline at end of file
+diff --git a/testdata/baselines/reference/submoduleAccepted/conformance/importTag1.errors.txt.diff b/testdata/baselines/reference/submoduleAccepted/conformance/importTag1.errors.txt.diff
+deleted file mode 100644
+index 045636af041..00000000000
+--- a/testdata/baselines/reference/submoduleAccepted/conformance/importTag1.errors.txt.diff
++++ /dev/null
+@@ -1,25 +0,0 @@
+---- old.importTag1.errors.txt
+-+++ new.importTag1.errors.txt
+-@@= skipped -0, +-1 lines =@@
+--<no content>
+-@@= skipped --1, +1 lines =@@
+-+/foo.js(6,13): error TS2304: Cannot find name 'Foo'.
+-+
+-+
+-+==== /types.ts (0 errors) ====
+-+    export interface Foo {
+-+        a: number;
+-+    }
+-+    
+-+==== /foo.js (1 errors) ====
+-+    /**
+-+     * @import { Foo } from "./types"
+-+     */
+-+    
+-+    /**
+-+     * @param { Foo } foo
+-+                ~~~
+-+!!! error TS2304: Cannot find name 'Foo'.
+-+     */
+-+    function f(foo) {}
+-+    
+diff --git a/testdata/baselines/reference/submoduleAccepted/conformance/importTag15(module=es2015).errors.txt.diff b/testdata/baselines/reference/submoduleAccepted/conformance/importTag15(module=es2015).errors.txt.diff
+index 619cb1400c4..17fbf0b3966 100644
+--- a/testdata/baselines/reference/submoduleAccepted/conformance/importTag15(module=es2015).errors.txt.diff
++++ b/testdata/baselines/reference/submoduleAccepted/conformance/importTag15(module=es2015).errors.txt.diff
+@@ -1,25 +1,27 @@
+ --- old.importTag15(module=es2015).errors.txt
+ +++ new.importTag15(module=es2015).errors.txt
+ @@= skipped -0, +0 lines =@@
+--1.js(1,30): error TS2823: Import attributes are only supported when the '--module' option is set to 'esnext', 'nodenext', or 'preserve'.
+--1.js(2,33): error TS2823: Import attributes are only supported when the '--module' option is set to 'esnext', 'nodenext', or 'preserve'.
+-+1.js(4,13): error TS2304: Cannot find name 'I'.
++ 1.js(1,30): error TS2823: Import attributes are only supported when the '--module' option is set to 'esnext', 'nodenext', or 'preserve'.
+++1.js(1,30): error TS2857: Import attributes cannot be used with type-only imports or exports.
++ 1.js(2,33): error TS2823: Import attributes are only supported when the '--module' option is set to 'esnext', 'nodenext', or 'preserve'.
+++1.js(2,33): error TS2857: Import attributes cannot be used with type-only imports or exports.
+  
+  
+  ==== 0.ts (0 errors) ====
+      export interface I { }
+      
+ -==== 1.js (2 errors) ====
+-+==== 1.js (1 errors) ====
+++==== 1.js (4 errors) ====
+      /** @import { I } from './0' with { type: "json" } */
+--                                 ~~~~~~~~~~~~~~~~~~~~~
+--!!! error TS2823: Import attributes are only supported when the '--module' option is set to 'esnext', 'nodenext', or 'preserve'.
++                                  ~~~~~~~~~~~~~~~~~~~~~
++ !!! error TS2823: Import attributes are only supported when the '--module' option is set to 'esnext', 'nodenext', or 'preserve'.
+++                                 ~~~~~~~~~~~~~~~~~~~~~
+++!!! error TS2857: Import attributes cannot be used with type-only imports or exports.
+      /** @import * as foo from './0' with { type: "json" } */
+--                                    ~~~~~~~~~~~~~~~~~~~~~
+--!!! error TS2823: Import attributes are only supported when the '--module' option is set to 'esnext', 'nodenext', or 'preserve'.
++                                     ~~~~~~~~~~~~~~~~~~~~~
++ !!! error TS2823: Import attributes are only supported when the '--module' option is set to 'esnext', 'nodenext', or 'preserve'.
+++                                    ~~~~~~~~~~~~~~~~~~~~~
+++!!! error TS2857: Import attributes cannot be used with type-only imports or exports.
+      
+      /** @param {I} a */
+-+                ~
+-+!!! error TS2304: Cannot find name 'I'.
+      function f(a) {}
+-     
+diff --git a/testdata/baselines/reference/submoduleAccepted/conformance/importTag15(module=esnext).errors.txt.diff b/testdata/baselines/reference/submoduleAccepted/conformance/importTag15(module=esnext).errors.txt.diff
+deleted file mode 100644
+index 3f390debf87..00000000000
+--- a/testdata/baselines/reference/submoduleAccepted/conformance/importTag15(module=esnext).errors.txt.diff
++++ /dev/null
+@@ -1,25 +0,0 @@
+---- old.importTag15(module=esnext).errors.txt
+-+++ new.importTag15(module=esnext).errors.txt
+-@@= skipped -0, +0 lines =@@
+--1.js(1,30): error TS2857: Import attributes cannot be used with type-only imports or exports.
+--1.js(2,33): error TS2857: Import attributes cannot be used with type-only imports or exports.
+-+1.js(4,13): error TS2304: Cannot find name 'I'.
+- 
+- 
+- ==== 0.ts (0 errors) ====
+-     export interface I { }
+-     
+--==== 1.js (2 errors) ====
+-+==== 1.js (1 errors) ====
+-     /** @import { I } from './0' with { type: "json" } */
+--                                 ~~~~~~~~~~~~~~~~~~~~~
+--!!! error TS2857: Import attributes cannot be used with type-only imports or exports.
+-     /** @import * as foo from './0' with { type: "json" } */
+--                                    ~~~~~~~~~~~~~~~~~~~~~
+--!!! error TS2857: Import attributes cannot be used with type-only imports or exports.
+-     
+-     /** @param {I} a */
+-+                ~
+-+!!! error TS2304: Cannot find name 'I'.
+-     function f(a) {}
+-     
+diff --git a/testdata/baselines/reference/submoduleAccepted/conformance/importTag16.errors.txt.diff b/testdata/baselines/reference/submoduleAccepted/conformance/importTag16.errors.txt.diff
+index a2ed8030b19..c84c13e3b65 100644
+--- a/testdata/baselines/reference/submoduleAccepted/conformance/importTag16.errors.txt.diff
++++ b/testdata/baselines/reference/submoduleAccepted/conformance/importTag16.errors.txt.diff
+@@ -3,24 +3,21 @@
+ @@= skipped -0, +-1 lines =@@
+ -<no content>
+ @@= skipped --1, +1 lines =@@
+-+b.js(4,12): error TS2304: Cannot find name 'Foo'.
+-+b.js(5,12): error TS2304: Cannot find name 'I'.
+++b.js(1,13): error TS1363: A type-only import can specify a default import or named bindings, but not both.
+ +
+ +
+ +==== a.ts (0 errors) ====
+ +    export default interface Foo {}
+ +    export interface I {}
+ +    
+-+==== b.js (2 errors) ====
+++==== b.js (1 errors) ====
+ +    /** @import Foo, { I } from "./a" */
+++                ~~~~~~~~~~
+++!!! error TS1363: A type-only import can specify a default import or named bindings, but not both.
+ +    
+ +    /**
+ +     * @param {Foo} a
+-+               ~~~
+-+!!! error TS2304: Cannot find name 'Foo'.
+ +     * @param {I} b
+-+               ~
+-+!!! error TS2304: Cannot find name 'I'.
+ +     */
+ +    export function foo(a, b) {}
+ +    
+diff --git a/testdata/baselines/reference/submoduleAccepted/conformance/importTag16.types.diff b/testdata/baselines/reference/submoduleAccepted/conformance/importTag16.types.diff
+new file mode 100644
+index 00000000000..0cba0091efa
+--- /dev/null
++++ b/testdata/baselines/reference/submoduleAccepted/conformance/importTag16.types.diff
+@@ -0,0 +1,12 @@
++--- old.importTag16.types
+++++ new.importTag16.types
++@@= skipped -12, +12 lines =@@
++  * @param {I} b
++  */
++ export function foo(a, b) {}
++->foo : (a: Foo, b: I) => void
++->a : Foo
+++>foo : (a: default, b: I) => void
+++>a : default
++ >b : I
++ 
+diff --git a/testdata/baselines/reference/submoduleAccepted/conformance/importTag17.errors.txt.diff b/testdata/baselines/reference/submoduleAccepted/conformance/importTag17.errors.txt.diff
+index 3dba612b3e8..38621401eba 100644
+--- a/testdata/baselines/reference/submoduleAccepted/conformance/importTag17.errors.txt.diff
++++ b/testdata/baselines/reference/submoduleAccepted/conformance/importTag17.errors.txt.diff
+@@ -3,17 +3,21 @@
+ @@= skipped -0, +0 lines =@@
+ -/a.js(8,5): error TS2322: Type '1' is not assignable to type '"module"'.
+ -/a.js(15,5): error TS2322: Type '1' is not assignable to type '"script"'.
+-+/a.js(5,15): error TS2304: Cannot find name 'Import'.
+-+/a.js(12,15): error TS2552: Cannot find name 'Require'. Did you mean 'Required'?
+++/a.js(1,15): error TS2305: Module '"/node_modules/@types/foo/index"' has no exported member 'Import'.
+++/a.js(12,15): error TS2749: 'Require' refers to a value, but is being used as a type here. Did you mean 'typeof Require'?
+  
+  
+  ==== /node_modules/@types/foo/package.json (0 errors) ====
+-@@= skipped -25, +25 lines =@@
++@@= skipped -21, +21 lines =@@
+      
+-     /**
+-      * @returns { Import }
++ ==== /a.js (2 errors) ====
++     /** @import { Import } from 'foo' with { 'resolution-mode': 'import' } */
+ +                  ~~~~~~
+-+!!! error TS2304: Cannot find name 'Import'.
+++!!! error TS2305: Module '"/node_modules/@types/foo/index"' has no exported member 'Import'.
++     /** @import { Require } from 'foo' with { 'resolution-mode': 'require' } */
++     
++     /**
++@@= skipped -7, +9 lines =@@
+       */
+      export function f1() {
+          return 1;
+@@ -24,7 +28,7 @@
+      /**
+       * @returns { Require }
+ +                  ~~~~~~~
+-+!!! error TS2552: Cannot find name 'Require'. Did you mean 'Required'?
+++!!! error TS2749: 'Require' refers to a value, but is being used as a type here. Did you mean 'typeof Require'?
+       */
+      export function f2() {
+          return 1;
+diff --git a/testdata/baselines/reference/submoduleAccepted/conformance/importTag18.errors.txt.diff b/testdata/baselines/reference/submoduleAccepted/conformance/importTag18.errors.txt.diff
+deleted file mode 100644
+index 8895183edbc..00000000000
+--- a/testdata/baselines/reference/submoduleAccepted/conformance/importTag18.errors.txt.diff
++++ /dev/null
+@@ -1,25 +0,0 @@
+---- old.importTag18.errors.txt
+-+++ new.importTag18.errors.txt
+-@@= skipped -0, +-1 lines =@@
+--<no content>
+-@@= skipped --1, +1 lines =@@
+-+b.js(8,12): error TS2304: Cannot find name 'Foo'.
+-+
+-+
+-+==== a.ts (0 errors) ====
+-+    export interface Foo {}
+-+    
+-+==== b.js (1 errors) ====
+-+    /**
+-+     * @import {
+-+     *    Foo
+-+     * } from "./a"
+-+     */
+-+    
+-+    /**
+-+     * @param {Foo} a
+-+               ~~~
+-+!!! error TS2304: Cannot find name 'Foo'.
+-+     */
+-+    export function foo(a) {}
+-+    
+diff --git a/testdata/baselines/reference/submoduleAccepted/conformance/importTag19.errors.txt.diff b/testdata/baselines/reference/submoduleAccepted/conformance/importTag19.errors.txt.diff
+deleted file mode 100644
+index 8839708644b..00000000000
+--- a/testdata/baselines/reference/submoduleAccepted/conformance/importTag19.errors.txt.diff
++++ /dev/null
+@@ -1,24 +0,0 @@
+---- old.importTag19.errors.txt
+-+++ new.importTag19.errors.txt
+-@@= skipped -0, +-1 lines =@@
+--<no content>
+-@@= skipped --1, +1 lines =@@
+-+b.js(7,12): error TS2304: Cannot find name 'Foo'.
+-+
+-+
+-+==== a.ts (0 errors) ====
+-+    export interface Foo {}
+-+    
+-+==== b.js (1 errors) ====
+-+    /**
+-+     * @import { Foo }
+-+     * from "./a"
+-+     */
+-+    
+-+    /**
+-+     * @param {Foo} a
+-+               ~~~
+-+!!! error TS2304: Cannot find name 'Foo'.
+-+     */
+-+    export function foo(a) {}
+-+    
+diff --git a/testdata/baselines/reference/submoduleAccepted/conformance/importTag2.errors.txt.diff b/testdata/baselines/reference/submoduleAccepted/conformance/importTag2.errors.txt.diff
+deleted file mode 100644
+index 68b2074596d..00000000000
+--- a/testdata/baselines/reference/submoduleAccepted/conformance/importTag2.errors.txt.diff
++++ /dev/null
+@@ -1,25 +0,0 @@
+---- old.importTag2.errors.txt
+-+++ new.importTag2.errors.txt
+-@@= skipped -0, +-1 lines =@@
+--<no content>
+-@@= skipped --1, +1 lines =@@
+-+/foo.js(6,13): error TS2503: Cannot find namespace 'types'.
+-+
+-+
+-+==== /types.ts (0 errors) ====
+-+    export interface Foo {
+-+        a: number;
+-+    }
+-+    
+-+==== /foo.js (1 errors) ====
+-+    /**
+-+     * @import * as types from "./types"
+-+     */
+-+    
+-+    /**
+-+     * @param { types.Foo } foo
+-+                ~~~~~
+-+!!! error TS2503: Cannot find namespace 'types'.
+-+     */
+-+    export function f(foo) {}
+-+    
+diff --git a/testdata/baselines/reference/submoduleAccepted/conformance/importTag20.errors.txt.diff b/testdata/baselines/reference/submoduleAccepted/conformance/importTag20.errors.txt.diff
+deleted file mode 100644
+index 3001e176c7b..00000000000
+--- a/testdata/baselines/reference/submoduleAccepted/conformance/importTag20.errors.txt.diff
++++ /dev/null
+@@ -1,25 +0,0 @@
+---- old.importTag20.errors.txt
+-+++ new.importTag20.errors.txt
+-@@= skipped -0, +-1 lines =@@
+--<no content>
+-@@= skipped --1, +1 lines =@@
+-+b.js(8,12): error TS2304: Cannot find name 'Foo'.
+-+
+-+
+-+==== a.ts (0 errors) ====
+-+    export interface Foo {}
+-+    
+-+==== b.js (1 errors) ====
+-+    /**
+-+     * @import
+-+     * { Foo
+-+     * } from './a'
+-+     */
+-+    
+-+    /**
+-+     * @param {Foo} a
+-+               ~~~
+-+!!! error TS2304: Cannot find name 'Foo'.
+-+     */
+-+    export function foo(a) {}
+-+    
+diff --git a/testdata/baselines/reference/submoduleAccepted/conformance/importTag3.errors.txt.diff b/testdata/baselines/reference/submoduleAccepted/conformance/importTag3.errors.txt.diff
+deleted file mode 100644
+index 31d34ac7107..00000000000
+--- a/testdata/baselines/reference/submoduleAccepted/conformance/importTag3.errors.txt.diff
++++ /dev/null
+@@ -1,25 +0,0 @@
+---- old.importTag3.errors.txt
+-+++ new.importTag3.errors.txt
+-@@= skipped -0, +-1 lines =@@
+--<no content>
+-@@= skipped --1, +1 lines =@@
+-+/foo.js(6,13): error TS2304: Cannot find name 'Foo'.
+-+
+-+
+-+==== /types.ts (0 errors) ====
+-+    export default interface Foo {
+-+        a: number;
+-+    }
+-+    
+-+==== /foo.js (1 errors) ====
+-+    /**
+-+     * @import Foo from "./types"
+-+     */
+-+    
+-+    /**
+-+     * @param { Foo } foo
+-+                ~~~
+-+!!! error TS2304: Cannot find name 'Foo'.
+-+     */
+-+    export function f(foo) {}
+-+    
+diff --git a/testdata/baselines/reference/submoduleAccepted/conformance/importTag3.types.diff b/testdata/baselines/reference/submoduleAccepted/conformance/importTag3.types.diff
+new file mode 100644
+index 00000000000..34450443ffe
+--- /dev/null
++++ b/testdata/baselines/reference/submoduleAccepted/conformance/importTag3.types.diff
+@@ -0,0 +1,11 @@
++--- old.importTag3.types
+++++ new.importTag3.types
++@@= skipped -14, +14 lines =@@
++  * @param { Foo } foo
++  */
++ export function f(foo) {}
++->f : (foo: Foo) => void
++->foo : Foo
+++>f : (foo: default) => void
+++>foo : default
++ 
+diff --git a/testdata/baselines/reference/submoduleAccepted/conformance/importTag4.errors.txt.diff b/testdata/baselines/reference/submoduleAccepted/conformance/importTag4.errors.txt.diff
+deleted file mode 100644
+index 8f00ca389ef..00000000000
+--- a/testdata/baselines/reference/submoduleAccepted/conformance/importTag4.errors.txt.diff
++++ /dev/null
+@@ -1,34 +0,0 @@
+---- old.importTag4.errors.txt
+-+++ new.importTag4.errors.txt
+-@@= skipped -0, +0 lines =@@
+--/foo.js(2,14): error TS2300: Duplicate identifier 'Foo'.
+--/foo.js(6,14): error TS2300: Duplicate identifier 'Foo'.
+-+/foo.js(10,13): error TS2304: Cannot find name 'Foo'.
+- 
+- 
+- ==== /types.ts (0 errors) ====
+-@@= skipped -6, +5 lines =@@
+-         a: number;
+-     }
+-     
+--==== /foo.js (2 errors) ====
+-+==== /foo.js (1 errors) ====
+-     /**
+-      * @import { Foo } from "./types"
+--                 ~~~
+--!!! error TS2300: Duplicate identifier 'Foo'.
+-      */
+-     
+-     /**
+-      * @import { Foo } from "./types"
+--                 ~~~
+--!!! error TS2300: Duplicate identifier 'Foo'.
+-      */
+-     
+-     /**
+-      * @param { Foo } foo
+-+                ~~~
+-+!!! error TS2304: Cannot find name 'Foo'.
+-      */
+-     function f(foo) {}
+-     
+diff --git a/testdata/baselines/reference/submoduleAccepted/conformance/importTag5.errors.txt.diff b/testdata/baselines/reference/submoduleAccepted/conformance/importTag5.errors.txt.diff
+deleted file mode 100644
+index 25bcd839849..00000000000
+--- a/testdata/baselines/reference/submoduleAccepted/conformance/importTag5.errors.txt.diff
++++ /dev/null
+@@ -1,25 +0,0 @@
+---- old.importTag5.errors.txt
+-+++ new.importTag5.errors.txt
+-@@= skipped -0, +-1 lines =@@
+--<no content>
+-@@= skipped --1, +1 lines =@@
+-+/foo.js(6,13): error TS2304: Cannot find name 'Foo'.
+-+
+-+
+-+==== /types.ts (0 errors) ====
+-+    export interface Foo {
+-+        a: number;
+-+    }
+-+    
+-+==== /foo.js (1 errors) ====
+-+    /**
+-+     * @import { Foo } from "./types"
+-+     */
+-+    
+-+    /**
+-+     * @param { Foo } foo
+-+                ~~~
+-+!!! error TS2304: Cannot find name 'Foo'.
+-+     */
+-+    function f(foo) {}
+-+    
+diff --git a/testdata/baselines/reference/submoduleAccepted/conformance/importTag6.errors.txt.diff b/testdata/baselines/reference/submoduleAccepted/conformance/importTag6.errors.txt.diff
+deleted file mode 100644
+index 51eb4dfd60e..00000000000
+--- a/testdata/baselines/reference/submoduleAccepted/conformance/importTag6.errors.txt.diff
++++ /dev/null
+@@ -1,35 +0,0 @@
+---- old.importTag6.errors.txt
+-+++ new.importTag6.errors.txt
+-@@= skipped -0, +-1 lines =@@
+--<no content>
+-@@= skipped --1, +1 lines =@@
+-+/foo.js(9,13): error TS2304: Cannot find name 'A'.
+-+/foo.js(10,13): error TS2304: Cannot find name 'B'.
+-+
+-+
+-+==== /types.ts (0 errors) ====
+-+    export interface A {
+-+        a: number;
+-+    }
+-+    export interface B {
+-+        a: number;
+-+    }
+-+    
+-+==== /foo.js (2 errors) ====
+-+    /**
+-+     * @import {
+-+     *     A,
+-+     *     B,
+-+     * } from "./types"
+-+     */
+-+    
+-+    /**
+-+     * @param { A } a
+-+                ~
+-+!!! error TS2304: Cannot find name 'A'.
+-+     * @param { B } b
+-+                ~
+-+!!! error TS2304: Cannot find name 'B'.
+-+     */
+-+    function f(a, b) {}
+-+    
+diff --git a/testdata/baselines/reference/submoduleAccepted/conformance/importTag7.errors.txt.diff b/testdata/baselines/reference/submoduleAccepted/conformance/importTag7.errors.txt.diff
+deleted file mode 100644
+index 7e454e8a8a1..00000000000
+--- a/testdata/baselines/reference/submoduleAccepted/conformance/importTag7.errors.txt.diff
++++ /dev/null
+@@ -1,34 +0,0 @@
+---- old.importTag7.errors.txt
+-+++ new.importTag7.errors.txt
+-@@= skipped -0, +-1 lines =@@
+--<no content>
+-@@= skipped --1, +1 lines =@@
+-+/foo.js(8,13): error TS2304: Cannot find name 'A'.
+-+/foo.js(9,13): error TS2304: Cannot find name 'B'.
+-+
+-+
+-+==== /types.ts (0 errors) ====
+-+    export interface A {
+-+        a: number;
+-+    }
+-+    export interface B {
+-+        a: number;
+-+    }
+-+    
+-+==== /foo.js (2 errors) ====
+-+    /**
+-+     * @import {
+-+     * A,
+-+     * B } from "./types"
+-+     */
+-+    
+-+    /**
+-+     * @param { A } a
+-+                ~
+-+!!! error TS2304: Cannot find name 'A'.
+-+     * @param { B } b
+-+                ~
+-+!!! error TS2304: Cannot find name 'B'.
+-+     */
+-+    function f(a, b) {}
+-+    
+diff --git a/testdata/baselines/reference/submoduleAccepted/conformance/importTag8.errors.txt.diff b/testdata/baselines/reference/submoduleAccepted/conformance/importTag8.errors.txt.diff
+deleted file mode 100644
+index 9bb7bbb81cf..00000000000
+--- a/testdata/baselines/reference/submoduleAccepted/conformance/importTag8.errors.txt.diff
++++ /dev/null
+@@ -1,34 +0,0 @@
+---- old.importTag8.errors.txt
+-+++ new.importTag8.errors.txt
+-@@= skipped -0, +-1 lines =@@
+--<no content>
+-@@= skipped --1, +1 lines =@@
+-+/foo.js(8,13): error TS2304: Cannot find name 'A'.
+-+/foo.js(9,13): error TS2304: Cannot find name 'B'.
+-+
+-+
+-+==== /types.ts (0 errors) ====
+-+    export interface A {
+-+        a: number;
+-+    }
+-+    export interface B {
+-+        a: number;
+-+    }
+-+    
+-+==== /foo.js (2 errors) ====
+-+    /**
+-+     * @import
+-+     * { A, B }
+-+     * from "./types"
+-+     */
+-+    
+-+    /**
+-+     * @param { A } a
+-+                ~
+-+!!! error TS2304: Cannot find name 'A'.
+-+     * @param { B } b
+-+                ~
+-+!!! error TS2304: Cannot find name 'B'.
+-+     */
+-+    function f(a, b) {}
+-+    
+diff --git a/testdata/baselines/reference/submoduleAccepted/conformance/importTag9.errors.txt.diff b/testdata/baselines/reference/submoduleAccepted/conformance/importTag9.errors.txt.diff
+deleted file mode 100644
+index 047a55a6c98..00000000000
+--- a/testdata/baselines/reference/submoduleAccepted/conformance/importTag9.errors.txt.diff
++++ /dev/null
+@@ -1,34 +0,0 @@
+---- old.importTag9.errors.txt
+-+++ new.importTag9.errors.txt
+-@@= skipped -0, +-1 lines =@@
+--<no content>
+-@@= skipped --1, +1 lines =@@
+-+/foo.js(8,13): error TS2503: Cannot find namespace 'types'.
+-+/foo.js(9,13): error TS2503: Cannot find namespace 'types'.
+-+
+-+
+-+==== /types.ts (0 errors) ====
+-+    export interface A {
+-+        a: number;
+-+    }
+-+    export interface B {
+-+        a: number;
+-+    }
+-+    
+-+==== /foo.js (2 errors) ====
+-+    /**
+-+     * @import
+-+     * * as types
+-+     * from "./types"
+-+     */
+-+    
+-+    /**
+-+     * @param { types.A } a
+-+                ~~~~~
+-+!!! error TS2503: Cannot find namespace 'types'.
+-+     * @param { types.B } b
+-+                ~~~~~
+-+!!! error TS2503: Cannot find namespace 'types'.
+-+     */
+-+    function f(a, b) {}
+-+    

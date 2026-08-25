@@ -1,0 +1,651 @@
+diff --git a/kvcache/causal.go b/kvcache/causal.go
+index 31f55233102..84b1b5f6863 100644
+--- a/kvcache/causal.go
++++ b/kvcache/causal.go
+@@ -199,9 +199,9 @@ func (c *Causal) Close() {
+ 
+ func (c *Causal) StartForward(ctx ml.Context, batch input.Batch, reserve bool) error {
+ 	c.curReserve = reserve
+-	c.curBatchSize = len(batch.Positions)
+ 	c.curSequences = batch.Sequences
+-	c.curPositions = batch.Positions
++	c.curPositions = batch.Positions.Ints()
++	c.curBatchSize = len(c.curPositions)
+ 	c.opts.Except = nil
+ 
+ 	if !c.curReserve {
+@@ -218,7 +218,7 @@ func (c *Causal) StartForward(ctx ml.Context, batch input.Batch, reserve bool) e
+ 			return err
+ 		}
+ 
+-		for i, pos := range batch.Positions {
++		for i, pos := range c.curPositions {
+ 			seq := batch.Sequences[i]
+ 
+ 			c.cells[c.curLoc+i] = cacheCell{pos: pos, sequences: []int{seq}}
+diff --git a/kvcache/causal_test.go b/kvcache/causal_test.go
+index 0d8cea79f70..b5bb44a93ff 100644
+--- a/kvcache/causal_test.go
++++ b/kvcache/causal_test.go
+@@ -391,7 +391,10 @@ func testCache(t *testing.T, backend ml.Backend, cache Cache, tests []testCase)
+ 			context := backend.NewContext()
+ 			defer context.Close()
+ 
+-			err := cache.StartForward(context, input.Batch{Positions: test.pos, Sequences: test.seqs}, false)
++			err := cache.StartForward(context, input.Batch{
++				Positions: context.FromIntSlice(test.pos, len(test.pos)),
++				Sequences: test.seqs,
++			}, false)
+ 			if err != nil {
+ 				panic(err)
+ 			}
+@@ -431,7 +434,7 @@ func TestCanResume(t *testing.T) {
+ 	defer context.Close()
+ 
+ 	err := cache.StartForward(context, input.Batch{
+-		Positions: []int32{0, 1, 2, 3},
++		Positions: context.FromIntSlice([]int32{0, 1, 2, 3}, 4),
+ 		Sequences: []int{0, 0, 0, 0},
+ 	}, false)
+ 	if err != nil {
+@@ -458,7 +461,7 @@ func TestCanResume(t *testing.T) {
+ 
+ 	// shift window by adding position 4
+ 	err = cache.StartForward(context, input.Batch{
+-		Positions: []int32{4, 5},
++		Positions: context.FromIntSlice([]int32{4, 5}, 2),
+ 		Sequences: []int{0, 0},
+ 	}, false)
+ 	if err != nil {
+@@ -503,7 +506,7 @@ func TestCanResumeSWAMem(t *testing.T) {
+ 	defer context.Close()
+ 
+ 	err := cache.StartForward(context, input.Batch{
+-		Positions: []int32{0, 1, 2, 3, 4, 5},
++		Positions: context.FromIntSlice([]int32{0, 1, 2, 3, 4, 5}, 6),
+ 		Sequences: []int{0, 0, 0, 0, 0, 0},
+ 	}, false)
+ 	if err != nil {
+@@ -516,7 +519,7 @@ func TestCanResumeSWAMem(t *testing.T) {
+ 
+ 	// shift window by adding position 6
+ 	err = cache.StartForward(context, input.Batch{
+-		Positions: []int32{6, 7},
++		Positions: context.FromIntSlice([]int32{6, 7}, 2),
+ 		Sequences: []int{0, 0},
+ 	}, false)
+ 	if err != nil {
+@@ -669,6 +672,14 @@ func (t *testTensor) Floats() []float32 {
+ 	return out
+ }
+ 
++func (t *testTensor) Ints() []int32 {
++	out := make([]int32, len(t.data))
++	for i := range out {
++		out[i] = int32(t.data[i])
++	}
++	return out
++}
++
+ func (t *testTensor) Neg(ctx ml.Context) ml.Tensor {
+ 	out := ctx.Empty(t.DType(), t.Shape()...).(*testTensor)
+ 	for i := range out.data {
+diff --git a/kvcache/encoder.go b/kvcache/encoder.go
+index 0f269c3ee78..3866a7f0437 100644
+--- a/kvcache/encoder.go
++++ b/kvcache/encoder.go
+@@ -91,7 +91,7 @@ func (c *EncoderCache) Close() {
+ func (c *EncoderCache) StartForward(ctx ml.Context, batch input.Batch, reserve bool) error {
+ 	// We work with the most recent image
+ 	if len(batch.Multimodal) > 0 {
+-		c.curPos = batch.Positions[batch.Multimodal[len(batch.Multimodal)-1].Index]
++		c.curPos = batch.Positions.Ints()[batch.Multimodal[len(batch.Multimodal)-1].Index]
+ 	}
+ 
+ 	c.curReserve = reserve
+diff --git a/kvcache/wrapper.go b/kvcache/wrapper.go
+index 7533d959e28..c3f9cb791f3 100644
+--- a/kvcache/wrapper.go
++++ b/kvcache/wrapper.go
+@@ -47,8 +47,9 @@ func (c *WrapperCache) StartForward(ctx ml.Context, batch input.Batch, reserve b
+ 		if err != nil {
+ 			// unwind on error - Remove with endIndex set to math.MaxInt32 does not fail
+ 			for j := i - 1; j >= 0; j-- {
+-				for k := range batch.Positions {
+-					_ = c.caches[j].Remove(batch.Sequences[k], batch.Positions[k], math.MaxInt32)
++				curPositions := batch.Positions.Ints()
++				for k := range curPositions {
++					_ = c.caches[j].Remove(batch.Sequences[k], curPositions[k], math.MaxInt32)
+ 				}
+ 			}
+ 			return err
+diff --git a/ml/backend.go b/ml/backend.go
+index 154a0f1b533..829540eac4f 100644
+--- a/ml/backend.go
++++ b/ml/backend.go
+@@ -401,6 +401,7 @@ type Tensor interface {
+ 
+ 	Bytes() []byte
+ 	Floats() []float32
++	Ints() []int32
+ 
+ 	SetValueFromIntSlice(s []int32)
+ 
+diff --git a/ml/backend/ggml/ggml.go b/ml/backend/ggml/ggml.go
+index 931386d5699..a2a0663012f 100644
+--- a/ml/backend/ggml/ggml.go
++++ b/ml/backend/ggml/ggml.go
+@@ -1004,6 +1004,9 @@ func (t *Tensor) Bytes() (data []byte) {
+ 
+ 		t.sync()
+ 		C.ggml_backend_tensor_get(t.t, unsafe.Pointer(&data[0]), 0, C.ggml_nbytes(t.t))
++	} else if bts := C.ggml_get_data(t.t); bts != nil {
++		// tensor is in cpu memory
++		data = C.GoBytes(bts, C.int(C.ggml_nbytes(t.t)))
+ 	}
+ 
+ 	return
+@@ -1015,6 +1018,23 @@ func (t *Tensor) Floats() (data []float32) {
+ 
+ 		t.sync()
+ 		C.ggml_backend_tensor_get(t.t, unsafe.Pointer(&data[0]), 0, C.ggml_nbytes(t.t))
++	} else if bts := C.ggml_get_data(t.t); bts != nil {
++		// tensor is in cpu memory
++		data = unsafe.Slice((*float32)(bts), C.ggml_nelements(t.t))
++	}
++
++	return
++}
++
++func (t *Tensor) Ints() (data []int32) {
++	if t.sync != nil {
++		data = make([]int32, C.ggml_nelements(t.t))
++
++		t.sync()
++		C.ggml_backend_tensor_get(t.t, unsafe.Pointer(&data[0]), 0, C.ggml_nbytes(t.t))
++	} else if bts := C.ggml_get_data(t.t); bts != nil {
++		// tensor is in cpu memory
++		data = unsafe.Slice((*int32)(bts), C.ggml_nelements(t.t))
+ 	}
+ 
+ 	return
+diff --git a/model/input/input.go b/model/input/input.go
+index bd9b53ec673..a4ce77bae11 100644
+--- a/model/input/input.go
++++ b/model/input/input.go
+@@ -54,19 +54,19 @@ type Batch struct {
+ 	// Inputs is the input tokens, including placeholders for multimodal inputs.
+ 	Inputs ml.Tensor
+ 
+-	// Multimodal is a set of multimodal embeddings previously created by
+-	// EncodeMultimodal, along with an index into Inputs. Unused for text-only
+-	// models or for batches without multimodal elements.
+-	Multimodal []MultimodalIndex
+-
+ 	// Positions is the position for each Input, relative to its sequence. Equal
+ 	// in length to Inputs.
+-	Positions []int32
++	Positions ml.Tensor
++
++	// Outputs are the set of indicies into Inputs for which output data should
++	// be returned.
++	Outputs ml.Tensor
+ 
+ 	// Sequences is the sequence for each Input. Equal in length to Inputs.
+ 	Sequences []int
+ 
+-	// Outputs are the set of indicies into Inputs for which output data should
+-	// be returned.
+-	Outputs []int32
++	// Multimodal is a set of multimodal embeddings previously created by
++	// EncodeMultimodal, along with an index into Inputs. Unused for text-only
++	// models or for batches without multimodal elements.
++	Multimodal []MultimodalIndex
+ }
+diff --git a/model/model.go b/model/model.go
+index 3a72f09aa30..82eb6a60625 100644
+--- a/model/model.go
++++ b/model/model.go
+@@ -282,11 +282,11 @@ func canNil(t reflect.Type) bool {
+ }
+ 
+ func Forward(ctx ml.Context, m Model, batch input.Batch) (ml.Tensor, error) {
+-	if len(batch.Positions) != len(batch.Sequences) {
+-		return nil, fmt.Errorf("length of positions (%v) must match length of seqs (%v)", len(batch.Positions), len(batch.Sequences))
++	if batch.Positions.Dim(0) != len(batch.Sequences) {
++		return nil, fmt.Errorf("length of positions (%v) must match length of seqs (%v)", batch.Positions.Dim(0), len(batch.Sequences))
+ 	}
+ 
+-	if len(batch.Positions) < 1 {
++	if batch.Positions.Dim(0) < 1 {
+ 		return nil, errors.New("batch size cannot be less than 1")
+ 	}
+ 
+diff --git a/model/models/gemma2/model.go b/model/models/gemma2/model.go
+index e621d03ae22..0f6ee9ec846 100644
+--- a/model/models/gemma2/model.go
++++ b/model/models/gemma2/model.go
+@@ -175,9 +175,6 @@ func (l *Layer) Forward(ctx ml.Context, hiddenState, positionIDs, outputs ml.Ten
+ }
+ 
+ func (m *Model) Forward(ctx ml.Context, batch input.Batch) (ml.Tensor, error) {
+-	positions := ctx.Input().FromIntSlice(batch.Positions, len(batch.Positions))
+-	outputs := ctx.Input().FromIntSlice(batch.Outputs, len(batch.Outputs))
+-
+ 	hiddenState := m.TokenEmbedding.Forward(ctx, batch.Inputs)
+ 	hiddenState = hiddenState.Scale(ctx, math.Sqrt(float64(m.Options.hiddenSize)))
+ 
+@@ -193,10 +190,10 @@ func (m *Model) Forward(ctx ml.Context, batch input.Batch) (ml.Tensor, error) {
+ 
+ 		var lastLayerOutputs ml.Tensor
+ 		if i == len(m.Layers)-1 {
+-			lastLayerOutputs = outputs
++			lastLayerOutputs = batch.Outputs
+ 		}
+ 
+-		hiddenState = layer.Forward(ctx, hiddenState, positions, lastLayerOutputs, m.Cache, m.Options)
++		hiddenState = layer.Forward(ctx, hiddenState, batch.Positions, lastLayerOutputs, m.Cache, m.Options)
+ 	}
+ 
+ 	hiddenState = m.OutputNorm.Forward(ctx, hiddenState, m.eps)
+diff --git a/model/models/gemma3/model_text.go b/model/models/gemma3/model_text.go
+index 2a3b23939cb..3f9a1dedcd2 100644
+--- a/model/models/gemma3/model_text.go
++++ b/model/models/gemma3/model_text.go
+@@ -160,9 +160,6 @@ func (l *TextLayer) Forward(ctx ml.Context, layer int, hiddenState, positionIDs,
+ }
+ 
+ func (m *TextModel) Forward(ctx ml.Context, batch input.Batch, cache kvcache.Cache) ml.Tensor {
+-	positions := ctx.Input().FromIntSlice(batch.Positions, len(batch.Positions))
+-	outputs := ctx.Input().FromIntSlice(batch.Outputs, len(batch.Outputs))
+-
+ 	hiddenState := m.TokenEmbedding.Forward(ctx, batch.Inputs)
+ 	hiddenState = hiddenState.Scale(ctx, math.Sqrt(float64(m.TextConfig.hiddenSize)))
+ 
+@@ -194,10 +191,10 @@ func (m *TextModel) Forward(ctx ml.Context, batch input.Batch, cache kvcache.Cac
+ 
+ 		var lastLayerOutputs ml.Tensor
+ 		if i == len(m.Layers)-1 {
+-			lastLayerOutputs = outputs
++			lastLayerOutputs = batch.Outputs
+ 		}
+ 
+-		hiddenState = layer.Forward(ctx, i, hiddenState, positions, lastLayerOutputs, cache, m.TextConfig)
++		hiddenState = layer.Forward(ctx, i, hiddenState, batch.Positions, lastLayerOutputs, cache, m.TextConfig)
+ 	}
+ 
+ 	hiddenState = m.OutputNorm.Forward(ctx, hiddenState, m.eps)
+diff --git a/model/models/gemma3n/model_text.go b/model/models/gemma3n/model_text.go
+index b75a2abb374..f4f71f2a6fc 100644
+--- a/model/models/gemma3n/model_text.go
++++ b/model/models/gemma3n/model_text.go
+@@ -29,7 +29,6 @@ type TextModel struct {
+ }
+ 
+ func (m *TextModel) Forward(ctx ml.Context, batch input.Batch, cache kvcache.Cache) (ml.Tensor, error) {
+-	positions := ctx.Input().FromIntSlice(batch.Positions, len(batch.Positions))
+ 	// Create a tensor of a single float32 value of 1.0 to use for altup correction
+ 	one := ctx.Input().FromFloatSlice([]float32{1.0}, 1)
+ 
+@@ -66,7 +65,7 @@ func (m *TextModel) Forward(ctx ml.Context, batch input.Batch, cache kvcache.Cac
+ 
+ 		// inputPerLayer = inputsPerLayer[:, i, :]
+ 		inputPerLayer := inputsPerLayer.View(ctx, i*inputsPerLayer.Stride(1), inputsPerLayer.Dim(0), inputsPerLayer.Stride(2), inputsPerLayer.Dim(2))
+-		hiddenStates = layer.Forward(ctx, hiddenStates, inputPerLayer, positions, one, cache, i >= firstSharedKeyValue, ropeBase, float64(m.activationSparsityScale[i]), &m.TextOptions)
++		hiddenStates = layer.Forward(ctx, hiddenStates, inputPerLayer, batch.Positions, one, cache, i >= firstSharedKeyValue, ropeBase, float64(m.activationSparsityScale[i]), &m.TextOptions)
+ 	}
+ 
+ 	// hiddenStates = hiddenStates[:, :, 0]
+@@ -83,7 +82,7 @@ func (m *TextModel) Forward(ctx ml.Context, batch input.Batch, cache kvcache.Cac
+ 
+ 	hiddenStates = hiddenStates.Permute(ctx, 1, 2, 0, 3).Contiguous(ctx).Mean(ctx)
+ 	hiddenStates = hiddenStates.Permute(ctx, 2, 0, 1, 3).Contiguous(ctx)
+-	hiddenStates = hiddenStates.Rows(ctx, ctx.Input().FromIntSlice(batch.Outputs, len(batch.Outputs)))
++	hiddenStates = hiddenStates.Rows(ctx, batch.Outputs)
+ 
+ 	hiddenStates = m.OutputNorm.Forward(ctx, hiddenStates, m.eps)
+ 	return m.Output.Forward(ctx, hiddenStates), nil
+diff --git a/model/models/gptoss/model.go b/model/models/gptoss/model.go
+index 3ef078095d3..21a49fd53b5 100644
+--- a/model/models/gptoss/model.go
++++ b/model/models/gptoss/model.go
+@@ -30,7 +30,6 @@ type Transformer struct {
+ // Forward implements model.Model.
+ func (m *Transformer) Forward(ctx ml.Context, batch input.Batch) (ml.Tensor, error) {
+ 	hiddenStates := m.TokenEmbedding.Forward(ctx, batch.Inputs)
+-	positions := ctx.Input().FromIntSlice(batch.Positions, len(batch.Positions))
+ 
+ 	one := ctx.Input().FromFloatSlice([]float32{1}, 1)
+ 	for i, block := range m.TransformerBlocks {
+@@ -41,11 +40,11 @@ func (m *Transformer) Forward(ctx ml.Context, batch input.Batch) (ml.Tensor, err
+ 		}
+ 
+ 		var outputs ml.Tensor
+-		if len(batch.Outputs) > 0 && i == len(m.TransformerBlocks)-1 {
+-			outputs = ctx.Input().FromIntSlice(batch.Outputs, len(batch.Outputs))
++		if i == len(m.TransformerBlocks)-1 {
++			outputs = batch.Outputs
+ 		}
+ 
+-		hiddenStates = block.Forward(ctx, hiddenStates, positions, outputs, one, m.Cache, &m.Options)
++		hiddenStates = block.Forward(ctx, hiddenStates, batch.Positions, outputs, one, m.Cache, &m.Options)
+ 	}
+ 
+ 	hiddenStates = m.OutputNorm.Forward(ctx, hiddenStates, m.eps)
+diff --git a/model/models/llama/model.go b/model/models/llama/model.go
+index 77d8f36d3cf..9caf40780a6 100644
+--- a/model/models/llama/model.go
++++ b/model/models/llama/model.go
+@@ -151,8 +151,6 @@ func (l *Layer) Forward(ctx ml.Context, hiddenState, positions, outputs ml.Tenso
+ }
+ 
+ func (m *Model) Forward(ctx ml.Context, batch input.Batch) (ml.Tensor, error) {
+-	positions := ctx.Input().FromIntSlice(batch.Positions, len(batch.Positions))
+-
+ 	hiddenState := m.TokenEmbedding.Forward(ctx, batch.Inputs)
+ 
+ 	for i, layer := range m.Layers {
+@@ -160,10 +158,10 @@ func (m *Model) Forward(ctx ml.Context, batch input.Batch) (ml.Tensor, error) {
+ 
+ 		var outputs ml.Tensor
+ 		if i == len(m.Layers)-1 {
+-			outputs = ctx.Input().FromIntSlice(batch.Outputs, len(batch.Outputs))
++			outputs = batch.Outputs
+ 		}
+ 
+-		hiddenState = layer.Forward(ctx, hiddenState, positions, outputs, m.Cache, m.Options)
++		hiddenState = layer.Forward(ctx, hiddenState, batch.Positions, outputs, m.Cache, m.Options)
+ 	}
+ 
+ 	hiddenState = m.OutputNorm.Forward(ctx, hiddenState, m.eps)
+diff --git a/model/models/llama4/model.go b/model/models/llama4/model.go
+index 99a898d2d99..0e2c90663ad 100644
+--- a/model/models/llama4/model.go
++++ b/model/models/llama4/model.go
+@@ -175,10 +175,7 @@ func (m *Model) PostTokenize(inputs []*input.Input) ([]*input.Input, error) {
+ }
+ 
+ func (m *Model) Forward(ctx ml.Context, batch input.Batch) (ml.Tensor, error) {
+-	positions := ctx.Input().FromIntSlice(batch.Positions, len(batch.Positions))
+-	outputs := ctx.Input().FromIntSlice(batch.Outputs, len(batch.Outputs))
+-
+-	return m.TextModel.Forward(ctx, batch.Inputs, positions, outputs, batch, m.Cache), nil
++	return m.TextModel.Forward(ctx, batch, m.Cache), nil
+ }
+ 
+ func init() {
+diff --git a/model/models/llama4/model_text.go b/model/models/llama4/model_text.go
+index 045ab403f2c..c82b8ddb701 100644
+--- a/model/models/llama4/model_text.go
++++ b/model/models/llama4/model_text.go
+@@ -208,8 +208,8 @@ func newTextModel(c fs.Config) *TextModel {
+ 	}
+ }
+ 
+-func (m *TextModel) Forward(ctx ml.Context, inputs, positions, outputs ml.Tensor, batch input.Batch, cache kvcache.Cache) ml.Tensor {
+-	hiddenStates := m.TokenEmbedding.Forward(ctx, inputs).Duplicate(ctx)
++func (m *TextModel) Forward(ctx ml.Context, batch input.Batch, cache kvcache.Cache) ml.Tensor {
++	hiddenStates := m.TokenEmbedding.Forward(ctx, batch.Inputs).Duplicate(ctx)
+ 
+ 	for _, mi := range batch.Multimodal {
+ 		img := mi.Multimodal[0].Tensor
+@@ -218,8 +218,8 @@ func (m *TextModel) Forward(ctx ml.Context, inputs, positions, outputs ml.Tensor
+ 
+ 	var attentionScales ml.Tensor
+ 	if m.attentionTemperatureTuning {
+-		scales := make([]float32, len(batch.Positions))
+-		for i, p := range batch.Positions {
++		scales := make([]float32, batch.Positions.Dim(0))
++		for i, p := range batch.Positions.Ints() {
+ 			scales[i] = float32(math.Log(math.Floor(((float64(p)+1.0)/float64(m.attentionFloorScale))+1.0))*m.attentionScale + 1.0)
+ 		}
+ 
+@@ -237,10 +237,10 @@ func (m *TextModel) Forward(ctx ml.Context, inputs, positions, outputs ml.Tensor
+ 
+ 		var lastLayerOutputs ml.Tensor
+ 		if i == len(m.Layers)-1 {
+-			lastLayerOutputs = outputs
++			lastLayerOutputs = batch.Outputs
+ 		}
+ 
+-		hiddenStates = layer.Forward(ctx, hiddenStates, positions, attentionScales, lastLayerOutputs, cache, useChunkedAttention, m.TextOptions)
++		hiddenStates = layer.Forward(ctx, hiddenStates, batch.Positions, attentionScales, lastLayerOutputs, cache, useChunkedAttention, m.TextOptions)
+ 	}
+ 
+ 	hiddenStates = m.OutputNorm.Forward(ctx, hiddenStates, m.eps)
+diff --git a/model/models/mistral3/model.go b/model/models/mistral3/model.go
+index 408e54d3dd2..7241cbba96c 100644
+--- a/model/models/mistral3/model.go
++++ b/model/models/mistral3/model.go
+@@ -158,10 +158,7 @@ func (m *Model) PostTokenize(inputs []*input.Input) ([]*input.Input, error) {
+ }
+ 
+ func (m *Model) Forward(ctx ml.Context, batch input.Batch) (ml.Tensor, error) {
+-	positions := ctx.Input().FromIntSlice(batch.Positions, len(batch.Positions))
+-	outputs := ctx.Input().FromIntSlice(batch.Outputs, len(batch.Outputs))
+-
+-	return m.TextModel.Forward(ctx, batch.Inputs, positions, outputs, batch, m.Cache), nil
++	return m.TextModel.Forward(ctx, batch, m.Cache), nil
+ }
+ 
+ func init() {
+diff --git a/model/models/mistral3/model_text.go b/model/models/mistral3/model_text.go
+index 19c36f9fe4e..5e26318abb0 100644
+--- a/model/models/mistral3/model_text.go
++++ b/model/models/mistral3/model_text.go
+@@ -97,8 +97,8 @@ func (l *Layer) Forward(ctx ml.Context, hiddenState, positionIDs, outputs ml.Ten
+ 	return hiddenState.Add(ctx, residual)
+ }
+ 
+-func (m *TextModel) Forward(ctx ml.Context, inputs, positions, outputs ml.Tensor, batch input.Batch, cache kvcache.Cache) ml.Tensor {
+-	hiddenState := m.TokenEmbedding.Forward(ctx, inputs).Duplicate(ctx)
++func (m *TextModel) Forward(ctx ml.Context, batch input.Batch, cache kvcache.Cache) ml.Tensor {
++	hiddenState := m.TokenEmbedding.Forward(ctx, batch.Inputs).Duplicate(ctx)
+ 
+ 	// image embeddings
+ 	for _, image := range batch.Multimodal {
+@@ -111,10 +111,10 @@ func (m *TextModel) Forward(ctx ml.Context, inputs, positions, outputs ml.Tensor
+ 
+ 		var lastLayerOutputs ml.Tensor
+ 		if i == len(m.Layers)-1 {
+-			lastLayerOutputs = outputs
++			lastLayerOutputs = batch.Outputs
+ 		}
+ 
+-		hiddenState = layer.Forward(ctx, hiddenState, positions, lastLayerOutputs, cache, m.TextOptions)
++		hiddenState = layer.Forward(ctx, hiddenState, batch.Positions, lastLayerOutputs, cache, m.TextOptions)
+ 	}
+ 
+ 	hiddenState = m.OutputNorm.Forward(ctx, hiddenState, m.eps)
+diff --git a/model/models/mllama/model.go b/model/models/mllama/model.go
+index d0ad4670ef2..71e56a21b2a 100644
+--- a/model/models/mllama/model.go
++++ b/model/models/mllama/model.go
+@@ -106,11 +106,8 @@ func (m *Model) Forward(ctx ml.Context, batch input.Batch) (ml.Tensor, error) {
+ 		crossAttentionStates = batch.Multimodal[len(batch.Multimodal)-1].Multimodal[0].Tensor
+ 	}
+ 
+-	positions := ctx.Input().FromIntSlice(batch.Positions, len(batch.Positions))
+-	outputs := ctx.Input().FromIntSlice(batch.Outputs, len(batch.Outputs))
+-
+ 	// TODO: attention mask, cross attention mask
+-	return m.TextModel.Forward(ctx, batch.Inputs, positions, outputs, crossAttentionStates, nil, m.Cache.(*kvcache.WrapperCache)), nil
++	return m.TextModel.Forward(ctx, batch.Inputs, batch.Positions, batch.Outputs, crossAttentionStates, nil, m.Cache.(*kvcache.WrapperCache)), nil
+ }
+ 
+ func init() {
+diff --git a/model/models/qwen2/model.go b/model/models/qwen2/model.go
+index 3c662f06822..915b88bea10 100644
+--- a/model/models/qwen2/model.go
++++ b/model/models/qwen2/model.go
+@@ -102,8 +102,6 @@ type Model struct {
+ 
+ // Forward implements model.Model.
+ func (m Model) Forward(ctx ml.Context, batch input.Batch) (ml.Tensor, error) {
+-	positions := ctx.Input().FromIntSlice(batch.Positions, len(batch.Positions))
+-
+ 	hiddenStates := m.TokenEmbedding.Forward(ctx, batch.Inputs)
+ 
+ 	for i, layer := range m.Layers {
+@@ -111,10 +109,10 @@ func (m Model) Forward(ctx ml.Context, batch input.Batch) (ml.Tensor, error) {
+ 
+ 		var outputs ml.Tensor
+ 		if i == len(m.Layers)-1 {
+-			outputs = ctx.Input().FromIntSlice(batch.Outputs, len(batch.Outputs))
++			outputs = batch.Outputs
+ 		}
+ 
+-		hiddenStates = layer.Forward(ctx, hiddenStates, positions, outputs, m.Cache, &m.Options)
++		hiddenStates = layer.Forward(ctx, hiddenStates, batch.Positions, outputs, m.Cache, &m.Options)
+ 	}
+ 
+ 	hiddenStates = m.OutputNorm.Forward(ctx, hiddenStates, m.eps)
+diff --git a/model/models/qwen25vl/model.go b/model/models/qwen25vl/model.go
+index d73f499d29d..90b6f928d46 100644
+--- a/model/models/qwen25vl/model.go
++++ b/model/models/qwen25vl/model.go
+@@ -139,10 +139,7 @@ func (m *Model) PostTokenize(inputs []*input.Input) ([]*input.Input, error) {
+ }
+ 
+ func (m *Model) Forward(ctx ml.Context, batch input.Batch) (ml.Tensor, error) {
+-	positions := ctx.Input().FromIntSlice(batch.Positions, len(batch.Positions))
+-	outputs := ctx.Input().FromIntSlice(batch.Outputs, len(batch.Outputs))
+-
+-	return m.TextModel.Forward(ctx, batch.Inputs, positions, outputs, batch, m.Cache)
++	return m.TextModel.Forward(ctx, batch, m.Cache)
+ }
+ 
+ func init() {
+diff --git a/model/models/qwen25vl/model_text.go b/model/models/qwen25vl/model_text.go
+index 4b6bc166616..2b069ff4bd1 100644
+--- a/model/models/qwen25vl/model_text.go
++++ b/model/models/qwen25vl/model_text.go
+@@ -125,9 +125,9 @@ func (l *Layer) Forward(ctx ml.Context, hiddenState, positionIDs, outputs ml.Ten
+ 	return hiddenState.Add(ctx, residual)
+ }
+ 
+-func (m *TextModel) Forward(ctx ml.Context, inputs, positions, outputs ml.Tensor, batch input.Batch, cache kvcache.Cache) (ml.Tensor, error) {
++func (m *TextModel) Forward(ctx ml.Context, batch input.Batch, cache kvcache.Cache) (ml.Tensor, error) {
+ 	// Initial token embedding
+-	hiddenStates := m.TokenEmbedding.Forward(ctx, inputs).Duplicate(ctx)
++	hiddenStates := m.TokenEmbedding.Forward(ctx, batch.Inputs).Duplicate(ctx)
+ 
+ 	for _, mi := range batch.Multimodal {
+ 		img := mi.Multimodal[0].Tensor
+@@ -140,10 +140,10 @@ func (m *TextModel) Forward(ctx ml.Context, inputs, positions, outputs ml.Tensor
+ 
+ 		var lastLayerOutputs ml.Tensor
+ 		if i == len(m.Layers)-1 {
+-			lastLayerOutputs = outputs
++			lastLayerOutputs = batch.Outputs
+ 		}
+ 
+-		hiddenStates = layer.Forward(ctx, hiddenStates, positions, lastLayerOutputs, cache, m.TextOptions)
++		hiddenStates = layer.Forward(ctx, hiddenStates, batch.Positions, lastLayerOutputs, cache, m.TextOptions)
+ 	}
+ 
+ 	hiddenStates = m.OutputNorm.Forward(ctx, hiddenStates, m.eps)
+diff --git a/model/models/qwen3/model.go b/model/models/qwen3/model.go
+index 7a83e0d04ac..6dc51575af3 100644
+--- a/model/models/qwen3/model.go
++++ b/model/models/qwen3/model.go
+@@ -156,8 +156,6 @@ type Model struct {
+ 
+ // Forward implements model.Model.
+ func (m *Model) Forward(ctx ml.Context, batch input.Batch) (ml.Tensor, error) {
+-	positions := ctx.Input().FromIntSlice(batch.Positions, len(batch.Positions))
+-
+ 	hiddenStates := m.TokenEmbedding.Forward(ctx, batch.Inputs)
+ 
+ 	for i, layer := range m.Layers {
+@@ -165,10 +163,10 @@ func (m *Model) Forward(ctx ml.Context, batch input.Batch) (ml.Tensor, error) {
+ 
+ 		var outputs ml.Tensor
+ 		if i == len(m.Layers)-1 {
+-			outputs = ctx.Input().FromIntSlice(batch.Outputs, len(batch.Outputs))
++			outputs = batch.Outputs
+ 		}
+ 
+-		hiddenStates = layer.Forward(ctx, hiddenStates, positions, outputs, m.Cache, m.Options)
++		hiddenStates = layer.Forward(ctx, hiddenStates, batch.Positions, outputs, m.Cache, m.Options)
+ 	}
+ 
+ 	hiddenStates = m.OutputNorm.Forward(ctx, hiddenStates, m.eps)
+diff --git a/runner/ollamarunner/runner.go b/runner/ollamarunner/runner.go
+index 201d55a166c..77693ba60ab 100644
+--- a/runner/ollamarunner/runner.go
++++ b/runner/ollamarunner/runner.go
+@@ -469,6 +469,7 @@ func (s *Server) forwardBatch(pendingBatch batchState) (nextBatch batchState, er
+ 
+ 	// Prepare the seqs and batch, but defer the input token values as we may not be ready yet
+ 	var batchInputs []*input.Input
++	var batchPositions, batchOutputs []int32
+ 	var batch input.Batch
+ 
+ 	resumeSeq := -1
+@@ -548,12 +549,12 @@ func (s *Server) forwardBatch(pendingBatch batchState) (nextBatch batchState, er
+ 				batch.Multimodal = append(batch.Multimodal, input.MultimodalIndex{Index: len(batchInputs) - 1, Multimodal: mm})
+ 			}
+ 
+-			batch.Positions = append(batch.Positions, int32(len(seq.cache.Inputs)+len(seq.pendingInputs)))
++			batchPositions = append(batchPositions, int32(len(seq.cache.Inputs)+len(seq.pendingInputs)))
+ 			batch.Sequences = append(batch.Sequences, seq.cache.Id)
+ 
+-			seq.iBatch = len(batch.Outputs)
++			seq.iBatch = len(batchOutputs)
+ 			if i+1 == len(seq.inputs) {
+-				batch.Outputs = append(batch.Outputs, int32(len(batchInputs)-1))
++				batchOutputs = append(batchOutputs, int32(len(batchInputs)-1))
+ 			}
+ 			logutil.Trace("forwardBatch iBatch", "batchID", s.batchID, "seqIdx", seqIdx, "seq.iBatch", seq.iBatch, "i+1", i+1, "len(seq.inputs)", len(seq.inputs))
+ 			seq.pendingInputs = append(seq.pendingInputs, inp)
+@@ -578,6 +579,8 @@ func (s *Server) forwardBatch(pendingBatch batchState) (nextBatch batchState, er
+ 
+ 	// Actual batchInputs values will be injected into the batch.Inputs tensor before calling Compute
+ 	batch.Inputs = nextBatch.ctx.Input().Empty(ml.DTypeI32, len(batchInputs))
++	batch.Positions = nextBatch.ctx.Input().FromIntSlice(batchPositions, len(batchPositions))
++	batch.Outputs = nextBatch.ctx.Input().FromIntSlice(batchOutputs, len(batchOutputs))
+ 	nextBatch.modelOutput, err = model.Forward(nextBatch.ctx, s.model, batch)
+ 	if err != nil {
+ 		err = fmt.Errorf("failed to build graph: %w", err)
+@@ -705,8 +708,8 @@ func (s *Server) computeBatch(activeBatch batchState) {
+ 		}
+ 
+ 		// sample a token
+-		vocabSize := len(outputs) / len(activeBatch.batch.Outputs)
+-		logutil.Trace("computeBatch: vocab details", "batchID", activeBatch.id, "seqIdx", i, "len(logits)", len(outputs), "len(activeBatch.batch.Outputs)", len(activeBatch.batch.Outputs), "vocabSize", vocabSize, "iBatches", iBatches)
++		vocabSize := len(outputs) / activeBatch.batch.Outputs.Dim(0)
++		logutil.Trace("computeBatch: vocab details", "batchID", activeBatch.id, "seqIdx", i, "len(logits)", len(outputs), "len(activeBatch.batch.Outputs)", activeBatch.batch.Outputs.Dim(0), "vocabSize", vocabSize, "iBatches", iBatches)
+ 		token, err := seq.sampler.Sample(outputs[iBatches[i]*vocabSize : (iBatches[i]+1)*vocabSize])
+ 		if err != nil {
+ 			s.hardErrCh <- fmt.Errorf("failed to sample token: %w", err)
+@@ -1047,8 +1050,7 @@ func (s *Server) reserveWorstCaseGraph() error {
+ 	var batch input.Batch
+ 
+ 	batchInputs := make([]int32, len(inputs))
+-	batch.Positions = make([]int32, len(inputs))
+-	batch.Sequences = make([]int, len(inputs))
++	batchPositions := make([]int32, len(inputs))
+ 	for i, inp := range inputs {
+ 		batchInputs[i] = inp.Token
+ 		if inp.Multimodal != nil {
+@@ -1059,15 +1061,13 @@ func (s *Server) reserveWorstCaseGraph() error {
+ 			batch.Multimodal = append(batch.Multimodal, input.MultimodalIndex{Index: i, Multimodal: mm})
+ 		}
+ 
+-		batch.Positions[i] = int32(i)
+-	}
+-
+-	batch.Outputs = make([]int32, s.parallel)
+-	for i := range batch.Outputs {
+-		batch.Outputs[i] = int32(i)
++		batchPositions[i] = int32(i)
+ 	}
+ 
++	batch.Sequences = make([]int, len(batchInputs))
+ 	batch.Inputs = ctx.Input().FromIntSlice(batchInputs, len(batchInputs))
++	batch.Positions = ctx.Input().FromIntSlice(batchPositions, len(batchPositions))
++	batch.Outputs = ctx.Input().Arange(0, float32(s.parallel), 1, ml.DTypeI32)
+ 
+ 	cache := s.model.Config().Cache
+ 	if cache != nil {

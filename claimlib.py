@@ -46,6 +46,27 @@ import re
 
 EXTRACTOR_VERSION = "1"
 
+# An explicit ABSTENTION, and why it is a sentinel rather than a phrase list.
+#
+# A judge that finds nothing writes prose -- "**No real defect found.**" followed by a
+# numbered list of REASONS. Structurally that is byte-identical to a numbered list of
+# findings, so this extractor turned one abstention into three false defects. Markdown
+# shape cannot observe whether a chunk asserts a defect; the information was never in the
+# text. That is the same class as this project's guards-that-cannot-discriminate frontier.
+#
+# The rejected fix was matching negative phrasings ("no issues", "LGTM", "looks good").
+# That is A LIST OF NAMES GUARDING AN OPEN SET -- the mistake recorded more times here
+# than any other -- because the ways a model can phrase "nothing found" are unbounded.
+#
+# A sentinel is not that. The open set is the set of phrasings a judge might INVENT; this
+# is one exact string that the prompt ASKS for, so both sides of the protocol are mine.
+# Compliance is not assumed: a judge that ignores the instruction simply falls through to
+# normal extraction, and `aacr-upstream` REPORTS the compliance rate rather than trusting
+# it -- routing is not compliance.
+ABSTAIN = "NO DEFECTS FOUND"
+_ABSTAIN_LINE = re.compile(r"^[ \t]{0,3}\**[ \t]*" + ABSTAIN + r"[ \t]*\**[ \t]*$", re.M)
+
+
 # The union of every finding-header form this project has been burned by, each earned.
 # Order matters only for readability; the scan takes the leftmost match of any of them.
 #
@@ -202,6 +223,14 @@ def extract(text, judge="?", run="?"):
     """
     text = text or ""
     fences = _fence_spans(text)
+    # An explicit abstention yields NO observations -- see ABSTAIN above. The whole review
+    # is returned as `unextracted` so an abstention is still visible as material that was
+    # read and deliberately not turned into findings, never as an empty parse.
+    if any(not _in_spans(m.start(), fences) for m in _ABSTAIN_LINE.finditer(text)):
+        return {"observations": [], "abstained": True,
+                "unextracted": ([{"start": 0, "end": len(text), "verbatim": text}]
+                                if text.strip() else []),
+                "extractor": EXTRACTOR_VERSION}
     # Bullets are boundaries only when nothing stronger is present -- see _STRONG above.
     strong_present = any(
         not _in_spans(m.start(), fences) for m in _STRONG.finditer(text)
@@ -241,6 +270,7 @@ def extract(text, judge="?", run="?"):
         cursor = max(cursor, b)
     return {
         "observations": obs,
+        "abstained": False,
         "unextracted": unextracted,
         "extractor": EXTRACTOR_VERSION,
     }

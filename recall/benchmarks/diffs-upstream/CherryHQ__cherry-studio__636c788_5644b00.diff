@@ -1,0 +1,698 @@
+diff --git a/src/renderer/src/middleware/convertLinksMiddleware.ts b/src/renderer/src/middleware/convertLinksMiddleware.ts
+new file mode 100644
+index 00000000000..f307fc1bec5
+--- /dev/null
++++ b/src/renderer/src/middleware/convertLinksMiddleware.ts
+@@ -0,0 +1,32 @@
++import { convertLinks } from '@renderer/utils/linkConverter'
++
++// 支持泛型 T，默认 T = { type: string; textDelta: string }
++export function convertLinksMiddleware<T extends { type: string } = { type: string; textDelta: string }>() {
++  return {
++    wrapStream: async ({
++      doStream
++    }: {
++      doStream: () => Promise<{ stream: ReadableStream<T> } & Record<string, any>>
++    }) => {
++      const { stream, ...rest } = await doStream()
++      return {
++        stream: stream.pipeThrough(
++          new TransformStream<T, T>({
++            transform: (chunk, controller) => {
++              if (chunk.type === 'text-delta') {
++                controller.enqueue({
++                  ...chunk,
++                  // @ts-expect-error: textDelta 只在 text-delta chunk 上
++                  textDelta: convertLinks(chunk.textDelta)
++                })
++              } else {
++                controller.enqueue(chunk)
++              }
++            }
++          })
++        ),
++        ...rest
++      }
++    }
++  }
++}
+diff --git a/src/renderer/src/middleware/extractReasoningMiddleware.ts b/src/renderer/src/middleware/extractReasoningMiddleware.ts
+new file mode 100644
+index 00000000000..ae9551e6820
+--- /dev/null
++++ b/src/renderer/src/middleware/extractReasoningMiddleware.ts
+@@ -0,0 +1,106 @@
++// Modified from https://github.com/vercel/ai/blob/845080d80b8538bb9c7e527d2213acb5f33ac9c2/packages/ai/core/middleware/extract-reasoning-middleware.ts
++
++import { getPotentialStartIndex } from '../utils/getPotentialIndex'
++
++export interface ExtractReasoningMiddlewareOptions {
++  tagName: string
++  separator?: string
++  startWithReasoning?: boolean
++}
++
++// 支持泛型 T，默认 T = { type: string; textDelta: string }
++export function extractReasoningMiddleware<T extends { type: string } = { type: string; textDelta: string }>({
++  tagName,
++  separator = '\n',
++  startWithReasoning = false
++}: ExtractReasoningMiddlewareOptions) {
++  const openingTag = `<${tagName}>`
++  const closingTag = `</${tagName}>`
++
++  return {
++    wrapGenerate: async ({ doGenerate }: { doGenerate: () => Promise<{ text: string } & Record<string, any>> }) => {
++      const { text: rawText, ...rest } = await doGenerate()
++      if (rawText == null) {
++        return { text: rawText, ...rest }
++      }
++      const text = startWithReasoning ? openingTag + rawText : rawText
++      const regexp = new RegExp(`${openingTag}(.*?)${closingTag}`, 'gs')
++      const matches = Array.from(text.matchAll(regexp))
++      if (!matches.length) {
++        return { text, ...rest }
++      }
++      const reasoning = matches.map((match: RegExpMatchArray) => match[1]).join(separator)
++      let textWithoutReasoning = text
++      for (let i = matches.length - 1; i >= 0; i--) {
++        const match = matches[i] as RegExpMatchArray
++        const beforeMatch = textWithoutReasoning.slice(0, match.index as number)
++        const afterMatch = textWithoutReasoning.slice((match.index as number) + match[0].length)
++        textWithoutReasoning =
++          beforeMatch + (beforeMatch.length > 0 && afterMatch.length > 0 ? separator : '') + afterMatch
++      }
++      return { ...rest, text: textWithoutReasoning, reasoning }
++    },
++    wrapStream: async ({
++      doStream
++    }: {
++      doStream: () => Promise<{ stream: ReadableStream<T> } & Record<string, any>>
++    }) => {
++      const { stream, ...rest } = await doStream()
++      let isFirstReasoning = true
++      let isFirstText = true
++      let afterSwitch = false
++      let isReasoning = startWithReasoning
++      let buffer = ''
++      return {
++        stream: stream.pipeThrough(
++          new TransformStream<T, T>({
++            transform: (chunk, controller) => {
++              if (chunk.type !== 'text-delta') {
++                controller.enqueue(chunk)
++                return
++              }
++              // @ts-expect-error: textDelta 只在 text-delta/reasoning chunk 上
++              buffer += chunk.textDelta
++              function publish(text: string) {
++                if (text.length > 0) {
++                  const prefix = afterSwitch && (isReasoning ? !isFirstReasoning : !isFirstText) ? separator : ''
++                  controller.enqueue({
++                    ...chunk,
++                    type: isReasoning ? 'reasoning' : 'text-delta',
++                    textDelta: prefix + text
++                  })
++                  afterSwitch = false
++                  if (isReasoning) {
++                    isFirstReasoning = false
++                  } else {
++                    isFirstText = false
++                  }
++                }
++              }
++              while (true) {
++                const nextTag = isReasoning ? closingTag : openingTag
++                const startIndex = getPotentialStartIndex(buffer, nextTag)
++                if (startIndex == null) {
++                  publish(buffer)
++                  buffer = ''
++                  break
++                }
++                publish(buffer.slice(0, startIndex))
++                const foundFullMatch = startIndex + nextTag.length <= buffer.length
++                if (foundFullMatch) {
++                  buffer = buffer.slice(startIndex + nextTag.length)
++                  isReasoning = !isReasoning
++                  afterSwitch = true
++                } else {
++                  buffer = buffer.slice(startIndex)
++                  break
++                }
++              }
++            }
++          })
++        ),
++        ...rest
++      }
++    }
++  }
++}
+diff --git a/src/renderer/src/providers/AiProvider/BaseProvider.ts b/src/renderer/src/providers/AiProvider/BaseProvider.ts
+index dfca89790d0..f27007daf24 100644
+--- a/src/renderer/src/providers/AiProvider/BaseProvider.ts
++++ b/src/renderer/src/providers/AiProvider/BaseProvider.ts
+@@ -241,40 +241,4 @@ export default abstract class BaseProvider {
+     const processors: ThoughtProcessor[] = [thinkTagProcessor, glmZeroPreviewProcessor]
+     return processors.find((p) => p.canProcess(chunkText, model))
+   }
+-
+-  /**
+-   * Returns a function closure that handles incremental reasoning text for a specific stream.
+-   * The returned function processes a chunk, emits THINKING_DELTA for new reasoning,
+-   * and returns the associated content part.
+-   */
+-  protected handleThinkingTags() {
+-    let memoizedReasoning = ''
+-    // Returns a function that handles a single chunk potentially containing thinking tags
+-    return (chunkText: string, processor: ThoughtProcessor, onChunk: (chunk: any) => void): string => {
+-      // Returns the processed content part
+-      const { reasoning, content } = processor.process(chunkText)
+-      let deltaReasoning = ''
+-
+-      if (reasoning && reasoning.trim()) {
+-        // Check if the new reasoning starts with the previous one
+-        if (reasoning.startsWith(memoizedReasoning)) {
+-          deltaReasoning = reasoning.substring(memoizedReasoning.length)
+-        } else {
+-          // If not a continuation, send the whole new reasoning
+-          deltaReasoning = reasoning
+-          // console.warn("Thinking content did not start with previous memoized version. Sending full content.")
+-        }
+-        memoizedReasoning = reasoning // Update memoized state
+-      } else {
+-        // If no reasoning, reset memoized state? Let's reset.
+-        memoizedReasoning = ''
+-      }
+-
+-      if (deltaReasoning) {
+-        onChunk({ type: ChunkType.THINKING_DELTA, text: deltaReasoning })
+-      }
+-
+-      return content // Return the content part for TEXT_DELTA emission
+-    }
+-  }
+ }
+diff --git a/src/renderer/src/providers/AiProvider/OpenAIProvider.ts b/src/renderer/src/providers/AiProvider/OpenAIProvider.ts
+index 43d7a421035..65bec6e527d 100644
+--- a/src/renderer/src/providers/AiProvider/OpenAIProvider.ts
++++ b/src/renderer/src/providers/AiProvider/OpenAIProvider.ts
+@@ -16,6 +16,8 @@ import {
+ } from '@renderer/config/models'
+ import { getStoreSetting } from '@renderer/hooks/useSettings'
+ import i18n from '@renderer/i18n'
++import { convertLinksMiddleware } from '@renderer/middleware/convertLinksMiddleware'
++import { extractReasoningMiddleware } from '@renderer/middleware/extractReasoningMiddleware'
+ import { getAssistantSettings, getDefaultModel, getTopNamingModel } from '@renderer/services/AssistantService'
+ import { EVENT_NAMES } from '@renderer/services/EventService'
+ import FileManager from '@renderer/services/FileManager'
+@@ -42,15 +44,10 @@ import { ChunkType, LLMWebSearchCompleteChunk } from '@renderer/types/chunk'
+ import { Message } from '@renderer/types/newMessage'
+ import { removeSpecialCharactersForTopicName } from '@renderer/utils'
+ import { addImageFileToContents } from '@renderer/utils/formats'
+-import {
+-  convertLinks,
+-  convertLinksToHunyuan,
+-  convertLinksToOpenRouter,
+-  convertLinksToZhipu
+-} from '@renderer/utils/linkConverter'
+ import { mcpToolCallResponseToOpenAIMessage, parseAndCallTools } from '@renderer/utils/mcp-tools'
+ import { findFileBlocks, findImageBlocks, getMainTextContent } from '@renderer/utils/messageUtils/find'
+ import { buildSystemPrompt } from '@renderer/utils/prompt'
++import { asyncGeneratorToReadableStream, readableStreamAsyncIterable } from '@renderer/utils/stream'
+ import { isEmpty, takeRight } from 'lodash'
+ import OpenAI, { AzureOpenAI, toFile } from 'openai'
+ import {
+@@ -63,6 +60,11 @@ import { FileLike } from 'openai/uploads'
+ import { CompletionsParams } from '.'
+ import BaseProvider from './BaseProvider'
+ 
++// 1. 定义联合类型
++export type OpenAIStreamChunk =
++  | { type: 'reasoning' | 'text-delta'; textDelta: string }
++  | { type: 'finish'; finishReason: any; usage: any; delta: any; chunk: any }
++
+ export default class OpenAIProvider extends BaseProvider {
+   private sdk: OpenAI
+ 
+@@ -390,42 +392,6 @@ export default class OpenAIProvider extends BaseProvider {
+       return streamOutput
+     }
+ 
+-    let hasReasoningContent = false
+-    let lastChunk = ''
+-    const isReasoningJustDone = (
+-      delta: OpenAI.Chat.Completions.ChatCompletionChunk.Choice.Delta & {
+-        reasoning_content?: string
+-        reasoning?: string
+-        thinking?: string
+-      }
+-    ) => {
+-      if (!delta?.content) return false
+-
+-      // 检查当前chunk和上一个chunk的组合是否形成###Response标记
+-      const combinedChunks = lastChunk + delta.content
+-      lastChunk = delta.content
+-
+-      // 检测思考结束
+-      if (combinedChunks.includes('###Response') || delta.content === '</think>') {
+-        return true
+-      }
+-
+-      // 如果有reasoning_content或reasoning，说明是在思考中
+-      if (delta?.reasoning_content || delta?.reasoning || delta?.thinking) {
+-        hasReasoningContent = true
+-      }
+-
+-      // 如果之前有reasoning_content或reasoning，现在有普通content，说明思考结束
+-      if (hasReasoningContent && delta.content) {
+-        return true
+-      }
+-
+-      return false
+-    }
+-
+-    let time_first_token_millsec = 0
+-    let time_first_token_millsec_delta = 0
+-    let time_first_content_millsec = 0
+     const start_time_millsec = new Date().getTime()
+     console.log(
+       `completions start_time_millsec ${new Date(start_time_millsec).toLocaleString(undefined, {
+@@ -500,7 +466,6 @@ export default class OpenAIProvider extends BaseProvider {
+     }
+ 
+     const processStream = async (stream: any, idx: number) => {
+-      // Handle non-streaming case (already returns early, no change needed here)
+       if (!isSupportStreamOutput()) {
+         const time_completion_millsec = new Date().getTime() - start_time_millsec
+         // Calculate final metrics once
+@@ -522,198 +487,172 @@ export default class OpenAIProvider extends BaseProvider {
+         return
+       }
+ 
+-      let content = '' // Accumulate content for tool processing if needed
++      let content = ''
+       let thinkingContent = ''
+-      // 记录最终的完成时间差
+       let final_time_completion_millsec_delta = 0
+       let final_time_thinking_millsec_delta = 0
+-      // Variable to store the last received usage object
+       let lastUsage: Usage | undefined = undefined
+-      // let isThinkingInContent: ThoughtProcessor | undefined = undefined
+-      // const processThinkingChunk = this.handleThinkingTags()
+       let isFirstChunk = true
+-      let isFirstThinkingChunk = true
+-      for await (const chunk of stream) {
+-        if (window.keyv.get(EVENT_NAMES.CHAT_COMPLETION_PAUSED)) {
+-          break
+-        }
+-
+-        const delta = chunk.choices[0]?.delta
+-        const finishReason = chunk.choices[0]?.finish_reason
+-
+-        // --- Incremental onChunk calls ---
+-
+-        // 1. Reasoning Content
+-        const reasoningContent = delta?.reasoning_content || delta?.reasoning
+-        const currentTime = new Date().getTime() // Get current time for each chunk
+-
+-        if (time_first_token_millsec === 0 && isFirstThinkingChunk && reasoningContent) {
+-          // 记录第一个token的时间
+-          time_first_token_millsec = currentTime
+-          // 记录第一个token的时间差
+-          time_first_token_millsec_delta = currentTime - start_time_millsec
+-          console.log(
+-            `completions time_first_token_millsec ${new Date(currentTime).toLocaleString(undefined, {
+-              year: 'numeric',
+-              month: 'numeric',
+-              day: 'numeric',
+-              hour: 'numeric',
+-              minute: 'numeric',
+-              second: 'numeric',
+-              fractionalSecondDigits: 3
+-            })}`
+-          )
+-          isFirstThinkingChunk = false
+-        }
+-        if (reasoningContent) {
+-          thinkingContent += reasoningContent
+-          hasReasoningContent = true // Keep track if reasoning occurred
++      let time_first_token_millsec = 0
++      let time_first_token_millsec_delta = 0
++      let time_first_content_millsec = 0
++      let time_thinking_start = 0
++
++      // 1. 初始化中间件
++      const reasoningTags = [
++        { tagName: 'think', separator: '\n' },
++        { tagName: 'reasoning', separator: '\n' }
++      ]
++      const getAppropriateTag = (model: Model | undefined) => {
++        if (!model) return reasoningTags[0]
++        if (model.id.includes('claude')) return reasoningTags[0]
++        return reasoningTags[0]
++      }
++      const reasoningTag = getAppropriateTag(model)
+ 
+-          // Calculate thinking time as time elapsed since start until this chunk
+-          const thinking_time = currentTime - time_first_token_millsec
+-          onChunk({ type: ChunkType.THINKING_DELTA, text: reasoningContent, thinking_millsec: thinking_time })
++      async function* openAIChunkToTextDelta(stream: any): AsyncGenerator<OpenAIStreamChunk> {
++        for await (const chunk of stream) {
++          if (window.keyv.get(EVENT_NAMES.CHAT_COMPLETION_PAUSED)) {
++            break
++          }
++          const delta = chunk.choices[0]?.delta
++          if (delta?.reasoning_content || delta?.reasoning) {
++            yield { type: 'reasoning', textDelta: delta.reasoning_content || delta.reasoning }
++          }
++          if (delta?.content) {
++            yield { type: 'text-delta', textDelta: delta.content }
++          }
++          const finishReason = chunk.choices[0]?.finish_reason
++          if (!isEmpty(finishReason)) {
++            yield { type: 'finish', finishReason, usage: chunk.usage, delta, chunk }
++            break
++          }
+         }
++      }
+ 
+-        if (isReasoningJustDone(delta)) {
+-          if (time_first_content_millsec === 0) {
+-            time_first_content_millsec = currentTime
+-            final_time_thinking_millsec_delta = time_first_content_millsec - time_first_token_millsec
+-            onChunk({
+-              type: ChunkType.THINKING_COMPLETE,
+-              text: thinkingContent,
+-              thinking_millsec: final_time_thinking_millsec_delta
+-            })
++      // 2. 使用中间件
++      const { stream: reasoningStream } = await extractReasoningMiddleware<OpenAIStreamChunk>({
++        tagName: reasoningTag.tagName,
++        separator: reasoningTag.separator,
++        startWithReasoning: false
++      }).wrapStream({
++        doStream: async () => ({
++          stream: asyncGeneratorToReadableStream(openAIChunkToTextDelta(stream))
++        })
++      })
+ 
+-            thinkingContent = ''
+-            isFirstThinkingChunk = true
+-            hasReasoningContent = false
+-          }
+-        }
++      const { stream: processedStream } = await convertLinksMiddleware<OpenAIStreamChunk>().wrapStream({
++        doStream: async () => ({ stream: reasoningStream })
++      })
+ 
+-        // 2. Text Content
+-        if (delta?.content) {
+-          if (assistant.enableWebSearch) {
+-            if (delta?.annotations) {
+-              delta.content = convertLinks(delta.content || '', isFirstChunk)
+-            } else if (assistant.model?.provider === 'openrouter') {
+-              delta.content = convertLinksToOpenRouter(delta.content || '', isFirstChunk)
+-            } else if (isZhipuModel(assistant.model)) {
+-              delta.content = convertLinksToZhipu(delta.content || '', isFirstChunk)
+-            } else if (isHunyuanSearchModel(assistant.model)) {
+-              delta.content = convertLinksToHunyuan(
+-                delta.content || '',
+-                chunk.search_info.search_results || [],
+-                isFirstChunk
+-              )
++      // 3. 消费 processedStream，分发 onChunk
++      for await (const chunk of readableStreamAsyncIterable(processedStream)) {
++        const currentTime = new Date().getTime()
++        switch (chunk.type) {
++          case 'reasoning': {
++            if (time_thinking_start === 0) {
++              time_thinking_start = currentTime
++              time_first_token_millsec = currentTime
++              time_first_token_millsec_delta = currentTime - start_time_millsec
+             }
++            thinkingContent += chunk.textDelta
++            const thinking_time = currentTime - time_thinking_start
++            onChunk({ type: ChunkType.THINKING_DELTA, text: chunk.textDelta, thinking_millsec: thinking_time })
++            break
+           }
+-          // 说明前面没有思考内容
+-          if (isFirstChunk && time_first_token_millsec === 0 && time_first_token_millsec_delta === 0) {
+-            isFirstChunk = false
+-            time_first_token_millsec = currentTime
+-            time_first_token_millsec_delta = time_first_token_millsec - start_time_millsec
+-          }
+-          content += delta.content // Still accumulate for processToolUses
+-
+-          // isThinkingInContent = this.findThinkingProcessor(content, model)
+-          // if (isThinkingInContent) {
+-          //   processThinkingChunk(content, isThinkingInContent, onChunk)
+-          onChunk({ type: ChunkType.TEXT_DELTA, text: delta.content })
+-          // } else {
+-          // }
+-        }
+-        // console.log('delta?.finish_reason', delta?.finish_reason)
+-        if (!isEmpty(finishReason)) {
+-          onChunk({ type: ChunkType.TEXT_COMPLETE, text: content })
+-          final_time_completion_millsec_delta = currentTime - start_time_millsec
+-          console.log(
+-            `completions final_time_completion_millsec ${new Date(currentTime).toLocaleString(undefined, {
+-              year: 'numeric',
+-              month: 'numeric',
+-              day: 'numeric',
+-              hour: 'numeric',
+-              minute: 'numeric',
+-              second: 'numeric',
+-              fractionalSecondDigits: 3
+-            })}`
+-          )
+-          // 6. Usage (If provided per chunk) - Capture the last known usage
+-          if (chunk.usage) {
+-            // console.log('chunk.usage', chunk.usage)
+-            lastUsage = chunk.usage // Update with the latest usage info
+-            // Send incremental usage update if needed by UI (optional, keep if useful)
+-            // onChunk({ type: 'block_in_progress', response: { usage: chunk.usage } })
+-          }
+-
+-          // 3. Web Search
+-          if (delta?.annotations) {
+-            onChunk({
+-              type: ChunkType.LLM_WEB_SEARCH_COMPLETE,
+-              llm_web_search: {
+-                results: delta.annotations,
+-                source: WebSearchSource.OPENAI
++          case 'text-delta': {
++            if (isFirstChunk) {
++              isFirstChunk = false
++              if (time_first_token_millsec === 0) {
++                time_first_token_millsec = currentTime
++                time_first_token_millsec_delta = currentTime - start_time_millsec
+               }
+-            } as LLMWebSearchCompleteChunk)
+-          }
+-
+-          if (assistant.model?.provider === 'perplexity') {
+-            const citations = chunk.citations
+-            if (citations) {
++            }
++            content += chunk.textDelta
++            // 推理转正文的分界点
++            if (time_thinking_start > 0 && time_first_content_millsec === 0) {
++              time_first_content_millsec = currentTime
++              final_time_thinking_millsec_delta = time_first_content_millsec - time_thinking_start
+               onChunk({
+-                type: ChunkType.LLM_WEB_SEARCH_COMPLETE,
+-                llm_web_search: {
+-                  results: citations,
+-                  source: WebSearchSource.PERPLEXITY
+-                }
+-              } as LLMWebSearchCompleteChunk)
++                type: ChunkType.THINKING_COMPLETE,
++                text: thinkingContent,
++                thinking_millsec: final_time_thinking_millsec_delta
++              })
+             }
++            onChunk({ type: ChunkType.TEXT_DELTA, text: chunk.textDelta })
++            break
+           }
+-          if (isEnabledWebSearch && isZhipuModel(model) && finishReason === 'stop' && chunk?.web_search) {
+-            onChunk({
+-              type: ChunkType.LLM_WEB_SEARCH_COMPLETE,
+-              llm_web_search: {
+-                results: chunk.web_search,
+-                source: WebSearchSource.ZHIPU
++          case 'finish': {
++            // 处理 finishReason、usage、websearch
++            const finishReason = chunk.finishReason
++            const usage = chunk.usage
++            const delta = chunk.delta
++            const rawChunk = chunk.chunk
++            const currentTime = new Date().getTime()
++            if (!isEmpty(finishReason)) {
++              onChunk({ type: ChunkType.TEXT_COMPLETE, text: content })
++              final_time_completion_millsec_delta = currentTime - start_time_millsec
++              if (usage) {
++                lastUsage = usage
+               }
+-            } as LLMWebSearchCompleteChunk)
+-          }
+-          if (isEnabledWebSearch && isHunyuanSearchModel(model) && chunk?.search_info?.search_results) {
++              if (delta?.annotations) {
++                onChunk({
++                  type: ChunkType.LLM_WEB_SEARCH_COMPLETE,
++                  llm_web_search: {
++                    results: delta.annotations,
++                    source: WebSearchSource.OPENAI
++                  }
++                } as LLMWebSearchCompleteChunk)
++              }
++              if (assistant.model?.provider === 'perplexity') {
++                const citations = rawChunk.citations
++                if (citations) {
++                  onChunk({
++                    type: ChunkType.LLM_WEB_SEARCH_COMPLETE,
++                    llm_web_search: {
++                      results: citations,
++                      source: WebSearchSource.PERPLEXITY
++                    }
++                  } as LLMWebSearchCompleteChunk)
++                }
++              }
++              if (isEnabledWebSearch && isZhipuModel(model) && finishReason === 'stop' && rawChunk?.web_search) {
++                onChunk({
++                  type: ChunkType.LLM_WEB_SEARCH_COMPLETE,
++                  llm_web_search: {
++                    results: rawChunk.web_search,
++                    source: WebSearchSource.ZHIPU
++                  }
++                } as LLMWebSearchCompleteChunk)
++              }
++              if (isEnabledWebSearch && isHunyuanSearchModel(model) && rawChunk?.search_info?.search_results) {
++                onChunk({
++                  type: ChunkType.LLM_WEB_SEARCH_COMPLETE,
++                  llm_web_search: {
++                    results: rawChunk.search_info.search_results,
++                    source: WebSearchSource.HUNYUAN
++                  }
++                } as LLMWebSearchCompleteChunk)
++              }
++            }
++            // 5. 工具调用和最终 block_complete
++            await processToolUses(content, idx)
+             onChunk({
+-              type: ChunkType.LLM_WEB_SEARCH_COMPLETE,
+-              llm_web_search: {
+-                results: chunk.search_info.search_results,
+-                source: WebSearchSource.HUNYUAN
++              type: ChunkType.BLOCK_COMPLETE,
++              response: {
++                usage: lastUsage,
++                metrics: {
++                  completion_tokens: lastUsage?.completion_tokens,
++                  time_completion_millsec: final_time_completion_millsec_delta,
++                  time_first_token_millsec: time_first_token_millsec_delta,
++                  time_thinking_millsec: final_time_thinking_millsec_delta
++                }
+               }
+-            } as LLMWebSearchCompleteChunk)
+-          }
+-        }
+-
+-        // --- End of Incremental onChunk calls ---
+-      } // End of for await loop
+-
+-      // Call processToolUses AFTER the loop finishes processing the main stream content
+-      // Note: parseAndCallTools inside processToolUses should handle its own onChunk for tool responses
+-      await processToolUses(content, idx)
+-
+-      // Send the final block_complete chunk with accumulated data
+-      onChunk({
+-        type: ChunkType.BLOCK_COMPLETE,
+-        response: {
+-          // Use the enhanced usage object
+-          usage: lastUsage,
+-          metrics: {
+-            // Get completion tokens from the last usage object if available
+-            completion_tokens: lastUsage?.completion_tokens,
+-            time_completion_millsec: final_time_completion_millsec_delta,
+-            time_first_token_millsec: time_first_token_millsec_delta,
+-            time_thinking_millsec: final_time_thinking_millsec_delta
++            })
++            break
+           }
+         }
+-      })
+-
+-      // FIXME: 临时方案，重置时间戳和思考内容
+-      time_first_token_millsec = 0
+-      time_first_content_millsec = 0
++      }
+     }
+ 
+     console.debug('[completions] reqMessages before processing', model.id, reqMessages)
+diff --git a/src/renderer/src/utils/getPotentialIndex.ts b/src/renderer/src/utils/getPotentialIndex.ts
+new file mode 100644
+index 00000000000..4cec103316f
+--- /dev/null
++++ b/src/renderer/src/utils/getPotentialIndex.ts
+@@ -0,0 +1,29 @@
++// Copied from https://github.com/vercel/ai/blob/main/packages/ai/core/util/get-potential-start-index.ts
++
++/**
++ * Returns the index of the start of the searchedText in the text, or null if it
++ * is not found.
++ */
++export function getPotentialStartIndex(text: string, searchedText: string): number | null {
++  // Return null immediately if searchedText is empty.
++  if (searchedText.length === 0) {
++    return null
++  }
++
++  // Check if the searchedText exists as a direct substring of text.
++  const directIndex = text.indexOf(searchedText)
++  if (directIndex !== -1) {
++    return directIndex
++  }
++
++  // Otherwise, look for the largest suffix of "text" that matches
++  // a prefix of "searchedText". We go from the end of text inward.
++  for (let i = text.length - 1; i >= 0; i--) {
++    const suffix = text.substring(i)
++    if (searchedText.startsWith(suffix)) {
++      return i
++    }
++  }
++
++  return null
++}
+diff --git a/src/renderer/src/utils/stream.ts b/src/renderer/src/utils/stream.ts
+new file mode 100644
+index 00000000000..77119db8f10
+--- /dev/null
++++ b/src/renderer/src/utils/stream.ts
+@@ -0,0 +1,25 @@
++export function readableStreamAsyncIterable<T>(stream: ReadableStream<T>): AsyncIterable<T> {
++  const reader = stream.getReader()
++  return {
++    [Symbol.asyncIterator](): AsyncIterator<T> {
++      return {
++        async next(): Promise<IteratorResult<T>> {
++          return reader.read() as Promise<IteratorResult<T>>
++        }
++      }
++    }
++  }
++}
++
++export function asyncGeneratorToReadableStream<T>(gen: AsyncGenerator<T>): ReadableStream<T> {
++  return new ReadableStream<T>({
++    async pull(controller) {
++      const { value, done } = await gen.next()
++      if (done) {
++        controller.close()
++      } else {
++        controller.enqueue(value)
++      }
++    }
++  })
++}

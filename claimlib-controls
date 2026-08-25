@@ -250,6 +250,58 @@ with section("7.1 coverage counts prose inside findings"):
 with section("7.2 empty text does not divide by zero"):
     check("7.2", claimlib.coverage(claimlib.extract(""), ""), 1.0)
 
+
+# --- 11. an ABSTENTION is not a list of findings -----------------------------------------
+# The shipped bug: a judge wrote "**No real defect found.**" and then a NUMBERED list of
+# reasons. `_STRONG` matched the bold line and both numbers, so one abstention became three
+# false defects -- fed onward as three located review comments. Markdown shape cannot tell
+# an enumeration of findings from an enumeration of reasons there are none.
+with section("11.1 the exact abstention sentinel yields zero observations"):
+    for form in (claimlib.ABSTAIN, f"**{claimlib.ABSTAIN}**", f"  {claimlib.ABSTAIN}  "):
+        r = claimlib.extract(form, judge="j", run="r")
+        check(f"11.1 {form.strip()[:24]!r} observations", len(r["observations"]), 0)
+        check(f"11.1 {form.strip()[:24]!r} flagged", r["abstained"], True)
+
+with section("11.2 THE SHIPPED BUG: prose reasons after an abstention are not findings"):
+    # verbatim shape from the vllm smoke run that exposed this
+    # LITERAL, not claimlib.ABSTAIN: a control that imports the fix's own symbol fails on
+    # pre-fix code with AttributeError -- "some exception was raised" -- which is satisfied
+    # by a broken harness just as well as by the bug. Spelled out, this control fails on
+    # pre-fix code for the STATED reason: 3 observations instead of 0.
+    txt = ("**NO DEFECTS FOUND**\n\nThis is a standard cleanup/shutdown pattern:\n\n"
+           "1. **Iterates all connectors** and calls shutdown() on each.\n"
+           "2. **Catches `Exception`** (not `BaseException`), which is correct.\n")
+    r = claimlib.extract(txt, judge="j", run="r")
+    check("11.2 zero findings from an abstention", len(r["observations"]), 0)
+    check("11.2 abstained", r["abstained"], True)
+    # NEGATIVE CONTROL: the SAME structure without the sentinel must still extract, or
+    # this control would pass simply because the extractor stopped working.
+    r2 = claimlib.extract(txt.replace(f"**{claimlib.ABSTAIN}**", "**Defects found:**"),
+                          judge="j", run="r")
+    check("11.2 positive control: same shape sans sentinel still extracts",
+          len(r2["observations"]) >= 2, True)
+    check("11.2 positive control not flagged", r2["abstained"], False)
+
+with section("11.3 a sentinel shown as an EXAMPLE inside a fence does not abstain"):
+    # the prompt quotes the sentinel; a judge echoing the format must not silence itself
+    txt = (f"The required format is:\n```\n{claimlib.ABSTAIN}\n```\n"
+           "1. **Real bug** in `a/b.py:3`\n")
+    r = claimlib.extract(txt, judge="j", run="r")
+    check("11.3 not abstained", r["abstained"], False)
+    check("11.3 the real finding survives", len(r["observations"]), 1)
+
+with section("11.4 an abstention is visible as read material, never an empty parse"):
+    r = claimlib.extract(f"**{claimlib.ABSTAIN}**\nbecause the change is trivial.\n")
+    check("11.4 unextracted retains the review", len(r["unextracted"]), 1)
+    check("11.4 nothing silently lost",
+          claimlib.ABSTAIN in r["unextracted"][0]["verbatim"], True)
+
+with section("11.5 a near-miss phrasing does NOT abstain (it is not a name list)"):
+    for near in ("No defects found", "NO DEFECTS FOUND HERE", "LGTM", "no issues found"):
+        r = claimlib.extract(f"**{near}**\n\n1. **Thing** in `a/b.py:2`\n")
+        check(f"11.5 {near!r} falls through", r["abstained"], False)
+
+
 print(f"\n{'FAILED' if FAILED else 'all controls green'}"
       f" ({len(FAILED)} failing)" if FAILED else "\nall controls green")
 for f in FAILED:
