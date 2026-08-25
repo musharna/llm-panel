@@ -21,6 +21,7 @@ import argparse
 import collections
 import datetime
 import json
+import os
 import pathlib
 import sys
 
@@ -28,7 +29,14 @@ import sys
 # inside the reviewed repo (judges can read their cwd, which would leak rivals' answers)
 # and falls back to ~/.llm-panel. A single-root reader reports "no runs" for panels that
 # plainly exist -- that bug is already on record, so this tool does not reintroduce it.
-ROOTS = [pathlib.Path.home() / ".cache" / "llm-panel" / "runs",
+# $XDG_CACHE_HOME, exactly as panel-report:47 resolves it. Hardcoding ~/.cache here meant
+# that on any host with a customised cache dir this tool reported NO runs for panels
+# panel-report could list -- the single-root blindness panel-report's own comment warns
+# about, reintroduced in a new form. Found by the panel reviewing this file's first commit.
+# The controls did not catch it because they pass roots EXPLICITLY, so they never exercised
+# the default; a control that cannot reach the defect cannot fail on it.
+ROOTS = [pathlib.Path(os.environ.get("XDG_CACHE_HOME") or (pathlib.Path.home() / ".cache"))
+         / "llm-panel" / "runs",
          pathlib.Path.home() / ".llm-panel" / "runs"]
 
 # Grounded in what the tool actually emits, counted over the runs on this machine

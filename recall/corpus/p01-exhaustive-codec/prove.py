@@ -158,6 +158,35 @@ guard(
 )
 guard("span full length", lambda: len(codec.span("A", "ZZZ")) == codec.MAX_INDEX)
 guard("span equals oracle", lambda: codec.span("A", "ZZZ") == ORACLE)
+
+# EVERY start point, not three hand-picked ranges.
+#
+# The first version of this proof checked span() on "Y".."AB", "A".."A" and the full
+# range, and truth.json still claimed "no defect within the stated domain". A panel
+# reviewing this fixture caught the gap: a span defect that only shows for particular
+# sub-ranges -- an off-by-one at a width boundary, say -- would have survived, so the
+# CLAIM was broader than the EVIDENCE. That is precisely the overclaim this fixture
+# exists to make impossible, sitting in the fixture itself.
+#
+# All (first,last) pairs is ~167M and not worth the wall-clock. Every start index, at
+# each of the three shortest lengths, is 3 x 18278 comparisons and catches anything that
+# depends on where a span starts or on crossing Z->AA (26->27) and ZZ->AAA (702->703).
+try:
+    _bad_span = None
+    for i in range(codec.MIN_INDEX, codec.MAX_INDEX + 1):
+        for _len in (1, 2, 3):
+            j = i + _len - 1
+            if j > codec.MAX_INDEX:
+                continue
+            got = codec.span(ORACLE[i - 1], ORACLE[j - 1])
+            if got != ORACLE[i - 1 : j]:
+                _bad_span = f"span({ORACLE[i - 1]!r},{ORACLE[j - 1]!r}) = {got!r}"
+                break
+        if _bad_span:
+            break
+    check("span over every start point", _bad_span is None, _bad_span or "")
+except Exception as e:  # noqa: BLE001
+    FAIL.append(f"span sweep raised {type(e).__name__}: {str(e)[:70]}")
 try:
     codec.span("B", "A")
     check("span inverted", False, "did not raise on last < first")
