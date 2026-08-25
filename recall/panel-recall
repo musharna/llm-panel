@@ -1,0 +1,477 @@
+#!/usr/bin/env python3
+"""Measure what an llm-panel MISSES, not just whether what it says is true.
+
+Six audit rounds against panel-report and llm-panel measured PRECISION: of the findings the
+panel produced, how many survived verification. None of them could measure RECALL, because
+nothing knew what was actually there to find. A corpus with planted defects does.
+
+Design, and why each part is load-bearing:
+
+  * Every defect class is one this codebase REALLY hit (see each truth.json `provenance`).
+    A corpus of textbook bugs measures whether a model has read a textbook.
+
+  * Every case is validated by EXECUTION before it is used -- each planted defect is proven
+    to misbehave and each clean file proven to behave (`panel-recall validate`). An
+    unvalidated corpus turns a recall number into a guess with a decimal point.
+
+  * CLEAN DECOYS carry the same prompt as the planted cases. Recall on its own is
+    unfalsifiable: a grader that says yes to everything scores 100%. The decoys are the
+    control that can catch it, and their false-positive rate is reported beside recall
+    rather than in a footnote.
+
+  * The keyword grader is A LIST OF NAMES GUARDING AN OPEN SET, which is this project's
+    most-repeated failure. It will MISS a judge that describes the defect in wording nobody
+    predicted. So its output is reported as a FLOOR on recall, never as recall, and every
+    finding it did not credit is dumped for adjudication.
+"""
+import argparse
+import json
+import pathlib
+import re
+import shutil
+import subprocess
+import sys
+import tempfile
+
+ROOT = pathlib.Path(__file__).resolve().parent
+CORPUS = ROOT / "corpus"
+RESULTS = ROOT / "results"
+
+# ONE prompt for every case, planted and clean alike. A prompt that differs between them --
+# even in tone -- would make the decoys measure something other than the panel's own
+# tendency to find defects where there are none.
+# TWO CONDITIONS, differing ONLY in the last paragraph. Roadmap v2 calls the dominant
+# code-review bias "must-find-something": a judge asked to review code will produce
+# findings because the base rate of "nothing here" answers is ~0 -- and calls it "the bias
+# a panel of models is structurally unable to notice about itself, because every member of
+# the panel is exhibiting it". That is testable: license abstention, or do not, and measure.
+_BASE = (
+    "Review code.py in this directory for REAL DEFECTS. Report only defects you can point "
+    "at, most severe first, each with a concrete failure scenario (inputs -> wrong "
+    "behaviour). Name the function or symbol each defect lives in. Do not restate what the "
+    "code does, do not praise it, and do not propose refactors."
+)
+_LICENCE = ("\n\nIf the code has no real defect, say so plainly and stop. Reporting a "
+            "defect that is not there is worse than reporting nothing.")
+PROMPT = _BASE + _LICENCE
+PROMPT_BARE = _BASE
+
+
+def cases(only=None):
+    for d in sorted(CORPUS.iterdir()):
+        if not (d / "truth.json").is_file():
+            continue
+        if only and not d.name.startswith(only):
+            continue
+        yield d, json.loads((d / "truth.json").read_text())
+
+
+def run_case(d, judges, effort, timeout, repeat=1, bare=False):
+    """Run one panel in an isolated copy, return the run directory."""
+    work = pathlib.Path(tempfile.mkdtemp(prefix=f"recall-{d.name}-"))
+    shutil.copy(d / "code.py", work / "code.py")
+    cmd = [str(pathlib.Path.home() / ".local/bin/llm-panel"),
+           "--cwd", str(work), "--judges", judges, "--effort", effort,
+           "--timeout", str(timeout)]
+    if repeat and repeat > 1:
+        cmd += ["--repeat", str(repeat)]
+    cmd += [PROMPT_BARE if bare else PROMPT]
+    r = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout * 3)
+    blob = r.stdout + r.stderr
+    m = re.search(r"panel written to (\S+?)\]", blob) or re.search(r"(/\S+/runs/\S+)", blob)
+    rd = m.group(1).rstrip(":]") if m else ""
+    if rd and not pathlib.Path(rd).is_dir():
+        rd = ""          # a path we cannot open is not a result
+    return rd, r.returncode, (r.stderr or "")[-400:]
+
+
+def reviews_of(rundir):
+    p = pathlib.Path(rundir)
+    out = {}
+    if not p.is_dir():
+        return out
+    for f in sorted(p.glob("*.md")):
+        n = f.name[:-3]
+        if n in ("panel", "prompt") or n.endswith((".prompt", ".rebuttal", ".live",
+                                                   ".rebuttal.prompt")):
+            continue
+        out[n] = f.read_text(encoding="utf-8", errors="replace")
+    return out
+
+
+# A review is a LIST of findings, and a finding is the unit a detection lives in.
+# A finding header takes four structural forms and the fourth was missing: a BOLD LINE ON
+# ITS OWN, at column 0, with no number and no list marker -- which is how claude-opus opens
+# a single-finding review. Two reviews were therefore counted as ZERO findings and scored as
+# ABSTENTIONS in the very experiment measuring abstention. Found by cross-checking the count
+# against an independent bold-header scan, not by any control.
+FINDING_START = re.compile(
+    r"^\s*(?:#{1,4}\s*)?(?:[-*+]\s*)?(?:\*\*)?\d{1,2}[.)]\s"      # 1. / ## 3) / - **2.
+    r"|^\s*#{1,4}\s+\S"                                             # ## heading
+    r"|^\s*[-*+]\s+\*\*"                                           # - **bold bullet
+    r"|^\*\*[^*\n]{6,}\*\*[ \t]*$",                                # **a bold line alone**
+    re.M)
+
+
+def blocks_of(text):
+    """A review split into its findings, so a match can be LOCAL to one of them."""
+    idx = [m.start() for m in FINDING_START.finditer(text or "")]
+    if not idx:
+        return [text or ""]
+    out = []
+    if idx[0] > 0:
+        out.append(text[:idx[0]])
+    for i, st in enumerate(idx):
+        out.append(text[st:idx[i + 1] if i + 1 < len(idx) else len(text)])
+    return out
+
+
+def detected(text, crit):
+    """Did this review identify THIS defect? Symbol AND failure description, IN ONE FINDING.
+
+    Both halves are required, and they must land in the SAME finding.
+
+    ⚠️ Matching them anywhere in the review was WRONG and it inflated the headline. On
+    h01/null-judges the grader credited claude-opus because `load_meta` appeared in its
+    finding 3 (duplicate judge names silently dropped -- a real defect, but not the planted
+    one) while `null` and `typeerror` appeared in its finding 1 (`secs: null` crashes
+    `summarise` -- also real, also not the planted one). Two correct findings about other
+    things combined into a false detection of a third. Hand-adjudication caught it; the
+    self-test did not, because its controls are single-sentence strings where locality is
+    trivially satisfied.
+    """
+    for b in blocks_of(text):
+        low = b.lower()
+        if any(x.lower() in low for x in crit["symbol"]) and \
+           any(x.lower() in low for x in crit["any_of"]):
+            return True
+    return False
+
+
+# Negation NEXT TO a defect noun, rather than a list of exact sentences. "This file is
+# correct as written." and "I found nothing wrong." are the same statement in different
+# words, and an allow-list of phrasings catches whichever ones I happened to imagine.
+NO_DEFECT = re.compile(
+    r"\b(?:no|not|none|zero|nothing|neither|without)\b[^.\n]{0,60}?"
+    r"\b(?:defect|bug|issue|problem|flaw|fault)s?\b"
+    r"|\b(?:defect|bug|issue|problem|flaw|fault)s?\b[^.\n]{0,40}?"
+    r"\b(?:none|not found|absent|were found|are present)\b", re.I)
+
+
+def asserted_findings(text):
+    """How many defects this review ENUMERATES.
+
+    The previous version was a boolean that fell back to `len(text) > 900`, so a judge
+    writing a long, careful explanation of why the code is CORRECT was recorded as having
+    asserted a defect -- which would have inflated the exact bias this measures. Length is
+    not a claim. Count the enumerated findings instead, using the same structural splitter
+    the recall grader uses.
+    """
+    return len(FINDING_START.findall(text or ""))
+
+
+def says_no_defect(text):
+    """Does the review state it found nothing?
+
+    ⚠️ DO NOT USE THIS TO DEFINE ABSTENTION. Negation next to a defect noun matches "this
+    specific thing is NOT a defect" exactly as readily as "there are no defects here", and
+    the careful judges write whole sections of the former: claude-opus enumerated three real
+    findings and this still fired on its "Not defects (considered and rejected)" heading and
+    on "not something I'd call a defect". Used inside `abstained` as an OR, it let a
+    rejected-candidates section erase three findings and reported the judge as silent.
+    Kept only as a secondary signal, never as the definition.
+    """
+    return bool(NO_DEFECT.search(text or ""))
+
+
+def abstained(text):
+    """Did this review decline to report anything? STRUCTURAL: it enumerated nothing.
+
+    A judge that lists findings has not abstained, whatever phrases appear elsewhere in its
+    prose. This is the one definition that cannot be talked out of.
+    """
+    return asserted_findings(text) == 0
+
+
+def claims_a_defect(text):
+    """Enumerated at least one finding. See `abstained` for why no phrase test is used."""
+    return asserted_findings(text) > 0
+
+
+def targets(t):
+    """[(key, criteria)] for a case. ONE normalisation for both tiers.
+
+    The easy tier plants a single defect per file; the hard tier plants several and is
+    scored PER DEFECT, because at-least-one saturated at 100% and a measure that cannot go
+    down cannot rank a judge, an effort level, or a roster against another.
+    """
+    if not t.get("planted"):
+        return []
+    if t.get("defects"):
+        return [(d["key"], d) for d in t["defects"]]
+    return [(t["id"], t["detect"])]
+
+
+def grader_selftest():
+    """The grader must be able to say NO, and must say YES to a correct finding.
+
+    A grader validated only on the data it grades cannot be shown to discriminate.
+    """
+    ok = True
+    for d, t in cases():
+      for _key, crit in targets(t):
+        # POSITIVE control: a review naming the symbol and the failure must be credited.
+        pos = f"The defect is in `{crit['symbol'][0]}`: it {crit['any_of'][0]} in a way that is wrong."
+        if not detected(pos, crit):
+            print(f"  SELFTEST FAIL (positive) {t['id']}/{_key}"); ok = False
+        # NEGATIVE control: praise that names the symbol must NOT be credited.
+        neg = f"`{crit['symbol'][0]}` is implemented correctly and I found nothing wrong."
+        if detected(neg, crit):
+            print(f"  SELFTEST FAIL (negative) {t['id']}/{_key}"); ok = False
+        # NEGATIVE control: the right words about the WRONG symbol must not be credited.
+        other = f"Some unrelated helper {crit['any_of'][0]} which is a problem."
+        if detected(other, crit):
+            print(f"  SELFTEST FAIL (wrong-symbol) {t['id']}/{_key}"); ok = False
+        # NEGATIVE control: THE TWO HALVES IN DIFFERENT FINDINGS ARE NOT A DETECTION.
+        # This is the control that was missing when the grader credited a defect nobody
+        # reported, by combining two correct findings about other things.
+        split = (f"1. `{crit['symbol'][0]}` has an unrelated problem with its return value.\n\n"
+                 f"2. Something else entirely {crit['any_of'][0]} over here.\n")
+        if detected(split, crit):
+            print(f"  SELFTEST FAIL (locality) {t['id']}/{_key}"); ok = False
+    print(f"  grader self-test: {'PASS' if ok else 'FAIL'}")
+    return ok
+
+
+def cmd_run(a):
+    RESULTS.mkdir(exist_ok=True)
+    out = {}
+    for d, t in cases(a.only):
+        sys.stderr.write(f"  {t['id']} ... ")
+        sys.stderr.flush()
+        try:
+            rd, rc, err = run_case(d, a.judges, a.effort, a.timeout,
+                                   getattr(a, 'repeat', 1), getattr(a, 'bare', False))
+        except subprocess.TimeoutExpired:
+            rd, rc, err = "", -1, "harness timeout"
+        n = len(reviews_of(rd))
+        out[t["id"]] = {"rundir": rd, "rc": rc, "err": err, "reviews": n}
+        sys.stderr.write(f"{n} review(s){' ' + err[:60] if not n else ''}\n")
+        # WRITE AFTER EVERY CASE. The first full sweep was killed at case 14 of 15 and the
+        # results file had never been written -- every panel was still on disk but the run
+        # looked like it had produced nothing, and the numbers had to be reconstructed by
+        # racing a directory listing against a job that was still finishing. A long job that
+        # only records its work at the end has no partial result, only a total loss.
+        f = RESULTS / f"{a.tag}.json"
+        f.write_text(json.dumps(out, indent=2) + "\n")
+    print(f"\nwrote {RESULTS / f'{a.tag}.json'}")
+
+
+def cmd_grade(a):
+    data = json.loads((RESULTS / f"{a.tag}.json").read_text())
+    print("=== grader self-test (must pass before any number below means anything) ===")
+    if not grader_selftest():
+        print("GRADER IS NOT DISCRIMINATING -- refusing to report recall."); return 1
+    hits = miss = 0
+    fp = clean_n = 0
+    per_judge = {}
+    by_defect = {}
+    decoy = []
+    uncredited = []
+    print("\n=== planted cases ===")
+    for d, t in cases(a.only):
+        rec = data.get(t["id"]) or {}
+        revs = reviews_of(rec.get("rundir", ""))
+        if not revs:
+            print(f"  {'NO RUN':>8}  {t['id']}  ({rec.get('err','')[:50]})")
+            continue
+        if t["planted"]:
+            for key, crit in targets(t):
+                found = {j: detected(x, crit) for j, x in revs.items()}
+                any_found = any(found.values())
+                hits += any_found
+                miss += not any_found
+                by_defect[f"{t['id']}/{key}"] = found
+                for j, f in found.items():
+                    st = per_judge.setdefault(j, [0, 0])
+                    st[0] += f
+                    st[1] += 1
+                mark = "FOUND " if any_found else "MISSED"
+                who = ",".join(j for j, f in found.items() if f) or "-"
+                label = key if key != t["id"] else t["cls"]
+                print(f"  {mark:>8}  {t['id']:<32} {label:<28} {who}")
+                if not any_found:
+                    for j, x in revs.items():
+                        uncredited.append((f"{t['id']}/{key}", j,
+                                           " ".join(x.split())[:220]))
+        else:
+            clean_n += 1
+            for j, x in revs.items():
+                decoy.append((t["id"], j, asserted_findings(x), says_no_defect(x)))
+    tot = hits + miss
+    # WITHIN-RUN comparison. `codex~2` is an independent second pass by the same model, so
+    # the first-pass union and the with-repeats union come from ONE run and differ only by
+    # the repeats. Comparing two separate runs would fold in ordinary run-to-run variance
+    # and could show a "repeat effect" that is just noise.
+    base_only = sum(1 for k, v in by_defect.items()
+                    if any(j for j, f in v.items() if f and "~" not in j))
+    with_rep = sum(1 for k, v in by_defect.items() if any(v.values()))
+    n_rep = sum(1 for j in per_judge if "~" in j)
+    print("\n=== result ===")
+    if tot:
+        print(f"  planted defects found by at least one judge: {hits}/{tot} "
+              f"({100*hits/tot:.0f}%)  <- FLOOR on recall, not recall")
+    for j, (f, n) in sorted(per_judge.items()):
+        print(f"    {j:<16} {f}/{n} ({100*f/n:.0f}%)")
+    if n_rep:
+        print(f"\n  --- does an independent REPEAT recover what one pass misses? ---")
+        print(f"  first passes only : {base_only}/{tot} "
+              f"({100*base_only/tot:.0f}%)" if tot else "")
+        print(f"  with repeats      : {with_rep}/{tot} "
+              f"({100*with_rep/tot:.0f}%)" if tot else "")
+        print(f"  recovered by a repeat: {with_rep - base_only}")
+        for k, v in sorted(by_defect.items()):
+            b = [j for j, f in v.items() if f and "~" not in j]
+            r_ = [j for j, f in v.items() if f and "~" in j]
+            if not b and r_:
+                print(f"    ONLY a repeat found {k}  ({','.join(r_)})")
+    if decoy:
+        # ⚠️ THIS IS NOT A FALSE-POSITIVE RATE, and it used to be printed as one.
+        # Two things were wrong at once. The measure required a NUMBERED line, so it was
+        # blind to codex's bulleted findings entirely and reported 0. And the premise --
+        # that these files are defect-free -- is FALSE: every finding judges raised against
+        # them was verified TRUE by execution (an empty key accepted; a 0.0 accumulator
+        # that rejects Decimal; a negative delay that masks the callable's exception).
+        # Roadmap v2 rejected "a clean file" as a fixture for exactly this reason.
+        # So: report the BASE RATE and the ABSTENTION RATE, which are measurable, and let
+        # scope adjudicate the findings.
+        n = len(decoy)
+        tot_f = sum(d[2] for d in decoy)
+        absts = sum(1 for d in decoy if d[2] == 0)
+        print("\n  --- sound-scope fixtures: base rate and abstention ---")
+        print(f"  findings enumerated per judge per fixture: {tot_f / n:.2f}  (n={n})")
+        print(f"  judge said it found nothing: {absts}/{n}")
+        per = {}
+        for cid, j, f_, nd in decoy:
+            a = per.setdefault(j, [0, 0, 0])
+            a[0] += f_; a[1] += 1; a[2] += (f_ == 0)
+        for j, (f_, k, ab) in sorted(per.items()):
+            print(f"    {j:<16} {f_ / k:.2f} findings/fixture, abstained {ab}/{k}")
+        print("  NOT a false-positive rate: these fixtures have VERIFIED SCOPE, not proven "
+              "absence of defects, and every finding raised against them so far was TRUE.")
+    if uncredited:
+        print("\n=== findings the grader did NOT credit (adjudicate these by hand) ===")
+        print("    the keyword grader is an allow-list over an open set; a real detection")
+        print("    worded unexpectedly lands here and DEPRESSES the floor above.")
+        for cid, j, snip in uncredited[:12]:
+            print(f"  [{cid} / {j}] {snip}")
+    return 0
+
+
+def _decoy_stats(tags):
+    """(findings/fixture, abstained, n, per-judge) over every sound-scope fixture in `tags`."""
+    per, tot, ab, n = {}, 0, 0, 0
+    for tag in tags:
+        f = RESULTS / f"{tag}.json"
+        if not f.is_file():
+            continue
+        data = json.loads(f.read_text())
+        for d, t in cases():
+            if t.get("planted") or t["id"] not in data:
+                continue
+            for j, x in reviews_of(data[t["id"]].get("rundir", "")).items():
+                k = asserted_findings(x)
+                quiet = abstained(x)
+                a_ = per.setdefault(j, [0, 0, 0])
+                a_[0] += k
+                a_[1] += 1
+                a_[2] += quiet
+                tot += k
+                ab += quiet
+                n += 1
+    return tot, ab, n, per
+
+
+def _ctl_findings(tags):
+    """Findings enumerated on PLANTED cases -- the positive control.
+
+    Without it, "the bare prompt produced no extra findings" is indistinguishable from
+    "the bare prompt produced nothing at all because the run broke".
+    """
+    tot = n = 0
+    for tag in tags:
+        f = RESULTS / f"{tag}.json"
+        if not f.is_file():
+            continue
+        data = json.loads(f.read_text())
+        for d, t in cases():
+            if not t.get("planted") or t["id"] not in data:
+                continue
+            for j, x in reviews_of(data[t["id"]].get("rundir", "")).items():
+                tot += asserted_findings(x)
+                n += 1
+    return tot, n
+
+
+def cmd_compare(a):
+    """Licensed vs bare, on fixtures whose in-scope answer is 'nothing here'."""
+    lic, bare = a.licensed.split(","), a.bare.split(",")
+    print("=== must-find-something: does licensing abstention change behaviour? ===")
+    print("    The two prompts differ in ONE sentence and nothing else.\n")
+    rows = []
+    for label, tags in (("licensed", lic), ("bare", bare)):
+        tot, ab, n, per = _decoy_stats(tags)
+        if not n:
+            print(f"  {label}: no data"); continue
+        rows.append((label, tot / n, ab, n, per))
+        print(f"  {label:<9} {tot / n:.2f} findings/fixture   abstained {ab}/{n}")
+        for j, (f_, k, q) in sorted(per.items()):
+            print(f"      {j:<16} {f_ / k:.2f}   abstained {q}/{k}")
+    for label, tags in (("licensed", lic), ("bare", bare)):
+        c, cn = _ctl_findings(tags)
+        if cn:
+            print(f"  POSITIVE CONTROL {label:<9} planted cases: {c / cn:.2f} findings/review "
+                  f"(n={cn}) -- judges are still working under this prompt")
+    if len(rows) == 2:
+        d = rows[1][1] - rows[0][1]
+        print(f"\n  effect of REMOVING the licence: {d:+.2f} findings/fixture, "
+              f"abstention {rows[0][2]}/{rows[0][3]} -> {rows[1][2]}/{rows[1][3]}")
+        print("  ⚠️ These fixtures have VERIFIED SCOPE, not proven absence of defects, and "
+              "every finding raised against them so far was TRUE. A rise is not proof of "
+              "hallucination; it is a change in willingness to enumerate.")
+    return 0
+
+
+def cmd_validate(a):
+    sub = subprocess.run([sys.executable, str(ROOT / "validate_corpus.py")])
+    return sub.returncode
+
+
+p = argparse.ArgumentParser(description=__doc__,
+                            formatter_class=argparse.RawDescriptionHelpFormatter)
+sp = p.add_subparsers(dest="cmd", required=True)
+r = sp.add_parser("run"); r.add_argument("--judges", default="codex")
+r.add_argument("--effort", default="high"); r.add_argument("--timeout", type=int, default=300)
+r.add_argument("--only"); r.add_argument("--tag", default="latest")
+r.add_argument("--repeat", type=int, default=1,
+               help="ask each judge N times independently. Lets one run yield BOTH the\n"
+                    "first-pass union and the with-repeats union, so the repeat effect is\n"
+                    "measured WITHIN a run rather than across two runs that also differ by\n"
+                    "ordinary run-to-run variance.")
+r.add_argument("--bare", action="store_true",
+               help="drop the sentence licensing abstention. The two conditions differ in "
+                    "NOTHING else, so a difference in the findings-per-fixture and "
+                    "abstention numbers is attributable to the licence.")
+r.set_defaults(fn=cmd_run)
+g = sp.add_parser("grade"); g.add_argument("--tag", default="latest"); g.add_argument("--only")
+g.set_defaults(fn=cmd_grade)
+v = sp.add_parser("validate"); v.set_defaults(fn=cmd_validate)
+c = sp.add_parser("compare")
+c.add_argument("--licensed", required=True)
+c.add_argument("--bare", required=True)
+c.set_defaults(fn=cmd_compare)
+# The grader gets its own entry point so it can be proven to DISCRIMINATE before any
+# money is spent on panel runs. An instrument is validated before it is used, not after.
+t = sp.add_parser("selftest"); t.set_defaults(fn=lambda a: 0 if grader_selftest() else 1)
+a = p.parse_args()
+sys.exit(a.fn(a) or 0)

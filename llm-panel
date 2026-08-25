@@ -1,0 +1,2525 @@
+#!/usr/bin/env python3
+"""Put one question to several models independently, then show every answer in full.
+
+Judges never see each other's answers -- that independence is the whole point of a
+panel. A judge that fails is REPORTED as failed, never silently dropped: a panel that
+quietly loses two judges still looks like a panel.
+
+Failures are reported in two CLASSES, because they license opposite conclusions:
+  refused  -- the model/provider said no (out of credits, rate limited, auth).
+              That is a fact about the judge.
+  harness  -- our own plumbing broke (timeout, state-DB lock, missing binary).
+              That is a fact about US, and must never be read as the judge declining.
+
+`refused` is claimed ONLY on a structured provider error, which is positive evidence
+we reached the provider and it said no. Everything ambiguous defaults to `harness`,
+because the two errors are not symmetric: crediting a model with a refusal it never
+made corrupts the panel's finding, while over-blaming our own plumbing just means we
+re-run it. (Caught by this rule: a dead ollama daemon first reported as `refused`.)
+
+  llm-panel "question"                     # default roster
+  llm-panel --diff "review my changes"     # attach the working-tree diff
+  llm-panel --judges codex,big-pickle "q"  # pick the roster
+  llm-panel --rebut --diff "review this"    # + a round where judges answer each other
+  llm-panel --thread design "..."           # persistent conversation; judges remember
+  llm-panel --list                         # print the roster (offline; no network)
+  llm-panel --check                        # actually ping each judge and report
+  llm-panel --show                         # reprint the last panel
+
+NOT every judge is equally equipped, and it matters when you read the answers:
+codex and opencode judges get READ-ONLY access to the repo (they can grep and read
+files to check a claim), while ollama judges answer from the prompt ALONE -- that
+transport is a plain completion call with no tool loop. An ollama judge saying "I
+cannot verify that" means it had no way to look, not that looking failed.
+
+Synthesis is deliberately NOT automatic. Read the disagreements yourself, or pass
+--synthesize to have one judge compare the others (it is told which answer is whose).
+
+Why each opencode judge gets its own XDG_DATA_HOME
+--------------------------------------------------
+Every `opencode run` writes to ONE shared SQLite DB (~/.local/share/opencode/
+opencode.db). Run judges in parallel and they contend on it: measured 2026-08-20,
+12 concurrent writers produced 1 "database is locked" failure in 24 calls, while the
+same 24 calls with per-judge data dirs produced 0. A judge lost that way used to be
+printed as DID NOT ANSWER -- blaming the model for our own contention.
+
+The dirs are PERSISTENT, not per-run, and that is load-bearing: a cold data dir must
+re-snapshot the repo, measured at 42.5s vs 5.2s on a 24GB repo. Warmed, the same call
+took 3.4s. So we pay the cold start once per (judge, repo), then run faster than the
+shared DB ever did.
+
+Residual, stated honestly: two llm-panel runs going at once still share a given
+judge's dir. That is 2 concurrent writers, far below the 12 that reproduced the lock,
+but it is not zero -- and if it ever bites, it is reported as `harness`, not as the
+judge refusing.
+"""
+import argparse, concurrent.futures as cf, datetime, json, os, pathlib, re, shutil, subprocess, sys, time
+import base64
+import fcntl
+import hashlib
+import random
+import threading
+import urllib.error, urllib.request
+
+# name -> (kind, model-id).  kind: "codex" uses the ChatGPT plan; "opencode" uses opencode run.
+ROSTER = {
+    "codex":       ("codex",    "gpt-5.6-sol"),
+    "big-pickle":  ("opencode", "opencode/big-pickle"),
+    "nemotron":    ("opencode", "opencode/nemotron-3-ultra-free"),
+    "lightning":   ("opencode", "opencode/nemotron-3.5-lightning-free"),
+    "deepseek":    ("opencode", "opencode/deepseek-v4-flash-free"),
+    "mimo":        ("opencode", "opencode/mimo-v2.5-free"),
+    "hy3":         ("opencode", "opencode/hy3-free"),
+    "muse":        ("opencode", "opencode/muse-spark-1.2-contributor-free"),
+    # Reachable only once HuggingFace credits reset or PRO is bought (they 402 today).
+    "glm":         ("opencode", "huggingface/zai-org/GLM-5.2"),
+    "qwen":        ("opencode", "huggingface/Qwen/Qwen3-235B-A22B-Thinking-2507"),
+    "kimi":        ("opencode", "huggingface/moonshotai/Kimi-K3"),
+    "deepseek-pro":("opencode", "huggingface/deepseek-ai/DeepSeek-V4-Pro"),
+    # --- OpenRouter: one key covers all of these, and it is the ONLY route to Grok.
+    # Needs OPENROUTER_API_KEY in the environment; without it they report `harness`.
+    # `or-glm-free` costs nothing, but OpenRouter's :free catalogue ROTATES (Qwen's
+    # free tier was delisted in early Aug 2026) -- if it starts failing, check the id
+    # before assuming the account is broken.
+    "or-glm-free": ("opencode", "openrouter/z-ai/glm-5.2:free"),
+    "or-glm":      ("opencode", "openrouter/z-ai/glm-5"),
+    "or-grok":     ("opencode", "openrouter/x-ai/grok-4.6"),
+    "or-kimi":     ("opencode", "openrouter/moonshotai/kimi-k3"),
+    "or-qwen":     ("opencode", "openrouter/qwen/qwen3-235b-a22b-thinking-2507"),
+    "or-deepseek": ("opencode", "openrouter/deepseek/deepseek-v3.2"),
+    # --- Anthropic through the `claude` CLI, which uses the claude.ai SUBSCRIPTION
+    # rather than metered API billing -- the same arrangement as the codex judge on
+    # ChatGPT Plus. Verified: with ANTHROPIC_API_KEY unset the CLI answers on the
+    # claude.ai login; with it set the CLI itself warns that the key "takes
+    # precedence over your claude.ai login", i.e. that path bills per token. So the
+    # transport strips the key. Going through opencode's anthropic/* models instead
+    # would bill the API at $5/M in, $25/M out.
+    # NOT in the default roster: when Claude wrote the work under review, a Claude
+    # judge shares the author's blind spots and is not an independent second opinion.
+    # --- vision judges (direct OpenRouter HTTP; see VISION note in ask()) -----------
+    "vis-grok":      ("orvision", "x-ai/grok-4.6"),
+    "vis-kimi":      ("orvision", "moonshotai/kimi-k3"),
+    "vis-gemini":    ("orvision", "google/gemini-2.5-flash"),
+    "vis-gpt":       ("orvision", "openai/gpt-5.6"),
+    "claude-opus":   ("claude",   "opus"),
+    "claude-sonnet": ("claude",   "sonnet"),
+    # Local; needs `ollama serve` (start it, and stop it when done -- it pins VRAM).
+    # `ollama list` returns EMPTY when the daemon is down, which reads as "no models
+    # installed" rather than "cannot see them" -- check the daemon before believing it.
+    "local-llama": ("ollama",   "llama3.1:latest"),      # 4.9GB, already present
+    "local-qwen":  ("ollama",   "qwen3-coder:30b"),      # 19GB, must be pulled first
+    "local-small": ("ollama",   "qwen3:0.6b"),           # 522MB, smoke-test only
+}
+
+# --- repeat passes -----------------------------------------------------------
+# Running the SAME model several times independently is the cheapest recall there is:
+# Multi-Review (2025) measured Self-Agg at n=10 improving recall 118.8% over a single pass,
+# because a model's misses are substantially stochastic rather than fixed. It also needs no
+# extra vendor, which matters when a roster is limited by who has credit.
+#
+# A repeat is spelled `codex~2` and is a FULL judge everywhere: its own file, its own letter
+# in the rebuttal round, its own row. That is deliberate -- collapsing repeats into one
+# entry would hide exactly the disagreement between passes that makes them worth running.
+# Only the ROSTER lookup strips the suffix.
+REPEAT_SEP = "~"
+
+
+class _Roster(dict):
+    """ROSTER lookups tolerate a `~N` repeat suffix, so `codex~2` resolves to `codex`."""
+
+    def __getitem__(self, key):
+        if dict.__contains__(self, key):
+            return dict.__getitem__(self, key)
+        return dict.__getitem__(self, str(key).split(REPEAT_SEP, 1)[0])
+
+    def __contains__(self, key):
+        return (dict.__contains__(self, key)
+                or dict.__contains__(self, str(key).split(REPEAT_SEP, 1)[0]))
+
+
+ROSTER = _Roster(ROSTER)
+
+# A judge whose provider key is absent should say so in a second, not burn the whole
+# timeout and then look like the model went quiet. Presence is all this checks -- an
+# invalid key still fails later, and reports as the provider refusing.
+PROVIDER_ENV = {"openrouter/": "OPENROUTER_API_KEY", "huggingface/": "HF_TOKEN"}
+# Provider name as it appears in opencode's auth.json, per model-id prefix.
+PROVIDER_AUTH = {"openrouter/": "openrouter", "huggingface/": "huggingface"}
+
+# opencode keeps `opencode auth login` credentials at $XDG_DATA_HOME/opencode/auth.json.
+# We override XDG_DATA_HOME per judge (see docstring), which would hide those creds from
+# every judge -- so capture the REAL location once, at import, before any override.
+HOST_AUTH = (pathlib.Path(os.environ.get("XDG_DATA_HOME") or os.path.expanduser("~/.local/share"))
+             / "opencode" / "auth.json")
+
+
+def stored_providers():
+    """Providers with a credential in the host auth.json. Empty on any read failure."""
+    try:
+        return set(json.loads(HOST_AUTH.read_text()))
+    except Exception:
+        return set()
+DEFAULT = ["codex", "big-pickle", "nemotron", "deepseek"]
+
+# ollama is deliberately absent: that transport uses the HTTP API, not the CLI.
+BINARY = {"codex": "codex", "opencode": "opencode", "claude": "claude"}
+STATE = pathlib.Path(os.environ.get("XDG_CACHE_HOME") or os.path.expanduser("~/.cache")) / "llm-panel"
+
+
+def die(msg, code=1):
+    sys.stderr.write(f"llm-panel: {msg}\n"); sys.exit(code)
+
+
+def now():
+    return datetime.datetime.now().astimezone().strftime("%Y-%m-%d %H:%M:%S %Z")
+
+
+def strip_ansi(s):
+    return re.sub(r"\x1b\[[0-9;]*[A-Za-z]", "", s)
+
+
+def find_session_id(obj, depth=0):
+    """Dig a session/thread id out of a codex JSON event. Codex has moved this field
+    between releases, so match on any of the known spellings rather than one path."""
+    if depth > 6:
+        return None
+    if isinstance(obj, dict):
+        for k in ("session_id", "sessionId", "thread_id", "threadId",
+                  "conversation_id", "conversationId"):
+            v = obj.get(k)
+            if isinstance(v, str) and v:
+                return v
+        for v in obj.values():
+            r = find_session_id(v, depth + 1)
+            if r:
+                return r
+    elif isinstance(obj, list):
+        for v in obj:
+            r = find_session_id(v, depth + 1)
+            if r:
+                return r
+    return None
+
+
+def codex_session_id(session_file, repo):
+    """The resumable codex id, or None if we cannot vouch for it.
+
+    Shared by ask() and the "N judges resuming" banner ON PURPOSE: they used to
+    disagree, because the banner only asked whether the file was non-empty. It
+    therefore announced "1 judge resuming" for a session ask() then refused to
+    resume -- a status line reporting the opposite of what happened.
+    """
+    mark = read_session(session_file)
+    if not mark:
+        return None
+    try:
+        rec = json.loads(mark)
+    except ValueError:
+        return None                      # bare id (old format or hand-edited)
+    if rec.get("sandbox") == "read-only" and rec.get("cwd") == repo and rec.get("id"):
+        return rec["id"]
+    return None
+
+
+def read_session(f):
+    try:
+        return f.read_text().strip() or None if f else None
+    except OSError:
+        return None
+
+
+def stream_text(raw):
+    """The judge's actual words out of a raw event stream, or "" if there are none.
+
+    A timed-out CLI judge's stdout is PROTOCOL TRAFFIC, not prose. The timeout handler kept
+    any body over 200 bytes and called it an `incomplete` review, so the 2026-08-22 audit
+    stored 143,505 bytes of codex JSON -- 46 events, 100% of them protocol -- as codex's
+    review, and the panel reported it as a partial answer. codex itself predicted exactly
+    this, in both halves: protocol traffic treated as an answer, and the real message left
+    unextracted inside it. The message IS in there; this digs it out.
+
+    Handles both CLI event shapes: codex `item.completed` -> `item.agent_message.text`, and
+    opencode `text` -> `part.text`.
+    """
+    out = []
+    for line in (raw or "").splitlines():
+        line = line.strip()
+        if not line.startswith("{"):
+            continue
+        try:
+            ev = json.loads(line)
+        except ValueError:
+            continue
+        item = ev.get("item") or {}
+        if item.get("type") == "agent_message" and item.get("text"):
+            out.append(item["text"])
+        part = ev.get("part") or {}
+        if ev.get("type") == "text" and part.get("text"):
+            out.append(part["text"])
+    return "\n".join(out).strip()
+
+
+def claude_body(deltas, result_event):
+    """Pick the judge's ANSWER from a claude stream-json run: the streamed text, or the
+    `result` field, whichever actually holds the answer.
+
+    `d = ev` overwrote the result event on every `result` message and the body was then
+    read from the survivor, so a judge that answered across MORE THAN ONE assistant turn
+    had every turn but the last discarded -- silently, with status `ok`. Observed on the
+    2026-08-21 audit of this file: claude-opus streamed a 25,793-byte review with 16
+    findings and 2,587 bytes were kept, containing only its closing caveat, which then
+    referred to "findings 1, 3, 4, 6, 10..." that appeared nowhere in the run. The panel
+    reported a healthy judge contributing nothing.
+
+    The complete text was already in hand -- `deltas` is what `.live.md` is written from --
+    and was discarded in favour of a field whose completeness the tool cannot check. This
+    is the same defect the opencode branch documents for `step_finish` ("Overwriting kept
+    only the LAST step") and fixes for tokens but never for the body.
+
+    Returns (text, note). `note` is non-empty when the two sources disagree materially, so
+    a discrepancy is reported rather than silently resolved.
+    """
+    streamed = "".join(deltas).strip()
+    final = ((result_event or {}).get("result") or "").strip()
+    if streamed and len(streamed) > len(final):
+        note = (f"kept the streamed answer ({len(streamed)} B); the result event carried "
+                f"only {len(final)} B" if final and len(final) * 2 < len(streamed) else "")
+        return streamed, note
+    return final, ""
+
+
+def ollama_context(session_file):
+    """The replayable context array in `session_file`, or None.
+
+    Shared by ask() and the "N judges resuming" banner ON PURPOSE, for the same reason
+    `read_session` is: they used to decide separately. The banner counted any NON-EMPTY
+    file as resumable while ask() silently dropped malformed JSON, a non-list, or an empty
+    list -- so a session file containing `{broken` announced "1 judge resuming" and then
+    sent no context at all. The judge answered with no memory of the thread while the
+    header said otherwise. Raised by codex and opus."""
+    if session_file is None:
+        return None
+    try:
+        ctx = json.loads(session_file.read_text())
+    except (OSError, ValueError):
+        return None
+    return ctx if isinstance(ctx, list) and ctx else None
+
+
+def result(name, status, text, secs, meta=None):
+    return {"name": name, "status": status, "text": text, "secs": round(secs, 1), "meta": meta or {}}
+
+
+STREAM_ECHO = False       # set by --stream
+
+
+class _LineEcho:
+    """Echo streamed chunks to the console, one whole line at a time, per judge.
+
+    Judges stream CONCURRENTLY onto one terminal, so echoing raw chunks the moment
+    they arrive interleaves two models mid-word and the transcript is unreadable.
+    Buffering per judge and flushing only on a newline keeps each line attributable.
+    Echo goes to stderr because stdout carries panel.md at the end -- piping the
+    report to a file must not collect the live chatter as well.
+    """
+
+    def __init__(self):
+        self.buf, self.lock = {}, threading.Lock()
+
+    def feed(self, judge, piece):
+        with self.lock:
+            *lines, rest = (self.buf.get(judge, "") + piece).split("\n")
+            self.buf[judge] = rest
+            for ln in lines:
+                sys.stderr.write(f"  [{judge}] {ln}\n")
+            if lines:
+                sys.stderr.flush()
+
+    def close(self, judge):
+        """Flush a trailing partial line: the last chunk rarely ends in a newline."""
+        with self.lock:
+            rest = self.buf.pop(judge, "")
+        if rest.strip():
+            sys.stderr.write(f"  [{judge}] {rest}\n")
+            sys.stderr.flush()
+
+
+ECHO = _LineEcho()
+
+
+def write_live(live_path, piece, judge=None):
+    """Append one streamed chunk to <judge>.live.md, and echo it if --stream is on.
+
+    A failed write here must never kill a judge that is answering correctly: the
+    live file is a convenience for watching, not the record. The record is the
+    <judge>.md written by emit() when the answer completes.
+    """
+    if live_path is not None:
+        try:
+            with open(live_path, "a") as lf:
+                lf.write(piece)
+        except OSError:
+            pass
+    if STREAM_ECHO and judge:
+        ECHO.feed(judge, piece)
+
+
+def emit(rundir, judge, prompt, res, live, tag=""):
+    """Persist one judge's INPUT and OUTPUT the moment it finishes, and echo if --live.
+
+    Both halves matter. The per-judge prompt was never saved, so for the rebuttal
+    round -- where every judge gets a DIFFERENT prompt containing the others'
+    anonymised reviews -- there was no way to answer "what did this judge actually
+    see?" after the fact. Writing on completion rather than at the end also means a
+    panel killed halfway still leaves the answers it did collect.
+    """
+    (rundir / f"{judge}{tag}.prompt.md").write_text(prompt)
+    (rundir / f"{judge}{tag}.md").write_text(res["text"] or "")
+    if live:
+        head = f"\n===== {judge}{tag} — {res['status']} in {res['secs']}s ====="
+        sys.stdout.write(f"{head}\n{res['text']}\n")
+        sys.stdout.flush()
+
+
+# HTTP statuses that genuinely mean "we reached the provider and it declined":
+# auth, payment, policy, rate limit. Everything else -- a bad model id (404), a
+# malformed request (400), a provider outage (5xx), or a non-API error such as a
+# config error -- is OUR mistake or the provider FAILING, neither of which is a
+# judgment about the question. Unknown codes default to `harness`, the safe
+# direction. Structuredness alone never proved refusal: under the old rule a
+# stale roster id would have been reported as the model saying no.
+# 401/402 are OUR ACCOUNT, not the model declining. Reporting them as `refused` printed
+# "the model/provider refused" for a key we never funded -- `--check` showed refused=4 with
+# "You have depleted your credits", which reads as four models saying no. This tool's own
+# rule is that a failure on our side is `harness`; an unfunded account is on our side, and
+# the degraded-panel guard SHOULD fire for it. Raised by opus and codex.
+PROVIDER_ACCOUNT = {401: "our API key was rejected", 402: "our account is out of credits"}
+PROVIDER_DECLINED = {403: "forbidden by the provider"}
+# Retryable: the provider was reached and would not serve RIGHT NOW. This is not a
+# judgment about the question (so not `refused`) and not necessarily our bug (so not
+# `harness`) -- a 429 can equally be this panel's own parallel launches hitting one
+# provider at once. We cannot tell which from the response, so we say so and report
+# how many judges in THIS run shared that provider, which is the evidence a reader
+# needs to decide whether to blame us.
+# 5xx means the provider was reached and FAILED. It fell through to `harness`, whose text
+# says "a transport or configuration failure on our side" -- so a provider outage was
+# printed as our bug and a reader would go looking for it in this file. Raised by codex.
+PROVIDER_UNAVAILABLE = {408: "provider request timeout", 429: "rate limited",
+                        500: "provider internal error",
+                        502: "bad gateway", 503: "service unavailable",
+                        504: "gateway timeout", 520: "provider returned nothing",
+                        522: "provider connection timed out", 524: "provider timed out",
+                        529: "overloaded"}
+
+
+def _classify_error(name, err, secs, meta, peers=1):
+    status = err.get("status")
+    label = f"{err['name'] or 'error'}" + (f" {status}" if status else "")
+    if status in PROVIDER_ACCOUNT:
+        return result(name, "harness", f"{label} ({PROVIDER_ACCOUNT[status]}): "
+                      f"{err['message']} -- this is OUR credential/account, not the model "
+                      f"declining to answer.", secs, meta)
+    if status in PROVIDER_DECLINED:
+        return result(name, "refused", f"{label} ({PROVIDER_DECLINED[status]}): "
+                      f"{err['message']}", secs, meta)
+    if status in PROVIDER_UNAVAILABLE:
+        blame = (f" This run sent {peers} judges to that provider at once, so it may be "
+                 f"self-inflicted; re-running with fewer judges would tell you."
+                 if peers > 1 else " Only this judge used that provider in this run.")
+        return result(name, "unavailable", f"{label} ({PROVIDER_UNAVAILABLE[status]}): "
+                      f"{err['message']}{blame}", secs, meta)
+    return result(name, "harness", f"{label}: {err['message']} -- this is a transport or "
+                  f"configuration failure on our side, not the model declining.", secs, meta)
+
+
+# Linux caps a SINGLE argv element at MAX_ARG_STRLEN, independent of total ARG_MAX.
+# MEASURED on this machine 2026-08-21, not recalled: 131,071 bytes passes, 131,072 raises
+# OSError(E2BIG). Every CLI transport passes the whole prompt as one argv element, so a
+# large `--file` or an unbounded `--diff` kills codex, claude and opencode simultaneously
+# with a bare OSError and no indication of why. For scale: the 2026-08-21 audit's round-one
+# prompt was 91 KB and its REBUTTAL prompts 79 KB, both of which grow with judge count.
+# Raised by codex and opus (who flagged the exact ceiling as recall -- it was right).
+MAX_ARGV_BYTES = 131_072
+
+EFFORT_LEVELS = ("low", "medium", "high", "xhigh", "max")
+
+
+MATERIAL_DIRNAME = ".llm-panel-material"
+# What THIS process wrote. Cleanup used to glob `material-*.md` and unlink every match, so a
+# finishing run deleted a CONCURRENT run's file -- and that run's judges, each holding a 2 KB
+# excerpt ending in "READ THAT FILE NOW", got ENOENT and answered from the excerpt with
+# status `ok` and nothing recording it. Content-hash naming does not save this: with
+# different prompts A deletes B's file, with identical prompts A deletes the file B is still
+# reading. Found by claude-opus 2026-08-22.
+_SPILLED = set()
+
+
+def spill_material(prompt, material_dir, keep=2000, shared=False):
+    """Move an oversized prompt into a FILE and return a short pointer in its place.
+
+    Every CLI transport passes the prompt as one argv element, which Linux caps at
+    MAX_ARG_STRLEN. That ceiling is what stopped llm-panel auditing ITSELF: the round-two
+    prompt re-sends the full source plus every review and reached 153,506 bytes, so all four
+    judges were refused and the rebuttal round produced nothing at all.
+
+    Judges hold read tools, but those tools are scoped to the PROJECT TREE. Verified
+    2026-08-22: a judge reads a relative path in cwd and an absolute path to a sibling of
+    cwd, but a path in ~/.cache -- where the run directory lives -- fails outright. The first
+    version put the material there on the strength of the sibling test and every read
+    errored; one positive did not generalise. So it goes inside the reviewed tree, in
+    `.llm-panel-material/`, and is REMOVED when the run ends.
+
+    Only the SHARED material is ever spilled -- the round-one prompt, identical for every
+    judge -- so one file exists and it contains no judge's review. Spilling per-judge
+    round-two prompts would have written one judge's own review where another could read it,
+    destroying the anonymity of the round. The name is a content hash, so concurrent panels
+    on the same repo converge on one file rather than clobbering each other.
+
+    The head of the prompt is kept INLINE: that is the brief, it is small, and a judge that
+    somehow does not open the file still knows what it was asked rather than seeing a bare
+    path. The file holds the complete text, head included.
+    """
+    # SHARED CONTENT ONLY, enforced here rather than promised in prose. The docstring below
+    # claimed only shared material is ever spilled; `run_rebuttals` passed `material_dir`
+    # down to `ask`, so `_ask`'s oversize branch spilled the PER-JUDGE round-two prompt --
+    # which carries "Your own review was: ..." plus every peer's review -- into the directory
+    # every concurrent judge can read and had just been told to read. Round-two anonymity
+    # gone, run reports `ok`, nothing records it. Found by claude-opus 2026-08-22.
+    #
+    # My control for this GREPPED THE SOURCE for `spill_material(prompts[` and passed,
+    # because it checked one call site and the leak was at the other. A predicate that
+    # cannot observe its referent. The flag makes it observable: a caller must SAY the
+    # content is shared, and the rebuttal path cannot.
+    if not shared:
+        raise ValueError("spill_material refuses non-shared content: a per-judge prompt "
+                         "carries peers' reviews and the material dir is judge-readable")
+    material_dir = pathlib.Path(material_dir)
+    # O_NOFOLLOW on the FILE does nothing about the DIRECTORY: a `.llm-panel-material ->
+    # /elsewhere` symlink redirects every write out of the tree, and the reviewed repo is
+    # exactly what could ship one. Found by codex, audit 5.
+    if material_dir.is_symlink():
+        raise OSError(f"{material_dir} is a symlink; refusing to spill through it")
+    material_dir.mkdir(parents=True, exist_ok=True)
+    if material_dir.resolve() != material_dir.absolute().resolve(strict=False):
+        raise OSError(f"{material_dir} does not resolve to itself")
+    digest = hashlib.sha256(prompt.encode("utf-8")).hexdigest()[:12]
+    path = material_dir / f"material-{digest}.md"
+    # The target sits in the REVIEWED TREE, which the thing under review controls. A dangling
+    # symlink at exactly this path -- the name is a hash of the prompt, but a repo that ships
+    # one for a predictable prompt, or any prior run's leftovers -- makes `is_file()` false
+    # and `write_text()` FOLLOW IT, writing the whole prompt outside the tree; cleanup then
+    # removes the link and leaves the copy. Refuse anything that is not a regular file
+    # resolving inside the directory. Found by codex 2026-08-22.
+    if path.is_symlink() or (path.exists() and not path.is_file()):
+        raise OSError(f"{path} is not a regular file; refusing to write through it")
+    created = False
+    if not path.is_file():
+        try:
+            with open(os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
+                              0o600), "w", encoding="utf-8") as fh:
+                fh.write(prompt)
+            created = True
+        except FileExistsError:
+            # Two judges in the SAME panel spilling identical content race here, and the
+            # loser turned a present, readable file into a harness FAILURE. Losing the race
+            # is the normal case, not an error: fall through and verify what is there.
+            # Found by claude-opus, audit 5.
+            pass
+    if created:
+        # ONLY what we created. `_SPILLED.add` sat outside this branch, so a second panel
+        # spilling IDENTICAL content -- same hash, file already there -- claimed the first
+        # panel's file and deleted it at cleanup while its judges were still reading. The
+        # content hash that made identical prompts SHARE a file also made them share the
+        # right to delete it. Found by codex, audit 5.
+        _SPILLED.add(path)
+    else:
+        # The name is a hash of the content, so an existing file that does NOT hash to its
+        # own name is not the material -- it is planted or truncated, and it would have been
+        # served to every judge as the thing under review. Verify, do not assume.
+        try:
+            existing = path.read_text(encoding="utf-8")
+        except OSError as e:
+            raise OSError(f"{path} exists but is unreadable: {e}") from e
+        if hashlib.sha256(existing.encode("utf-8")).hexdigest()[:12] != digest:
+            raise OSError(f"{path} exists with content that does not match its own hash; "
+                          f"refusing to serve it as the material")
+    head = prompt[:keep]
+    if len(prompt) > keep:
+        head = head.rsplit("\n", 1)[0]
+    return (f"{head}\n\n"
+            f"[TRUNCATED HERE. The material is too large to pass on the command line, so the "
+            f"COMPLETE text -- including everything above and the entire body that follows "
+            f"it -- has been written to this file:\n\n    {path}\n\n"
+            f"READ THAT FILE NOW, before answering. You have read tools. Everything you need "
+            f"is in it; what you see above is only its opening. Answering from this excerpt "
+            f"alone will produce a wrong review.]\n")
+
+
+def vision_verdict(text, needle):
+    """(saw_it, why). The needle is compared against the judge's FIRST line.
+
+    `--vision-check` used to put the needle into the TEXT prompt ("quote verbatim the exact
+    text of: NEEDLE") and then never look at the answer. Both halves were broken: a model
+    that cannot see the image can copy the needle straight out of the instruction, and
+    nothing checked the reply, so a blank image with `--vision-check NEEDLE` returned `ok`
+    whether the judge answered NEEDLE or CANNOT_SEE. A CONTROL THAT CANNOT FAIL IS NOT A
+    CONTROL. Raised by codex, opus and or-deepseek. The needle now appears ONLY in the
+    image, and the verdict is computed from the reply.
+    """
+    first = (text or "").strip().splitlines()[0] if (text or "").strip() else ""
+    # CANNOT_SEE FIRST. Checking the needle first meant "CANNOT_SEE CAT" -- a judge saying
+    # in as many words that it could not see the image, while echoing the word it was asked
+    # about -- counted as having seen it. An explicit denial outranks a substring match.
+    if "CANNOT_SEE" in first.upper():
+        return False, "vision check FAILED: the judge reported it could not read the image."
+    if needle.strip().lower() in first.lower():
+        return True, ""
+    return False, (f"vision check FAILED: expected the image text on the first line, got "
+                   f"{first[:120]!r}. This judge did not see the image.")
+
+
+def ask(name, prompt, repo, timeout, agent="panelist", session_file=None,
+        keep_alive="60s", peers=1, live_path=None, effort=None, images=None,
+        vision_check=None, material_dir=None, material_shared=False):
+    """Wrapper: run the transport, then ENFORCE the vision check if one was asked for."""
+    res = _ask(name, prompt, repo, timeout, agent, session_file, keep_alive, peers,
+               live_path, effort, images, vision_check, material_dir, material_shared)
+    if images and vision_check and res["status"] == "ok":
+        saw, why = vision_verdict(res["text"], vision_check)
+        if not saw:
+            res["status"] = "unavailable"
+            res["meta"]["vision_check"] = "failed"
+            res["text"] = why + "\n\n" + (res["text"] or "")
+        else:
+            res["meta"]["vision_check"] = "passed"
+    return res
+
+
+def _ask(name, prompt, repo, timeout, agent="panelist", session_file=None,
+         keep_alive="60s", peers=1, live_path=None, effort=None, images=None,
+         vision_check=None, material_dir=None, material_shared=False):
+    """Return a result dict. Never raises -- a judge's failure is data, not an exception.
+
+    status: "ok" | "refused" (the model/provider said no) | "harness" (our plumbing broke).
+    """
+    kind, model = ROSTER[name]
+    t0 = time.time()
+    # A prompt beginning with `-` is parsed by the child CLI as an OPTION: the judge never
+    # sees the question and the CLI prints its own help or an argument error.
+    if kind in ("codex", "claude", "opencode") and prompt.startswith("-"):
+        prompt = "\n" + prompt
+    if images and vision_check:
+        # The needle is NOT named here. Naming it let a judge that never received the image
+        # satisfy the check by copying it out of the instruction -- the check proved only
+        # that the model could read its own prompt.
+        prompt = ("BEFORE ANYTHING ELSE, quote verbatim on its own first line the text "
+                  "printed in the image you were given. If you received no image, or "
+                  "cannot read it, write CANNOT_SEE and stop.\n\n" + prompt)
+    # The size check sits AFTER every mutation of `prompt`. It used to run first, so a
+    # 131,071-byte prompt passed, then gained the leading newline or the vision preamble and
+    # died at E2BIG with a bare OSError -- the exact failure the check exists to replace.
+    if kind in ("codex", "claude", "opencode"):
+        nbytes = len(prompt.encode("utf-8"))
+        if nbytes >= MAX_ARGV_BYTES:
+            # Spill to a file the judge can read rather than refusing outright. Refusing was
+            # correct as a guard -- it replaced a bare OSError -- but it is not a workable
+            # answer for a panel whose whole job is reviewing large files. Only if there is
+            # nowhere to put it does this still fail.
+            # `material_dir` is passed ONLY where the prompt is shared across judges
+            # (round one, synthesis). The rebuttal path passes None, so an oversized
+            # round-two prompt fails loudly here instead of leaking peers' reviews.
+            # `shared` comes FROM THE CALLER. The previous version had _ask assert it
+            # itself, which made the flag meaningless -- the function receiving the data
+            # cannot know whether it is shared. The synthesis path then supplied a material
+            # dir for a prompt built as "### Reviewer <REAL NAME>\n<full review>" for every
+            # judge, so a large synthesis wrote every judge's IDENTIFIED review into the
+            # judge-readable directory. Found by codex 2026-08-22, on my own fix.
+            # A file pointer is also useless to a transport with no filesystem: ollama and
+            # orvision judges would receive a 2 KB excerpt and a path they cannot open, and
+            # whatever prose came back was recorded as a complete `ok` answer.
+            if material_dir is not None and material_shared and kind in ("codex", "claude",
+                                                                        "opencode"):
+                try:
+                    prompt = spill_material(prompt, material_dir, shared=True)
+                except OSError as e:
+                    # `_ask` promises never to raise: a judge's failure is data. mkdir and
+                    # write_text raise on a read-only tree, or when .llm-panel-material
+                    # already exists as a FILE from a killed run, and that propagated
+                    # through main() as a bare traceback with no panel.md and no run.json --
+                    # the whole run lost after every judge had already answered.
+                    return result(name, "harness",
+                                  f"prompt is {nbytes:,} bytes and could not be spilled to "
+                                  f"{material_dir}: {e}", time.time() - t0)
+                nbytes = len(prompt.encode("utf-8"))
+            if nbytes >= MAX_ARGV_BYTES:
+                return result(name, "harness",
+                              f"prompt is {nbytes:,} bytes; the {kind} transport passes it "
+                              f"as a single argv element and Linux caps that at "
+                              f"{MAX_ARGV_BYTES:,} (MAX_ARG_STRLEN), and it could not be "
+                              f"spilled to a file. Shorten the input, or use an "
+                              f"HTTP-transport judge (vis-* / ollama).", time.time() - t0)
+    if images and kind not in ("orvision", "claude"):
+        return result(name, "unavailable",
+                      f"this judge cannot receive images: the {kind} transport does not "
+                      f"forward them as vision content (verified -- grok and kimi answer "
+                      f"CANNOT_SEE through opencode while reading the same image correctly "
+                      f"over the raw API). Use vis-grok / vis-kimi / vis-gemini / vis-gpt or "
+                      f"a claude judge for visual questions.", time.time() - t0)
+    try:
+        if kind == "codex":
+            # `exec resume` accepts neither -C nor -s: it inherits cwd and sandbox from
+            # the recorded session, and passing them is an error. Hence two flag sets.
+            # codex validates this: "minimal" is REJECTED, low/medium/high/xhigh/max
+            # are accepted (probed). High stays the default -- a judge that reasons
+            # less is a cheaper judge, not a faster one to trust.
+            base = ["--json", "--skip-git-repo-check",
+                    "-c", f"model_reasoning_effort={effort or 'high'}"]
+            # `exec resume` inherits the RECORDED cwd and sandbox, so resuming an id we
+            # cannot vouch for silently hands the judge whatever sandbox that session was
+            # created with. We therefore store a marker beside the id and refuse to resume
+            # unless WE created it, read-only, for THIS repo. A bare id (old format, or
+            # hand-edited) is not resumable -- we start a fresh sandboxed session instead.
+            sid = codex_session_id(session_file, repo)
+            if sid:
+                cmd = ["codex", "exec", "resume"] + base + ["-m", model, sid, prompt]
+            else:
+                cmd = ["codex", "exec"] + base + ["-C", repo, "-s", "read-only", "-m", model, prompt]
+            r = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout,
+                               stdin=subprocess.DEVNULL)
+            if r.returncode != 0:
+                # Ambiguous exits default to `harness`: see classification note above.
+                return result(name, "harness", f"codex exec exited {r.returncode}: "
+                              f"{r.stderr.strip()[:500]}", time.time() - t0)
+            out = None
+            for line in r.stdout.splitlines():
+                try:
+                    ev = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                m = ev.get("msg") if isinstance(ev.get("msg"), dict) else ev
+                item = m.get("item") or {}
+                # ACCUMULATE. `out = item["text"]` overwrote on every agent message, so a
+                # codex judge that answered across more than one message kept only the last
+                # -- exactly the defect `claude_body` was written to fix, in the transport
+                # next door, unfixed. A fix applied to one instance of a class and not to
+                # the class. Found by claude-opus, audit 5.
+                if item.get("type") in ("agent_message", "assistant_message") and item.get("text"):
+                    out = (out + "\n" + item["text"]) if out else item["text"]
+                for k in ("message", "text", "last_agent_message"):
+                    if m.get("type") in ("agent_message", "agent-message") and isinstance(m.get(k), str):
+                        out = (out + "\n" + m[k]) if out else m[k]
+                if session_file is not None and not sid:
+                    got = find_session_id(ev)
+                    if got:
+                        session_file.parent.mkdir(parents=True, exist_ok=True)
+                        session_file.write_text(json.dumps(
+                            {"id": got, "sandbox": "read-only", "cwd": repo, "model": model}))
+                        sid = got
+            if out:
+                return result(name, "ok", out, time.time() - t0)
+            return result(name, "harness", "codex produced no agent message", time.time() - t0)
+
+        if kind == "orvision":
+            # Direct OpenRouter chat/completions with an image_url content block.
+            # Verified 2026-08-21 against ground truth (a 3-column table + "PROMPTS"
+            # sidebar): grok-4.6, kimi-k3, gemini-2.5-flash and gpt-5.6 all read it
+            # correctly. deepseek-v3.2, qwen3-235b and glm-5/5.2 return
+            # 404 "No endpoints found that support image input" -- they are text-only.
+            key = os.environ.get("OPENROUTER_API_KEY")
+            if not key:
+                return result(name, "harness", "no $OPENROUTER_API_KEY for the vision "
+                              "transport (it talks to OpenRouter directly, not through "
+                              "opencode)", time.time() - t0)
+            content = [{"type": "text", "text": prompt}]
+            for img in (images or []):
+                try:
+                    b64 = base64.b64encode(pathlib.Path(img).read_bytes()).decode()
+                except OSError as e:
+                    return result(name, "harness", f"cannot read image {img}: {e}",
+                                  time.time() - t0)
+                suffix = pathlib.Path(img).suffix.lower().lstrip(".") or "png"
+                mime = {"jpg": "jpeg"}.get(suffix, suffix)
+                content.append({"type": "image_url",
+                                "image_url": {"url": f"data:image/{mime};base64,{b64}"}})
+            payload = json.dumps({"model": model, "max_tokens": 16000,
+                                  "messages": [{"role": "user", "content": content}]}).encode()
+            req = urllib.request.Request(
+                "https://openrouter.ai/api/v1/chat/completions", data=payload,
+                headers={"Authorization": f"Bearer {key}", "Content-Type": "application/json"})
+            try:
+                deadline = time.time() + timeout
+                with urllib.request.urlopen(req, timeout=timeout) as resp:
+                    buf = b""
+                    while True:
+                        if time.time() > deadline:
+                            return result(name, "harness", f"vision request exceeded the "
+                                          f"{timeout}s deadline while reading the response",
+                                          time.time() - t0)
+                        chunk = resp.read(65536)
+                        if not chunk:
+                            break
+                        buf += chunk
+                    d = json.loads(buf.decode("utf-8", "replace"))
+            except urllib.error.HTTPError as e:
+                body = e.read().decode(errors="replace")[:300]
+                # A model with no image endpoint says so plainly; that is the provider
+                # declining, not our plumbing breaking.
+                # A model with no image endpoint is a CAPABILITY fact, not a refusal: the
+                # model never saw the question. Calling it `refused` made a stale roster
+                # entry look like evidence that the model declined. And this branch missed
+                # the shared status maps entirely, so a 429/503 here was reported as our
+                # plumbing. Raised by codex and opus.
+                if "image input" in body:
+                    return result(name, "unavailable", f"OpenRouter {e.code}: {body} -- this "
+                                  f"model has no image endpoint; it is text-only, which is a "
+                                  f"roster fact, not a judgment.", time.time() - t0)
+                if e.code in PROVIDER_ACCOUNT:
+                    return result(name, "harness", f"OpenRouter {e.code} "
+                                  f"({PROVIDER_ACCOUNT[e.code]}): {body}", time.time() - t0)
+                if e.code in PROVIDER_DECLINED:
+                    return result(name, "refused", f"OpenRouter {e.code}: {body}",
+                                  time.time() - t0)
+                if e.code in PROVIDER_UNAVAILABLE:
+                    return result(name, "unavailable", f"OpenRouter {e.code} "
+                                  f"({PROVIDER_UNAVAILABLE[e.code]}): {body}", time.time() - t0)
+                return result(name, "harness", f"OpenRouter {e.code}: {body}", time.time() - t0)
+            except urllib.error.URLError as e:
+                return result(name, "harness", f"cannot reach OpenRouter ({e.reason})",
+                              time.time() - t0)
+            ch = (d.get("choices") or [{}])[0]
+            text = ((ch.get("message") or {}).get("content") or "").strip()
+            u = d.get("usage") or {}
+            meta = {"tokens": {"input": u.get("prompt_tokens") or 0,
+                               "output": u.get("completion_tokens") or 0},
+                    "cost": (d.get("usage") or {}).get("cost")}
+            if not text:
+                return result(name, "harness", f"empty response (finish_reason="
+                              f"{ch.get('finish_reason')})", time.time() - t0, meta)
+            if ch.get("finish_reason") not in (None, "stop", "end_turn"):
+                meta["note"] = f"finish_reason {ch.get('finish_reason')!r}"
+                return result(name, "incomplete", text, time.time() - t0, meta)
+            return result(name, "ok", text, time.time() - t0, meta)
+
+        if kind == "claude":
+            # ANTHROPIC_API_KEY is REMOVED so this runs on the subscription.
+            # --disallowedTools is what actually sandboxes it: --allowedTools is an
+            # auto-approve allowlist, not a restriction, and a judge given
+            # "Read,Grep,Glob" that way still created a file when asked (verified).
+            env = {k: v for k, v in os.environ.items() if k != "ANTHROPIC_API_KEY"}
+            # stream-json + --include-partial-messages is what makes a Claude judge
+            # watchable, and it costs nothing to use: the run STILL ends with the same
+            # `result` event carrying total_cost_usd, session_id, usage and stop_reason.
+            # An earlier version used plain `--output-format json` on the belief that
+            # only it reported cost -- that was simply wrong (verified: identical
+            # result-event keys, 7 text deltas alongside them).
+            if images:
+                # Verified: a claude judge reads a PNG with its Read tool and reports its
+                # contents correctly. It needs the path, so name the files explicitly.
+                paths = "\n".join(str(pathlib.Path(i).resolve()) for i in images)
+                prompt = (f"{prompt}\n\n---\nUse your Read tool on each of these image "
+                          f"files before answering, and say what you actually see:\n{paths}")
+            cmd = [BINARY["claude"], "-p", prompt,
+                   "--output-format", "stream-json", "--verbose",
+                   "--include-partial-messages",
+                   "--model", model,
+                   "--disallowedTools", "Write,Edit,NotebookEdit,Bash"]
+            if effort:                       # same five levels as codex, verified
+                cmd += ["--effort", effort]
+            sid = read_session(session_file)
+            if sid:
+                cmd += ["--resume", sid]
+            p = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                                 text=True, cwd=repo, env=env, stdin=subprocess.DEVNULL)
+            # stderr is drained on its own thread. Reading it only after stdout is
+            # exhausted would deadlock the moment claude writes more than a pipe
+            # buffer's worth of warnings while we are still consuming deltas.
+            errbuf = []
+            th = threading.Thread(
+                target=lambda: errbuf.extend(p.stderr), daemon=True)
+            th.start()
+            # subprocess.run(timeout=) is gone with the streaming loop, so the deadline
+            # becomes an explicit watchdog. It raises the SAME TimeoutExpired the
+            # handler below already knows how to report, with the partial answer
+            # attached, so a slow judge still tells you what it managed to say.
+            d, deltas = {}, []
+            killer = threading.Timer(timeout, p.kill)
+            killer.start()
+            try:
+                for line in p.stdout:
+                    line = line.strip()
+                    if not line:
+                        continue
+                    try:
+                        ev = json.loads(line)
+                    except ValueError:
+                        continue
+                    if ev.get("type") == "stream_event":
+                        se = ev.get("event") or {}
+                        if se.get("type") == "content_block_delta":
+                            piece = (se.get("delta") or {}).get("text") or ""
+                            if piece:
+                                deltas.append(piece)
+                                write_live(live_path, piece, name)
+                    elif ev.get("type") == "result":
+                        d = ev
+                p.wait()
+            finally:
+                killer.cancel()
+                if STREAM_ECHO:
+                    ECHO.close(name)
+            if not d:
+                if p.returncode is not None and p.returncode < 0:
+                    raise subprocess.TimeoutExpired(cmd, timeout,
+                                                    output="".join(deltas))
+                th.join(timeout=2)
+                # If claude STREAMED a substantial answer and then exited without a result
+                # event, that answer is real and was being thrown away: the judge file held
+                # only stderr and the text survived solely in .live.md, which nothing reads.
+                # Same defect class as the multi-turn loss claude_body() exists to fix, on
+                # the one path claude_body() was never reached. Caught by codex 2026-08-22.
+                streamed = "".join(deltas).strip()
+                if len(streamed) >= 200:
+                    return result(name, "incomplete", streamed, time.time() - t0,
+                                  {"note": f"claude exited {p.returncode} with no result "
+                                           f"event; this is what it had streamed"})
+                return result(name, "harness", f"claude produced no result event (exit "
+                              f"{p.returncode}): "
+                              f"{strip_ansi(''.join(errbuf))[-300:]}", time.time() - t0)
+            u = d.get("usage") or {}
+            meta = {"tokens": {"input": (u.get("input_tokens") or 0)
+                                        + (u.get("cache_read_input_tokens") or 0)
+                                        + (u.get("cache_creation_input_tokens") or 0),
+                               "output": u.get("output_tokens") or 0},
+                    "cost": d.get("total_cost_usd"), "billing": "subscription"}
+            if session_file is not None and d.get("session_id"):
+                session_file.parent.mkdir(parents=True, exist_ok=True)
+                session_file.write_text(d["session_id"])
+            text, _bodynote = claude_body(deltas, d)
+            if _bodynote:
+                meta["note"] = _bodynote
+            if d.get("is_error"):
+                return result(name, "harness", f"claude reported an error: {text[:400]}",
+                              time.time() - t0, meta)
+            stop = d.get("stop_reason")
+            if text and stop not in (None, "end_turn", "stop"):
+                meta["note"] = f"stop_reason {stop!r}, not 'end_turn'"
+                return result(name, "incomplete", text, time.time() - t0, meta)
+            if not text:
+                return result(name, "harness", "claude returned an empty result",
+                              time.time() - t0, meta)
+            return result(name, "ok", text, time.time() - t0, meta)
+
+        if kind == "ollama":
+            # Use the HTTP API, NOT `ollama run`. The CLI streams through a terminal
+            # renderer and emits cursor-control codes even when piped -- a real answer
+            # came back as "catches all exceptions with\x1b[4D\x1b[K\nwith a bare".
+            # Those codes mean "back up 4 columns and erase", so stripping them naively
+            # DUPLICATES the overwritten text rather than cleaning it. The API returns
+            # the string itself, plus token counts, and a `context` we can replay.
+            host = os.environ.get("OLLAMA_HOST", "127.0.0.1:11434")
+            if not host.startswith("http"):
+                host = "http://" + host
+            # keep_alive: qwen3-coder:30b holds 21GB of a 24GB card, and this GPU is
+            # shared with other sessions' work. Ollama's default is 5m resident AFTER the
+            # answer is returned, which monopolises the card for nothing. Hold briefly by
+            # default; --keep-alive raises it when you are mid-conversation on a thread.
+            # stream=True: this and the claude transport are the two that can stream.
+            # opencode emits its whole answer as a single JSON text event and codex
+            # emits only item.completed (re-verified: 4 events, zero deltas), so there
+            # is nothing to follow there. Chunks are appended to <judge>.live.md as
+            # they arrive, which is what `tail -f` needs to show a judge thinking.
+            payload = {"model": model, "prompt": prompt, "stream": True,
+                       "keep_alive": keep_alive}
+            ctx = ollama_context(session_file)               # ollama resumes by replaying
+            if ctx:                                           # the opaque context array
+                payload["context"] = ctx
+            req = urllib.request.Request(f"{host}/api/generate",
+                                         data=json.dumps(payload).encode(),
+                                         headers={"Content-Type": "application/json"})
+            try:
+                chunks, d, hit_deadline = [], {}, False
+                # `urlopen(timeout=)` bounds each SOCKET OPERATION, not the call. A model
+                # emitting one token every few seconds satisfies every individual read and
+                # runs for minutes under `--timeout 10`; a peer that dribbles a byte before
+                # each timeout keeps the judge alive indefinitely. Raised by codex and opus.
+                deadline = time.time() + timeout
+                with urllib.request.urlopen(req, timeout=timeout) as resp:
+                    for raw_line in resp:
+                        if time.time() > deadline:
+                            hit_deadline = True
+                            break
+                        if not raw_line.strip():
+                            continue
+                        d = json.loads(raw_line.decode())
+                        piece = d.get("response") or ""
+                        if piece:
+                            chunks.append(piece)
+                            write_live(live_path, piece, name)
+                d["response"] = "".join(chunks)
+                if STREAM_ECHO:
+                    ECHO.close(name)
+            except urllib.error.HTTPError as e:
+                body = e.read().decode(errors="replace")[:300]
+                return result(name, "harness", f"ollama HTTP {e.code}: {body} "
+                              f"(is the model pulled? `ollama pull {model}`)", time.time() - t0)
+            except urllib.error.URLError as e:
+                return result(name, "harness", f"cannot reach the ollama daemon at {host} "
+                              f"({e.reason}). Start it with `ollama serve`.", time.time() - t0)
+            if session_file is not None and isinstance(d.get("context"), list):
+                session_file.parent.mkdir(parents=True, exist_ok=True)
+                session_file.write_text(json.dumps(d["context"]))
+            meta = {"tokens": {"input": d.get("prompt_eval_count") or 0,
+                               "output": d.get("eval_count") or 0}, "cost": 0}
+            text = (d.get("response") or "").strip()
+            if not text:
+                return result(name, "harness", f"ollama returned an empty response "
+                              f"(done_reason={d.get('done_reason')})", time.time() - t0, meta)
+            # The branch never consulted `done` or `done_reason`, so a stream that stopped
+            # at the context limit -- or one the server closed mid-generation -- was returned
+            # as a COMPLETE answer. Judged by content alone a truncated review and a short
+            # one are indistinguishable, which is the same reason the opencode branch reads
+            # the provider's own finish reason. Raised by codex.
+            reason = d.get("done_reason")
+            if hit_deadline:
+                meta["note"] = f"wall-clock deadline of {timeout}s reached mid-stream"
+                return result(name, "incomplete", text, time.time() - t0, meta)
+            if d.get("done") is False or reason in ("length", "load"):
+                meta["note"] = f"done_reason {reason!r}, stream did not finish"
+                return result(name, "incomplete", text, time.time() - t0, meta)
+            return result(name, "ok", text, time.time() - t0, meta)
+
+        # --- opencode ---------------------------------------------------------
+        # Own data dir: see the module docstring. Without it, parallel judges
+        # contend on one SQLite DB and a loser looks like a judge that declined.
+        # Credentials can arrive two ways -- an env var, or `opencode auth login`. A guard
+        # that only knew about the env var would call a perfectly good stored credential
+        # "missing", so check both before declaring a judge unreachable.
+        for prefix, var in PROVIDER_ENV.items():
+            if model.startswith(prefix) and not os.environ.get(var) \
+                    and PROVIDER_AUTH[prefix] not in stored_providers():
+                return result(name, "harness", f"no credential for {PROVIDER_AUTH[prefix]}: "
+                              f"neither ${var} in the environment nor an entry in "
+                              f"{HOST_AUTH}. This is a missing key on our side, not a "
+                              f"refusal by the model.", time.time() - t0)
+        env = dict(os.environ)
+        statedir = STATE / "state" / name
+        statedir.mkdir(parents=True, exist_ok=True)
+        # Carry the host credentials into the isolated dir, or `opencode auth login` keys
+        # would be invisible to every judge. Re-copied when the source changes, so a
+        # refreshed/rotated token propagates on the next run.
+        if HOST_AUTH.is_file():
+            dest = statedir / "opencode" / "auth.json"
+            try:
+                if not dest.is_file() or dest.stat().st_mtime < HOST_AUTH.stat().st_mtime:
+                    dest.parent.mkdir(parents=True, exist_ok=True)
+                    shutil.copy2(HOST_AUTH, dest)
+            except OSError as e:
+                # Swallowed, this reverses blame: the isolated copy keeps a STALE key, the
+                # provider answers 401, and the run reports the provider rejecting us when
+                # the real cause was our own failure to propagate the credential. Say it at
+                # the moment it happens -- by the time the 401 arrives the evidence is gone.
+                # Raised by codex and or-deepseek.
+                sys.stderr.write(f"llm-panel: WARNING could not copy host credentials to "
+                                 f"{dest}: {e}. The judge will use whatever key is already "
+                                 f"there, which may be stale -- an auth failure after this "
+                                 f"is OURS, not the provider's.\n")
+        env["XDG_DATA_HOME"] = str(statedir)
+        # --format json: parse events structurally. The old parser stripped ANSI and
+        # dropped lines starting with ">"/"@", then flagged failure on the SUBSTRING
+        # "Error:" -- so a reviewer whose first sentence quoted an error message was
+        # marked FAILED and their whole review discarded.
+        # --agent: judges must not be able to edit the repo they are judging.
+        # opencode's DEFAULT agent is `build`, which has write tools -- verified
+        # 2026-08-20 by asking a judge to create a file in a scratch repo, which it
+        # did. The panel runs judges concurrently in a live working tree, so this
+        # is not hypothetical. `panelist` (opencode.jsonc) denies edit/bash/webfetch.
+        cmd = ["opencode", "run", "--format", "json", "--agent", agent, "-m", model]
+        if effort:
+            # opencode calls this a "variant" and it is PROVIDER-specific, so unlike
+            # codex/claude the level is passed through rather than validated here.
+            # Accepted is not the same as honoured: a model with no reasoning setting
+            # takes the flag and ignores it, and opencode reports no error either way.
+            cmd += ["--variant", effort]
+        sid = read_session(session_file)
+        if sid:
+            cmd += ["-s", sid]          # verified to survive across processes
+        r = subprocess.run(cmd + [prompt], capture_output=True, text=True,
+                           timeout=timeout, cwd=repo, env=env, stdin=subprocess.DEVNULL)
+        texts, err, meta = [], None, {}
+        for line in r.stdout.splitlines():
+            try:
+                ev = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            typ, part = ev.get("type"), (ev.get("part") or {})
+            if session_file is not None and not sid and ev.get("sessionID"):
+                sid = ev["sessionID"]
+                session_file.parent.mkdir(parents=True, exist_ok=True)
+                session_file.write_text(sid)
+            if typ == "text" and part.get("text"):
+                texts.append(part["text"])
+            elif typ == "error":
+                e = ev.get("error") or {}
+                d = e.get("data") if isinstance(e.get("data"), dict) else {}
+                err = {"name": e.get("name"), "status": d.get("statusCode"),
+                       "message": d.get("message") or str(e)[:400]}
+            elif typ == "step_finish":
+                # The provider's OWN finish reason. "stop" means it said its piece;
+                # "tool-calls" or "length" mean it was cut off mid-work. Judged by
+                # length instead, a legitimate one-line answer and a truncated
+                # preamble are indistinguishable -- grok returned 159 bytes of
+                # "I'll inspect the source..." and was counted as a full view.
+                if part.get("reason"):
+                    meta["finish"] = part["reason"]
+                # An agentic judge takes MANY steps (read, grep, read, answer) and each
+                # emits its own step_finish. Overwriting kept only the LAST step, which
+                # reported "858 in / 8741 out" for a run that had just read a whole repo.
+                # Sum instead: every step is a separate billed call.
+                if isinstance(part.get("tokens"), dict):
+                    tot = meta.setdefault("tokens", {"input": 0, "output": 0})
+                    for k in ("input", "output"):
+                        tot[k] += part["tokens"].get(k) or 0
+                    meta["steps"] = meta.get("steps", 0) + 1
+                if part.get("cost") is not None:
+                    meta["cost"] = meta.get("cost", 0) + part["cost"]
+        body = "\n".join(texts).strip()
+        raw = strip_ansi(r.stdout + r.stderr)
+        # opencode's OWN messages are plain lines; every event it emits under
+        # --format json is a JSON object. Scanning `raw` for opencode's warnings
+        # therefore also scanned the model's answer and its tool output -- and the
+        # source under review contains the literal guard string, so any judge that
+        # READ the file it was reviewing had its answer discarded as "unsandboxed".
+        # Observed live: two rebuttals destroyed this way. Match chrome only.
+        chrome = "\n".join(l for l in raw.splitlines()
+                           if l.strip() and not l.lstrip().startswith("{")).lower()
+
+        # --- classification -------------------------------------------------
+        # Order matters and each step answers a DIFFERENT question:
+        #   1. was the judge sandboxed at all?   (if not, nothing it says counts)
+        #   2. did its answer COMPLETE?          (text + no error + clean exit)
+        #   3. if there is no answer, whose fault is that?
+        # The previous version was a flat sequence of substring tests over the raw
+        # stream, so a lock message printed AFTER a finished review threw the review
+        # away (measured: 67,517 tokens over 8 steps, discarded), while a non-empty
+        # body short-circuited a fatal error and shipped a truncated review as whole.
+        #
+        # opencode does not FAIL on a bad --agent: it warns and silently falls back
+        # to `build`, which can write to the repo. An answer produced that way came
+        # from an agent we did not sandbox, so refuse it rather than print it as a
+        # clean review. (This fired for real: `panelist` was declared mode:subagent,
+        # which `run --agent` rejects, so every judge silently ran write-capable.)
+        if "falling back to default agent" in chrome:
+            # Quote opencode's own line. This fires intermittently under concurrent
+            # launches and has never reproduced on demand (12/12 clean when probed),
+            # so the one occurrence we DO get must carry its own evidence rather than
+            # a generic message that tells the next investigator nothing.
+            said = next((l.strip() for l in raw.splitlines()
+                         if "falling back" in l.lower()
+                         and not l.lstrip().startswith("{")), "")
+            return result(name, "harness", f"opencode ignored --agent {agent} and fell back to "
+                          f"the default (write-capable) agent, so this judge was NOT sandboxed "
+                          f"and its answer is discarded. opencode said: {said!r}. Known causes: "
+                          f"the agent is declared a subagent (run --agent needs a PRIMARY "
+                          f"one), or an intermittent failure under concurrent launches that "
+                          f"has never reproduced on demand -- re-running alone usually works.",
+                          time.time() - t0, meta)
+        # 2. Did it finish? An answer is complete only if nothing else went wrong.
+        unfinished = meta.get("finish") not in (None, "stop")
+        broke = err is not None or r.returncode != 0 or unfinished
+        if body and not broke:
+            return result(name, "ok", body, time.time() - t0, meta)
+        if body and broke:
+            if err:
+                why = (f"{err['name'] or 'error'}"
+                       + (f" {err['status']}" if err.get("status") else "")
+                       + f": {err['message']}")
+            elif unfinished:
+                why = (f"the provider stopped with reason {meta['finish']!r}, not 'stop' -- "
+                       f"the judge was cut off before it finished answering")
+            else:
+                why = f"exited {r.returncode}"
+            meta["note"] = why
+            # Keep the text -- it may be most of a good review -- but never let a
+            # truncated answer be counted as an answer.
+            return result(name, "incomplete", body, time.time() - t0, meta)
+
+        # 3. No answer at all. Whose fault?
+        if "database is locked" in chrome:
+            return result(name, "harness", "opencode's state DB was locked (parallel-run "
+                          "contention on our side, NOT a refusal by this model)",
+                          time.time() - t0, meta)
+        if err:
+            return _classify_error(name, err, time.time() - t0, meta, peers)
+        # The judge's WORDS may still be in the stream in a shape the inline loop above
+        # did not collect. stream_text was written for exactly this and wired into the
+        # TIMEOUT exit only -- this exit kept dumping protocol. A recovery that guards one
+        # of two exits guards neither: the bug simply leaves by the other door.
+        dug = stream_text(raw)
+        if dug:
+            meta["note"] = ("recovered from the raw event stream; the run emitted no text "
+                            "event of its own")
+            return result(name, "incomplete", dug, time.time() - t0, meta)
+        # A provider that stopped for ITS OWN stated reason and produced no text is not our
+        # harness failing. or-kimi spent 470s and $0.58 hitting its output-length cap
+        # without emitting one text event, and the panel reported "our harness failed, not
+        # the model" above 600 bytes of raw JSON -- while meta["finish"] said 'length' the
+        # whole time. Same misattribution class as the 408 that was blamed on us.
+        if meta.get("finish") and meta["finish"] != "stop":
+            return result(name, "unavailable",
+                          f"the provider stopped with reason {meta['finish']!r} before "
+                          f"emitting any text. Nothing was returned to review. This is "
+                          f"retryable and says nothing about the question: 'length' means "
+                          f"the output budget was spent (often on reasoning or tool calls) "
+                          f"before the answer began.", time.time() - t0, meta)
+        detail = raw.strip()[:600] or f"exited {r.returncode} with no output"
+        return result(name, "harness", detail, time.time() - t0, meta)
+
+    except subprocess.TimeoutExpired as e:
+        def tail(b):
+            if not b:
+                return ""
+            txt = b.decode("utf-8", "replace") if isinstance(b, bytes) else str(b)
+            return strip_ansi(txt).strip()[-400:]
+        def whole(b):
+            if not b:
+                return ""
+            txt = b.decode("utf-8", "replace") if isinstance(b, bytes) else str(b)
+            return strip_ansi(txt).strip()
+        # Prefer the judge's WORDS. `whole()` is raw stdout, which for a CLI transport is a
+        # JSON event stream -- storing that as a review is worse than storing nothing,
+        # because the panel then reports a partial answer that contains no answer.
+        body = stream_text(whole(e.stdout)) or ""
+        if not body:
+            raw_body = whole(e.stdout) or whole(e.stderr)
+            # Only prose is an answer. If what is left still looks like protocol, it is not.
+            jsonish = sum(1 for l in raw_body.splitlines()
+                          if l.strip().startswith("{"))
+            body = "" if jsonish and jsonish >= len(
+                [l for l in raw_body.splitlines() if l.strip()]) / 2 else raw_body
+        # A judge killed at the deadline having written 10 KB had that answer reduced to a
+        # 400-character TAIL inside a `harness` message: <judge>.md held the error, run.json
+        # held no text, and the only surviving copy was <judge>.live.md, which nothing reads.
+        # The panel then reported a plumbing failure where it actually had most of a review.
+        # Substantive output makes this `incomplete` -- a status the renderer already knows
+        # how to mark as truncated -- and keeps the whole thing. Raised by codex.
+        if len(body) >= 200:
+            return result(name, "incomplete", body, time.time() - t0,
+                          {"note": f"timed out after {timeout}s (our limit, not a refusal); "
+                                   f"this is what it had written by then"})
+        note = f" Last output before the timeout: {tail(e.stdout) or tail(e.stderr)!r}" \
+            if body else " The process produced NO output at all before the timeout."
+        return result(name, "harness", f"timed out after {timeout}s (our limit, not a "
+                      f"refusal).{note}", time.time() - t0)
+    except FileNotFoundError as e:
+        return result(name, "harness", f"transport missing: {e}", time.time() - t0)
+    except Exception as e:  # never let one judge's crash take down the panel
+        return result(name, "harness", f"{type(e).__name__}: {e}", time.time() - t0)
+
+
+REBUT_INSTRUCTIONS = (
+    "You already reviewed this material independently. Below are the findings of the OTHER "
+    "reviewers. They did not see your review, and their identities are withheld from you on "
+    "purpose.\n\n"
+    "Reviewers were NOT required to number their findings, so some lists below are "
+    "numbered and some are not. Where a finding carries a number, refer to it as "
+    "<Letter><number> -- B7 is Reviewer B's finding 7. Where it does not, count the "
+    "findings in that reviewer's list from the top and use that position, so the third "
+    "finding by Reviewer B is B3. Take a position on each finding that touches yours:\n"
+    "  UPHOLD:  B7 -- you stand by your own claim despite theirs; say what proves it.\n"
+    "  REJECT:  B7 -- theirs is wrong or overstated; point at the specific code or "
+    "logic that makes it wrong.\n"
+    "  CONCEDE: B7 -- you were wrong; say exactly what changed your mind.\n"
+    "  MISSED:  B7 -- they caught something real that you did not; confirm it against "
+    "the code rather than taking their word.\n\n"
+    "Start each point with one of those four labels verbatim, then the reference, THEN your "
+    "argument. Cite the reference even when you also describe the finding: a position that "
+    "only restates a finding in your own words cannot be matched to the finding it answers, "
+    "so it is dropped from the panel's grouped view and argues with nobody.\n\n"
+    "Two rules that matter more than agreeing:\n"
+    "1. Do NOT concede merely because someone disagreed with you. Concede only when you can "
+    "point at what proves you wrong. A correct finding stays correct when it is unpopular.\n"
+    "2. Do NOT invent agreement. If a finding is unverifiable from what you have, say so "
+    "instead of endorsing it.\n\n"
+    "Reviews from the other reviewers follow.\n\n")
+
+
+# New feature, not a bug fix: ROOT_CAUSE_OK
+# Filesystem writes below are read back live after a real run: # BOUNDARY_OK
+def run_rebuttals(judges, results, prompt, repo, timeout, agent, rundir, log, live=False,
+                  effort=None, images=None):
+    """Round 2: each judge answers the OTHERS' findings. Round 1 is never overwritten.
+
+    Judges see each other ANONYMIZED. Naming the models invites deference to whichever
+    one is famous or expensive, which is the opposite of what a panel is for -- the point
+    is to weigh the argument, not the byline. The legend is printed for the READER, who
+    does need to know who said what.
+    """
+    answered = [j for j in judges if results[j]["status"] == "ok"]
+    if len(answered) < 2:
+        # THREE values. Adding `letters` to the main return on 2026-08-21 missed this early
+        # branch, so `--judges codex --rebut` raised ValueError out of main() and wrote no
+        # panel.md and no run.json at all -- the whole run lost, on the ordinary path where
+        # only one judge answers. Caught by codex in the 2026-08-22 re-audit.
+        return (["", "_Rebuttal round skipped: it needs at least two answers to argue about._"],
+                {}, {})
+    letters = assign_letters(judges, results, seed=pathlib.Path(rundir).name)
+    # Best-effort leak DETECTOR, not a guard: if a review names its own model or vendor, the
+    # anonymisation is already defeated for that judge no matter how the letters are drawn.
+    # It is a name list, so it will miss cases -- which is why it WARNS instead of gating.
+    for _j in answered:
+        _txt = (results[_j].get("text") or "").lower()
+        _self = [w for w in re.split(r"[-/]", _j.lower()) if len(w) > 2]
+        _hit = [w for w in _self if w in _txt]
+        if _hit:
+            log(f"llm-panel: WARNING {_j}'s review contains {_hit} — it may have identified "
+                f"itself to the other judges; round-2 anonymity is best-effort.\n")
+
+    # ROUND 2 DOES NOT RE-SEND THE SOURCE. The rebuttal prompt used to be the ENTIRE
+    # round-one prompt plus every review, which is how it reached 153,506 bytes on this
+    # tool's own audit and got all four judges refused. But re-sending the material is the
+    # waste, not the reviews: the judge already reviewed it, and round two is ABOUT the
+    # reviews. Past a threshold the material becomes a file reference -- read tools are
+    # granted and all three CLI transports were verified reading both relative and absolute
+    # paths -- while the reviews, which are the actual subject, stay inline. Spilling the
+    # whole round-two prompt instead was tried first and was worse: judges spent their turn
+    # reading 134 KB and were cut off with finish reason `tool-calls` before answering.
+    REBUT_INLINE_MAX = 40_000
+    # A pointer is only an answer for a judge that can OPEN it. ollama and orvision have no
+    # filesystem tools and rebuttals deliberately carry no session, so those judges would get
+    # a 2 KB excerpt plus an unusable path and their reply would still be recorded `ok`.
+    # They keep the full prompt inline; only file-capable transports get the reference.
+    _spillable = pathlib.Path(repo) / MATERIAL_DIRNAME
+    try:
+        base = (spill_material(prompt, _spillable, shared=True)
+                if len(prompt.encode("utf-8")) > REBUT_INLINE_MAX else prompt)
+    except OSError as e:
+        # Same invariant as _ask: a failure here must not take the run down after round one
+        # has already been paid for. Fall back to the inline prompt and say so.
+        log(f"llm-panel: could not write the material file ({e}); sending round two inline\n")
+        base = prompt
+
+    prompts = {}
+
+    def one(me):
+        # ORDERED BY LETTER, not by roster. Shuffling the letter assignment (2026-08-21)
+        # was only half the fix: the blocks were still EMITTED in roster order, so the first
+        # block a judge saw was always the first non-self judge on the roster and position
+        # gave the mapping away no matter what letter sat on it. Caught by or-glm in the
+        # 2026-08-22 re-audit -- the same judge that abstained on two other areas. Sorting
+        # by the shuffled letter makes position carry exactly what the letter carries.
+        others = sorted((o for o in answered if o != me), key=lambda o: letters[o])
+        blocks = "\n\n".join(f"### Reviewer {letters[o]}\n{results[o]['text']}" for o in others)
+        # session_file=None ON PURPOSE. Rebuttals used to run inside the judge's
+        # --thread session, which wrote the OTHER judges' findings into its history:
+        # on the next turn its "independent" answer had already read everyone else's,
+        # destroying the one property the panel exists to provide. The judge's own
+        # review is replayed in the prompt instead, so it keeps its context without
+        # the thread ever recording what its rivals said.
+        # A judge that cannot read a file gets the material itself, however big.
+        _base = base if ROSTER[me][0] in ("codex", "claude", "opencode") else prompt
+        prompts[me] = (f"{_base}\n\n---\n\nYour own review was:\n\n{results[me]['text']}"
+                       f"\n\n---\n\n{REBUT_INSTRUCTIONS}{blocks}")
+        r = ask(me, prompts[me], repo, timeout, agent, None, "60s",
+                sum(1 for k in answered if provider_of(k) == provider_of(me)),
+                None, effort, images, None, None)   # None: see spill_material's gate
+        emit(rundir, me, prompts[me], r, live, tag=".rebuttal")
+        return r
+
+    log(f"llm-panel: rebuttal round — {len(answered)} judges answering each other\n")
+    with cf.ThreadPoolExecutor(max_workers=len(answered)) as ex:
+        rebuts = {r["name"]: r for r in [f.result() for f in [ex.submit(one, j) for j in answered]]}
+
+    out = ["\n---\n", "## Rebuttal round", "",
+           "Round 1 above is untouched. Here each judge answers the others' findings, having "
+           "been shown them anonymously.", "",
+           "Legend (withheld from the judges, shown to you): "
+           + ", ".join(f"Reviewer {letters[j]} = {j}" for j in answered), ""]
+    for j in answered:
+        r = rebuts[j]
+        out += [f"\n### {j} (Reviewer {letters[j]}) responds — {r['secs']}s", ""]
+        # Mirror the main renderer. It used to print anything that was not ok/refused
+        # as "our harness failed", so a rate-limited rebuttal was blamed on us and an
+        # `incomplete` one had its partial text thrown away.
+        if r["status"] == "ok":
+            out += [r["text"], ""]
+        elif r["status"] == "incomplete":
+            out += [f"**PARTIAL REBUTTAL — cut off ({r['meta'].get('note', 'unknown')}).**",
+                    "", r["text"], ""]
+        elif r["status"] == "refused":
+            out += [f"**NO REBUTTAL — the model/provider refused.** {r['text']}", ""]
+        elif r["status"] == "unavailable":
+            out += [f"**NO REBUTTAL — the provider would not serve right now.** "
+                    f"{r['text']}", ""]
+        else:
+            out += [f"**NO REBUTTAL — our harness failed, not the model.** {r['text']}", ""]
+
+
+    # A concession under evidence and a concession under social pressure look identical
+    # in the tally, so count but do not interpret.
+    tally = {}
+    for j in answered:
+        if rebuts[j]["status"] != "ok":
+            continue
+        # Colon OR em/en dash, with an optional qualifier. The old rf"^\s*\**{k}:" counted
+        # 3 of one judge's 57 positions because it wrote "MISSED — ..." rather than
+        # "MISSED: ...". A bare hyphen is excluded on purpose ("REJECT-worthy ...").
+        counts = {k: len(re.findall(rf"^\s*\**{k}\**[^:\u2014\u2013]{{0,24}}?\s*[:\u2014\u2013]\s",
+                                    rebuts[j]["text"], re.M | re.I))
+                  for k in ("UPHOLD", "REJECT", "CONCEDE", "MISSED")}
+        if any(counts.values()):
+            tally[j] = counts
+    if tally:
+        out += ["", "**Positions taken** (labels the judges used; a concession may be evidence "
+                "OR deference — read the text to tell which):", ""]
+        for j, c in tally.items():
+            out += [f"- {j}: " + ", ".join(f"{k.lower()} {v}" for k, v in c.items() if v)]
+    return out, rebuts, letters
+
+
+def collect_diff(repo):
+    def git(*a):
+        r = subprocess.run(["git", "-C", repo, *a], capture_output=True, text=True)
+        if r.returncode != 0:
+            die(f"git {' '.join(a)} failed: {r.stderr.strip()[:300]}", 7)
+        return r.stdout
+    # `git diff HEAD` fails outright before the first commit, so --diff could not
+    # review a brand-new repository at all. Staged-vs-empty-tree works either way.
+    has_head = subprocess.run(["git", "-C", repo, "rev-parse", "--verify", "HEAD"],
+                              capture_output=True).returncode == 0
+    diff = git("diff", "HEAD") if has_head else git("diff", "--cached")
+    untracked = git("ls-files", "--others", "--exclude-standard")
+    if not diff.strip() and not untracked.strip():
+        die("--diff found no uncommitted changes; nothing to review", 8)
+    out = ["Here are the uncommitted changes in this repository. Review them.", "",
+           "```diff", diff.rstrip(), "```"]
+    files = [f for f in untracked.splitlines() if f.strip()]
+    if files:
+        # The prompt tells judges these ARE the uncommitted changes, so sending bare
+        # filenames meant a brand-new file -- the likeliest place for a fresh defect --
+        # was reviewed by nobody while the panel looked complete.
+        out += ["", "Untracked files (new, not yet in git):"]
+        shown, budget = 0, 200_000
+        for f in files:
+            if shown >= 40 or budget <= 0:
+                out += ["", f"... and {len(files) - shown} more untracked files not shown"]
+                break
+            # `git ls-files --others` reports an untracked SYMLINK by its path inside the
+            # repo, and opening it followed the link straight out of the tree: an untracked
+            # `notes.txt -> ~/.aws/credentials` had its contents embedded in the prompt sent
+            # to every REMOTE judge. Verified by execution 2026-08-21 -- the secret appeared
+            # in the assembled prompt. (codex's own example, `credentials`, happened to be
+            # caught by this machine's global gitignore; the class is not about the name.)
+            # Resolve and require containment: a link is only read when its TARGET is still
+            # inside the repository being reviewed.
+            src = pathlib.Path(repo) / f
+            try:
+                inside = src.resolve().is_relative_to(pathlib.Path(repo).resolve())
+            except (OSError, ValueError):
+                inside = False
+            if not inside:
+                out += ["", f"--- {f} (symlink out of the repository — NOT read) ---"]
+                shown += 1
+                continue
+            try:
+                # Read at most the cap. The previous version read the WHOLE file and
+                # truncated afterwards, so one stray multi-GB untracked file would be
+                # pulled into memory before the budget was ever consulted.
+                with open(src, encoding="utf-8", errors="replace") as fh:
+                    data = fh.read(20_000)
+                    if fh.read(1):
+                        data += "\n... [truncated]"
+            except (OSError, IsADirectoryError):
+                out += ["", f"--- {f} (unreadable or not text) ---"]
+                shown += 1
+                continue
+            budget -= len(data)
+            shown += 1
+            out += ["", f"--- {f} ---", "```", data.rstrip(), "```"]
+    return "\n".join(out)
+
+
+def _letter(i):
+    """A, B ... Z, AA, AB ... `chr(ord("A") + i)` was unbounded, so judge 27 was labelled
+    `[`, then `\\`, `]`, `^`. Judges are told to write `<Letter><number>`; a lone backslash
+    in a markdown heading is an escape, and every round-two cross-reference became
+    unresolvable. Reachable with a full roster or `--repeat`. Found by claude-opus."""
+    out = ""
+    i += 1
+    while i:
+        i, r = divmod(i - 1, 26)
+        out = chr(ord("A") + r) + out
+    return out
+
+
+def assign_letters(judges, results, seed=""):
+    """The reviewer letters for a rebuttal round: `ok` judges only.
+
+    Extracted so run_rebuttals and its control bind to ONE definition. run.json used to
+    rebuild an equivalent-looking map over `ok` + `incomplete`, which shifted every letter
+    after an incomplete judge and pointed `B7` at the wrong reviewer.
+
+    ANONYMITY IS A CORRECTNESS PROPERTY, and positional assignment leaked it. Letters
+    followed ROSTER ORDER, so a judge that knows the roster maps every letter to a name --
+    and in the 2026-08-21 audit the roster was literally in the file under review, printed
+    in order, in a ROSTER dict. Raised by all four judges. Reproduced before fixing: with
+    five judges, or-kimi sees A,B,D,E, learns it is C, and roster order gives it the rest.
+
+    The order is now shuffled by a per-run seed, so position carries no information. A judge
+    can still tell WHICH LETTER IT IS (its own review is absent), which is harmless -- it
+    already knows its own review. What it can no longer do is name the others.
+
+    Not fixed here, and not fixable by relabelling: a model may recognise its own prose, or
+    a review may say "as Claude I...". The reviews are shown VERBATIM on purpose, so that
+    residual is accepted and warned about (see the leak check in run_rebuttals) rather than
+    papered over by paraphrasing, which would corrupt the evidence.
+    """
+    ok = [j for j in judges if results[j]["status"] == "ok"]
+    order = list(ok)
+    random.Random(f"llm-panel-letters\0{seed}").shuffle(order)
+    return {j: _letter(order.index(j)) for j in ok}
+
+
+def cache_is_inside(state, repo):
+    """Would finished answers land inside the tree under review?
+
+    PHYSICAL, not lexical: the old string-prefix test was defeated by a symlinked
+    XDG_CACHE_HOME and by a relative one, either of which puts a finished review back where
+    a still-running judge can read it."""
+    try:
+        sr, rr = pathlib.Path(state).resolve(), pathlib.Path(repo).resolve()
+        return sr == rr or sr.is_relative_to(rr)
+    except (OSError, ValueError):
+        return True                       # cannot prove it is outside -> assume inside
+
+
+def _phase_record(r):
+    """The uniform shape for one call in an optional phase."""
+    meta = r.get("meta") or {}
+    tok = meta.get("tokens") or {}
+    return {"name": r.get("name"), "status": r.get("status"),
+            "secs": r.get("secs") if isinstance(r.get("secs"), (int, float)) else None,
+            "cost": meta.get("cost"), "billing": meta.get("billing"),
+            "tokens": {"input": tok.get("input"), "output": tok.get("output")},
+            "note": meta.get("note")}
+
+
+def _judge_record(name, r, rundir):
+    """One judge, in a shape a renderer can read without discovering the schema."""
+    meta = r.get("meta") or {}
+    tok = meta.get("tokens") or {}
+    # The round-one text lived ONLY in a sibling file whose naming was never written down.
+    # Name the files here so a reader does not have to reverse-engineer the convention.
+    files = {k: f"{name}{suf}" for k, suf in
+             (("review", ".md"), ("rebuttal", ".rebuttal.md"), ("prompt", ".prompt.md"),
+              ("live", ".live.md"))
+             if (rundir / f"{name}{suf}").is_file()}
+    return {
+        "name": name,
+        "transport": ROSTER[name][0],
+        "model": ROSTER[name][1],
+        "status": r.get("status") or "unknown",
+        "secs": r.get("secs") if isinstance(r.get("secs"), (int, float)) else None,
+        "meta": meta,
+        "cost": meta.get("cost"),
+        "billing": meta.get("billing"),
+        "tokens": {"input": tok.get("input"), "output": tok.get("output")},
+        "note": meta.get("note"),
+        "files": files,
+    }
+
+
+def billed_note(metered, n_priced, n_total=None):
+    """The qualifier after a billed total. "$0.0000 (nothing metered)" asserts a
+    MEASUREMENT: it says we looked and the bill was zero. A run where no transport reported
+    a cost at all has measured nothing, which is a different fact -- codex reports no cost
+    on any path, so a codex-only run printed a measured-looking zero while spending real
+    plan quota. Raised by all four judges of the 2026-08-21 audit."""
+    if metered:
+        # A total built from SOME judges is not the run's bill. codex reports no cost on any
+        # path, so any panel including it printed a complete-looking figure. Found by
+        # claude-opus, audit 5.
+        if n_total and n_priced < n_total:
+            return f" (from {n_priced} of {n_total} judges; the rest reported no cost)"
+        return ""
+    if not n_priced:
+        return " (no transport reported a cost \u2014 UNMEASURED, not zero)"
+    if n_total and n_priced < n_total:
+        return f" ({n_priced} of {n_total} judges reported, and reported zero)"
+    return " (nothing metered)"
+
+
+def cost_note(meta):
+    tok, cost = meta.get("tokens") or {}, meta.get("cost")
+    bits = []
+    if tok:
+        step = f" over {meta['steps']} steps" if meta.get("steps", 0) > 1 else ""
+        bits.append(f"{tok.get('input', '?')} in / {tok.get('output', '?')} out{step}")
+    if cost is not None:
+        bits.append("free" if not cost else f"${cost:.4f}")
+    return ", ".join(bits)
+
+
+def summary_table(judges, results):
+    """A scoreboard above the reviews: who answered, how long, what it cost.
+
+    The per-judge facts were only ever available by reading four essays to the end
+    and then the Cost section at the bottom. Which judge failed, and which one cost
+    a hundred times the others, are the two things you want BEFORE reading anything.
+    """
+    rows = [("judge", "status", "time", "tokens", "cost")]
+    for j in judges:
+        r = results[j]
+        tok = r["meta"].get("tokens") or {}
+        cost = r["meta"].get("cost")
+        money = ("—" if cost is None else "free" if not cost
+                 else f"${cost:.4f}" + (" *" if r["meta"].get("billing") == "subscription"
+                                        else ""))
+        rows.append((j, r["status"], f"{r['secs']}s",
+                     f"{tok.get('input', 0):,}/{tok.get('output', 0):,}" if tok else "—",
+                     money))
+    out = ["| " + " | ".join(rows[0]) + " |",
+           "|" + "|".join(["---"] * len(rows[0])) + "|"]
+    out += ["| " + " | ".join(r) + " |" for r in rows[1:]]
+    if any(results[j]["meta"].get("billing") == "subscription" for j in judges):
+        out += ["", "`*` = charged against a subscription plan, not invoiced."]
+    return out
+
+
+CITE = re.compile(r"([A-Za-z0-9_./-]+\.[A-Za-z0-9]{1,6}):(\d+)")
+# Judges do NOT agree on how to cite. Measured across one 4-judge panel: codex and
+# local-qwen wrote `bug.py:14`, claude-sonnet wrote `(line 14)`, and or-deepseek wrote
+# no line numbers at all. Matching only the first form reported 2/4 consensus on a
+# defect that 3 of the 4 had actually located -- an undercount is worse than no table,
+# because it reads as disagreement rather than as a citation style this code cannot see.
+BARE_LINE = re.compile(r"\blines?\s+(\d+)", re.I)
+
+
+def same_file(a, b):
+    """Do two cited paths name the same file?
+
+    `f.split("/")[-1]` threw the directory away, so `src/config.py:20` and
+    `tests/config.py:20` merged into one row reporting 2/2 agreement between judges who
+    were looking at DIFFERENT FILES -- consensus manufactured out of a shared basename.
+    It also made `files` a set of basenames, so those two collapsed to one entry and the
+    "only resolve a bare `line 14` when the panel has a single file" guard silently
+    unlocked. Raised by codex (twice), opus and or-deepseek.
+
+    The basename was discarded for a reason: judges cite the same file as `config.py`,
+    `./config.py` and `src/config.py`, and matching whole strings under-counted. Compare by
+    SUFFIX instead -- same file when every component they share matches. `config.py` still
+    matches `src/config.py`; `src/config.py` no longer matches `tests/config.py`.
+    """
+    pa = [p for p in a.replace("\\", "/").split("/") if p not in ("", ".")]
+    pb = [p for p in b.replace("\\", "/").split("/") if p not in ("", ".")]
+    n = min(len(pa), len(pb))
+    return n > 0 and pa[-n:] == pb[-n:]
+
+
+def consensus_view(judges, results):
+    """Which judges pointed at the same place. Mechanical overlap, NOT agreement.
+
+    A review panel's whole value is knowing which findings stand alone and which
+    several independent models reached; four essays in a row hide that -- you have
+    to diff them in your head. Rows are file:line citations, columns are judges.
+
+    Deliberately NOT model-generated: asking a model to summarise the panel puts a
+    thirteenth opinion between you and the twelve, and it is the step most likely to
+    quietly drop a minority finding. This groups only on literal citations, so it
+    can be wrong in exactly one direction -- two judges citing one line may still be
+    saying opposite things -- and the caveat below says so rather than implying a vote.
+    """
+    answered = [j for j in judges if results[j]["status"] in ("ok", "incomplete")]
+    cites, bare, silent = {}, {}, []
+    for j in answered:
+        txt = results[j]["text"] or ""
+        named = CITE.findall(txt)
+        for f, ln in named:
+            # A judge citing the same line five times is one finding, not five.
+            ln = int(ln)
+            for (kf, kl) in list(cites):
+                if kl == ln and same_file(kf, f):
+                    cites[(kf, kl)].add(j)
+                    # keep the MORE SPECIFIC path as the row label
+                    if f.count("/") > kf.count("/"):
+                        cites[(f, ln)] = cites.pop((kf, kl))
+                    break
+            else:
+                cites.setdefault((f, ln), set()).add(j)
+        loose = {int(n) for n in BARE_LINE.findall(txt)}
+        if loose:
+            bare[j] = loose
+        if not named and not loose:
+            silent.append(j)
+    # A bare "line 14" only resolves if the panel is looking at ONE file. With two
+    # files in the diff it could mean either, and guessing would invent consensus --
+    # the exact failure this table exists to avoid.
+    # Compare by the SAME identity test the merge uses. Raw-string comparison meant one file
+    # spelled `bug.py` and `src/bug.py` at DIFFERENT lines counted as two files, so bare
+    # "line 14" citations were discarded and the page told the reader more than one file was
+    # cited when exactly one was. Found by claude-opus 2026-08-22.
+    files = []
+    for f, _ in cites:
+        if not any(same_file(f, g) for g in files):
+            files.append(f)
+    if len(files) == 1:
+        only_file = files[0]
+        for j, lines in bare.items():
+            for ln in lines:
+                cites.setdefault((only_file, ln), set()).add(j)
+        unresolved = []
+    else:
+        unresolved = sorted(bare)
+    shared = {k: v for k, v in cites.items() if len(v) > 1}
+    if not shared:
+        return []
+    out = ["", "---", "", "## Where the judges pointed at the same code", "",
+           "| location | " + " | ".join(answered) + " | judges |",
+           "|" + "|".join(["---"] * (len(answered) + 2)) + "|"]
+    for (f, ln), who in sorted(shared.items(), key=lambda kv: (-len(kv[1]), kv[0])):
+        marks = ["✓" if j in who else "·" for j in answered]
+        out.append(f"| `{f}:{ln}` | " + " | ".join(marks) + f" | {len(who)}/{len(answered)} |")
+    only = {k: v for k, v in cites.items() if len(v) == 1}
+    if only:
+        singles = ", ".join(f"`{f}:{ln}` ({next(iter(w))})"
+                            for (f, ln), w in sorted(only.items())[:8])
+        out += ["", f"Cited by one judge only: {singles}"
+                    + (" …" if len(only) > 8 else "")]
+    # Naming who the table CANNOT represent matters more than the table. A judge that
+    # cites no line is absent from every row, and a blank column reads as "disagreed"
+    # when it means "this code could not see what it said".
+    if silent:
+        out += ["", f"**Not represented above: {', '.join(silent)}** — "
+                    f"{'this judge' if len(silent) == 1 else 'these judges'} cited no "
+                    f"line numbers, so {'it is' if len(silent) == 1 else 'they are'} "
+                    f"missing from every row regardless of what "
+                    f"{'it' if len(silent) == 1 else 'they'} found. A blank cell is not "
+                    f"a disagreement."]
+    if unresolved:
+        out += ["", f"Ignored bare `line N` references from {', '.join(unresolved)}: more "
+                    f"than one file is cited in this panel, so a bare line number is "
+                    f"ambiguous and was not guessed at."]
+    out += ["", "This counts CITATIONS, not agreement: two judges can cite one line and "
+                "say opposite things about it. Use it to find where to look, then read "
+                "the reviews in full."]
+    return out
+
+
+CONFIG_DIR = pathlib.Path(os.environ.get("XDG_CONFIG_HOME")
+                          or os.path.expanduser("~/.config")) / "opencode"
+# A judge needs to READ. Everything else is a capability it has no business holding.
+# This is an ALLOW-LIST on purpose: the previous guard enumerated four tools that write
+# (`write, edit, patch, bash`) and asked whether any was enabled, which is a bet that the
+# tool universe is closed. It is not -- opencode agents can gain tools from MCP servers at
+# runtime -- and the bet has now lost THREE TIMES on this one boundary:
+#   2026-08-20  `permission: {edit: deny}` was checked; `permission` has no write key at
+#               all, so a judge wrote a file while appearing sandboxed.
+#   2026-08-20  the agent was declared `mode: subagent`; `opencode run --agent` rejects a
+#               subagent and SILENTLY FALLS BACK to the write-capable `build` agent.
+#   2026-08-21  a config enabling `filesystem_write_file` and `shell` while disabling all
+#               four enumerated names returned False -- "cannot write" -- from this guard.
+#               Raised by 4 of 4 judges, each by a different route.
+# A LIST OF NAMES CANNOT GUARD AN OPEN SET. The predicate has to be able to observe its
+# referent, so invert it: a tool that is enabled and is NOT known-read-only counts as
+# writable. Unknown now fails toward "unsafe", which is the only direction that is safe to
+# be wrong in, and the caller already refuses anything that is not a definite False.
+READ_ONLY_TOOLS = frozenset({"read", "grep", "glob", "list", "ls", "todoread"})
+MUTATING_TOOLS = ("write", "edit", "patch", "bash")      # kept: still used in the message
+
+
+def _agent_writable_from(cfg, agent):
+    """None = this config says nothing about `agent`; True/False = its verdict."""
+    # The repo under review supplies one of these files, so its SHAPE is attacker-controlled.
+    # `{"agent": "oops"}` raised AttributeError out of the guard and took the whole panel
+    # down with a traceback. A config we cannot read is not a clearance -- it is unknown.
+    if not isinstance(cfg, dict):
+        return None
+    agents = cfg.get("agent")
+    if not isinstance(agents, dict):
+        return None
+    spec = agents.get(agent)
+    if spec is not None and not isinstance(spec, dict):
+        return True                       # a shape we cannot read is not a shape we clear
+    if spec is None:
+        return None
+    # `mode: subagent` is a WRITE PATH, whatever the tools say: `opencode run --agent X`
+    # refuses a subagent and silently falls back to `build`, which has write tools. This
+    # exact configuration caused the 2026-08-20 incident, and a tools-only guard clears it.
+    if str(spec.get("mode", "primary")).lower() != "primary":
+        return True
+    # `permission` is what modern opencode agents declare, and `tools` is deprecated. A
+    # permission map that denies by default and allows only read-only verbs is safe, and the
+    # tools-only guard refused it -- exiting 9 on a correct config. Found by codex, audit 5.
+    perm = spec.get("permission")
+    if isinstance(perm, dict):
+        low_p = {str(k).lower(): str(v).lower() for k, v in perm.items()}
+        if low_p.get("*") in ("deny", "false"):
+            return any(v == "allow" and k not in READ_ONLY_TOOLS and k != "*"
+                       for k, v in low_p.items())
+    tools = spec.get("tools")
+    if tools is None:
+        return True          # no grant declared: opencode enables its defaults, which write
+    if isinstance(tools, (list, tuple, set)):
+        # The array form crashed the guard outright with AttributeError ('list' object has
+        # no attribute 'get') rather than answering. Raised by codex and or-deepseek.
+        return any(str(t).lower() not in READ_ONLY_TOOLS for t in tools)
+    if not isinstance(tools, dict):
+        return True          # a shape we do not understand is not a shape we can clear
+    low = {str(k).lower(): v for k, v in tools.items()}
+    # TWO conditions, and the second was lost when this became an allow-list. opencode
+    # enables its tools by DEFAULT and a `tools` map only toggles the names it lists, so
+    # `{"read": true, "grep": true, "glob": true}` leaves write/edit/bash ENABLED while
+    # naming nothing but read-only tools -- and the allow-list cleared it. The earlier
+    # `tools.get(t, True)` form had this right and I regressed it while fixing the open set.
+    # Found by codex~2 2026-08-22. Both properties now hold:
+    #   (a) every known mutating tool is EXPLICITLY disabled -- absence is not denial;
+    #   (b) nothing outside the read-only set is enabled -- the open-set guard.
+    if any(low.get(t, True) for t in MUTATING_TOOLS):
+        return True
+    return any(v and k not in READ_ONLY_TOOLS for k, v in low.items())
+
+
+def repo_fingerprint(repo):
+    """What the reviewed tree looks like right now: {relpath: (size, mtime_ns)}.
+
+    THE CONFIG GUARD CANNOT BE SOUND, and five rounds of judges have now shown why. It reads
+    `opencode.json[c]`, but (a) opencode ENABLES tools by default, so a config that denies
+    four names leaves `task` and every MCP tool live -- and `task` delegates to a
+    write-capable subagent; (b) `OPENCODE_CONFIG_CONTENT` has HIGHER PRECEDENCE than the
+    files read here, so the guard can clear a config that is not the one applied; (c) modern
+    agents declare `permission`, not `tools`, so the guard refuses configs that are actually
+    safe. Each round the fix added another name to a list, and the next round arrived through
+    a name nobody listed. Six failures of one boundary.
+
+    So stop predicting and start OBSERVING. A predicate over config files cannot see what
+    opencode will do; a fingerprint of the tree can see what it DID. This does not prevent a
+    write -- preventing it needs a read-only mount, which is outside this tool -- but it
+    makes one impossible to miss, and silence was the actual failure every time.
+    """
+    out = {}
+    root = pathlib.Path(repo)
+    skip = {".git", "node_modules", "__pycache__", MATERIAL_DIRNAME, ".venv"}
+    for p in root.rglob("*"):
+        if any(part in skip for part in p.parts):
+            continue
+        try:
+            if p.is_file() and not p.is_symlink():
+                st = p.stat()
+                out[str(p.relative_to(root))] = (st.st_size, st.st_mtime_ns)
+        except OSError:
+            continue
+        if len(out) > 20000:              # a huge tree: fingerprint what we can, say so
+            break
+    return out
+
+
+def fingerprint_delta(before, after):
+    """(added, removed, modified) between two fingerprints."""
+    a, b = set(before), set(after)
+    return (sorted(b - a), sorted(a - b),
+            sorted(k for k in a & b if before[k] != after[k]))
+
+
+def agent_can_write(agent, repo=None):
+    """Can this opencode agent modify the repo?  True / False / None (unknown).
+
+    Consults the REPO-LOCAL config as well as the global one. opencode loads a project
+    config from the tree it runs in -- which, for a panel, is the tree under review -- so a
+    repository could previously ship an `opencode.json` re-enabling write for our agent and
+    this guard, reading only ~/.config/opencode, would still report False. Either config
+    saying "writable" makes it writable: for a safety predicate the permissive answer wins.
+    """
+    verdicts = []
+    roots = [CONFIG_DIR] + ([pathlib.Path(repo)] if repo else [])
+    for root in roots:
+        for fn in ("opencode.jsonc", "opencode.json"):
+            path = root / fn
+            if not path.is_file():
+                continue
+            try:
+                # JSONC allows INLINE comments and trailing commas. Stripping only
+                # whole-line `//` left both, json.loads raised, the guard returned None,
+                # and main() exited 9 telling the user their perfectly good read-only
+                # agent was "not verified read-only". Caught by codex 2026-08-22.
+                raw = path.read_text()
+                # `/* ... */` too. The previous fix enumerated `//` and trailing commas and
+                # missed the third JSONC construct, so a valid config still returned None and
+                # main() exited 9 claiming a defined, read-only agent was "not defined".
+                # A LIST OF NAMES AGAIN. String-aware so a `//` or `/*` inside a value survives.
+                raw = re.sub(r'("(?:[^"\\]|\\.)*")|//[^\n]*|/\*.*?\*/',
+                             lambda m: m.group(1) or "", raw, flags=re.S)
+                raw = re.sub(r",(\s*[}\]])", r"\1", raw)
+                cfg = json.loads(raw)
+            except (OSError, ValueError):
+                return None
+            v = _agent_writable_from(cfg, agent)
+            if v is not None:
+                verdicts.append(v)
+            break                     # .jsonc wins over .json within one root
+    if not verdicts:
+        return None
+    return any(verdicts)
+
+
+def provider_of(judge):
+    """Which upstream service this judge talks to -- what a rate limit is shared across."""
+    kind, model = ROSTER[judge]
+    if kind == "opencode":
+        return model.split("/", 1)[0]      # openrouter / huggingface / opencode
+    return kind                            # codex / ollama
+
+
+def _real(path):
+    """The physical path. `os.path.abspath` normalises `..` but does NOT follow symlinks, so
+    `/work/repo` and a `/tmp/repo-link` pointing at it hashed to DIFFERENT keys and `--show`,
+    `--runs` and `--thread` could not find a run made through the other name. Only a repo
+    reached by a symlinked path changes key here; one reached by its real path is unaffected."""
+    try:
+        return os.path.realpath(path)
+    except OSError:
+        return path
+
+
+def repo_key(repo):
+    """Stable per-repository directory name: readable basename + hash of the path."""
+    repo = _real(repo)
+    base = re.sub(r"[^A-Za-z0-9._-]", "_", os.path.basename(repo.rstrip("/")) or "root")[:40]
+    return f"{base}-{hashlib.sha256(repo.encode()).hexdigest()[:12]}"
+
+
+def thread_key(name, repo):
+    """Thread state is keyed by (name, REPO), not name alone.
+
+    Keying by name let `--cwd repoA --thread design` and `--cwd repoB --thread design`
+    share sessions -- and `codex exec resume` inherits the RECORDED working directory,
+    so the repoB judge resumed inside repoA and answered about the wrong tree. The hash
+    also separates names that sanitise identically ("a/b" and "a_b").
+    """
+    safe = re.sub(r"[^A-Za-z0-9._-]", "_", name)[:40]
+    return f"{safe}-{hashlib.sha256(f'{name}\0{_real(repo)}'.encode()).hexdigest()[:12]}"
+
+
+def run_check(judges, repo, timeout, agent):
+    """Actually ping each judge. --list makes a claim; this one observes it."""
+    sys.stderr.write(f"llm-panel: pinging {len(judges)} judges...\n")
+    with cf.ThreadPoolExecutor(max_workers=max(1, len(judges))) as ex:
+        rows = [f.result() for f in
+                [ex.submit(ask, j, "Reply with exactly: PONG", repo, timeout, agent, None,
+                           "60s", sum(1 for k in judges if provider_of(k) == provider_of(j)))
+                 for j in judges]]
+    print(f"{'judge':<15}{'transport':<11}{'status':<9}{'secs':>6}  detail")
+    for r in sorted(rows, key=lambda x: x["name"]):
+        kind, _ = ROSTER[r["name"]]
+        detail = "" if r["status"] == "ok" else r["text"].replace("\n", " ")[:70]
+        print(f"{r['name']:<15}{kind:<11}{r['status']:<9}{r['secs']:>6}  {detail}")
+    bad = [r for r in rows if r["status"] == "harness"]
+    print(f"\nok={sum(1 for r in rows if r['status']=='ok')}  "
+          f"refused={sum(1 for r in rows if r['status']=='refused')}  "
+          f"unavailable={sum(1 for r in rows if r['status']=='unavailable')}  "
+          f"incomplete={sum(1 for r in rows if r['status']=='incomplete')}  harness={len(bad)}")
+    if bad:
+        print("`harness` failures are OUR plumbing, not the model saying no.")
+    return 0 if not bad else 3
+
+
+def main():
+    ap = argparse.ArgumentParser()
+    ap.add_argument("prompt", nargs="?")
+    ap.add_argument("-f", "--file")
+    ap.add_argument("--diff", action="store_true")
+    # default=None, not the roster string: the code needs to distinguish "user said
+    # nothing" from "user chose these". Sniffing sys.argv for "--judges" missed the
+    # equals form (--judges=codex), so --check silently re-expanded the roster AFTER
+    # the write-safety check had already passed on a smaller set.
+    ap.add_argument("--judges", default=None)
+    ap.add_argument("--list", action="store_true")
+    ap.add_argument("--check", action="store_true",
+                    help="ping every selected judge and report what actually happened")
+    ap.add_argument("--show", action="store_true")
+    ap.add_argument("--runs", action="store_true",
+                    help="list past panel runs for this repo (newest first) with their "
+                         "judges and outcomes, and where each one is on disk")
+    ap.add_argument("--all-repos", action="store_true",
+                    help="with --runs, list runs for every repo, not just this one")
+    ap.add_argument("--stream", action="store_true",
+                    help="echo tokens inline as they arrive, prefixed by judge. Only the "
+                         "judges that actually stream can honour this (ollama and claude); "
+                         "opencode sends one blob and codex sends no deltas, so those still "
+                         "appear only when they finish")
+    ap.add_argument("--thread", metavar="NAME",
+                    help="keep a persistent conversation under NAME: every judge resumes its "
+                         "own session, so follow-up turns remember the earlier ones")
+    ap.add_argument("--repeat", type=int, default=1, metavar="N",
+                    help="ask each judge N times INDEPENDENTLY (default 1). Repeats appear "
+                         "as codex~2, codex~3 ... and are full judges: own review, own "
+                         "letter in the rebuttal round, own row. A model's misses are "
+                         "largely stochastic, so repeated passes recover findings a single "
+                         "pass drops -- and it needs no second vendor.")
+    ap.add_argument("--rebut", action="store_true",
+                    help="round 2: each judge answers the others' findings (anonymized)")
+    ap.add_argument("--synthesize", metavar="JUDGE")
+    ap.add_argument("--cwd", default=os.getcwd())
+    ap.add_argument("--agent", default="panelist",
+                    help="opencode agent for judges; default denies edit/bash (see opencode.jsonc)")
+    ap.add_argument("--live", action="store_true",
+                    help="print each judge's answer the moment it lands, instead of "
+                         "holding everything until the slowest one finishes")
+    ap.add_argument("--save-here", action="store_true",
+                    help="also copy panel.md into the reviewed repo after the run "
+                         "(off by default: judges of later panels could read it)")
+    ap.add_argument("--unsafe-agent", action="store_true",
+                    help="run even though the chosen opencode agent is not verified "
+                         "read-only (it may write to the repo under review)")
+    ap.add_argument("--keep-alive", default="60s",
+                    help="how long a local (ollama) model stays resident in VRAM after "
+                         "answering; the GPU is shared, so the default is short")
+    ap.add_argument("--image", action="append", metavar="PATH",
+                    help="attach an image for the judges to look at (repeatable). Only "
+                         "vision-capable judges accept it: vis-grok, vis-kimi, vis-gemini, "
+                         "vis-gpt and the claude judges. Everyone else reports "
+                         "`unavailable` rather than answering blind")
+    ap.add_argument("--vision-check", metavar="TEXT",
+                    help="ground-truth control for --image runs: each judge must first "
+                         "quote a specific thing visible in the image. Any judge whose "
+                         "answer does not contain TEXT is reported as unverified rather "
+                         "than believed. A judge asserting 'I can see it' is not evidence.")
+    ap.add_argument("--effort", choices=EFFORT_LEVELS, default=None,
+                    help="reasoning effort for judges that have the setting: claude "
+                         "(--effort), codex (model_reasoning_effort) and opencode "
+                         "(--variant, provider-specific). ollama models have no "
+                         "equivalent and ignore it. Default: codex stays at high, "
+                         "the others use their own defaults")
+    ap.add_argument("--timeout", type=int, default=None)
+    a = ap.parse_args()
+
+    global STATE, STREAM_ECHO
+    STREAM_ECHO = a.stream
+    repo = os.path.abspath(a.cwd)
+    if not os.path.isdir(repo):
+        die(f"--cwd is not a directory: {repo}")
+    # STATE follows XDG_CACHE_HOME, which the caller controls and could point INSIDE
+    # the repo -- putting every finished answer back where judges can read it while
+    # slower judges are still running.
+    # Compare RESOLVED paths. The check was lexical, so `/tmp/cache -> <repo>/.cache` and a
+    # relative `XDG_CACHE_HOME=.cache` both sailed past it and put finished answers back
+    # inside the reviewed tree, where a slower judge can read a faster one's review and
+    # round-one independence is gone. Verified by execution 2026-08-21. Raised by codex and
+    # opus. `os.path.abspath` normalises `..` but does NOT follow links; `resolve()` does.
+    if cache_is_inside(STATE, repo):
+        STATE = pathlib.Path.home() / ".llm-panel"
+        if cache_is_inside(STATE, repo):
+            # Reviewing a repository rooted at $HOME puts the FALLBACK inside it too, and
+            # nothing checked that, so finished answers landed back where a slower judge
+            # could read them -- the very thing the first check exists to prevent.
+            import tempfile as _tf
+            STATE = pathlib.Path(_tf.mkdtemp(prefix="llm-panel-"))
+            sys.stderr.write(f"llm-panel: the usual fallback is also inside the reviewed "
+                             f"tree; using {STATE}\n")
+        sys.stderr.write(f"llm-panel: XDG_CACHE_HOME points inside the reviewed repo, "
+                         f"where judges could read earlier answers; using {STATE}\n")
+    # Panel output lives OUTSIDE the reviewed repo. It used to be written to
+    # <repo>/.panel, which judges can read: opencode judges have read/grep/glob
+    # over their cwd and the codex judge gets a read-only sandbox rooted at the
+    # same tree. Round 1 was safe only by accident (per-judge files are written
+    # after every judge returns), but the rebuttal round, turn 2 of a --thread,
+    # and every later panel in that repo all ran with earlier answers sitting on
+    # disk -- so "judges never see each other's answers" was defeated through the
+    # filesystem rather than the prompt.
+    outdir = STATE / "runs" / repo_key(repo)
+
+    if a.list:
+        print(f"{'judge':<15}{'transport':<11}model")
+        for n, (k, m) in ROSTER.items():
+            need = next((v for pre, v in PROVIDER_ENV.items() if m.startswith(pre)), "")
+            have = (os.environ.get(need) or
+                    next((PROVIDER_AUTH[pre] in stored_providers()
+                          for pre in PROVIDER_AUTH if m.startswith(pre)), False)) if need else True
+            flag = "" if not need or have else f"  [no {need} and no stored login]"
+            print(f"{'*' if n in DEFAULT else ' '}{n:<14}{k:<11}{m}{flag}")
+        print("\n* = in the default roster.  This listing is OFFLINE -- it reports what is")
+        print("configured, not what answers today.  Run --check to actually ping them.")
+        print("codex/opencode judges can READ the repo; ollama judges answer from the")
+        print("prompt alone (no tool loop), so they cannot verify a claim against code.")
+        return
+
+    if a.show:
+        last = sorted(outdir.glob("*/panel.md")) if outdir.exists() else []
+        if not last:
+            die(f"no panel run found under {outdir}")  # runs are kept outside the repo
+        sys.stdout.write(last[-1].read_text()); return
+
+    if a.runs:
+        # Every run already persisted its prompt, each judge's prompt, each judge's
+        # answer and the assembled panel.md -- but nothing ever listed them, so the
+        # history was only reachable by knowing the cache layout by heart.
+        roots = sorted((STATE / "runs").glob("*")) if a.all_repos else [outdir]
+        rows = []
+        for root in roots:
+            if not root.is_dir():
+                continue
+            for rd in sorted(root.glob("*/"), reverse=True):
+                pm = rd / "panel.md"
+                # `.rebuttal.md` was not excluded, so its stem `<judge>.rebuttal` was listed
+                # as a judge of its own and a 2-judge rebuttal run reported 4 names.
+                judges_ran = sorted(f.stem for f in rd.glob("*.md")
+                                    if f.name not in ("panel.md", "prompt.md")
+                                    and not f.name.endswith((".prompt.md", ".live.md",
+                                                             ".rebuttal.md")))
+                # Read the WHOLE report, not a prefix: the "N of M judges answered"
+                # line is the LAST thing written, so a first-4KB scan reported every
+                # finished run as unfinished (it did, on the first try).
+                head = pm.read_text().splitlines() if pm.is_file() else []
+                when = head[0].replace("# Panel — ", "").strip() if head else "(unfinished)"
+                answered = next((l.strip("* ") for l in reversed(head)
+                                 if "judges answered" in l), "")
+                # The prompt is the only thing that tells two runs apart at a glance.
+                q = ""
+                if (rd / "prompt.md").is_file():
+                    q = " ".join((rd / "prompt.md").read_text().split())[:70]
+                rows.append((rd, when, judges_ran, answered, q,
+                             root.name if a.all_repos else ""))
+        if not rows:
+            die(f"no panel runs recorded under {STATE / 'runs'}")
+        for rd, when, js, answered, q, which in rows:
+            tag = f"[{which}] " if which else ""
+            print(f"{tag}{when}  —  {answered or 'no summary (run did not finish)'}")
+            print(f"    judges: {', '.join(js) or '(none completed)'}")
+            if q:
+                print(f"    asked:  {q}…")
+            print(f"    {rd}")
+        print(f"\n{len(rows)} run(s). Full report: cat <dir>/panel.md · one judge: "
+              f"<dir>/<judge>.md · what that judge was SHOWN: <dir>/<judge>.prompt.md")
+        print("Streaming judges also leave <judge>.live.md, written as the tokens arrived.")
+        return
+
+    explicit_timeout = a.timeout is not None
+    if a.timeout is None:
+        a.timeout = 900
+    judges = [j.strip() for j in (a.judges if a.judges is not None
+                                  else ",".join(DEFAULT)).split(",") if j.strip()]
+    # Duplicates silently overwrote each other in `results`, so `--judges codex,codex`
+    # printed one answer twice and claimed "2 of 2 judges answered".
+    seen, unique = set(), []
+    for j in judges:
+        if j in seen:
+            sys.stderr.write(f"llm-panel: {j} listed more than once; asking it once\n")
+            continue
+        seen.add(j)
+        unique.append(j)
+    # A judge name is used as a PATH COMPONENT (`STATE/state/<name>`, `<name>.md`), so it is
+    # not free text. `--judges 'big-pickle~/../../../../repo/leak'` resolved through _Roster
+    # (which strips at `~`) and then traversed out of the state directory -- and
+    # `shutil.copy2(HOST_AUTH, dest)` writes OpenCode CREDENTIALS to wherever that lands.
+    # The `~` guard added earlier only ran under `--repeat > 1`, so the default path was
+    # wide open. Found by codex~2 2026-08-22 -- a finding the other pass of the same model
+    # did not make. Validate the NAME, not one character of it: the repeat suffix is the
+    # only structure allowed, and nothing else may appear.
+    _NAME_OK = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*(?:" + re.escape(REPEAT_SEP) + r"\d+)?$")
+    for _j in judges + ([a.synthesize] if a.synthesize else []):
+        if not _NAME_OK.match(_j):
+            die(f"illegal judge name {_j!r}: names are used as file paths, so only "
+                f"letters, digits, dot, dash and underscore are allowed", 13)
+    judges = unique
+
+    # Expand repeats AFTER dedup, so `--judges codex,codex --repeat 3` still means three
+    # passes and not six. A repeat keeps its base name's transport and provider, so rate-limit
+    # peer counting and the opencode write check both still see the real provider.
+    if a.repeat and a.repeat > 1:
+        # Dedup runs BEFORE expansion, so `--judges codex,codex~2 --repeat 2` produced
+        # `codex~2` twice: two threads writing one judge's files, its spend double-counted,
+        # one letter never assigned, and every peer shown that review twice under the same
+        # letter. The suffix is ours to add, so refuse it as input rather than expanding it.
+        _hand = [j for j in judges if REPEAT_SEP in j]
+        if _hand:
+            die(f"--repeat cannot be combined with judge names containing "
+                f"{REPEAT_SEP!r} ({', '.join(_hand)}): the suffix is generated, "
+                f"not supplied", 12)
+        if a.repeat > 20:
+            die(f"--repeat {a.repeat} is more than this is for; 2-10 is the useful range", 11)
+        judges = [j if n == 1 else f"{j}{REPEAT_SEP}{n}"
+                  for j in judges for n in range(1, a.repeat + 1)]
+        sys.stderr.write(f"llm-panel: --repeat {a.repeat} -> {len(judges)} passes "
+                         f"({len(unique)} judges x {a.repeat}); repeats are independent, "
+                         f"they do not see each other in round one\n")
+    unknown = [j for j in judges if j not in ROSTER]
+    if unknown:
+        die(f"unknown judge(s): {', '.join(unknown)} (see --list)")
+    if a.synthesize and a.synthesize not in ROSTER:
+        die(f"unknown synthesizer: {a.synthesize} (see --list)")
+    if not judges:
+        die("no judges selected: --judges parsed to an empty list")
+
+    stale = pathlib.Path(repo) / ".panel"
+    if stale.is_dir():
+        sys.stderr.write(
+            f"llm-panel: WARNING {stale} exists from an older version. It sits inside the "
+            f"tree the judges can read, so they may find earlier judges' answers there. "
+            f"Delete it to keep this panel independent.\n")
+
+    # A missing binary is ONE judge's problem. Dying here meant an absent opencode
+    # cancelled the whole panel before Codex was ever asked -- and ollama judges
+    # were refused for want of a CLI this program no longer uses (it speaks HTTP).
+    # ask() reports a missing transport as that judge's `harness` failure instead.
+    for j in judges:
+        kind = ROSTER[j][0]
+        if kind in BINARY and not shutil.which(BINARY[kind]):
+            sys.stderr.write(f"llm-panel: `{BINARY[kind]}` is not on PATH, so {j} will "
+                             f"report a transport failure; the other judges still run\n")
+
+    # The synthesizer runs the same way a judge does, in the same repo, so it must
+    # clear the same bar. The guard used to consult `judges` only, so
+    # `--judges codex --synthesize big-pickle --agent build` skipped it entirely.
+    if any(ROSTER[j][0] == "opencode" for j in judges + ([a.synthesize] if a.synthesize else [])):
+        writable = agent_can_write(a.agent, repo)
+        if writable is not False and not a.unsafe_agent:
+            why = ("it is not defined in your opencode config" if writable is None
+                   else "its config enables at least one tool that is not read-only "
+                        f"(read-only means only: {', '.join(sorted(READ_ONLY_TOOLS))})")
+            die(f"agent '{a.agent}' is not verified read-only ({why}), so a judge could "
+                f"modify the very repo it is reviewing. Fix the agent definition, or pass "
+                f"--unsafe-agent if you really mean it.", 9)
+
+    # Snapshot the tree BEFORE any judge runs. The config guard above is advisory -- it
+    # cannot see `OPENCODE_CONFIG_CONTENT`, tool defaults for names it does not enumerate,
+    # or a `permission` schema it does not model -- so this is what actually observes
+    # whether a judge modified the repository it was reviewing.
+    # `None` means NOT TAKEN; `{}` means an EMPTY TREE. The first version used `{}` for both
+    # and tested `if _fp_before:`, so a panel on an empty repo skipped the check entirely --
+    # and an empty repo that GAINS files during a run is exactly the case worth catching.
+    # A predicate that cannot tell two states apart, in the code written to catch predicates
+    # that cannot tell two states apart. Every unit test of fingerprint_delta passed; only
+    # running a real panel with a file planted mid-run exposed it.
+    _fp_before = None if a.check else repo_fingerprint(repo)
+
+    if a.check:
+        if a.judges is None:
+            judges = list(ROSTER)
+        # 180s is plenty when the box is idle, but this laptop shares cores with
+        # other sessions' jobs; honour an explicit --timeout so contention does not
+        # get misread as 13 dead judges.
+        cap = a.timeout if explicit_timeout else 180
+        sys.exit(run_check(judges, repo, cap, a.agent))
+
+    if a.file:
+        if a.prompt:
+            die("give a prompt as an argument or via --file, not both")
+        a.prompt = sys.stdin.read() if a.file == "-" else pathlib.Path(a.file).read_text()
+    elif not a.prompt and not sys.stdin.isatty():
+        a.prompt = sys.stdin.read()
+    if not a.prompt or not a.prompt.strip():
+        die("no prompt given (--list shows judges, --check pings them, --show reprints)")
+    if a.diff:
+        a.prompt = a.prompt.rstrip() + "\n\n" + collect_diff(repo)
+
+    stamp = datetime.datetime.now().astimezone().strftime("%Y%m%d-%H%M%S")
+    # pid in the name: two panels started in the same SECOND used to share a
+    # rundir and overwrite each other's per-judge files and panel.md.
+    rundir = outdir / f"{stamp}-{os.getpid()}"
+    rundir.mkdir(parents=True, exist_ok=True)
+    (rundir / "prompt.md").write_text(a.prompt)
+
+    sessions = {}
+    if a.thread:
+        tdir = STATE / "threads" / thread_key(a.thread, repo)
+        tdir.mkdir(parents=True, exist_ok=True)
+        # A thread is a conversation; two panels running it at once both compute the
+        # same turn number, overwrite turn-001.md, and race to write the same session
+        # file, after which the next turn resumes whichever id landed last and the
+        # other conversation is silently forgotten. Serialise instead of interleaving.
+        _lock = open(tdir / ".lock", "w")
+        try:
+            fcntl.flock(_lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except OSError:
+            die(f"another llm-panel run is already using thread '{a.thread}' in this "
+                f"repository. Wait for it, or use a different --thread name.", 10)
+        sessions = {j: tdir / f"{j}.session" for j in judges}
+        # Each transport is asked the question ITS OWN loader answers, so the banner cannot
+        # claim memory a judge will not actually have.
+        resuming = [j for j in judges
+                    if (codex_session_id(sessions[j], repo) if ROSTER[j][0] == "codex"
+                        else ollama_context(sessions[j]) if ROSTER[j][0] == "ollama"
+                        else read_session(sessions[j]))]
+        # `--thread` promises every judge resumes its own session. The vision transport
+        # never reads or writes session_file at all (0 references in its 80-line branch), so
+        # two `--thread design` calls to vis-gpt are unrelated fresh completions. Saying so
+        # is the fix; replaying history into a stateless chat/completions call is a feature.
+        # Raised by codex.
+        _novis = [j for j in judges if ROSTER[j][0] == "orvision"]
+        if _novis:
+            sys.stderr.write(f"llm-panel: WARNING --thread does NOT apply to "
+                             f"{', '.join(_novis)}: the vision transport keeps no session, "
+                             f"so each turn starts fresh for those judges.\n")
+        turn = len(list(tdir.glob("turn-*.md"))) + 1
+        sys.stderr.write(f"llm-panel: thread '{a.thread}', turn {turn} — "
+                         f"{len(resuming)} judge(s) resuming, {len(judges)-len(resuming)} starting "
+                         f"fresh{': ' + ', '.join(resuming) if resuming else ''}\n")
+        (tdir / f"turn-{turn:03d}.md").write_text(a.prompt)
+
+    sys.stderr.write(f"llm-panel: asking {len(judges)} judges in parallel "
+                     f"({', '.join(judges)}) — this takes as long as the slowest one\n")
+    results = {}
+    with cf.ThreadPoolExecutor(max_workers=len(judges)) as ex:
+        peers = {}
+        for j in judges:
+            peers[provider_of(j)] = peers.get(provider_of(j), 0) + 1
+        futs = {ex.submit(ask, j, a.prompt, repo, a.timeout, a.agent,
+                          sessions.get(j), a.keep_alive,
+                          peers[provider_of(j)],
+                          rundir / f"{j}.live.md", a.effort, a.image, a.vision_check,
+                          pathlib.Path(repo) / MATERIAL_DIRNAME, True): j for j in judges}
+        # Heartbeat. ollama and claude judges stream token-by-token; opencode emits
+        # its whole answer as ONE json text event and codex only emits item.completed,
+        # so for THOSE the honest live signal is "still working, N seconds in" rather
+        # than a token feed that does not exist. Do not promise streaming for all.
+        pending, t_start = set(futs), time.time()
+        while pending:
+            done, pending = cf.wait(pending, timeout=20)
+            for fut in done:
+                r = fut.result()
+                results[r["name"]] = r
+                note = cost_note(r["meta"])
+                sys.stderr.write(f"  · {r['name']}: {r['status']} ({r['secs']}s"
+                                 + (f", {note}" if note else "") + ")\n")
+                emit(rundir, r["name"], a.prompt, r, a.live)
+            if pending:
+                waiting = sorted(futs[f] for f in pending)
+                sys.stderr.write(f"  … {int(time.time() - t_start)}s — still working: "
+                                 f"{', '.join(waiting)}\n")
+                sys.stderr.flush()
+
+    hdr = f"# Panel — {now()}"
+    if a.thread:
+        alive = [j for j in judges if (codex_session_id(sessions[j], repo)
+                                       if ROSTER[j][0] == "codex"
+                                       else read_session(sessions[j]))]
+        hdr += f"\n\n**Thread `{a.thread}`** — judges carrying memory of earlier turns: " \
+               + (", ".join(alive) if alive else "none yet (first turn)")
+    lines = [hdr, "", f"Judges: {', '.join(judges)}", ""]
+    lines += summary_table(judges, results) + [""]
+    lines += consensus_view(judges, results)
+    lines += ["", "## Question", "", a.prompt, ""]
+    for j in judges:
+        r = results[j]
+        _, model = ROSTER[j]
+        note = cost_note(r["meta"])
+        head = f"\n---\n\n## {j}  (`{model}`) — {r['secs']}s" + (f", {note}" if note else "")
+        lines += [head, ""]
+        if r["status"] == "ok":
+            lines += [r["text"], ""]
+        elif r["status"] == "incomplete":
+            lines += [f"**INCOMPLETE — this judge started answering and then failed "
+                      f"({r['meta'].get('note', 'unknown')}). What it produced is below, "
+                      f"but it is a PARTIAL review: treat silence on any point as "
+                      f"'never got there', not 'found nothing'.**", "", r["text"], ""]
+        elif r["status"] == "refused":
+            lines += [f"**DID NOT ANSWER — the model/provider refused.** {r['text']}", ""]
+        elif r["status"] == "unavailable":
+            lines += [f"**DID NOT ANSWER — the provider would not serve right now.** "
+                      f"{r['text']} This is retryable and says nothing about the question.", ""]
+        else:
+            lines += [f"**DID NOT ANSWER — our harness failed, not the model.** {r['text']}", ""]
+
+    answered = [j for j in judges if results[j]["status"] == "ok"]
+    partial = [j for j in judges if results[j]["status"] == "incomplete"]
+    refused = [j for j in judges if results[j]["status"] == "refused"]
+    unavail = [j for j in judges if results[j]["status"] == "unavailable"]
+    broke = [j for j in judges if results[j]["status"] == "harness"]
+    # The Cost section is BUILT LAST and spliced back in here. It used to be assembled
+    # at this point -- before the rebuttal and synthesis had even run -- so neither
+    # phase could possibly be counted, and run_rebuttals' results were discarded into
+    # `_` besides. Deferring the build keeps the document order while letting the
+    # numbers cover every phase that actually spent something.
+    cost_at = len(lines)
+
+    rebut_results, rebut_letters = {}, None
+    if a.rebut:
+        # Capture BOTH: the results carry round-2 spend (see the Cost block), and the
+        # letters are the ONLY authoritative mapping. run.json used to rebuild its own from
+        # `ok` + `incomplete` while round 2 assigned over `ok` alone, so one incomplete
+        # judge shifted every later letter and a renderer attributed each `B<n>` to the
+        # WRONG judge -- silently, with both maps internally consistent. Raised by codex
+        # and opus. Two constructions of one fact is the defect; returning it is the fix.
+        rlines, rebut_results, rebut_letters = run_rebuttals(
+            judges, results, a.prompt, repo, a.timeout,
+            a.agent, rundir, sys.stderr.write, a.live, a.effort, a.image)
+        lines += rlines
+
+    synth_result = None
+    if a.synthesize:
+        if len(answered) < 2:
+            lines += ["", "_Synthesis skipped: fewer than two judges answered._"]
+        else:
+            blob = "\n\n".join(f"### Reviewer {j}\n{results[j]['text']}" for j in answered)
+            sp = ("Below are independent reviews of the same material by different models. "
+                  "Do not average them. Report: (1) points every reviewer agrees on, "
+                  "(2) points where they DISAGREE, naming who said what and which is better "
+                  "supported, (3) anything only one reviewer caught. Be concise.\n\n" + blob)
+            sys.stderr.write(f"  · synthesizing with {a.synthesize}\n")
+            # NO IMAGES. The synthesis prompt is the reviews -- text. Passing `a.image`
+            # made `_ask`'s capability gate refuse any non-vision synthesizer, so
+            # `--image x.png --synthesize codex` failed unconditionally with "this judge
+            # cannot receive images" for a judge that never needed to see one.
+            # NOT shared: `sp` names every judge and quotes its review in full. If it is
+            # too large for a CLI synthesizer the run says so; it does not leak.
+            s = ask(a.synthesize, sp, repo, a.timeout, a.agent, None, a.keep_alive,
+                    1, None, a.effort, None, None, None, False)
+            synth_result = s          # its spend counts too; it was never accumulated
+            lines += [f"\n---\n\n## Synthesis (by `{a.synthesize}`)", "",
+                      s["text"] if s["status"] == "ok"
+                      else f"**SYNTHESIS FAILED ({s['status']})** — {s['text']}"]
+
+    costlines = []
+    # Money and quota are not the same thing, so report them apart: metered judges
+    # add up to a bill, subscription judges (codex on ChatGPT Plus, claude on
+    # claude.ai) consume plan quota and their dollar figures are notional.
+    # EVERY phase that spent money, not just round one. The cost section was assembled
+    # from round-one `results` before the rebuttal and synthesis had even been added, and
+    # `run_rebuttals`'s results were discarded into `_`, so a `--rebut --synthesize` run
+    # made roughly twice the calls and reported round-one money. Raised by codex and opus.
+    phases = [("round 1", [r["meta"] for r in (results[j] for j in judges)])]
+    if rebut_results:
+        phases.append(("rebuttal", [r["meta"] for r in rebut_results.values()]))
+    if synth_result is not None:
+        phases.append(("synthesis", [synth_result["meta"]]))
+    allmeta = [m for _, ms in phases for m in ms]
+
+    def _sum(ms, sub):
+        return sum(m.get("cost") or 0 for m in ms
+                   if (m.get("billing") == "subscription") == sub)
+
+    metered = _sum(allmeta, False)
+    plan = _sum(allmeta, True)
+    tok = sum((m.get("tokens") or {}).get("input", 0) for m in allmeta)
+    out_tok = sum((m.get("tokens") or {}).get("output", 0) for m in allmeta)
+    # "nothing metered" asserts a measurement. A run where NO transport reported a cost at
+    # all has measured nothing, which is not the same as having measured zero -- codex
+    # reports no cost on any path, so a codex-only run printed "$0.0000 (nothing metered)"
+    # and "on subscription plans: none used" while spending real plan quota.
+    n_priced = sum(1 for m in allmeta if m.get("cost") is not None)
+    costlines += ["\n---\n", "### Cost", "",
+              f"- billed: **${metered:.4f}**" + billed_note(metered, n_priced, len(allmeta)),
+              f"- on subscription plans (notional, no invoice): ${plan:.4f}" if plan else
+              ("- on subscription plans: none reported (codex reports none on any path)"
+               if n_priced < len(allmeta) else "- on subscription plans: none used"),
+              f"- tokens: {tok:,} in / {out_tok:,} out across {len(judges)} judges"
+              + (f", over {len(phases)} phases ({', '.join(p for p, _ in phases)})"
+                 if len(phases) > 1 else ""), ""]
+    if len(phases) > 1:
+        costlines += ["  - by phase: " + "; ".join(
+            f"{name} ${_sum(ms, False):.4f} billed / ${_sum(ms, True):.4f} quota"
+            for name, ms in phases), ""]
+    for j in judges:
+        m = results[j]["meta"]
+        c = m.get("cost")
+        tag = " (plan quota)" if m.get("billing") == "subscription" else ""
+        costlines += [f"  - {j}: " + (f"${c:.4f}{tag}" if c is not None else "no cost reported")
+                  + f", {results[j]['secs']}s, {results[j]['status']}"]
+    costlines += ["", f"**{len(answered)} of {len(judges)} judges answered.**"]
+    if partial:
+        costlines += [f"**Answered only partially: {', '.join(partial)}** — they failed mid-answer, "
+                  f"so their reviews are truncated and are NOT counted above."]
+    if refused:
+        costlines += [f"**Refused: {', '.join(refused)}** — their view is missing from this panel."]
+    if unavail:
+        costlines += [f"**Temporarily unavailable: {', '.join(unavail)}** — rate-limited or "
+                  f"overloaded, not a judgment. Re-run them before drawing conclusions."]
+    if broke:
+        costlines += [f"**Harness failed for: {', '.join(broke)}** — that is OUR plumbing, not a "
+                  f"judgment by those models. Re-run them before concluding anything."]
+    lines[cost_at:cost_at] = costlines
+
+    doc = "\n".join(lines)
+    (rundir / "panel.md").write_text(doc)
+    # Machine-readable sibling of panel.md. Anything that wants to RENDER a run should read
+    # this rather than re-parse the prose: status, cost and timing are already structured
+    # here, and a reporter scraping markdown goes stale the moment the wording changes.
+    (rundir / "run.json").write_text(json.dumps({
+        "stamp": stamp, "when": now(), "repo": repo, "thread": a.thread,
+        "effort": a.effort, "rebut": bool(a.rebut), "synthesize": a.synthesize,
+        "images": [str(pathlib.Path(i).resolve()) for i in (a.image or [])],
+        # Who "Reviewer A" actually was. The rebuttal round anonymises judges from EACH
+        # OTHER on purpose, but the reader is not the one being kept honest -- without
+        # this map every cross-reference in round 2 is unresolvable prose.
+        # THE letter map, taken from the round that assigned it. Rebuilding it here from a
+        # different status filter is what put `B` on the wrong judge.
+        "letters": ({L: j for j, L in rebut_letters.items()} if rebut_letters else
+                    {_letter(i): j
+                     for i, j in enumerate(j for j in judges
+                                           if results[j]["status"] == "ok")}),
+        "prompt": a.prompt,
+        # A UNIFORM shape, because a renderer cannot branch on a schema it has to discover.
+        # `meta` could be missing `cost` or `tokens` entirely (codex), or carry them as
+        # null (vision/claude), and a renderer formatting them numerically crashed on the
+        # null -- panel-report died with TypeError on `secs: null` and produced NO html at
+        # all. Every key below is now always present; ABSENT is spelled `null`, and a
+        # number is always a number. Raised by all four judges.
+        "judges": [_judge_record(j, results[j], rundir) for j in judges],
+        # The optional phases were recorded only as "requested", never as what happened:
+        # a failed or billed rebuttal was invisible to anything reading this file, which is
+        # also why the cost of a --rebut run could not be reconstructed afterwards.
+        "phases": {
+            "rebuttal": ({j: _phase_record(r) for j, r in rebut_results.items()}
+                         if rebut_results else None),
+            "synthesis": (_phase_record(synth_result) if synth_result is not None else None),
+        },
+    }, indent=1))
+    # The material lived in the reviewed tree because that is the only place a judge's read
+    # tool reaches. It does not stay there.
+    _mat = pathlib.Path(repo) / MATERIAL_DIRNAME
+    if _mat.is_dir():
+        for _f in sorted(_SPILLED):
+            try:
+                _f.unlink()
+            except OSError:
+                pass                      # already gone, or never ours to remove
+        try:
+            _mat.rmdir()                  # only when empty -- a concurrent run may still
+        except OSError:                   # be using its own file in here
+            pass
+
+    # DID a judge touch the tree? Reported after the panel so the reviews are not lost, and
+    # loudly, because silence was the failure mode every previous version had.
+    if _fp_before is not None:
+        _added, _removed, _modified = fingerprint_delta(_fp_before, repo_fingerprint(repo))
+        if _added or _removed or _modified:
+            sys.stderr.write(
+                "\n!! THE REVIEWED TREE CHANGED WHILE THE PANEL RAN.\n"
+                "!! Judges are supposed to be read-only. Something wrote to the repo under\n"
+                "!! review -- that may be you in another window, or it may be a judge.\n")
+            for _label, _fs in (("added", _added), ("removed", _removed),
+                                ("modified", _modified)):
+                for _f in _fs[:10]:
+                    sys.stderr.write(f"!!   {_label}: {_f}\n")
+                if len(_fs) > 10:
+                    sys.stderr.write(f"!!   ... and {len(_fs) - 10} more {_label}\n")
+
+    print(doc)
+    sys.stderr.write(f"\n[panel written to {rundir}]\n")
+    if a.save_here:
+        # Written only AFTER judging, and off by default: anything left inside the
+        # repo is readable by the NEXT panel's judges.
+        dest = pathlib.Path(repo) / f"panel-{stamp}.md"
+        dest.write_text(doc)
+        sys.stderr.write(f"[copy saved in the repo at {dest} — future judges can read it]\n")
+
+    # FAIL LOUD ON A DEGRADED BENCH. A 5-judge panel once came back with three judges at
+    # `harness (0.0s)` -- no request ever left the machine, the key was simply absent from
+    # a non-interactive shell -- and the run still printed a normal-looking report and
+    # exited 0. A panel's whole value is cross-family independence, so losing 60% of the
+    # bench is not a footnote: it silently turns a five-family panel into a two-family one,
+    # and the reader cannot tell from the report that anything was missing.
+    broken = [j for j in judges if results[j]["status"] == "harness"]
+    if broken:
+        sys.stderr.write(
+            f"\n!! DEGRADED PANEL: {len(broken)} of {len(judges)} judges never ran "
+            f"({', '.join(broken)}).\n"
+            f"!! These are OUR failures, not refusals. This panel is missing "
+            f"{len(broken)} of its {len(judges)} families.\n")
+        for j in broken:
+            first = (results[j]["text"] or "").strip().splitlines()
+            sys.stderr.write(f"!!   {j}: {first[0][:150] if first else 'no detail'}\n")
+        sys.stderr.write("!! Exit 4. The report above is real but INCOMPLETE.\n")
+        sys.exit(4)
+
+
+if __name__ == "__main__":
+    main()
