@@ -2370,6 +2370,16 @@ def main():
         cap = a.timeout if explicit_timeout else 180
         sys.exit(run_check(judges, repo, cap, a.agent))
 
+    # A BARE `-` means stdin, the same as `-f -`. It is the near-universal CLI convention,
+    # and both README.md and the /panel skill document `llm-panel - <<'ASK' ... ASK` -- but
+    # only `-f -` was implemented, so the bare form set prompt="-", which is non-empty, and
+    # the branch below never ran. The heredoc was discarded and the literal dash was sent
+    # to the judges as the question. Found by dogfooding: a 6-judge panel with rebuttals
+    # ran to completion on a one-character prompt. Every judge refused to review and named
+    # the cause, which is the right behaviour and still a wasted run -- documenting a form
+    # the code does not implement is a defect in whichever half you choose to call wrong.
+    if a.prompt == "-":
+        a.prompt = None
     if a.file:
         if a.prompt:
             die("give a prompt as an argument or via --file, not both")
