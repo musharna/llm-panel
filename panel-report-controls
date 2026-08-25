@@ -1386,18 +1386,41 @@ with section("40.1 no concrete Windows profile is hardcoded in the source"):
 # code's choice and not about this machine happening to have Firefox installed.
 
 
+class _FakeProc:
+    """Stands in for the spawned opener. `rc` is what wait() reports.
+
+    None means "still running after the timeout", i.e. it handed off to a viewer, which
+    is the success case for a browser. An int is an already-exited child.
+    """
+
+    def __init__(self, rc):
+        self.rc = rc
+
+    def wait(self, timeout=None):
+        if self.rc is None:
+            raise pr.subprocess.TimeoutExpired(cmd="opener", timeout=timeout)
+        return self.rc
+
+
 class _Spawned:
-    def __init__(self):
+    def __init__(self, rc=None):
         self.calls = []
+        self.rc = rc
 
     def __call__(self, argv, **kw):
         self.calls.append(argv)
-        return None
+        return _FakeProc(self.rc)
 
 
-def _open_with(tmp, profile, exes, platform="linux", which=lambda n: "/usr/bin/" + n):
-    """Run open_report with the host facts stubbed, returning (message, spawned argv)."""
-    spy = _Spawned()
+def _open_with(tmp, profile, exes, platform="linux", which=lambda n: "/usr/bin/" + n, rc=None):
+    """Run open_report with the host facts stubbed, returning (message, spawned argv).
+
+    `rc` is the opener's exit status: None = still running (handed off to a viewer),
+    an int = already exited. The panel found that open_report reported success the
+    instant it spawned, so a headless host -- binary present, child exits non-zero --
+    still printed "opened with xdg-open". rc lets a control express that.
+    """
+    spy = _Spawned(rc)
     old = (pr.win_profile, pr.to_win_path, pr.subprocess.Popen, pr.shutil.which,
            pr.sys.platform, pr.pathlib.Path.is_file)
     try:
@@ -1442,6 +1465,41 @@ with section("40.3 off WSL it falls back to the platform opener, not a WSL path"
         check("40.3 used xdg-open", _calls, [["xdg-open", str(_rep)]])
         _msg, _calls = _open_with(_rep, None, set(), platform="darwin")
         check("40.3 used open on macOS", _calls, [["open", str(_rep)]])
+
+# --- 40.5/40.6: a spawned opener that FAILS must not be reported as success -------------
+# Found by the panel reviewing this file's own commit. open_report returned
+# "opened with {opener}" immediately after Popen, without waiting or checking -- so on a
+# headless host (xdg-open present, no display, child exits non-zero) it claimed the report
+# was on screen. The same defect was in the WSL browser branch. This is the third distinct
+# instance today of a success message not tied to the thing it reports; the first two were
+# found by running the code, this one by six independent judges reading it.
+with section("40.5 an opener that exits NON-ZERO is reported as a failure"):
+    with tempfile.TemporaryDirectory() as _td:
+        _rep = pathlib.Path(_td) / "panel-f.html"
+        _rep.write_text("<html></html>", encoding="utf-8")
+        _msg, _calls = _open_with(_rep, None, set(), rc=3)
+        check("40.5 it was still spawned", len(_calls), 1)
+        check("40.5 the failure is reported", _msg.startswith("--open:"), True)
+        check("40.5 the exit status is named", "exited 3" in _msg, True)
+        check("40.5 it does NOT claim success", "opened with" not in _msg, True)
+
+with section("40.6 an opener still running after the wait IS success (it handed off)"):
+    with tempfile.TemporaryDirectory() as _td:
+        _rep = pathlib.Path(_td) / "panel-g.html"
+        _rep.write_text("<html></html>", encoding="utf-8")
+        _msg, _calls = _open_with(_rep, None, set(), rc=None)
+        check("40.6 reported as opened", _msg.startswith("opened with"), True)
+
+with section("40.7 a WSL browser that exits non-zero is reported as a failure too"):
+    with tempfile.TemporaryDirectory() as _td:
+        _prof = pathlib.Path(_td) / "profile"
+        (_prof / "Downloads").mkdir(parents=True)
+        _rep = pathlib.Path(_td) / "panel-h.html"
+        _rep.write_text("<html></html>", encoding="utf-8")
+        _chrome = r"/mnt/c/Program Files/Google/Chrome/Application/chrome.exe"
+        _msg, _calls = _open_with(_rep, _prof, {_chrome}, rc=5)
+        check("40.7 the failure is reported", _msg.startswith("--open:"), True)
+        check("40.7 it does NOT claim success", "opened in Chrome" not in _msg, True)
 
 with section("40.4 a missing opener is REPORTED, never silently swallowed"):
     with tempfile.TemporaryDirectory() as _td:
