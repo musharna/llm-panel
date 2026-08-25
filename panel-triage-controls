@@ -1,0 +1,189 @@
+#!/usr/bin/env python3
+"""Regression controls for panel-triage.
+
+Each control builds a real run directory on disk and runs the real problems()
+over it, because every defect this file records was found by running the tool
+against real runs and reading the output -- not by reasoning about it. Two of
+the three were false POSITIVES, which a suite full of "does it flag the bad
+case" assertions would never have caught: control 3 exists to assert that
+legitimate runs stay SILENT.
+
+    panel-triage-controls          # run them
+    panel-triage-controls -v       # show each
+"""
+import contextlib
+import importlib.machinery
+import importlib.util
+import json
+import pathlib
+import sys
+import tempfile
+
+VERBOSE = "-v" in sys.argv
+
+_sib = pathlib.Path(__file__).resolve().parent / "panel-triage"
+SRC = _sib if _sib.is_file() else pathlib.Path.home() / ".local/bin/panel-triage"
+spec = importlib.util.spec_from_loader("pt", importlib.machinery.SourceFileLoader("pt", str(SRC)))
+pt = importlib.util.module_from_spec(spec)
+sys.argv = ["panel-triage", "--help-noop"]
+try:
+    spec.loader.exec_module(pt)
+except SystemExit:
+    pass
+
+FAILED = []
+
+
+@contextlib.contextmanager
+def section(name):
+    """A control that RAISES must report FAIL, not abort the suite."""
+    try:
+        yield
+    except Exception as e:                                # noqa: BLE001
+        FAILED.append(f"{name}: raised {type(e).__name__}: {e}")
+        print(f"  FAIL {name} -- raised {type(e).__name__}: {e}")
+
+
+def check(name, got, want):
+    ok = got == want
+    if not ok:
+        FAILED.append(f"{name}: got {got!r}, want {want!r}")
+    if VERBOSE or not ok:
+        print(f"  {'ok  ' if ok else 'FAIL'} {name}")
+
+
+@contextlib.contextmanager
+def run_dir(judges, reviews=None, rebuttals=(), **extra):
+    """A real run directory: run.json plus the review/rebuttal files named in it."""
+    with tempfile.TemporaryDirectory() as td:
+        d = pathlib.Path(td)
+        run = {"judges": judges, **extra}
+        (d / "run.json").write_text(json.dumps(run), encoding="utf-8")
+        for j in judges:
+            body = (reviews or {}).get(j["name"], "a real review with actual content in it")
+            if body is not None:
+                (d / f"{j['name']}.md").write_text(body, encoding="utf-8")
+        for n in rebuttals:
+            (d / f"{n}.rebuttal.md").write_text("rebuttal body", encoding="utf-8")
+        yield run, d
+
+
+def _ok(name, **kw):
+    return {"name": name, "status": "ok", "secs": 3, "meta": {"finish": "stop"}, **kw}
+
+
+# --- 1. length is NOT a defect signal -----------------------------------------------
+# The first draft flagged any review under 200 chars, on a comment claiming the number
+# came from the observed distribution. It did not; the number came first. Measuring
+# properly killed the idea: the shortest real reviews are the two-byte answer `OK`,
+# which is a COMPLETE reply to a yes/no question. Length cannot distinguish that from
+# a judge that returned nothing, so it must not be trusted to.
+with section("1.1 a terse but real answer is not a problem"):
+    with run_dir([_ok("g")], reviews={"g": "OK"}) as (run, d):
+        check("1.1 two-byte 'OK' is silent", pt.problems(run, d), [])
+
+with section("1.2 an EMPTY review file IS a problem (this one is observable)"):
+    with run_dir([_ok("g")], reviews={"g": "   \n  "}) as (run, d):
+        check("1.2 whitespace-only is flagged",
+              pt.problems(run, d), ["g: status ok but the review file is empty"])
+
+with section("1.3 a MISSING review file is a problem"):
+    with run_dir([_ok("g")], reviews={"g": None}) as (run, d):
+        check("1.3 absent file is flagged",
+              pt.problems(run, d), ["g: status ok but g.md was never written"])
+
+
+# --- 2. a rebuttal round needs someone to rebut --------------------------------------
+# Flagging an absent rebuttal on a ONE-judge run made every single-judge smoke test
+# look broken. With fewer than two answering judges there is nothing to disagree with.
+with section("2.1 --rebut with a single judge is not a defect"):
+    with run_dir([_ok("g")], rebut=True) as (run, d):
+        check("2.1 silent for one judge", pt.problems(run, d), [])
+
+with section("2.2 --rebut with two judges and no rebuttals IS a defect"):
+    with run_dir([_ok("g"), _ok("h")], rebut=True) as (run, d):
+        check("2.2 flagged", pt.problems(run, d),
+              ["--rebut was requested and 2 judges answered, but no rebuttal file exists"])
+
+with section("2.3 a partial rebuttal round names WHO is missing"):
+    with run_dir([_ok("g"), _ok("h")], rebuttals=["g"], rebut=True) as (run, d):
+        check("2.3 names the missing judge", pt.problems(run, d), ["rebuttal missing for h"])
+
+with section("2.4 a judge that never answered is not owed a rebuttal"):
+    js = [_ok("g"), {"name": "h", "status": "harness", "secs": 1, "meta": {}}]
+    with run_dir(js, rebuttals=["g"], rebut=True) as (run, d):
+        # h is reported for its status, but NOT for a missing rebuttal it could not write.
+        check("2.4 only the status is reported",
+              pt.problems(run, d), ["h: status harness"])
+
+
+# --- 3. clean runs stay SILENT (the positive control) --------------------------------
+# Two of the three defects above were FALSE POSITIVES. A suite that only asserts
+# "the bad case is flagged" scores a perfect run on a tool that flags everything.
+with section("3.1 a wholly clean two-judge run produces no problems"):
+    with run_dir([_ok("g"), _ok("h")], rebuttals=["g", "h"], rebut=True) as (run, d):
+        check("3.1 silent", pt.problems(run, d), [])
+
+with section("3.2 a clean run with no rebuttal round requested is silent"):
+    with run_dir([_ok("g"), _ok("h")]) as (run, d):
+        check("3.2 silent", pt.problems(run, d), [])
+
+
+# --- 4. the failures that ARE observable ---------------------------------------------
+# 4.1/4.2 pair the failing judge with a HEALTHY one on purpose. First draft used a single
+# judge, so the run-level "EVERY judge failed" verdict fired as well and the exact
+# assertion failed -- correct tool behaviour, wrong control. A second judge isolates the
+# per-judge report from the run-level one, which 4.3 covers on its own.
+with section("4.1 a non-ok status is reported with its note"):
+    js = [{"name": "g", "status": "incomplete", "secs": 900, "meta": {"note": "timed out"}},
+          _ok("h")]
+    with run_dir(js) as (run, d):
+        check("4.1 status and note", pt.problems(run, d), ["g: status incomplete -- timed out"])
+
+with section("4.2 status ok with a truncated finish is the QUIET failure"):
+    # The review reads complete and is not. Without this, a cut-off answer looks clean.
+    js = [_ok("g", meta={"finish": "length"}), _ok("h")]
+    with run_dir(js) as (run, d):
+        check("4.2 flagged as cut off", pt.problems(run, d),
+              ["g: status ok but finish=length (answer was cut off)"])
+
+with section("4.3 a panel where EVERY judge failed is called out as a whole"):
+    js = [{"name": "g", "status": "harness", "secs": 1, "meta": {}},
+          {"name": "h", "status": "harness", "secs": 1, "meta": {}}]
+    with run_dir(js) as (run, d):
+        check("4.3 run-level verdict present",
+              any("EVERY judge failed (2/2)" in p for p in pt.problems(run, d)), True)
+
+with section("4.4 a run with no judges at all is reported, not skipped"):
+    with run_dir([]) as (run, d):
+        check("4.4 reported", pt.problems(run, d), ["no judges recorded at all"])
+
+
+# --- 5. both run roots are read -------------------------------------------------------
+# A single-root reader reports "no runs found" for panels that plainly exist. That bug
+# is already on record in panel-report; this asserts it was not reintroduced here.
+with section("5.1 runs() reads every configured root"):
+    with tempfile.TemporaryDirectory() as t1, tempfile.TemporaryDirectory() as t2:
+        found = []
+        for i, t in enumerate((t1, t2)):
+            p = pathlib.Path(t) / f"tag{i}" / "stamp"
+            p.mkdir(parents=True)
+            (p / "run.json").write_text("{}", encoding="utf-8")
+            found.append(p.resolve())
+        got = pt.runs([pathlib.Path(t1), pathlib.Path(t2)])
+        check("5.1 both roots represented",
+              sorted(x.resolve() for x in got), sorted(found))
+
+with section("5.2 an absent root is skipped, not fatal"):
+    with tempfile.TemporaryDirectory() as t1:
+        p = pathlib.Path(t1) / "tag" / "stamp"
+        p.mkdir(parents=True)
+        (p / "run.json").write_text("{}", encoding="utf-8")
+        got = pt.runs([pathlib.Path("/nonexistent/root"), pathlib.Path(t1)])
+        check("5.2 the real root still read", len(got), 1)
+
+print(f"\n{'FAILED' if FAILED else 'all controls green'}"
+      f" ({len(FAILED)} failing)" if FAILED else "\nall controls green")
+for f in FAILED:
+    print("  -", f)
+sys.exit(1 if FAILED else 0)
