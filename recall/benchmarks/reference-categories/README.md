@@ -26,6 +26,22 @@ pooled 10.6% was measuring the instruction, not the panel.
 Quote the scoped number with its scope -- 18.5% on defect-type references -- rather than a
 pooled figure whose denominator is half out of scope by construction.
 
+## Category does NOT predict acceptance
+
+I expected the REJECTED comments to be disproportionately nitpicks, which would have made
+"only report defects" a cheap proxy for "only report what reviewers accept". It is not:
+
+| references | DEFECT | IMPROVEMENT |
+|------------|-------:|------------:|
+| accepted (positive sample) | 55% | 45% |
+| rejected (negative sample) | 49% | 51% |
+
+Human reviewers rejected confident defect claims at about the same rate as improvement
+suggestions -- "The code incorrectly attempts to parse the conditions property expression
+string as JSON" is a rejected DEFECT. So acceptance turns on whether the specific claim is
+right and useful, not on which category it falls in, and narrowing the prompt to defects
+buys less precision than it costs recall.
+
 ## Regenerate
 
     JUDGE_BASE_URL=https://openrouter.ai/api/v1 JUDGE_API_KEY=$OPENROUTER_API_KEY \
