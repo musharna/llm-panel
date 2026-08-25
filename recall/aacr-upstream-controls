@@ -176,6 +176,87 @@ with section("4.2 an UNLOCATED finding is still emitted, with an empty path"):
     check("4.2 empty path, not dropped", r["review"]["comments"][0]["path"], "")
     check("4.2 reason recorded", tally, {"absent": 1})
 
+
+# --- 5. one finding torn apart is reassembled --------------------------------------------
+# Shipped: `**File: ...**` and `**Failure Scenario:**` both end in `**` so both match the
+# bold-line-alone form, and a numbered failure-scenario matches the numbered form. ONE
+# finding became NINE observations with the path stranded in the first fragment.
+with section("5.1 fragments with no VALID location merge into the finding above them"):
+    P = ns["diff_paths"](DIFF)
+    obs = [
+        {"verbatim": "**File: `src/app/main.py`, Line 10**\n", "observation_id": "a",
+         "location": {"path": "src/app/main.py", "line": 10}},
+        {"verbatim": "**Failure Scenario:**\n", "observation_id": "b", "location": {}},
+        {"verbatim": "1. first step\n", "observation_id": "c", "location": {}},
+        {"verbatim": "2. second step\n", "observation_id": "d", "location": {}},
+    ]
+    m = ns["merge_fragments"](obs, P)
+    check("5.1 four observations become one", len(m), 1)
+    check("5.1 the location survives", m[0]["location"]["path"], "src/app/main.py")
+    check("5.1 every fragment is kept in the text",
+          all(k in m[0]["verbatim"] for k in ("Failure Scenario", "first step", "second step")),
+          True)
+    check("5.1 provenance of the merged fragments", m[0]["merged_from"], ["b", "c", "d"])
+
+with section("5.2 DRIFT CHECK: two genuinely located findings are NOT merged"):
+    # Without this the rule could pass by merging everything into one finding.
+    P = ns["diff_paths"](DIFF)
+    obs = [
+        {"verbatim": "**Defect 1**\n", "observation_id": "a",
+         "location": {"path": "src/app/main.py", "line": 10}},
+        {"verbatim": "**Defect 2**\n", "observation_id": "b",
+         "location": {"path": "lib/util/main.py", "line": 5}},
+    ]
+    m = ns["merge_fragments"](obs, P)
+    check("5.2 both survive", len(m), 2)
+    check("5.2 locations intact",
+          [x["location"]["path"] for x in m], ["src/app/main.py", "lib/util/main.py"])
+
+with section("5.3 a location claimlib invented but the diff denies is NOT a boundary"):
+    # `text_size.x` is a struct field. claimlib reads it as a path -- `.x` is a legal
+    # one-char suffix, so the boundary assertion cannot reject it -- and merging on RAW
+    # locations therefore left the review at 3 findings instead of 1. Only the diff knows.
+    P = ns["diff_paths"](DIFF)
+    obs = [
+        {"verbatim": "**File: `src/app/main.py`, Line 10**\n", "observation_id": "a",
+         "location": {"path": "src/app/main.py", "line": 10}},
+        {"verbatim": "5. expand branch uses `dsc->text_size.x`\n", "observation_id": "b",
+         "location": {"path": "text_size.x", "line": None}},
+    ]
+    m = ns["merge_fragments"](obs, P)
+    check("5.3 the invented path does not start a new finding", len(m), 1)
+    check("5.3 merged", m[0]["merged_from"], ["b"])
+
+with section("5.4 a LONE unlocated finding still stands"):
+    # It has no predecessor to belong to. Dropping or merging it would hide the panel's
+    # own unlocated output, which control 4.2 exists to prevent.
+    m = ns["merge_fragments"](
+        [{"verbatim": "a general observation\n", "observation_id": "z", "location": {}}],
+        ns["diff_paths"](DIFF))
+    check("5.4 kept", len(m), 1)
+    check("5.4 nothing merged into it", m[0].get("merged_from", []), [])
+
+
+with section("5.5 WITNESS end-to-end: the shipped fragment shape yields ONE comment"):
+    # Goes through to_upstream_result, which exists in BOTH versions, so this fails on the
+    # pre-merge bridge as got 4 / want 1 -- the defect itself -- rather than KeyError on a
+    # function that did not exist yet. That "some exception was raised" non-result has now
+    # cost three separate controls in this project.
+    P = ns["diff_paths"](DIFF)
+    obs = [
+        {"verbatim": "**File: `src/app/main.py`, Line 10**\n", "observation_id": "a",
+         "location": {"path": "src/app/main.py", "line": 10}},
+        {"verbatim": "**Failure Scenario:**\n", "observation_id": "b", "location": {}},
+        {"verbatim": "1. first step\n", "observation_id": "c", "location": {}},
+        {"verbatim": "2. second step\n", "observation_id": "d", "location": {}},
+    ]
+    r = ns["to_upstream_result"](obs, "/run", P, {})
+    c = r["review"]["comments"]
+    check("5.5 one comment, not four", len(c), 1)
+    check("5.5 it carries the location", c[0]["path"], "src/app/main.py")
+    check("5.5 the scenario text survives into it", "second step" in c[0]["content"], True)
+
+
 print(f"\n{'FAILED' if FAILED else 'all controls green'}"
       f" ({len(FAILED)} failing)" if FAILED else "\nall controls green")
 for f in FAILED:
