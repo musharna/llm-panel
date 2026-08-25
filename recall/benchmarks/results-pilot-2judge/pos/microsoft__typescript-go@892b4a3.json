@@ -8,7 +8,8 @@
         "end_line": 67,
         "observation_id": "cf8322e8f666ddb5",
         "claimed_path": "makeManual.mts",
-        "path_resolution": "basename"
+        "path_resolution": "basename",
+        "merged_from": []
       },
       {
         "content": "**Defect 2: `makeManual.mts` constructs the gen file path without appending `_test.go`, but `convertFourslash.mts` writes gen files AS `${test.name}_test.go`.**\n\nIn `makeManual.mts`, line ~22:\n```ts\nconst genTestFile = path.join(genDir, `${testFileName}`);  // no _test.go suffix\n```\n\nBut `convertFourslash.mts` line ~75 writes:\n```ts\nconst testPath = path.join(outputDir, `${test.name}_test.go`);\n```\n\nSo if the user passes the base name `MyTest`, `makeManual.mts` looks for `gen/MyTest` which doesn't exist \u2014 the file is `gen/MyTest_test.go`. The script will always error with \"Test file not found\".\n\nIf the user compensates by passing `MyTest_test.go`, then that full string (with suffix) goes into `manualTests.txt`, but the lookup in `convertFourslash.mts` compares against just `test.name` (capitalized, no suffix) \u2014 still no match.\n\n**These two defects combine into a single critical failure:** the `manualTests` exclusion path is completely dead \u2014 it can never skip any test, regardless of what the user passes.\n\n**Failure scenario:** User runs `npm run makemanual -- MyTest_test.go`. The file is moved successfully. `manualTests.txt` contains `MyTest_test.go`. On next `npm run convertfourslash`, for that test `test.name = \"MyTest\"`, the code checks `manualTests.has(\"MyTest\")` \u2192 `false` (set contains `\"MyTest_test.go\"`). The test is regenerated anyway, overwriting the manual copy.\n\n**Defect 3: `makeManual.mts` \u2014 the `testName` variable is ambiguously used as both the CLI arg and the file path, with `_test.go` stripping never performed.** `makeManual.mts` line 16\u201322:\n```ts\nconst testName = args[0];\nconst testFileName = testName;\nconst genTestFile = path.join(genDir, `${testFileName}`);\n```\nThe variable is never stripped of `_test.go` for the `manualTests.txt` entry but is expected to include it for the file lookup. There is no code to do `testName.replace(/_test\\.go$/, \"\")`.\n\n---\n\nHere is the full defect report:\n\n---",
@@ -17,7 +18,8 @@
         "end_line": 22,
         "observation_id": "eef5e3c9a5ab87dd",
         "claimed_path": "makeManual.mts",
-        "path_resolution": "basename"
+        "path_resolution": "basename",
+        "merged_from": []
       },
       {
         "content": "### Defect 1 (Critical): Manual test exclusion is dead code \u2014 value mismatch between writer and reader\n\n**File:** `internal/fourslash/_scripts/makeManual.mts` lines 35\u201336 and `internal/fourslash/_scripts/convertFourslash.mts` lines 67\u201369\n\n`makeManual.mts` stores `args[0]` (the raw CLI argument) into `manualTests.txt`. `convertFourslash.mts` reads that file into a Set, then checks `manualTests.has(test.name[0].toUpperCase() + test.name.substring(1))`. The stored value and the looked-up value use different normalization, so the check can never succeed.\n\n**Failure scenario:** User runs `npm run makemanual -- myTest_test.go`. The file is moved. `manualTests.txt` now contains `myTest_test.go`. On the next `npm run convertfourslash`, for the file with `test.name = \"myTest\"`, the lookup is `manualTests.has(\"MyTest\")` \u2192 `false` (the Set contains `\"myTest_test.go\"`, not `\"MyTest\"`). The test is regenerated despite being marked manual.\n\n**Fix needed:** `makeManual.mts` must strip the `_test.go` suffix and capitalize the first letter before appending to `manualTests.txt`:\n```ts\nconst normalizedName = testName.replace(/_test\\.go$/, \"\");\nconst entry = normalizedName[0].toUpperCase() + normalizedName.substring(1);\n```\n\n---",
@@ -26,7 +28,8 @@
         "end_line": 35,
         "observation_id": "52dae1505484c92e",
         "claimed_path": "internal/fourslash/_scripts/makeManual.mts",
-        "path_resolution": "exact"
+        "path_resolution": "exact",
+        "merged_from": []
       },
       {
         "content": "### Defect 2 (Critical): `makeManual.mts` cannot find the gen file when passed a bare test name\n\n**File:** `internal/fourslash/_scripts/makeManual.mts` line 22\n\nThe gen directory contains files named `{test.name}_test.go` (written by `convertFourslash.mts` at line 75). But `makeManual.mts` line 22 constructs the lookup path as `path.join(genDir, testFileName)` with no `_test.go` appended. If the user passes the logical test name (e.g. `myTest`), the script looks for `gen/myTest`, which does not exist; it errors with \"Test file not found\".\n\n**Failure scenario:** User runs `npm run makemanual -- myTest`. Script prints `Test file not found: .../tests/gen/myTest` and exits 1. The file that actually exists is `.../tests/gen/myTest_test.go`.\n\n**Fix needed:** Append `_test.go` when constructing the gen file path:\n```ts\nconst genTestFile = path.join(genDir, `${testFileName}_test.go`);\n```\n\n---\n\nBoth defects are independently sufficient to make the `makeManual` workflow non-functional. Together they guarantee no manual test is ever excluded from generation.",
@@ -35,7 +38,8 @@
         "end_line": 22,
         "observation_id": "50cf253be2a802ee",
         "claimed_path": "makeManual.mts",
-        "path_resolution": "basename"
+        "path_resolution": "basename",
+        "merged_from": []
       },
       {
         "content": "**DEFECT 1: `internal/fourslash/_scripts/convertFourslash.mts:68-72` \u2014 Manual test skip check uses wrong key**\n\nThe manual test list stores full filenames with `_test.go` suffix (added by `makeManual.mts:31` as raw `testName` like `\"foo_test.go\"`), but the skip check at line 72 uses a capitalized base name without suffix (`\"Foo\"`).  \n**Failure scenario**: User runs `npm run makemanual foo_test.go` \u2192 test moved to `manual/`, `\"foo_test.go\"` added to `manualTests.txt`. Later `convertFourslash` runs, parses test with `test.name = \"foo\"`, computes `testName = \"Foo\"`, checks `manualTests.has(\"Foo\")` \u2192 `false` \u2192 test regenerates in `gen/foo_test.go` instead of being skipped.\n\n---",
@@ -44,7 +48,8 @@
         "end_line": 68,
         "observation_id": "208d19881c1ae1ea",
         "claimed_path": "internal/fourslash/_scripts/convertFourslash.mts",
-        "path_resolution": "exact"
+        "path_resolution": "exact",
+        "merged_from": []
       },
       {
         "content": "**DEFECT 2: `internal/fourslash/_scripts/convertFourslash.mts:68` \u2014 Crash on empty test name**\n\n`test.name[0].toUpperCase()` throws `TypeError: Cannot read properties of undefined` if `test.name === \"\"`.  \n**Failure scenario**: A `.ts` file parsed by `parseFileContent` returns a test object with empty `name` (e.g., malformed test marker). The script crashes instead of skipping or reporting the file in `unparsedFiles`.\n\n---",
@@ -53,7 +58,8 @@
         "end_line": 68,
         "observation_id": "12861efc4b28bd45",
         "claimed_path": "internal/fourslash/_scripts/convertFourslash.mts",
-        "path_resolution": "exact"
+        "path_resolution": "exact",
+        "merged_from": []
       },
       {
         "content": "**DEFECT 3: `internal/fourslash/_scripts/makeManual.mts:15-16` \u2014 User must know exact generated filename**\n\nScript expects the full `_test.go` filename (`foo_test.go`), but users naturally know the test base name (`foo`).  \n**Failure scenario**: User runs `npm run makemanual foo` \u2192 script looks for `gen/foo` (doesn't exist) \u2192 exits with \"Test file not found\" even though `gen/foo_test.go` exists. No guidance to append `_test.go`.\n\n---",
@@ -62,7 +68,8 @@
         "end_line": 15,
         "observation_id": "06ae44796acc66ee",
         "claimed_path": "internal/fourslash/_scripts/makeManual.mts",
-        "path_resolution": "exact"
+        "path_resolution": "exact",
+        "merged_from": []
       },
       {
         "content": "**DEFECT 4: `internal/fourslash/_scripts/convertFourslash.mts:75-78` \u2014 Silent drop of failed test generation**\n\nNew `if (testContent)` guard skips writing when `generateGoTest` returns falsy. Original code wrote empty file (visible failure). Now failure is silent \u2014 test simply disappears from `gen/` with no log entry.  \n**Failure scenario**: `generateGoTest` returns `null` for a valid test (bug in generator). Test not generated, not in `unparsedFiles`, no error \u2014 CI passes but test coverage drops silently.",
@@ -71,7 +78,8 @@
         "end_line": 75,
         "observation_id": "140c5127e2c29511",
         "claimed_path": "internal/fourslash/_scripts/convertFourslash.mts",
-        "path_resolution": "exact"
+        "path_resolution": "exact",
+        "merged_from": []
       }
     ]
   },

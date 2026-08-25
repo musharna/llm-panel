@@ -8,7 +8,8 @@
         "end_line": 221,
         "observation_id": "4a1232f5ca97c8bf",
         "claimed_path": "src/draw/lv_draw_label.c",
-        "path_resolution": "exact"
+        "path_resolution": "exact",
+        "merged_from": []
       },
       {
         "content": "**DEFECT: `text_size` cache computed with constrained width but used where `LV_COORD_MAX` width is required**\n\n- **File:** `src/widgets/label/lv_label.c`, line 965 (the cache store) and `src/draw/lv_draw_label.c`, line 221 (the cache consumer)\n- **Severity:** High \u2014 causes incorrect text width measurement in EXPAND mode, leading to wrong layout/scrolling\n\n**The problem:** In `lv_label_refr_text()` (line 965 of `lv_label.c`), the text size is measured with the widget's constrained `max_w` and stored into `label->text_size`. In `lv_draw_label.c` (line 221), the EXPAND branch previously called `lv_text_get_size` with `LV_COORD_MAX` (unlimited width) to get the true full text width. After this patch, it instead reads `dsc->text_size.x`, which holds the constrained measurement.\n\n**Failure scenario:** Create a label with `LV_LABEL_LONG_MODE_SCROLL` on a narrow widget. The text is wider than the widget. `lv_label_refr_text` measures the text at `max_w = widget_width`, so `label->text_size.x == widget_width`. The draw code then uses this cached value as the full text width for scroll offset calculations and alignment centering. Since the scroll code expects the *unconstrained* text width to determine how far to scroll, it now uses the *constrained* width \u2014 the scroll range is wrong, text appears misaligned, and the scroll animation covers insufficient distance (text that should scroll into view never appears).",
@@ -17,88 +18,27 @@
         "end_line": 965,
         "observation_id": "33d723accce05fe0",
         "claimed_path": "src/widgets/label/lv_label.c",
-        "path_resolution": "exact"
+        "path_resolution": "exact",
+        "merged_from": []
       },
       {
-        "content": "**File: `src/draw/lv_draw_label.c`, Line 221 (in the diff hunk `@@ -218,10 +218,7 @@`)**\n\n**Defect:** When `expand` mode is enabled (used for `LV_LABEL_LONG_MODE_SCROLL` and `LV_LABEL_LONG_MODE_SCROLL_CIRCULAR`), the code now uses `dsc->text_size.x` which was calculated with a constrained `max_w` (the object's width), but expand mode requires the **unconstrained** text width (`LV_COORD_MAX`).",
+        "content": "**File: `src/draw/lv_draw_label.c`, Line 221 (in the diff hunk `@@ -218,10 +218,7 @@`)**\n\n**Defect:** When `expand` mode is enabled (used for `LV_LABEL_LONG_MODE_SCROLL` and `LV_LABEL_LONG_MODE_SCROLL_CIRCULAR`), the code now uses `dsc->text_size.x` which was calculated with a constrained `max_w` (the object's width), but expand mode requires the **unconstrained** text width (`LV_COORD_MAX`).\n\n**Failure Scenario:**\n1. Label has text \"Hello World\" with natural width 200px\n2. Label object width is 100px (constrained)\n3. `lv_label_refr_text` calculates `text_size` with `max_w = 100` \u2192 stores width = 100px (clamped)\n4. Label uses `LV_LABEL_LONG_MODE_SCROLL` (sets `expand = 1`)\n5. In `lv_draw_label_iterate_characters`, expand branch uses `dsc->text_size.x` = 100px\n6. **Result:** Scrolling calculates wrong text width, causing incorrect scroll behavior / clipping\n\n**Evidence from diff:**\n- Original code (lines 221-224): explicitly passed `LV_COORD_MAX` to `lv_text_get_size` for expand mode\n- New code (line 221): uses `dsc->text_size.x` which was computed in `lv_label_refr_text` with `max_w` (line 968 in `lv_label.c` diff: `lv_text_get_size(&size, ..., max_w, flag);`)\n\nThe `invalid_size_cache` flag added to `lv_label_private.h` is also never read/used in this diff, suggesting incomplete caching logic, but the expand-mode width bug is the concrete functional defect.",
         "path": "src/draw/lv_draw_label.c",
         "start_line": 221,
         "end_line": 221,
         "observation_id": "6ad73f2f1e8cacaa",
         "claimed_path": "src/draw/lv_draw_label.c",
-        "path_resolution": "exact"
-      },
-      {
-        "content": "**Failure Scenario:**",
-        "path": "",
-        "start_line": null,
-        "end_line": null,
-        "observation_id": "32c7f94b02ba1e1c",
-        "claimed_path": null,
-        "path_resolution": "absent"
-      },
-      {
-        "content": "1. Label has text \"Hello World\" with natural width 200px",
-        "path": "",
-        "start_line": null,
-        "end_line": null,
-        "observation_id": "b52bdabe0adbbfa9",
-        "claimed_path": null,
-        "path_resolution": "absent"
-      },
-      {
-        "content": "2. Label object width is 100px (constrained)",
-        "path": "",
-        "start_line": null,
-        "end_line": null,
-        "observation_id": "3530e9fcfe22ffda",
-        "claimed_path": null,
-        "path_resolution": "absent"
-      },
-      {
-        "content": "3. `lv_label_refr_text` calculates `text_size` with `max_w = 100` \u2192 stores width = 100px (clamped)",
-        "path": "",
-        "start_line": null,
-        "end_line": null,
-        "observation_id": "376eac9ea0e81d3a",
-        "claimed_path": null,
-        "path_resolution": "absent"
-      },
-      {
-        "content": "4. Label uses `LV_LABEL_LONG_MODE_SCROLL` (sets `expand = 1`)",
-        "path": "",
-        "start_line": null,
-        "end_line": null,
-        "observation_id": "a22c58b9263c78b7",
-        "claimed_path": null,
-        "path_resolution": "absent"
-      },
-      {
-        "content": "5. In `lv_draw_label_iterate_characters`, expand branch uses `dsc->text_size.x` = 100px",
-        "path": "",
-        "start_line": null,
-        "end_line": null,
-        "observation_id": "c4b099b60194d9dd",
-        "claimed_path": "text_size.x",
-        "path_resolution": "not-in-diff"
-      },
-      {
-        "content": "6. **Result:** Scrolling calculates wrong text width, causing incorrect scroll behavior / clipping",
-        "path": "",
-        "start_line": null,
-        "end_line": null,
-        "observation_id": "a91d05810237c52d",
-        "claimed_path": null,
-        "path_resolution": "absent"
-      },
-      {
-        "content": "**Evidence from diff:**\n- Original code (lines 221-224): explicitly passed `LV_COORD_MAX` to `lv_text_get_size` for expand mode\n- New code (line 221): uses `dsc->text_size.x` which was computed in `lv_label_refr_text` with `max_w` (line 968 in `lv_label.c` diff: `lv_text_get_size(&size, ..., max_w, flag);`)\n\nThe `invalid_size_cache` flag added to `lv_label_private.h` is also never read/used in this diff, suggesting incomplete caching logic, but the expand-mode width bug is the concrete functional defect.",
-        "path": "",
-        "start_line": 221,
-        "end_line": 221,
-        "observation_id": "c3087d163ab3b29e",
-        "claimed_path": "text_size.x",
-        "path_resolution": "not-in-diff"
+        "path_resolution": "exact",
+        "merged_from": [
+          "32c7f94b02ba1e1c",
+          "b52bdabe0adbbfa9",
+          "3530e9fcfe22ffda",
+          "376eac9ea0e81d3a",
+          "a22c58b9263c78b7",
+          "c4b099b60194d9dd",
+          "a91d05810237c52d",
+          "c3087d163ab3b29e"
+        ]
       }
     ]
   },
