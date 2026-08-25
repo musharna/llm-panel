@@ -144,7 +144,17 @@ _STRONG = re.compile(
 # because a match additionally requires a line number AND agreement with a real
 # annotation's path, so a stray token has nothing to pair with.
 _PATH = (r"(?:[@\w.-]+/)+[@\w.-]+"                              # any token with a separator
-         r"|[\w-]{2,}(?:[.\-][\w-]+)*\.[A-Za-z][A-Za-z0-9]{0,4}")  # bare filename.ext
+         r"|[\w-]{2,}(?:[.\-][\w-]+)*\.[A-Za-z][A-Za-z0-9]{0,4}(?![\w-])")  # bare filename.ext
+# The trailing `(?![\w-])` is load-bearing. Without it the bounded 1-5 char suffix matches a
+# PREFIX of any longer dotted identifier, so ordinary JavaScript turned into file paths:
+# `assistant.enableWebSearch` -> `assistant.enabl`, `delta.content` -> `delta.conte`,
+# `chunk.textDelta` -> `chunk.textD`. One AACR instance produced 18 findings of which ZERO
+# had a usable location, every claimed path being a truncated expression. This is the same
+# mechanism as the `Foo.cs` -> `Foo.c` bug already fixed here: a bound that silently yields
+# a prefix instead of declining to match. I fixed the alternation ordering then and left
+# the bound, so the class survived the fix to its first instance.
+# Measured against all 2145 real annotated paths: 2143 before, 2143 after -- zero drift.
+# It converts a silently-wrong path into an honest absence, which is the whole rule here.
 _PATH_LINE = re.compile(r"`?(" + _PATH + r")`?(?::(\d{1,6}))?")
 # A diff hunk header names the line the change starts at, and this project's own diff
 # prompt tells judges to take line numbers from exactly here. `@@ -112,6 +112,10 @@` -> 112,
