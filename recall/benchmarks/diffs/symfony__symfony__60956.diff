@@ -1,0 +1,34 @@
+diff --git a/src/Symfony/Component/TypeInfo/Tests/TypeFactoryTest.php b/src/Symfony/Component/TypeInfo/Tests/TypeFactoryTest.php
+index 6a9aaf4cfe25b..fafad79a9a371 100644
+--- a/src/Symfony/Component/TypeInfo/Tests/TypeFactoryTest.php
++++ b/src/Symfony/Component/TypeInfo/Tests/TypeFactoryTest.php
+@@ -254,6 +254,8 @@ public static function createFromValueProvider(): iterable
+         yield [Type::object(\DateTimeImmutable::class), new \DateTimeImmutable()];
+         yield [Type::object(), new \stdClass()];
+         yield [Type::list(Type::object()), [new \stdClass(), new \DateTimeImmutable()]];
++        yield [Type::enum(DummyEnum::class), DummyEnum::ONE];
++        yield [Type::enum(DummyBackedEnum::class), DummyBackedEnum::ONE];
+ 
+         // collection
+         $arrayAccess = new class implements \ArrayAccess {
+diff --git a/src/Symfony/Component/TypeInfo/TypeFactoryTrait.php b/src/Symfony/Component/TypeInfo/TypeFactoryTrait.php
+index b922c2749ba5d..99bbb77c4a221 100644
+--- a/src/Symfony/Component/TypeInfo/TypeFactoryTrait.php
++++ b/src/Symfony/Component/TypeInfo/TypeFactoryTrait.php
+@@ -412,6 +412,7 @@ public static function fromValue(mixed $value): Type
+         }
+ 
+         $type = match (true) {
++            \is_object($value) && is_subclass_of($value::class, \UnitEnum::class) => Type::enum($value::class),
+             \is_object($value) => \stdClass::class === $value::class ? self::object() : self::object($value::class),
+             \is_array($value) => self::builtin(TypeIdentifier::ARRAY),
+             default => null,
+@@ -428,8 +429,6 @@ public static function fromValue(mixed $value): Type
+             /** @var list<Type> $valueTypes */
+             $valueTypes = [];
+ 
+-            $i = 0;
+-
+             foreach ($value as $k => $v) {
+                 $keyTypes[] = self::fromValue($k);
+                 $valueTypes[] = self::fromValue($v);
