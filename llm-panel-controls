@@ -443,12 +443,24 @@ with section('15. material spill'):
     check("the brief stays inline", "BRIEF: review this." in _p6, True)
     check("the path is named", str(_f6[0]) in _p6, True)
     check("the judge is told to read it", "READ THAT FILE NOW" in _p6, True)
-    # same content -> one file, so concurrent judges share rather than clobber
+    # DESIGN CHANGE 2026-08-25, and these controls previously asserted the OLD one.
+    # The name used to be sha256(prompt)[:12] alone, so identical content across concurrent
+    # panels RESOLVED TO ONE SHARED FILE -- and the creator still deleted it on finishing,
+    # pulling it out from under another panel's judges mid-read. Sharing was never the goal;
+    # the hash was only ever a name. The path is now run-unique, so the invariant is the
+    # OPPOSITE of what was asserted here: identical content must NOT collide.
     lp.spill_material(_big, _d6, shared=True)
-    check("identical material reuses one file", len(list(_d6.glob("material-*.md"))), 1)
-    # different content -> a different file
+    check("identical material does NOT share a file", len(list(_d6.glob("material-*.md"))), 2)
     lp.spill_material(_big + "z", _d6, shared=True)
-    check("different material gets its own file", len(list(_d6.glob("material-*.md"))), 2)
+    check("different material also gets its own file", len(list(_d6.glob("material-*.md"))), 3)
+    check("every spill is still readable (none deleted by a peer)",
+          all(p.is_file() and p.read_text(encoding="utf-8") for p in _d6.glob("material-*.md")),
+          True)
+    import hashlib as _hs15
+    check("the name still carries the content digest, for diagnosis",
+          all(_hs15.sha256(_big.encode()).hexdigest()[:12] in p.name
+              or _hs15.sha256((_big + "z").encode()).hexdigest()[:12] in p.name
+              for p in _d6.glob("material-*.md")), True)
 
     # _ask must SPILL rather than refuse when it has somewhere to put it...
     _d7 = pathlib.Path(_t6.mkdtemp())
@@ -638,15 +650,28 @@ with section('19. audit 4'):
           "1, None, a.effort, None, None, None, False)" in SRC.read_text(encoding="utf-8"), True)
 
     # codex #2 -- the target sits in the reviewed tree, which the reviewed thing controls
+    # The run-unique name makes the target UNPREDICTABLE, which is now the first line of
+    # defence -- a repo can no longer pre-place a symlink at a path it can compute. But the
+    # symlink guard itself must remain, and this control must still be able to REACH it, so
+    # the randomness is pinned for the duration. Without pinning, the control silently stops
+    # exercising the guard: it plants a link at the old path, the code writes elsewhere, the
+    # spill succeeds and the control fails for the wrong reason. That is what happened when
+    # the name changed -- the guard was intact; the control could no longer touch it.
     _d10 = pathlib.Path(_t9.mkdtemp())
     _dig = _h9.sha256(_big9.encode()).hexdigest()[:12]
     _out = pathlib.Path(_t9.mkdtemp()) / "leaked"
-    (_d10 / f"material-{_dig}.md").symlink_to(_out)
+    _saved = (lp.secrets.token_hex, lp.os.getpid)
     try:
-        lp.spill_material(_big9, _d10, shared=True)
-        check("a symlink at the target is refused", "wrote through it", "OSError")
-    except OSError:
-        check("a symlink at the target is refused", "OSError", "OSError")
+        lp.secrets.token_hex = lambda n=4: "deadbeef"
+        lp.os.getpid = lambda: 0xABC
+        (_d10 / f"material-{_dig}-abc-deadbeef.md").symlink_to(_out)
+        try:
+            lp.spill_material(_big9, _d10, shared=True)
+            check("a symlink at the target is refused", "wrote through it", "OSError")
+        except OSError:
+            check("a symlink at the target is refused", "OSError", "OSError")
+    finally:
+        lp.secrets.token_hex, lp.os.getpid = _saved
     check("  and nothing was written outside the tree", _out.exists(), False)
 
     # codex #4 -- a file pointer is useless to a transport with no filesystem
@@ -765,8 +790,13 @@ with section('20. write guard observes instead of predicting'):
     lp._SPILLED.clear()
     lp.spill_material(_big, _sd, shared=True)
     check("the creator tracks the file", _first, 1)
-    check("a second panel adopting it tracks NOTHING (so cannot delete it)",
-          len(lp._SPILLED), 0)
+    # WAS: "a second panel adopting it tracks NOTHING (so cannot delete it)" -- the old
+    # content-hash name made the second spill ADOPT the first's file, and ownership was the
+    # workaround for the resulting shared-lifetime problem. Run-unique names remove the
+    # sharing, so there is nothing to adopt: every spill is its own creator and deletes
+    # only what it made. That is the stronger invariant, and it is what cleanup relies on.
+    check("a second spill of identical content creates and tracks its OWN file",
+          len(lp._SPILLED), 1)
     _w = pathlib.Path(_ta.mkdtemp())
     (_w / "real").mkdir()
     (_w / "matdir").symlink_to(_w / "real")
@@ -775,14 +805,28 @@ with section('20. write guard observes instead of predicting'):
         check("a symlinked material DIRECTORY is refused", "wrote", "OSError")
     except OSError:
         check("a symlinked material DIRECTORY is refused", "OSError", "OSError")
+    # Randomness pinned so the content-mismatch guard is still REACHABLE. With run-unique
+    # names a collision is vanishingly unlikely in practice, which is the point -- but that
+    # makes the guard untestable unless the control controls the path. Left in as
+    # defence-in-depth: unpredictability is not a reason to delete a check, only a reason it
+    # should almost never fire.
     import hashlib as _ha
     _pd = pathlib.Path(_ta.mkdtemp())
-    (_pd / f"material-{_ha.sha256(_big.encode()).hexdigest()[:12]}.md").write_text("PLANTED")
+    _saved_a = (lp.secrets.token_hex, lp.os.getpid)
     try:
-        lp.spill_material(_big, _pd, shared=True)
-        check("an existing target that does not hash to its name is refused", "served", "OSError")
-    except OSError:
-        check("an existing target that does not hash to its name is refused", "OSError", "OSError")
+        lp.secrets.token_hex = lambda n=4: "cafebabe"
+        lp.os.getpid = lambda: 0xDEF
+        _dig_a = _ha.sha256(_big.encode()).hexdigest()[:12]
+        (_pd / f"material-{_dig_a}-def-cafebabe.md").write_text("PLANTED")
+        try:
+            lp.spill_material(_big, _pd, shared=True)
+            check("an existing target whose content does not match is refused",
+                  "served", "OSError")
+        except OSError:
+            check("an existing target whose content does not match is refused",
+                  "OSError", "OSError")
+    finally:
+        lp.secrets.token_hex, lp.os.getpid = _saved_a
 
 # --- 21. audit 5, second pass (claude-opus's findings) -----------------------
 with section('21. audit 5 opus findings'):
@@ -841,14 +885,29 @@ with section('21. audit 5 opus findings'):
     lp._SPILLED.clear()
     lp.spill_material(_big, _d, shared=True)          # must NOT raise
     check("the creator tracks it", _first, 1)
-    check("the adopter tracks nothing and does not fail", len(lp._SPILLED), 0)
+    # Adoption is GONE as of 2026-08-25: run-unique names mean two judges spilling identical
+    # content each create their own file, so there is no shared lifetime to arbitrate. The
+    # cost is N copies of the prompt per panel instead of one; the benefit is that no
+    # panel's cleanup can delete a file another panel's judges are still reading. Both files
+    # hold the same text the judges were told to read, so the extra copies leak nothing.
+    check("each spill of identical content creates and tracks its own file",
+          len(lp._SPILLED), 1)
     _pd = pathlib.Path(_tb.mkdtemp())
-    (_pd / f"material-{_hb.sha256(_big.encode()).hexdigest()[:12]}.md").write_text("PLANTED")
+    _saved_b = (lp.secrets.token_hex, lp.os.getpid)
     try:
-        lp.spill_material(_big, _pd, shared=True)
-        check("adoption still verifies the content hash", "served", "OSError")
-    except OSError:
-        check("adoption still verifies the content hash", "OSError", "OSError")
+        lp.secrets.token_hex = lambda n=4: "f00dface"
+        lp.os.getpid = lambda: 0x111
+        (_pd / f"material-{_hb.sha256(_big.encode()).hexdigest()[:12]}-111-f00dface.md"
+         ).write_text("PLANTED")
+        try:
+            lp.spill_material(_big, _pd, shared=True)
+            check("a pre-existing target with wrong content is still refused",
+                  "served", "OSError")
+        except OSError:
+            check("a pre-existing target with wrong content is still refused",
+                  "OSError", "OSError")
+    finally:
+        lp.secrets.token_hex, lp.os.getpid = _saved_b
 
 # --- or-kimi: a provider's own stop reason is not our harness failing --------
 # or-kimi was dropped from the roster after three "harness failures". They were three

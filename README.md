@@ -4,9 +4,14 @@ Put the same question to several models independently, then read every answer in
 
 Judges run in parallel, never see each other's work, and answer from their own reading of
 your repo. An optional second round shows each of them the others' findings — anonymised —
-and asks them to defend or withdraw. The output is a single self-contained HTML page
-organised **by claim**, so comparing what five models said about one line of code doesn't
-mean holding five documents in your head.
+and asks them to defend or withdraw. The output is a single self-contained HTML page where
+that second round is grouped **by the finding being argued about**, so comparing what five
+models said about one line of code doesn't mean holding five documents in your head.
+
+To be precise about what that grouping is and isn't: it keys on the rebuttal letter each
+finding is given (A1, B2 …), so it collects the _discussion_ around one judge's finding. It
+is **not** semantic clustering — two judges independently raising the same underlying defect
+stay two findings, and with `--rebut` omitted there is no grouping at all.
 
 It is not a voting machine. A panel _generates candidate defects_; it does not establish
 truth by counting agreements. Every finding still has to be checked against the code.
@@ -80,13 +85,27 @@ than silently ignored:
 `llm-panel --list` shows the roster offline and marks config-defined judges.
 `llm-panel --check` actually pings each one. `llm-panel --help-config` prints this schema.
 
-**Pick for vendor diversity, not judge count.** Three judges from one vendor is one opinion
-wearing three hats. The six above are six distinct families (OpenAI / NVIDIA / Zhipu /
-Moonshot / DeepSeek / xAI); measured against the corpus they find 6/6 where a two-vendor
-panel finds 4/6. Two further constraints worth knowing: wall-clock is the **slowest** judge,
-not the sum, so one slow model sets the pace for every run; and `claude-*` are deliberately
-absent from the default, because when Claude wrote the code under review a Claude judge
-shares the author's blind spots. Add it explicitly when that isn't the case — it is strong.
+**How to pick judges — and why "one per vendor" is _not_ the answer.** It is tempting to
+treat vendor labels as a proxy for independent opinions. The evidence says they aren't:
+[Kohli 2026](https://arxiv.org/html/2605.29800) measured cross-family judge correlation at
+φ̄=0.389 against same-family 0.437 — barely different — with the three _most_ correlated pairs
+being cross-family, and found that restricting to one judge per family made effective
+independence **worse** (n_eff 1.93 vs 2.18). Family is display metadata here, not policy.
+
+The six-judge set above did score 6/6 against this corpus where a two-vendor panel scored
+4/6, but **treat that as debugging evidence, not as a result**: the roster was repaired
+_because_ of what happened on those very fixtures, so the comparison is in-sample, and the
+six defects live in only two files (effective n≈2, 95% CI 61–100%).
+
+What to actually do: pick judges by what they find on _your_ code, and use `panel-recall` to
+measure it. The quantity worth maximising is each judge's **marginal rescue rate** — how
+often it catches something every other judge on the roster missed — not how many logos are
+represented.
+
+Two practical constraints: wall-clock is the **slowest** judge, not the sum, so one slow
+model sets the pace for every run; and `claude-*` are deliberately absent from the default,
+because when Claude wrote the code under review a Claude judge shares the author's blind
+spots. Add it explicitly when that isn't the case — it is strong.
 
 A malformed config is **fatal** and names the offending key. Quietly falling back to the
 built-in roster would run a panel you didn't ask for, and bill you for it.
@@ -113,8 +132,22 @@ Treat their findings accordingly.
 planted in real code, each one **proven to misbehave by execution**, so "the panel missed
 it" is a measurement rather than an impression.
 
-On the 27-defect corpus a **two-vendor** panel (codex + claude-opus, each twice) finds
-**25/27 (93%)**. Which panel found it is part of the number, not a footnote — see below.
+> **At least one of four independent passes (codex ×2 + claude-opus ×2) matched 25 of 27
+> known targets in this controlled, single-file Python corpus.** That is a keyword-matched
+> lower bound on an easy corpus — not an estimate of real-world code-review capability.
+> 95% CI 76.6–97.9%, and that is before accounting for defects clustering within fixtures.
+
+**Read that next to a real-world number.** [CR-Bench](https://arxiv.org/html/2603.11078v1)
+(Nutanix, 2026) builds review tasks from _real_ bugs `git blame`d out of merged PRs in
+django, sympy, astropy and scikit-learn, and reports GPT-5.2 + Reflexion at **32.8% recall
+and 5.1% precision**. The gap between that and 25/27 is the corpus, not the panel: hand-
+planted single-mechanism defects in ~40-line files are far easier than real defects in
+mature codebases, and the two numbers are not even the same estimand — different agents,
+different context, different definitions of a hit.
+
+So this corpus is a **development instrument**, good for controlled A/Bs where ground truth
+must be known and iteration must be cheap (the abstention experiment below is exactly that).
+It is not evidence of absolute capability, and no number from it should be quoted as one.
 
 Three results worth knowing before you trust any of the output:
 

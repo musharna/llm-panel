@@ -25,6 +25,7 @@ Design, and why each part is load-bearing:
     finding it did not credit is dumped for adjudication.
 """
 import argparse
+import hashlib
 import json
 import pathlib
 import re
@@ -36,6 +37,54 @@ import tempfile
 ROOT = pathlib.Path(__file__).resolve().parent
 CORPUS = ROOT / "corpus"
 RESULTS = ROOT / "results"
+
+
+def panel_binary():
+    """The llm-panel THIS CHECKOUT is measuring, preferring the sibling over $PATH.
+
+    ROOT CAUSE this fixes: the harness recorded what it RAN but never what it ran it
+    WITH. It invoked `~/.local/bin/llm-panel` unconditionally, so on this machine -- where
+    that path is a symlink into the checkout -- every number was valid BY ACCIDENT of the
+    author's setup, and on a fresh clone it would benchmark whatever happened to be
+    installed, or nothing.
+
+    `panel-report-controls` already carries this exact lesson: "Always importing
+    ~/.local/bin meant a modified checkout could be broken while the controls happily
+    verified the installed binary and reported green. Found by codex." The controls were
+    fixed; this harness was not. Prefer the sibling, same as they do.
+    """
+    sib = ROOT.parent / "llm-panel"
+    if sib.is_file():
+        return sib
+    found = shutil.which("llm-panel")
+    if found:
+        return pathlib.Path(found)
+    sys.exit(f"cannot find llm-panel: no {sib} and none on PATH")
+
+
+def binary_identity(path):
+    """What was actually executed, so a result can be tied to a revision.
+
+    A recall number with no record of the binary that produced it cannot be reproduced or
+    disputed -- and 'the symlink pointed somewhere else that week' is not a hypothesis
+    anyone can check after the fact.
+    """
+    p = pathlib.Path(path).resolve()
+    try:
+        digest = hashlib.sha256(p.read_bytes()).hexdigest()[:16]
+    except OSError as e:
+        digest = f"unreadable: {e}"
+    rev = None
+    try:
+        r = subprocess.run(["git", "-C", str(p.parent), "rev-parse", "--short", "HEAD"],
+                           capture_output=True, text=True, timeout=15)
+        if r.returncode == 0:
+            dirty = subprocess.run(["git", "-C", str(p.parent), "status", "--porcelain",
+                                    "--", str(p)], capture_output=True, text=True, timeout=15)
+            rev = r.stdout.strip() + ("-dirty" if dirty.stdout.strip() else "")
+    except (OSError, subprocess.SubprocessError):
+        pass
+    return {"path": str(p), "sha256_16": digest, "git": rev}
 
 # ONE prompt for every case, planted and clean alike. A prompt that differs between them --
 # even in tone -- would make the decoys measure something other than the panel's own
@@ -91,7 +140,7 @@ def run_case(d, judges, effort, timeout, repeat=1, bare=False):
     """Run one panel in an isolated copy, return the run directory."""
     work = pathlib.Path(tempfile.mkdtemp(prefix=f"recall-{d.name}-"))
     shutil.copy(d / "code.py", work / "code.py")
-    cmd = [str(pathlib.Path.home() / ".local/bin/llm-panel"),
+    cmd = [str(panel_binary()),
            "--cwd", str(work), "--judges", judges, "--effort", effort,
            "--timeout", str(timeout)]
     if repeat and repeat > 1:
@@ -266,7 +315,15 @@ def grader_selftest():
 
 def cmd_run(a):
     RESULTS.mkdir(exist_ok=True)
-    out = {}
+    # Provenance travels WITH the number. Without it a recall figure cannot be reproduced or
+    # disputed: which binary, which revision, which roster, which prompt condition. "The
+    # symlink pointed somewhere else that week" is not a hypothesis anyone can check after
+    # the fact. Stored under a reserved key so every existing reader keeps working.
+    out = {"_meta": {"binary": binary_identity(panel_binary()),
+                     "judges": a.judges, "effort": a.effort,
+                     "repeat": getattr(a, "repeat", 1),
+                     "prompt": "bare" if getattr(a, "bare", False) else "licensed",
+                     "corpus_cases": sorted(d.name for d, _ in cases(a.only))}}
     for d, t in cases(a.only):
         sys.stderr.write(f"  {t['id']} ... ")
         sys.stderr.flush()
@@ -291,9 +348,13 @@ def cmd_run(a):
     # "wrote .../wide6.json", exited 0, and no such file existed. Report the artifact
     # only after confirming it is on disk, and say how many cases produced it.
     f = RESULTS / f"{a.tag}.json"
-    if not out or not f.is_file():
+    # Count CASES, not keys. Adding the `_meta` provenance block made `out` non-empty even
+    # on a run that executed nothing, which would have silently disarmed this guard -- the
+    # exact zero-case silent no-op it was added to catch, re-broken by the fix above it.
+    n_cases = len([k for k in out if k != "_meta"])
+    if not n_cases or not f.is_file():
         sys.exit(f"ran 0 cases -- NOTHING was written to {f}")
-    print(f"\nwrote {f}  ({len(out)} case(s))")
+    print(f"\nwrote {f}  ({n_cases} case(s))")
 
 
 def cmd_grade(a):
