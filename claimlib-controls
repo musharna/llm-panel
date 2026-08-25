@@ -1,0 +1,172 @@
+#!/usr/bin/env python3
+"""Controls for claimlib, the one measurement boundary.
+
+Every control corresponds to a boundary mistake this project actually shipped. The
+extractor is an INSTRUMENT, so the thing that matters is not that it produces plausible
+output but that it can be shown to fail when it is wrong.
+
+    claimlib-controls        # run them
+    claimlib-controls -v     # show each
+"""
+import contextlib
+import pathlib
+import sys
+
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
+import claimlib  # noqa: E402
+
+VERBOSE = "-v" in sys.argv
+FAILED = []
+
+
+@contextlib.contextmanager
+def section(name):
+    """A control that RAISES must report FAIL, not abort the suite."""
+    try:
+        yield
+    except Exception as e:                                # noqa: BLE001
+        FAILED.append(f"{name}: raised {type(e).__name__}: {e}")
+        print(f"  FAIL {name} -- raised {type(e).__name__}: {e}")
+
+
+def check(name, got, want):
+    ok = got == want
+    if not ok:
+        FAILED.append(f"{name}: got {got!r}, want {want!r}")
+    if VERBOSE or not ok:
+        print(f"  {'ok  ' if ok else 'FAIL'} {name}")
+
+
+def heads(text):
+    return [o["heading"] for o in claimlib.extract(text)["observations"]]
+
+
+# --- 1. the four header forms, each earned by a miscount --------------------------------
+with section("1.1 numbered findings"):
+    check("1.1", heads("1. First thing\nbody\n2) Second thing\nbody\n"),
+          ["1. First thing", "2) Second thing"])
+
+with section("1.2 markdown headings"):
+    check("1.2", heads("## Alpha\nbody\n### Beta\nbody\n"), ["## Alpha", "### Beta"])
+
+with section("1.3 bolded bullets"):
+    check("1.3", heads("- **Alpha** detail\n* **Beta** detail\n"),
+          ["- **Alpha** detail", "* **Beta** detail"])
+
+with section("1.4 A BOLD LINE ALONE is a finding"):
+    # The form whose ABSENCE scored two real reviews as zero findings -- and therefore as
+    # abstentions, in the experiment measuring abstention.
+    check("1.4", heads("**`summarise` crashes on a null**\nbody text here\n"),
+          ["**`summarise` crashes on a null**"])
+
+
+# --- 2. a heading must not swallow the following line -----------------------------------
+with section("2.1 `\\s` matched a newline; `[ \\t]` does not"):
+    # `## Reproduction` once paired with the next line's `1. Run it` and reported the
+    # second line's content as the heading's own.
+    r = claimlib.extract("## Reproduction\n1. Run it.\n")
+    check("2.1 two findings, not one", len(r["observations"]), 2)
+    check("2.1 the heading is its own", r["observations"][0]["heading"], "## Reproduction")
+
+
+# --- 3. fenced code is DISPLAYED, not claimed -------------------------------------------
+FENCED = (
+    "1. **`fence_mask` closes on a shorter fence**\n"
+    "Example:\n"
+    "```\n"
+    "# 1. Hidden\n"
+    "# 2. Still hidden\n"
+    "# 3. Visible\n"
+    "```\n"
+    "2. **A second real finding**\nbody\n"
+)
+with section("3.1 headers inside a fence are not findings"):
+    # Adjudicated against a real kimi review: the incumbent counted each example line in a
+    # fence as its own finding, over-splitting a 3-finding review into 11.
+    check("3.1 exactly the two real findings", len(claimlib.extract(FENCED)["observations"]), 2)
+    check("3.1 the example lines are not headings",
+          any("Hidden" in (h or "") for h in heads(FENCED)), False)
+
+with section("3.2 an UNCLOSED fence swallows the rest, and does not crash"):
+    r = claimlib.extract("1. Real finding\n```\n2. Inside an unclosed fence\n")
+    check("3.2 one finding", len(r["observations"]), 1)
+
+
+# --- 4. unextracted material is REPORTED, never dropped ---------------------------------
+with section("4.1 a preamble is unextracted, not a finding"):
+    r = claimlib.extract("I read the file and traced it.\n\n1. A real finding\nbody\n")
+    check("4.1 one finding", len(r["observations"]), 1)
+    check("4.1 the preamble is reported", len(r["unextracted"]), 1)
+    check("4.1 verbatim, for a human to read",
+          "traced it" in r["unextracted"][0]["verbatim"], True)
+
+with section("4.2 a review with NO parseable finding is unextracted, not empty"):
+    # THE defect this whole design exists to prevent: an extraction failure silently
+    # becoming "the judge found nothing", which is how two reviews were scored as
+    # abstentions. Zero observations is fine; zero observations AND zero unextracted,
+    # for a review with text in it, would be a lie.
+    r = claimlib.extract("No real defects found. I checked the boundary values.")
+    check("4.2 no findings claimed", len(r["observations"]), 0)
+    check("4.2 but the text IS reported", len(r["unextracted"]), 1)
+
+with section("4.3 nothing is lost: every non-space char is in a finding or unextracted"):
+    txt = "preamble here\n\n1. Alpha\nbody\n\n## Beta\nmore body\ntrailing words\n"
+    r = claimlib.extract(txt)
+    seen = "".join("".join(x["verbatim"].split())
+                   for x in r["observations"] + r["unextracted"])
+    check("4.3 character-complete", sorted(seen), sorted("".join(txt.split())))
+
+
+# --- 5. identity ------------------------------------------------------------------------
+with section("5.1 observation_id is deterministic and span-derived"):
+    t = "1. Alpha\nbody\n2. Beta\nbody\n"
+    a = claimlib.extract(t, judge="codex", run="r1")["observations"]
+    b = claimlib.extract(t, judge="codex", run="r1")["observations"]
+    check("5.1 stable across calls", [o["observation_id"] for o in a],
+          [o["observation_id"] for o in b])
+    check("5.1 distinct per finding", len({o["observation_id"] for o in a}), 2)
+
+with section("5.2 a different judge or run gives a different id for the same span"):
+    t = "1. Alpha\nbody\n"
+    x = claimlib.extract(t, judge="codex", run="r1")["observations"][0]["observation_id"]
+    y = claimlib.extract(t, judge="glm", run="r1")["observations"][0]["observation_id"]
+    z = claimlib.extract(t, judge="codex", run="r2")["observations"][0]["observation_id"]
+    check("5.2 judge matters", x == y, False)
+    check("5.2 run matters", x == z, False)
+
+with section("5.3 spans point back into the ORIGINAL text"):
+    t = "preamble\n\n1. Alpha\nbody\n"
+    o = claimlib.extract(t)["observations"][0]
+    check("5.3 the span reproduces the verbatim", t[o["start"]:o["end"]], o["verbatim"])
+
+
+# --- 6. location is parsed, never invented ----------------------------------------------
+with section("6.1 file and line are read when stated"):
+    loc = claimlib.extract("1. **Bug** in `panel.py:42` -- it breaks\n")["observations"][0]["location"]
+    check("6.1 path", loc["path"], "panel.py")
+    check("6.1 line", loc["line"], 42)
+
+with section("6.2 absence is recorded as absence, not guessed"):
+    loc = claimlib.extract("1. Something is wrong somewhere\n")["observations"][0]["location"]
+    check("6.2 no path invented", loc["path"], None)
+    check("6.2 no line invented", loc["line"], None)
+
+with section("6.3 a symbol is taken from a code span, not from a path"):
+    loc = claimlib.extract("1. `load_meta` mishandles null in `a/b.py`\n")["observations"][0]["location"]
+    check("6.3 symbol", loc["symbol"], "load_meta")
+    check("6.3 path", loc["path"], "a/b.py")
+
+
+# --- 7. coverage is reported, not asserted ----------------------------------------------
+with section("7.1 coverage counts prose inside findings"):
+    check("7.1 all-findings text is fully covered",
+          claimlib.coverage(claimlib.extract("1. Alpha\nbody\n"), "1. Alpha\nbody\n") == 1.0, True)
+
+with section("7.2 empty text does not divide by zero"):
+    check("7.2", claimlib.coverage(claimlib.extract(""), ""), 1.0)
+
+print(f"\n{'FAILED' if FAILED else 'all controls green'}"
+      f" ({len(FAILED)} failing)" if FAILED else "\nall controls green")
+for f in FAILED:
+    print("  -", f)
+sys.exit(1 if FAILED else 0)

@@ -35,6 +35,8 @@ import sys
 import tempfile
 
 ROOT = pathlib.Path(__file__).resolve().parent
+sys.path.insert(0, str(ROOT.parent))   # claimlib lives beside the tools it serves
+import claimlib   # noqa: E402
 CORPUS = ROOT / "corpus"
 RESULTS = ROOT / "results"
 
@@ -184,16 +186,35 @@ FINDING_START = re.compile(
 
 
 def blocks_of(text):
-    """A review split into its findings, so a match can be LOCAL to one of them."""
-    idx = [m.start() for m in FINDING_START.finditer(text or "")]
-    if not idx:
-        return [text or ""]
-    out = []
-    if idx[0] > 0:
-        out.append(text[:idx[0]])
-    for i, st in enumerate(idx):
-        out.append(text[st:idx[i + 1] if i + 1 < len(idx) else len(text)])
-    return out
+    """A review split into its findings, so a match can be LOCAL to one of them.
+
+    Delegates to claimlib, which is now the ONE measurement boundary. Two existed before:
+    this, and `claims_of` in panel-report -- each a separate regex over arbitrary Markdown,
+    neither knowing what the other had decided, and each with its own history of splitting
+    in the wrong place.
+
+    The extractor differs from the old regex in two ways that are corrections, both
+    confirmed by hand-adjudicating the largest disagreements over 184 real reviews:
+
+      * Headers INSIDE a fenced code block are no longer findings. A judge demonstrating a
+        fence bug by quoting `# 1. Hidden` had each example line counted as a separate
+        finding -- which over-splits and can break the locality that `detected` relies on.
+      * The preamble before the first finding is no longer a finding. It is returned here
+        (so nothing is lost to matching) but it is `unextracted` material, not a claim.
+
+    UNEXTRACTED MATERIAL IS INCLUDED in what this returns, deliberately. A review the
+    extractor could not parse must still be searchable; the alternative is that a parsing
+    failure silently becomes "the judge found nothing", which is exactly the defect that
+    scored two real reviews as abstentions in the abstention experiment.
+
+    Measured before switching: recall is UNCHANGED on both stored runs (rep2 13/15,
+    wide6b 6/6, identical either way). The prediction that the old boundary was depressing
+    the floor was FALSIFIED -- the value here is one boundary instead of two, not a better
+    number.
+    """
+    r = claimlib.extract(text or "")
+    out = [o["verbatim"] for o in r["observations"]] + [u["verbatim"] for u in r["unextracted"]]
+    return out or [text or ""]
 
 
 def detected(text, crit):
