@@ -1388,9 +1388,28 @@ def _ask(name, prompt, repo, timeout, agent="panelist", session_file=None,
         sid = read_session(session_file)
         if sid:
             cmd += ["-s", sid]          # verified to survive across processes
-        r = subprocess.run(cmd + [prompt], capture_output=True, text=True,
-                           timeout=timeout, cwd=repo, env=env, stdin=subprocess.DEVNULL)
-        texts, err, meta = [], None, {}
+        # Breadcrumbs, not a fix. One panel recorded big-pickle `incomplete` at secs=3257.0
+        # carrying the note "timed out after 300s", and nemotron at an IDENTICAL 3257.0 --
+        # two judges released in the same wall-clock second, so a shared blocker rather
+        # than two slow models. It could not be diagnosed after the fact because `secs` is
+        # measured from ask() entry (see t0) and collapses spawn, run, timeout and reap
+        # into one number. Three hypotheses died on it: grandchildren holding the stdout
+        # pipe (the repro FAILED -- plain subprocess.run returned on time), a retry loop
+        # (there is none), and a shared local opencode server (no such process or socket
+        # exists). Rather than guess a fourth time, record enough that the next occurrence
+        # is answerable: how long until the child was spawned, and how long it then ran.
+        _spawn = time.time()
+        try:
+            r = subprocess.run(cmd + [prompt], capture_output=True, text=True,
+                               timeout=timeout, cwd=repo, env=env, stdin=subprocess.DEVNULL)
+        except subprocess.TimeoutExpired:
+            _t = time.time()
+            sys.stderr.write(f"  · {name}: timed out; {_t - _spawn:.1f}s in the subprocess, "
+                             f"{_spawn - t0:.1f}s before it started\n")
+            raise
+        _ran = time.time() - _spawn
+        texts, err, meta = [], None, {"secs_before_spawn": round(_spawn - t0, 1),
+                                      "secs_in_subprocess": round(_ran, 1)}
         for line in r.stdout.splitlines():
             try:
                 ev = json.loads(line)
