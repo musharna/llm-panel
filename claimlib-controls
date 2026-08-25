@@ -178,6 +178,38 @@ with section("8.4 the discriminator is HIERARCHY, not a colon or a label vocabul
           len(claimlib.extract("- **Function** `foo`\n- **Defect** it breaks\n")["observations"]), 2)
 
 
+# --- 10. paths are recognised STRUCTURALLY, not from a list of extensions ---------------
+# The allowlist (cpp|cc|cs|...) had two faults: leftmost-first alternation parsed `Foo.cs`
+# as `Foo.c`, CORRUPTING the path, and it missed 166 of AACR-Bench's 2145 annotated paths.
+# The structural rule matches 2143/2145 of them. These cases are drawn from real ones.
+with section("10.1 suffixes no allowlist would have contained"):
+    for txt, want in [("in components/Btn.tsx:9 it breaks", "components/Btn.tsx"),
+                      ("include/x.hpp:3 leaks", "include/x.hpp"),
+                      ("schema at db/q.sql:12", "db/q.sql"),
+                      ("config/app.xml:4 is wrong", "config/app.xml")]:
+        check(f"10.1 {want}", claimlib._location(txt)["path"], want)
+
+with section("10.2 the `Foo.cs` corruption is gone"):
+    check("10.2 cs not truncated to c", claimlib._location("at Foo.cs:20")["path"], "Foo.cs")
+    check("10.2 cpp intact", claimlib._location("at Foo.cpp:7")["path"], "Foo.cpp")
+
+with section("10.3 shapes with no extension at all, and scoped packages"):
+    check("10.3 extensionless with a path",
+          claimlib._location("docker/images/n8n/Dockerfile:2")["path"],
+          "docker/images/n8n/Dockerfile")
+    check("10.3 @scoped npm path",
+          claimlib._location("packages/@n8n/db/src/x.ts:5")["path"],
+          "packages/@n8n/db/src/x.ts")
+    check("10.3 multi-dot stem",
+          claimlib._location("e2e/src/asset.e2e-spec.ts:11")["path"],
+          "e2e/src/asset.e2e-spec.ts")
+
+with section("10.4 prose that LOOKS path-shaped is not a path"):
+    # The structural rule must reject these or every review sprouts phantom locations.
+    for txt in ["it costs 3.14 dollars", "e.g. the handler", "version 1.2 shipped"]:
+        check(f"10.4 {txt[:22]}", claimlib._location(txt)["path"], None)
+
+
 # --- 9. the line parser reads the shape the prompt asks for -----------------------------
 with section("9.1 `- **Line:** 114` is read"):
     check("9.1", claimlib._location("- **Line:** 114 (from hunk)")["line"], 114)
