@@ -151,6 +151,44 @@ def score(observations, truths, pad=DEFAULT_PAD):
             "pad": pad}
 
 
+def separation(runs, pad=DEFAULT_PAD):
+    """Valid-hit rate MINUS invalid-hit rate, in percentage points.
+
+    THE NUMBER THAT DECIDES WHETHER ANY RECALL FIGURE HERE MEANS ANYTHING. AACR-Bench
+    carries annotations a human REJECTED (label 0). A matcher that lands on rejected
+    comments as often as on valid ones is not identifying defects; it is reporting
+    proximity, and its "recall" is a restatement of its own tolerance.
+
+    Measured on the 20-PR pilot, sweeping the pad:
+
+        pad    valid%   invalid%   separation
+          0     37.7      36.8       +0.9      <- no discrimination at all
+          1     62.3      42.1      +20.2
+          5     83.0      57.9      +25.1
+         20     94.3      73.7      +20.7
+        200     98.1      78.9      +19.2
+
+    Recall climbs monotonically from 37.7% to 98.1% purely as the tolerance widens, and
+    the separation stays ~20pp throughout rather than sharpening as the match tightens.
+    Both facts say the same thing: this matches WHERE a finding is, not WHAT it claims.
+    """
+    hp = np_ = hn = nn = 0
+    for obs, items in runs:
+        s = score(obs, items, pad)
+        hp += s["hit_pos"]; np_ += s["n_pos"]
+        hn += s["hit_neg"]; nn += s["n_neg"]
+    v = 100 * hp / max(np_, 1)
+    iv = 100 * hn / max(nn, 1)
+    return {"valid_pct": v, "invalid_pct": iv, "separation_pp": v - iv,
+            "n_pos": np_, "n_neg": nn}
+
+
+# A recall figure is only reportable if the matcher can tell valid from invalid. Set from
+# the pilot: at the pad in use the separation is ~25pp, and at pad=0 it is +0.9pp -- so any
+# threshold in between distinguishes "tolerance is doing the work" from "identity is".
+MIN_SEPARATION_PP = 15.0
+
+
 # ------------------------------------------------------------------ matcher self-test
 def self_test():
     """The matcher is an instrument. Refuse to score with one that cannot discriminate."""
@@ -314,7 +352,30 @@ def main():
                   f"unlocated {was['unlocated']:3}->{now['unlocated']:3}  "
                   f"matched {was['hit_pos']}/{was['n_pos']}->{now['hit_pos']}/{now['n_pos']}")
         f.write_text(json.dumps(out, indent=2) + "\n")
-        print(f"\n  TOTAL {tp}/{tn}  (extractor v{claimlib.EXTRACTOR_VERSION})")
+        runs = []
+        for rec in out:
+            d = pathlib.Path(rec["rundir"]); ob = []
+            for rf in d.glob("*.md"):
+                if rf.name in ("panel.md", "prompt.md") or rf.name.endswith(
+                        (".prompt.md", ".live.md", ".rebuttal.md")):
+                    continue
+                ob += claimlib.extract(rf.read_text(errors="replace"),
+                                       judge=rf.stem, run=d.name)["observations"]
+            runs.append((ob, groups.get(rec["url"], [])))
+        sep = separation(runs)
+        print(f"\n  matched {tp}/{tn} valid annotations")
+        print(f"  valid {sep['valid_pct']:.1f}%  vs  known-INVALID {sep['invalid_pct']:.1f}%"
+              f"   separation {sep['separation_pp']:+.1f} pp")
+        if sep["separation_pp"] < MIN_SEPARATION_PP:
+            print(f"\n  *** NOT REPORTABLE AS RECALL ***")
+            print(f"  The matcher lands on comments a human REJECTED almost as often as on")
+            print(f"  valid ones, so the figure above measures PROXIMITY, not identification.")
+            print(f"  Widening the pad raises it (37.7% -> 98.1% across pad 0 -> 200); that is")
+            print(f"  the tolerance talking. Fix the matcher before quoting a number.")
+        else:
+            print(f"\n  Reportable, WITH ITS TOLERANCE: pad={DEFAULT_PAD} lines. This still")
+            print(f"  matches WHERE a finding is, not WHAT it claims -- see separation() for the")
+            print(f"  pad sweep. Treat as an upper bound on location agreement, not as recall.")
         print(f"  rewrote {f}")
         return 0
 
