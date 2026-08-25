@@ -173,6 +173,52 @@ def read_run(d):
                  "judges_total": len(judges), "degraded": degraded}
 
 
+def merge_fragments(obs, paths):
+    """Reassemble findings that the structural extractor tore apart.
+
+    A judge writes ONE finding shaped like this:
+
+        **File: `src/draw/lv_draw_label.c`, Line 221 (in the diff hunk `@@ -218,10 +218,7 @@`)**
+        **Defect:** When `expand` mode is enabled ...
+        **Failure Scenario:**
+        1. Label has text "Hello World" with natural width 200px
+        2. ... 6.
+
+    `**File: ...**` and `**Failure Scenario:**` both END in `**`, so both match the
+    bold-line-alone form, and steps 1-6 match the numbered form. One finding became NINE
+    observations, with the path stranded in the first and the actual claim in another.
+    That is the same locality defect claimlib's own header says it exists to fix -- fixed
+    there for BULLETS, via the hierarchy rule, and never for the strong forms.
+
+    THE RULE: an observation whose location does not survive DIFF VALIDATION merges into
+    the one before it. A fragment that cannot say where it lives cannot stand alone.
+
+    No vocabulary and no length constant. A "short and colon-terminated means attribute
+    label" rule fits this data too, but it is a constant calibrated from the artifact under
+    test, and claimlib already records that a colon rule was MEASURED against 376 bold
+    bullets in 351 reviews and REFUTED.
+
+    THIS BELONGS HERE, NOT IN CLAIMLIB. claimlib is structural and holds no world
+    knowledge: it reads `text_size.x` -- a struct field -- as a path, and the boundary
+    assertion cannot reject it because `.x` is a legitimate one-character suffix. Only the
+    bridge has the diff, so only the bridge can tell a real location from a plausible one.
+    Merging on RAW locations gets that review 9 -> 3; on VALIDATED locations, 9 -> 1.
+
+    Measured on both pilot arms before being written: 140 findings -> 93 (-34%), with
+    LOCATED findings 90 -> 90. It removes only fragments that could never have matched.
+    """
+    out = []
+    for o in obs:
+        resolved, _ = resolve_path((o.get("location") or {}).get("path"), paths)
+        if out and not resolved:
+            prev = out[-1]
+            prev["verbatim"] = prev["verbatim"] + o["verbatim"]
+            prev.setdefault("merged_from", []).append(o["observation_id"])
+        else:
+            out.append(dict(o))
+    return out
+
+
 def to_upstream_result(obs, rundir, paths, tally):
     """claimlib observations -> the shape upstream's `ocr` builder reads.
 
@@ -184,6 +230,7 @@ def to_upstream_result(obs, rundir, paths, tally):
     match it, which is correct and visible -- dropping it here would quietly improve the
     apparent precision by hiding the panel's own unlocated output.
     """
+    obs = merge_fragments(obs, paths)
     comments = []
     for o in obs:
         loc = o.get("location") or {}
@@ -197,6 +244,7 @@ def to_upstream_result(obs, rundir, paths, tally):
             "observation_id": o["observation_id"],      # provenance, ignored by upstream
             "claimed_path": loc.get("path"),            # what the judge said, before checking
             "path_resolution": why,
+            "merged_from": o.get("merged_from", []),    # fragments reassembled into this one
         })
     return {"review": {"comments": comments}, "rundir": rundir,
             "extractor": claimlib.EXTRACTOR_VERSION}
