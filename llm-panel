@@ -1154,7 +1154,17 @@ def _ask(name, prompt, repo, timeout, agent="panelist", session_file=None,
         # 2026-08-20 by asking a judge to create a file in a scratch repo, which it
         # did. The panel runs judges concurrently in a live working tree, so this
         # is not hypothetical. `panelist` (opencode.jsonc) denies edit/bash/webfetch.
-        cmd = ["opencode", "run", "--format", "json", "--agent", agent, "-m", model]
+        # --dir: opencode does NOT take its working directory from the process cwd. It
+        # walks up to its own project root, so `subprocess.run(..., cwd=repo)` -- which is
+        # still set below, and is right for everything else -- left every opencode judge
+        # reviewing the LAUNCH directory while reporting `ok`. Measured 2026-08-25 with a
+        # marker file: with `--cwd <tmp>` the codex judge printed the marker and the
+        # nemotron judge listed ~/llm-panel instead. Reproduced outside llm-panel too, so
+        # it is opencode's behaviour and not our subprocess call. This silently invalidated
+        # every opencode judgement in any panel where --cwd differed from the launch dir --
+        # which is exactly what the recall harness does for every fixture.
+        cmd = ["opencode", "run", "--dir", str(repo),
+               "--format", "json", "--agent", agent, "-m", model]
         if effort:
             # opencode calls this a "variant" and it is PROVIDER-specific, so unlike
             # codex/claude the level is passed through rather than validated here.

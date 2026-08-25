@@ -1017,6 +1017,30 @@ with section("cli.2 each hint names a way to get the tool, not just its name"):
                 if len(hint) < 30 or exe == hint]
     check("cli.2 no placeholder hints", _useless, [])
 
+# --- opencode must be TOLD its working directory ---------------------------------------
+# opencode does not take its cwd from the process; it walks up to its own project root.
+# So `subprocess.run(..., cwd=repo)` -- correct for codex and claude -- left every opencode
+# judge reviewing the LAUNCH directory while reporting `ok`. Measured with a marker file:
+# before the fix the codex judge printed the marker and the nemotron judge listed a
+# different tree entirely. That silently invalidated every opencode judgement in any panel
+# where --cwd differed from the launch dir, which is what the recall harness does for every
+# single fixture -- 20 of the 27 roster judges use this transport.
+#
+# Asserted against the SOURCE because the alternative is a live model call. It is a
+# regression guard for a one-token deletion, not a substitute for the live probe.
+with section("cli.4 the opencode command passes --dir explicitly"):
+    _src = SRC.read_text(encoding="utf-8")
+    _cmd = re.search(r'cmd = \["opencode", "run",(.*?)\]', _src, re.S)
+    check("cli.4 opencode cmd found", _cmd is not None, True)
+    if _cmd:
+        check("cli.4 --dir is passed", "--dir" in _cmd.group(1), True)
+        check("cli.4 --dir carries the repo", "str(repo)" in _cmd.group(1), True)
+
+with section("cli.5 cwd= is still set on the subprocess for the other transports"):
+    # Removing cwd= "because --dir handles it" would break codex and claude, which DO
+    # honour the process cwd and take no --dir flag.
+    check("cli.5 cwd=repo still present", "cwd=repo" in SRC.read_text(encoding="utf-8"), True)
+
 with section("cli.3 ollama is NOT treated as a CLI transport"):
     # It speaks HTTP. Judges were once refused for want of a CLI this program no longer
     # uses; asserting the absence keeps that fix from being undone by a tidy-up.
