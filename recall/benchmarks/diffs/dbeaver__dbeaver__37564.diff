@@ -1,0 +1,57 @@
+diff --git a/plugins/org.jkiss.dbeaver.model.rcp/src/org/jkiss/dbeaver/model/navigator/DBNResource.java b/plugins/org.jkiss.dbeaver.model.rcp/src/org/jkiss/dbeaver/model/navigator/DBNResource.java
+index 79d55c05d43a..e33f75fb9bd3 100644
+--- a/plugins/org.jkiss.dbeaver.model.rcp/src/org/jkiss/dbeaver/model/navigator/DBNResource.java
++++ b/plugins/org.jkiss.dbeaver.model.rcp/src/org/jkiss/dbeaver/model/navigator/DBNResource.java
+@@ -1,6 +1,6 @@
+ /*
+  * DBeaver - Universal Database Manager
+- * Copyright (C) 2010-2024 DBeaver Corp and others
++ * Copyright (C) 2010-2025 DBeaver Corp and others
+  *
+  * Licensed under the Apache License, Version 2.0 (the "License");
+  * you may not use this file except in compliance with the License.
+@@ -420,6 +420,12 @@ public <T> T getAdapter(Class<T> adapter) {
+             if (adapter == Path.class) {
+                 IPath location = resource.getLocation();
+                 return location == null ? null : adapter.cast(location.toPath());
++            } else if (adapter == InputStream.class && resource instanceof IFile file) {
++                try {
++                    return adapter.cast(file.getContents());
++                } catch (CoreException e) {
++                    log.error("Error getting file contents", e);
++                }
+             }
+         }
+         return super.getAdapter(adapter);
+diff --git a/plugins/org.jkiss.dbeaver.model/src/org/jkiss/dbeaver/model/navigator/fs/DBNPathBase.java b/plugins/org.jkiss.dbeaver.model/src/org/jkiss/dbeaver/model/navigator/fs/DBNPathBase.java
+index 9a4db24e6ad7..4e9c0a65da77 100644
+--- a/plugins/org.jkiss.dbeaver.model/src/org/jkiss/dbeaver/model/navigator/fs/DBNPathBase.java
++++ b/plugins/org.jkiss.dbeaver.model/src/org/jkiss/dbeaver/model/navigator/fs/DBNPathBase.java
+@@ -35,6 +35,7 @@
+ import org.jkiss.utils.ByteNumberFormat;
+ 
+ import java.io.IOException;
++import java.io.InputStream;
+ import java.nio.file.CopyOption;
+ import java.nio.file.Files;
+ import java.nio.file.Path;
+@@ -288,7 +289,18 @@ public void dropNodes(DBRProgressMonitor monitor, Collection<DBNNode> nodes) thr
+                     break;
+                 }
+                 Path resource = node.getAdapter(Path.class);
+-                if (resource == null || !Files.exists(resource)) {
++                if (resource == null) {
++                    try (InputStream inputStream = node.getAdapter(InputStream.class)) {
++                        if (inputStream != null) {
++                            monitor.subTask("Copy file");
++                            Files.copy(inputStream, folder.resolve(node.getNodeDisplayName()));
++                        }
++                    } finally {
++                        monitor.worked(1);
++                    }
++                    continue;
++                }
++                if (Files.notExists(resource)) {
+                     log.debug("Resource " + resource + " doesn't not exists");
+                     continue;
+                 }
