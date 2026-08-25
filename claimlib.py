@@ -103,10 +103,18 @@ _STRONG = re.compile(
 
 # Opportunistic location parsing. Absence is recorded as absence -- a missing file or line
 # is None, never a guess, because a fabricated location is worse than no location.
-_PATH_LINE = re.compile(
-    r"`?([\w./-]+\.(?:py|js|ts|go|rs|java|c|cc|cpp|h|rb|php|cs))`?"
-    r"(?::(\d{1,6}))?"
-)
+# Extensions are ordered LONGEST-FIRST and closed with \b. Python alternation is
+# leftmost-first, not longest-match, so `c` ahead of `cc`/`cpp`/`cs` made `Foo.cs:20` parse
+# as path `Foo.c` -- CORRUPTING THE PATH, not merely losing the line, and leaving `s:20`
+# so the line group never matched either. C/C++/C# are 766 of AACR-Bench's 2145 items.
+_EXT = r"(?:cpp|cc|cs|php|java|py|js|ts|go|rs|rb|c|h)"
+_PATH_LINE = re.compile(r"`?([\w./-]+\." + _EXT + r")\b`?(?::(\d{1,6}))?")
+# A diff hunk header names the line the change starts at, and this project's own diff
+# prompt tells judges to take line numbers from exactly here. `@@ -112,6 +112,10 @@` -> 112,
+# reading the NEW-file side, which is what a reviewer is looking at.
+_HUNK = re.compile(r"@@[^@\n]*?\+(\d{1,6})")
+# `Foo.py L42` / `L42` -- a common shorthand the prose form does not cover.
+_L_PREFIX = re.compile(r"\bL(\d{1,6})\b")
 _BACKTICK = re.compile(r"`([^`\n]{1,80})`")
 # `line 114`, `Line: 114`, `- **Line:** 114` -- the last is the shape this project's
 # own prompt ASKS for, and the original `line[ \t]+\d` could not read it because of the
@@ -152,9 +160,11 @@ def _location(chunk):
         if m.group(2):
             loc["line"] = int(m.group(2))
     if loc["line"] is None:
-        m2 = _LINE_ONLY.search(chunk)
-        if m2:
-            loc["line"] = int(m2.group(1))
+        for pat in (_LINE_ONLY, _HUNK, _L_PREFIX):
+            m2 = pat.search(chunk)
+            if m2:
+                loc["line"] = int(m2.group(1))
+                break
     for m3 in _BACKTICK.finditer(chunk):
         cand = m3.group(1).strip()
         # a symbol, not a path and not a sentence
