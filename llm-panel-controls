@@ -1267,6 +1267,81 @@ with section("cli.3 ollama is NOT treated as a CLI transport"):
     # uses; asserting the absence keeps that fix from being undone by a tidy-up.
     check("cli.3 ollama absent from BINARY", "ollama" in lp.BINARY, False)
 
+
+# --- quota.N: usage-limit accounting -----------------------------------------------------
+# The shipped bug: codex reports a spent quota as a STRUCTURED event on stdout under
+# --json, and puts 39 bytes on stderr. The non-zero-exit path reported stderr and returned
+# before parsing stdout, so a whole batch degraded from three judges to two leaving only
+# `harness (3.1s)` -- indistinguishable from a crash -- and no reset time anywhere.
+# This fixture is the REAL stream captured from a genuinely rate-limited codex, not a
+# hand-written approximation of one.
+REAL_LIMIT_STREAM = (
+    '{"type":"thread.started","thread_id":"01a039d2-1714-7f62-8421-0786d8424940"}\n'
+    '{"type":"turn.started"}\n'
+    '{"type":"error","message":"You\'ve hit your usage limit. Upgrade to Pro '
+    '(https://chatgpt.com/explore/pro), visit https://chatgpt.com/codex/settings/usage to '
+    'purchase more credits or try again at 3:15 PM."}\n'
+    '{"type":"turn.failed","error":{"message":"You\'ve hit your usage limit. Upgrade to Pro '
+    '(https://chatgpt.com/explore/pro), visit https://chatgpt.com/codex/settings/usage to '
+    'purchase more credits or try again at 3:15 PM."}}\n')
+
+with section("quota.1 the provider's sentence is recovered from stdout, not stderr"):
+    msg = lp.codex_json_error(REAL_LIMIT_STREAM)
+    check("quota.1 message found", bool(msg and "usage limit" in msg), True)
+    check("quota.1 reset time preserved", bool(msg and "3:15 PM" in msg), True)
+
+with section("quota.2 a usage limit is classified, with its reset hint"):
+    limited, reset = lp.is_usage_limit(lp.codex_json_error(REAL_LIMIT_STREAM))
+    check("quota.2 classified as a limit", limited, True)
+    check("quota.2 reset hint", reset, "3:15 PM")
+
+with section("quota.3 NEGATIVE CONTROL: a non-quota failure is NOT absorbed as a limit"):
+    # It must stay `harness`, which is loud. A classifier that swallowed every failure
+    # into `unavailable` would turn real breakage into "the provider is busy".
+    other = lp.codex_json_error('{"type":"error","message":"connection reset by peer"}')
+    check("quota.3 message still captured verbatim", other, "connection reset by peer")
+    check("quota.3 not classified as a limit", lp.is_usage_limit(other)[0], False)
+    for junk in ("", "not json at all", '{"type":"thread.started"}'):
+        check(f"quota.3 {junk[:18]!r} yields no message", lp.codex_json_error(junk), None)
+
+with section("quota.4 a limit maps onto the EXISTING unavailable status, not a new one"):
+    # `unavailable` is already excluded from `answered` (see the answered= line), so a
+    # spent quota cannot read as a judge who reviewed and found nothing. Asserting the
+    # wiring keeps a later tidy-up from inventing a parallel category that is not excluded.
+    _src = SRC.read_text()
+    check("quota.4 codex limit returns unavailable",
+          'return result(name, "unavailable",\n                                  f"codex usage limit' in _src
+          or 'note_limit(name, said, reset)' in _src, True)
+    check("quota.4 unavailable is not counted as answered",
+          'answered = [j for j in judges if results[j]["status"] in ("ok", "incomplete")]' in _src,
+          True)
+
+with section("quota.6 WITNESS: the codex failure path no longer reports stderr alone"):
+    # Version-independent, so it fails on pre-fix code for the STATED reason rather than
+    # AttributeError. Pre-fix the non-zero branch was, verbatim:
+    #     return result(name, "harness", f"codex exec exited {r.returncode}: "
+    #                   f"{r.stderr.strip()[:500]}", ...)
+    # and codex puts 39 bytes on stderr while the quota sentence goes to stdout, so the
+    # message was structurally incapable of naming the reason the judge was missing.
+    _src = SRC.read_text()
+    _i = _src.find("codex exec exited")
+    check("quota.6 the codex failure branch exists", _i > 0, True)
+    _branch = _src[max(0, _i - 1500):_i + 300]
+    check("quota.6 it consults codex's stdout stream", "codex_json_error(r.stdout)" in _branch, True)
+    check("quota.6 stderr is a fallback, not the whole message",
+          "said or r.stderr" in _branch, True)
+
+
+with section("quota.5 accounting never takes the run down"):
+    # note_limit writes to the cache dir; an unwritable cache must not kill a panel.
+    try:
+        lp.note_limit("nobody", "msg", None)
+        check("quota.5 note_limit survives", True, True)
+    except Exception as e:                                   # noqa: BLE001
+        check(f"quota.5 note_limit raised {type(e).__name__}", False, True)
+    check("quota.5 recent_limits returns a dict", isinstance(lp.recent_limits(), dict), True)
+
+
 print(f"\n{'FAILED' if FAILED else 'all controls green'}"
       f" ({len(FAILED)} failing)" if FAILED else "\nall controls green")
 for f in FAILED:
