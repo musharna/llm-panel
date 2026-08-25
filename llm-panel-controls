@@ -1041,6 +1041,60 @@ with section("cli.5 cwd= is still set on the subprocess for the other transports
     # honour the process cwd and take no --dir flag.
     check("cli.5 cwd=repo still present", "cwd=repo" in SRC.read_text(encoding="utf-8"), True)
 
+# --- the documented stdin form must actually read stdin ---------------------------------
+# README.md and the /panel skill both document `llm-panel - <<'ASK' ... ASK`, but only
+# `-f -` was implemented. A bare `-` became the PROMPT, which is non-empty, so the
+# read-stdin branch never ran: the heredoc was discarded and a single dash was sent to the
+# judges as the question. Found by dogfooding -- a six-judge panel with a rebuttal round
+# ran to completion on it. Verified against the pre-fix binary, which billed a real model
+# call for a one-character prompt rather than refusing.
+#
+# This one SHELLS OUT on purpose. The logic lives inline in main() between argparse and
+# the run, so nothing importable covers it -- and an import-level control would not have
+# caught this, since the defect is in how the parsed value flows, not in any function.
+import subprocess as _sp  # noqa: E402
+
+
+def _run_cli(args, stdin_text=""):
+    return _sp.run([sys.executable, str(SRC), *args], input=stdin_text,
+                   capture_output=True, text=True, timeout=120)
+
+
+with section("cli.6 a bare `-` with empty stdin is refused, not sent as the prompt"):
+    _r = _run_cli(["-", "--judges", "codex"])
+    check("cli.6 exits non-zero", _r.returncode != 0, True)
+    check("cli.6 says no prompt was given", "no prompt given" in _r.stderr, True)
+    # The pre-fix failure mode was a SUCCESSFUL run. Assert we never reached one.
+    check("cli.6 no panel was started", "asking" not in _r.stderr + _r.stdout, True)
+
+with section("cli.7 a bare `-` is a SENTINEL, not a prompt value"):
+    # First draft asserted `- --judges nonexistent` reports "unknown judge". That passes on
+    # the BROKEN binary too, because judges are validated before the prompt is resolved --
+    # an assertion that cannot fail on the defect it names. This one can: `-` together with
+    # -f is a conflict ONLY if `-` is still being treated as a prompt value.
+    # The judge roster is validated BEFORE the prompt is resolved, so an invalid judge
+    # short-circuits and hides the behaviour under test -- the second draft of this control
+    # fell into that too. A VALID judge plus `--diff` against a non-git directory reaches
+    # prompt resolution and then dies in collect_diff, still without a model call. Pre-fix
+    # the run dies EARLIER, on the prompt/-f conflict, because `-` was a prompt value.
+    with tempfile.TemporaryDirectory() as _td:
+        _pf = pathlib.Path(_td) / "q.txt"
+        _pf.write_text("a real question", encoding="utf-8")
+        _nogit = pathlib.Path(_td) / "nogit"
+        _nogit.mkdir()
+        _r = _run_cli(["-", "-f", str(_pf), "--judges", "codex",
+                       "--diff", "--cwd", str(_nogit)])
+        check("cli.7 `-` is not counted as a prompt argument",
+              "not both" not in _r.stderr, True)
+        check("cli.7 got as far as collecting the diff", "git" in _r.stderr.lower(), True)
+        check("cli.7 no model was called", "asking" not in _r.stderr + _r.stdout, True)
+
+with section("cli.8 `-f -` still reads stdin (regression guard on the form that worked)"):
+    # Passes before and after by design: its job is to catch the fix BREAKING the old path,
+    # not to demonstrate the bug.
+    _r = _run_cli(["-f", "-", "--judges", "nonexistent-judge"], stdin_text="a real question\n")
+    check("cli.8 got past prompt resolution", "no prompt given" not in _r.stderr, True)
+
 with section("cli.3 ollama is NOT treated as a CLI transport"):
     # It speaks HTTP. Judges were once refused for want of a CLI this program no longer
     # uses; asserting the absence keeps that fix from being undone by a tidy-up.
