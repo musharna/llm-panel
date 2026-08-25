@@ -31,6 +31,18 @@ try:
 except SystemExit:
     pass
 
+# CONTROLS MUST NOT WRITE TO REAL ACCOUNTING STATE.
+#
+# `result()` records any judge that reports itself unavailable, which is the point -- but
+# the controls construct results for judges named "nobody", "ctl-openrouter", "or-kimi" and
+# so on, and those landed in the USER's ~/.cache/llm-panel/limits.json alongside the real
+# codex and nemotron entries. A test suite that mutates the state it is testing produces
+# exactly the kind of plausible-but-wrong artifact this project keeps finding, and here it
+# would have polluted the quota accounting a run depends on. Redirect the cache before any
+# control runs; the temp dir dies with the process.
+import tempfile as _tempfile
+lp.STATE = pathlib.Path(_tempfile.mkdtemp(prefix="llm-panel-controls-"))
+
 FAILED = []
 
 
@@ -1315,6 +1327,19 @@ with section("quota.4 a limit maps onto the EXISTING unavailable status, not a n
     check("quota.4 unavailable is not counted as answered",
           'answered = [j for j in judges if results[j]["status"] in ("ok", "incomplete")]' in _src,
           True)
+
+with section("quota.0 the controls do not write to REAL accounting state"):
+    # They did. Running this suite put judges named "nobody", "or-kimi" and "some-claude"
+    # into the user's live ~/.cache/llm-panel/limits.json, next to the real codex and
+    # nemotron entries, because result() records every unavailable judge and the controls
+    # construct plenty of them. A suite that mutates the state it tests manufactures
+    # exactly the plausible-but-wrong artifact this project keeps finding.
+    _real = pathlib.Path(os.environ.get("XDG_CACHE_HOME")
+                         or os.path.expanduser("~/.cache")) / "llm-panel"
+    check("quota.0 STATE is redirected away from the real cache",
+          pathlib.Path(lp.STATE).resolve() != _real.resolve(), True)
+    check("quota.0 and points somewhere temporary",
+          "llm-panel-controls-" in str(lp.STATE), True)
 
 with section("quota.7 EVERY transport is accounted for, not just codex"):
     # The class-not-instance bug, caught live: accounting was wired into the codex failure
