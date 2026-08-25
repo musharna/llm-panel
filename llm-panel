@@ -517,6 +517,81 @@ def ollama_context(session_file):
     return ctx if isinstance(ctx, list) and ctx else None
 
 
+# --- usage/quota accounting -------------------------------------------------------------
+#
+# Codex reports a spent quota as a STRUCTURED event on stdout under `--json`:
+#     {"type":"error","message":"You've hit your usage limit. ... try again at 3:15 PM."}
+#     {"type":"turn.failed","error":{"message":"..."}}
+# and puts nothing useful on stderr (39 bytes: "Reading additional input from stdin...").
+# The non-zero-exit path reported ONLY stderr and returned before parsing stdout, so the
+# one signal carrying both the limit and its reset time was thrown away. A whole run then
+# degraded from three judges to two with `harness (3.1s)` as the only trace, which is
+# indistinguishable from a crash. The opencode transport next door already digs its
+# structured error out of its JSON stream; this is that same fix, applied to the class.
+#
+# VERBATIM CAPTURE IS THE ACCOUNTING. Deciding "is this a quota message?" from free text is
+# a list of names guarding an open set, and providers reword these constantly -- so the
+# provider's own sentence is always stored, and the CLASSIFICATION is best-effort on top.
+# Unrecognised failures stay `harness`, which is loud, rather than being quietly absorbed.
+LIMIT_STATE = "limits.json"          # beside the runs, under the panel's cache dir
+_LIMIT_HINT = re.compile(
+    r"usage limit|rate.?limit|quota|too many requests|out of credits|insufficient credits",
+    re.I)
+_RESET_HINT = re.compile(r"try again (?:at|in) ([^.\n]{1,40})", re.I)
+
+
+def codex_json_error(stdout):
+    """The provider's own error sentence from codex's --json stream, or None."""
+    msg = None
+    for line in (stdout or "").splitlines():
+        try:
+            ev = json.loads(line)
+        except (json.JSONDecodeError, TypeError):
+            continue
+        if not isinstance(ev, dict):
+            continue
+        if ev.get("type") == "error" and isinstance(ev.get("message"), str):
+            msg = ev["message"]
+        elif ev.get("type") == "turn.failed":
+            e = ev.get("error")
+            if isinstance(e, dict) and isinstance(e.get("message"), str):
+                msg = e["message"]
+    return msg
+
+
+def is_usage_limit(msg):
+    """(bool, reset_hint_or_None). Best effort, on top of verbatim capture -- never instead."""
+    if not msg or not _LIMIT_HINT.search(msg):
+        return False, None
+    m = _RESET_HINT.search(msg)
+    return True, (m.group(1).strip() if m else None)
+
+
+def note_limit(judge, msg, reset):
+    """Record a judge's spent quota so the NEXT run can say so before spending a call.
+
+    Advisory only: it is never used to SKIP a judge. A reset time is the provider's word
+    in the provider's timezone, and a guard that refuses to call a judge because a stored
+    string looks future-dated would fail exactly when the quota had actually come back.
+    """
+    try:
+        f = pathlib.Path(STATE) / LIMIT_STATE
+        cur = json.loads(f.read_text()) if f.is_file() else {}
+        cur[judge] = {"at": now(), "reset_hint": reset, "message": msg}
+        f.parent.mkdir(parents=True, exist_ok=True)
+        f.write_text(json.dumps(cur, indent=2, sort_keys=True) + "\n")
+    except OSError:
+        pass          # accounting must never take the run down
+
+
+def recent_limits():
+    try:
+        f = pathlib.Path(STATE) / LIMIT_STATE
+        return json.loads(f.read_text()) if f.is_file() else {}
+    except (OSError, json.JSONDecodeError):
+        return {}
+
+
 def result(name, status, text, secs, meta=None):
     return {"name": name, "status": status, "text": text, "secs": round(secs, 1), "meta": meta or {}}
 
@@ -907,9 +982,23 @@ def _ask(name, prompt, repo, timeout, agent="panelist", session_file=None,
             r = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout,
                                stdin=subprocess.DEVNULL)
             if r.returncode != 0:
+                # stdout, not stderr: codex puts its real error in the --json stream.
+                said = codex_json_error(r.stdout)
+                limited, reset = is_usage_limit(said)
+                if limited:
+                    note_limit(name, said, reset)
+                    # `unavailable` is the status this panel ALREADY uses for a judge that
+                    # is rate-limited rather than refusing -- it is excluded from
+                    # `answered`, so a spent quota can never read as a judge who reviewed
+                    # and found nothing. Reusing it beats inventing a parallel category.
+                    return result(name, "unavailable",
+                                  f"codex usage limit reached"
+                                  + (f" -- resets {reset}" if reset else "")
+                                  + f". Provider said: {said}", time.time() - t0,
+                                  {"limit": True, "reset_hint": reset, "provider_said": said})
                 # Ambiguous exits default to `harness`: see classification note above.
                 return result(name, "harness", f"codex exec exited {r.returncode}: "
-                              f"{r.stderr.strip()[:500]}", time.time() - t0)
+                              f"{said or r.stderr.strip()[:500]}", time.time() - t0)
             out = None
             for line in r.stdout.splitlines():
                 try:
@@ -2544,6 +2633,19 @@ def main():
 
     sys.stderr.write(f"llm-panel: asking {len(judges)} judges in parallel "
                      f"({', '.join(judges)}) — this takes as long as the slowest one\n")
+    # Inline quota accounting: a judge whose quota was spent on an earlier run is named
+    # HERE, before the call, instead of being rediscovered as a 3-second `harness` failure
+    # three judges into a batch. Advisory only -- it never skips a judge, because the reset
+    # time is the provider's word and a stale hint must not be able to suppress a judge
+    # whose quota has actually come back.
+    _known = recent_limits()
+    for _j in judges:
+        _rec = _known.get(_j)
+        if _rec:
+            sys.stderr.write(f"llm-panel: NOTE {_j} hit a usage limit at {_rec.get('at')}"
+                             + (f" (provider said it resets {_rec['reset_hint']})"
+                                if _rec.get("reset_hint") else "")
+                             + " — trying anyway\n")
     results = {}
     with cf.ThreadPoolExecutor(max_workers=len(judges)) as ex:
         peers = {}
@@ -2710,6 +2812,15 @@ def main():
     if unavail:
         costlines += [f"**Temporarily unavailable: {', '.join(unavail)}** — rate-limited or "
                   f"overloaded, not a judgment. Re-run them before drawing conclusions."]
+        # Quote the provider verbatim. A run that degraded because a quota ran out should
+        # say so in the report itself, with the reset time, rather than leaving the reader
+        # to infer it from a judge that is merely missing.
+        for _j in unavail:
+            _m = results[_j]["meta"] or {}
+            if _m.get("limit"):
+                costlines += [f"  - `{_j}` USAGE LIMIT"
+                              + (f", resets {_m['reset_hint']}" if _m.get("reset_hint") else "")
+                              + f" — provider said: {_m.get('provider_said', '')!r}"]
     if broke:
         costlines += [f"**Harness failed for: {', '.join(broke)}** — that is OUR plumbing, not a "
                   f"judgment by those models. Re-run them before concluding anything."]

@@ -132,17 +132,45 @@ def panel_findings(diff, judges, effort, timeout):
     m = re.search(r"panel written to (\S+?)\]", r.stdout + r.stderr)
     if not m:
         return None, (r.stdout + r.stderr)[-160:]
-    d = pathlib.Path(m.group(1).rstrip(":]"))
-    obs, abstained, reviews = [], 0, 0
-    for f in d.glob("*.md"):
-        if f.name in ("panel.md", "prompt.md") or f.name.endswith(
-                (".prompt.md", ".live.md", ".rebuttal.md")):
+    return read_run(pathlib.Path(m.group(1).rstrip(":]")))
+
+
+def read_run(d):
+    """Observations from a finished panel run dir. Split out from panel_findings so it can
+    be exercised against REAL degraded run dirs without spending judge calls."""
+    # A JUDGE THAT FAILED IS NOT A JUDGE THAT FOUND NOTHING.
+    #
+    # This used to glob *.md and extract from whatever was there. When codex's quota ran
+    # out mid-batch it still wrote a codex.md -- containing the string "codex exec exited
+    # 1: ..." -- so a spent quota entered the corpus as a review with zero findings, and
+    # the panel silently became 2 judges for the rest of the run with nothing in the
+    # results recording that. Reviews are now taken from run.json's per-judge STATUS, the
+    # panel's own structured record, and only `ok`/`incomplete` count as reviews at all.
+    ANSWERED = ("ok", "incomplete")
+    obs, abstained, reviews, degraded = [], 0, 0, []
+    rj = d / "run.json"
+    try:
+        judges = json.loads(rj.read_text()).get("judges") or []
+    except (OSError, json.JSONDecodeError):
+        judges = []
+    if not judges:
+        return None, {"rundir": str(d), "why": "run.json unreadable -- refusing to guess "
+                                               "which judges answered"}
+    for jr in judges:
+        name, status = jr.get("name"), jr.get("status")
+        if status not in ANSWERED:
+            degraded.append(f"{name}:{status}")
             continue
-        r = claimlib.extract(f.read_text(errors="replace"), judge=f.stem, run=d.name)
+        f = d / ((jr.get("files") or {}).get("review") or f"{name}.md")
+        if not f.is_file():
+            degraded.append(f"{name}:missing-file")
+            continue
+        r = claimlib.extract(f.read_text(errors="replace"), judge=name, run=d.name)
         reviews += 1
         abstained += 1 if r.get("abstained") else 0
         obs += r["observations"]
-    return obs, {"rundir": str(d), "reviews": reviews, "abstained": abstained}
+    return obs, {"rundir": str(d), "reviews": reviews, "abstained": abstained,
+                 "judges_total": len(judges), "degraded": degraded}
 
 
 def to_upstream_result(obs, rundir, paths, tally):
@@ -185,8 +213,49 @@ def main():
     r.add_argument("--effort", default="high")
     r.add_argument("--timeout", type=int, default=300)
     r.add_argument("--limit", type=int)
+    x = sub.add_parser("reextract", help="rebuild result files from recorded run dirs")
+    x.add_argument("--out", required=True, help="results dir written by `run`; rebuilt in place")
+    x.add_argument("--instances", required=True)
     sub.add_parser("help-eval")
     a = ap.parse_args()
+
+    if a.cmd == "reextract":
+        # A panel run is expensive; an extraction fix is not. Every result file records the
+        # `rundir` that produced it, so a corrected extractor can be re-applied to finished
+        # panels instead of re-asking the judges. This is how the roster-status fix was
+        # applied to a batch that had already run with the old glob-every-md logic.
+        out = pathlib.Path(a.out)
+        byid = {i["instance_id"]: i for i in instances(a.instances)}
+        tally, rebuilt, rev = {}, 0, []
+        for f in sorted(out.glob("*.json")):
+            if f.name == "manifest.json":
+                continue
+            old = json.loads(f.read_text())
+            d = pathlib.Path(old.get("rundir") or "")
+            iid = next((k for k in byid if safe_id(k) == f.stem), None)
+            if not d.is_dir() or iid is None:
+                print(f"  SKIP {f.name}: rundir missing or unknown instance")
+                continue
+            obs, info = read_run(d)
+            if obs is None:
+                print(f"  SKIP {f.name}: {info.get('why')}")
+                continue
+            i = byid[iid]
+            diff = fetch_diff(i["repo"], i["base_commit"], i["head_commit"]) or ""
+            res = to_upstream_result(obs, str(d), diff_paths(diff), tally)
+            f.write_text(json.dumps(res, indent=2) + "\n", encoding="utf-8")
+            rebuilt += 1
+            deg = info.get("degraded") or []
+            rev.append((iid, info["reviews"], info["abstained"], info.get("judges_total", 0), deg))
+            print(f"  re   {iid:44} findings={len(obs):>3} "
+                  f"judges={info['reviews']}/{info.get('judges_total', 0)}"
+                  + (f"  DEGRADED[{','.join(deg)}]" if deg else ""))
+        nrev = sum(r[1] for r in rev); ntot = sum(r[3] for r in rev)
+        degi = [r[0] for r in rev if r[4]]
+        print(f"\n  rebuilt {rebuilt} result files from recorded run dirs")
+        print(f"  judge slots answered: {nrev}/{ntot}; degraded instances: {len(degi)}/{rebuilt}")
+        print("  path resolution: " + ", ".join(f"{k}={v}" for k, v in sorted(tally.items())))
+        return 0
 
     if a.cmd == "help-eval":
         print("After `run`, score with the UPSTREAM evaluator (its matching, its judge):\n")
@@ -227,16 +296,30 @@ def main():
         (out / f"{safe_id(i['instance_id'])}.json").write_text(
             json.dumps(res, indent=2) + "\n", encoding="utf-8")
         ok += 1
-        rev.append((i["instance_id"], info["reviews"], info["abstained"]))
+        rev.append((i["instance_id"], info["reviews"], info["abstained"],
+                    info.get("judges_total", 0), info.get("degraded") or []))
+        deg = info.get("degraded") or []
         print(f"  ok   {i['instance_id']:44} diff={len(diff):>6}B "
               f"findings={len(obs):>3} located={located:>3} "
-              f"abstain={info['abstained']}/{info['reviews']} "
-              f"refs={len(i.get('reference_comments') or [])}")
+              f"judges={info['reviews']}/{info.get('judges_total', 0)} "
+              f"abstain={info['abstained']} "
+              f"refs={len(i.get('reference_comments') or [])}"
+              + (f"  DEGRADED[{','.join(deg)}]" if deg else ""))
     nrev = sum(r[1] for r in rev); nabs = sum(r[2] for r in rev)
+    ntot = sum(r[3] for r in rev)
+    degraded_instances = [r[0] for r in rev if r[4]]
+    all_deg = [d for r in rev for d in r[4]]
     print(f"\n  wrote {ok}/{len(insts)} result files to {out}")
     if skipped:
         lost = sum(x.get("references_lost", 0) for x in skipped)
         print(f"  DROPPED {len(skipped)} instances ({lost} references) -- see manifest.json")
+    if degraded_instances:
+        from collections import Counter
+        print(f"  ⚠ ROSTER DEGRADED on {len(degraded_instances)}/{ok} instances "
+              f"({nrev}/{ntot} judge-slots answered). A judge that failed is NOT a judge "
+              f"that found nothing:")
+        for k, v in Counter(all_deg).most_common():
+            print(f"      {k}: {v} instances")
     print(f"  abstentions: {nabs}/{nrev} reviews used the sentinel "
           f"({100*nabs/nrev if nrev else 0:.0f}% -- compliance is reported, not assumed)")
     print("  path resolution: " + ", ".join(f"{k}={v}" for k, v in sorted(tally.items())))
@@ -244,7 +327,12 @@ def main():
         "instances_file": a.instances, "judges": a.judges, "effort": a.effort,
         "extractor": claimlib.EXTRACTOR_VERSION, "written": ok, "attempted": len(insts),
         "skipped": skipped, "path_resolution": tally,
-        "reviews": nrev, "abstentions": nabs,
+        "reviews": nrev, "abstentions": nabs, "judge_slots": ntot,
+        "degraded_instances": degraded_instances,
+        "roster_note": ("Reviews are counted from run.json per-judge status, not from the "
+                        "presence of a .md file. Only ok/incomplete count. If judge_slots "
+                        "exceeds reviews the panel ran degraded and the headline is NOT a "
+                        "full-roster result."),
         "diff_source": "GitHub compare API (base...head); upstream clones and runs "
                        "git diff base..head. Representations differ, but all 159 reference "
                        "comments in the fetchable sample fall inside a hunk of this one "
