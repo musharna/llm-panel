@@ -58,6 +58,7 @@ import base64
 import fcntl
 import hashlib
 import random
+import secrets
 import threading
 import urllib.error, urllib.request
 
@@ -279,7 +280,19 @@ def stored_providers():
         return set(json.loads(HOST_AUTH.read_text()))
     except Exception:
         return set()
-DEFAULT = ["codex", "big-pickle", "nemotron", "deepseek"]
+# A STARTING POINT, not a recommendation backed by evidence. `deepseek` was dropped on
+# 2026-08-25 because the model behind it is dead (reproducible `UnknownError` on three
+# separate probes) -- a default judge that never answers silently runs every panel a hand
+# short. What remains is simply the set reachable with no credentials beyond the ones the
+# codex and opencode CLIs already need.
+#
+# Deliberately NOT chosen for vendor diversity. Kohli 2026 ("Nine Judges, Two Effective
+# Votes", arXiv 2605.29800) measured cross-family judge correlation at φ̄=0.389 against
+# same-family 0.437 -- barely different -- and found that restricting to one judge per
+# family made effective independence WORSE. Family is display metadata in this tool, not
+# roster policy. Pick judges by what they actually find on your code; `roster.example.json`
+# shows how, and `panel-recall` is how you would measure it.
+DEFAULT = ["codex", "big-pickle", "nemotron"]
 
 # ollama is deliberately absent: that transport uses the HTTP API, not the CLI.
 BINARY = {"codex": "codex", "opencode": "opencode", "claude": "claude"}
@@ -643,8 +656,17 @@ def spill_material(prompt, material_dir, keep=2000, shared=False):
     material_dir.mkdir(parents=True, exist_ok=True)
     if material_dir.resolve() != material_dir.absolute().resolve(strict=False):
         raise OSError(f"{material_dir} does not resolve to itself")
+    # ROOT CAUSE: the NAME encoded CONTENT identity while the LIFETIME is governed by RUN
+    # identity. Two concurrent panels asking the same question hashed to the same filename;
+    # only the creator recorded ownership, but the creator still deleted it on finishing --
+    # so panel A's cleanup could pull the file out from under panel B's judges mid-read,
+    # and B's judges would be told to read a path that no longer exists. Sharing was never
+    # the goal; the hash was only ever a name. Making the name run-unique removes the
+    # mechanism rather than trying to arbitrate ownership between processes.
+    # Content still contributes, so the name stays diagnostic; PID+random makes it unique.
     digest = hashlib.sha256(prompt.encode("utf-8")).hexdigest()[:12]
-    path = material_dir / f"material-{digest}.md"
+    unique = f"{os.getpid():x}-{secrets.token_hex(4)}"
+    path = material_dir / f"material-{digest}-{unique}.md"
     # The target sits in the REVIEWED TREE, which the thing under review controls. A dangling
     # symlink at exactly this path -- the name is a hash of the prompt, but a repo that ships
     # one for a predictable prompt, or any prior run's leftovers -- makes `is_file()` false
@@ -2113,9 +2135,9 @@ def main():
     ap.add_argument("--repeat", type=int, default=1, metavar="N",
                     help="ask each judge N times INDEPENDENTLY (default 1). Repeats appear "
                          "as codex~2, codex~3 ... and are full judges: own review, own "
-                         "letter in the rebuttal round, own row. A model's misses are "
-                         "largely stochastic, so repeated passes recover findings a single "
-                         "pass drops -- and it needs no second vendor.")
+                         "letter in the rebuttal round, own row. Use it to MEASURE whether "
+                         "repeats help on your material -- on this project's 27-defect "
+                         "corpus they recovered nothing (25/27 either way).")
     ap.add_argument("--rebut", action="store_true",
                     help="round 2: each judge answers the others' findings (anonymized)")
     ap.add_argument("--synthesize", metavar="JUDGE")
