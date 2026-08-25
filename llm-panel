@@ -198,7 +198,17 @@ def load_roster(path, roster, default, families, added):
         raise ValueError(f"{path}: 'judges' must be an object, got {type(judges).__name__}")
     for name, spec in judges.items():
         if spec is None:
-            roster.pop(name, None)
+            # ROOT CAUSE (shared by the two fixes below): this function validated the
+            # config as INPUT and never validated the roster as RESULT. `pop(name, None)`
+            # made a deletion that deletes nothing indistinguishable from one that works,
+            # so `{"judges": {"cdex": null}}` -- a typo -- left codex in the default panel
+            # and said nothing. The author got, and paid for, a judge they believed they
+            # had removed. A config that cannot do what it says is fatal here, always.
+            if name not in roster:
+                raise ValueError(
+                    f"{path}: cannot delete judge {name!r} -- there is no such judge. "
+                    f"Known: {', '.join(sorted(roster))}")
+            roster.pop(name)
             added.discard(name)
             continue
         if REPEAT_SEP in name:
@@ -224,16 +234,26 @@ def load_roster(path, roster, default, families, added):
         if spec.get("family"):
             families[name] = str(spec["family"])
 
-    if "default" not in cfg:
-        return default
-    dflt = cfg["default"]
-    if not isinstance(dflt, list) or not all(isinstance(x, str) for x in dflt):
-        raise ValueError(f"{path}: 'default' must be a list of judge names")
-    if not dflt:
-        raise ValueError(f"{path}: 'default' is empty -- a panel needs at least one judge")
+    dflt = cfg.get("default", default)
+    if "default" in cfg:
+        if not isinstance(dflt, list) or not all(isinstance(x, str) for x in dflt):
+            raise ValueError(f"{path}: 'default' must be a list of judge names")
+        if not dflt:
+            raise ValueError(f"{path}: 'default' is empty -- a panel needs at least one judge")
+
+    # Checked whether or not the config supplied a 'default'. Same root cause as the
+    # deletion above: the old code returned early when 'default' was absent, so a config
+    # that deleted a shipped default judge left DEFAULT still naming it. Verified:
+    # `{"judges": {"codex": null}}` gave DEFAULT = ['codex', ...] with codex gone from the
+    # roster -- an inconsistency that surfaces later as a lookup failure, far from the
+    # config that caused it. The INHERITED default has to survive the deletions too.
     unknown = [x for x in dflt if x.split(REPEAT_SEP, 1)[0] not in roster]
     if unknown:
-        raise ValueError(f"{path}: 'default' names unknown judge(s) {', '.join(unknown)}")
+        where = "'default' names" if "default" in cfg else \
+                "deleting judge(s) left the built-in default panel naming"
+        raise ValueError(f"{path}: {where} unknown judge(s) {', '.join(unknown)}"
+                         + ("" if "default" in cfg else
+                            " -- set 'default' to the panel you do want"))
     return list(dflt)
 
 
@@ -2204,8 +2224,16 @@ def main():
         print("configured, not what answers today.  Run --check to actually ping them.")
         print("codex/opencode judges can READ the repo; ollama judges answer from the")
         print("prompt alone (no tool loop), so they cannot verify a claim against code.")
-        if FROM_CONFIG:
-            print(f"\n[from config] = defined in {CONFIG_PATH}")
+        # Same root cause once more: FROM_CONFIG records only judges the config ADDED, so
+        # a delete-only config reported "No roster config" while plainly having been
+        # applied -- the listing described the input it did not receive rather than the
+        # state it produced. Whether a config was loaded is a property of the FILE.
+        if CONFIG_PATH.is_file():
+            if FROM_CONFIG:
+                print(f"\n[from config] = defined in {CONFIG_PATH}")
+            else:
+                print(f"\nRoster config applied from {CONFIG_PATH}")
+                print("(it adds no judges of its own -- it sets 'default', deletes, or both).")
         else:
             print("\nNo roster config. The list above is the SHIPPED DEFAULT -- one person's")
             print(f"accounts. Edit {CONFIG_PATH}")

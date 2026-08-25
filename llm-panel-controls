@@ -12,6 +12,7 @@ fixed code tells you nothing.
     llm-panel-controls -v       # show each
 """
 import contextlib
+import os
 import importlib.machinery
 import importlib.util
 import pathlib
@@ -973,8 +974,14 @@ with section("roster.1 an absent config changes nothing"):
     check("roster.1 nothing marked as config-sourced", (_fams, _added), ({}, set()))
 
 with section("roster.2 null deletes a shipped judge"):
-    _d, _r, _f, _a = _load({"judges": {"codex": None}})
-    check("roster.2 judge removed", "codex" in dict(_r), False)
+    # Deleted `codex` and asserted only that it was gone -- which, once the loader began
+    # validating the RESULT, was asserting the defect: codex is in the built-in default,
+    # so that config leaves the default naming a judge that no longer exists and is now
+    # correctly fatal. The control was encoding the old behaviour. It still tests what it
+    # always meant to (null removes a judge); it just no longer needs the roster to end up
+    # inconsistent to do so. roster.16 covers the fatal case, roster.18 the fixed-up one.
+    _d, _r, _f, _a = _load({"judges": {"claude-sonnet": None}})
+    check("roster.2 judge removed", "claude-sonnet" in dict(_r), False)
 
 with section("roster.3 a config judge resolves through the ~N repeat suffix"):
     _d, _r, _f, _a = _load({"judges": {"x": {"transport": "ollama", "model": "m"}}})
@@ -1001,6 +1008,27 @@ _rejects("roster.11 ~ in a judge name",
 _rejects("roster.12 default is not a list", {"default": "codex"}, "must be a list")
 _rejects("roster.13 default is empty", {"default": []}, "needs at least one judge")
 _rejects("roster.14 default names an unknown judge", {"default": ["nope"]}, "unknown judge")
+
+# --- validate the RESULT, not just the input ------------------------------------------
+# One root cause, three symptoms, all found by the panel reviewing this loader: the config
+# was validated as INPUT and the resulting roster never was. Each operation below could
+# complete without achieving what it named, and report success.
+_rejects("roster.15 deleting a judge that does not exist is fatal",
+         {"judges": {"cdex": None}}, "cannot delete judge")
+_rejects("roster.16 deleting a judge the INHERITED default names is fatal",
+         {"judges": {"codex": None}}, "built-in default panel")
+
+with section("roster.17 a deletion that leaves the default intact is fine"):
+    # The positive control for both: deleting a judge the default does not name must NOT
+    # be an error, or the fixes above would just be a loader that rejects everything.
+    _d, _r, _f, _a = _load({"judges": {"claude-opus": None}})
+    check("roster.17 judge removed", "claude-opus" in dict(_r), False)
+    check("roster.17 default untouched", _d, list(lp.SHIPPED_DEFAULT))
+
+with section("roster.18 deleting a default judge IS fine when default is replaced too"):
+    _d, _r, _f, _a = _load({"judges": {"codex": None}, "default": ["nemotron"]})
+    check("roster.18 accepted", _d, ["nemotron"])
+    check("roster.18 judge removed", "codex" in dict(_r), False)
 
 # --- missing external CLIs ------------------------------------------------------------
 # A degraded panel already fails loud, names each judge, and exits 4. What it did not do
@@ -1088,6 +1116,23 @@ with section("cli.7 a bare `-` is a SENTINEL, not a prompt value"):
               "not both" not in _r.stderr, True)
         check("cli.7 got as far as collecting the diff", "git" in _r.stderr.lower(), True)
         check("cli.7 no model was called", "asking" not in _r.stderr + _r.stdout, True)
+
+with section("cli.9 --list reports a DELETE-ONLY config as applied, not as absent"):
+    # FROM_CONFIG tracked only judges the config ADDED, so a config that merely deletes
+    # or sets 'default' printed "No roster config" while plainly having been applied --
+    # the listing described the input it did not receive rather than the state it made.
+    # Shelled out because the message is produced in main(), not in load_roster.
+    with tempfile.TemporaryDirectory() as _td:
+        _cfg = pathlib.Path(_td) / "roster.json"
+        _cfg.write_text(_json.dumps({"judges": {"codex": None},
+                                     "default": ["nemotron"]}), encoding="utf-8")
+        _env = dict(os.environ, LLM_PANEL_CONFIG=str(_cfg))
+        _r = _sp.run([sys.executable, str(SRC), "--list"], capture_output=True,
+                     text=True, timeout=120, env=_env)
+        check("cli.9 does not claim there is no config",
+              "No roster config" in _r.stdout, False)
+        check("cli.9 names the config it applied", str(_cfg) in _r.stdout, True)
+        check("cli.9 the deletion actually happened", "\n*codex " in _r.stdout, False)
 
 with section("cli.8 `-f -` still reads stdin (regression guard on the form that worked)"):
     # Passes before and after by design: its job is to catch the fix BREAKING the old path,
