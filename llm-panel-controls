@@ -1,0 +1,922 @@
+#!/usr/bin/env python3
+"""Regression controls for llm-panel.
+
+Every control here corresponds to a defect that SHIPPED. llm-panel had NO controls at all
+until 2026-08-21 -- the tool that runs the audits was the least audited thing in the set.
+
+Each control asserts the FIXED behaviour AND, where the pre-fix input is representable, that
+the broken form would have failed on it: an assertion that passes on both the broken and the
+fixed code tells you nothing.
+
+    llm-panel-controls          # run them
+    llm-panel-controls -v       # show each
+"""
+import contextlib
+import importlib.machinery
+import importlib.util
+import pathlib
+import re
+import sys
+
+VERBOSE = "-v" in sys.argv
+
+_sib = pathlib.Path(__file__).resolve().parent / "llm-panel"
+SRC = _sib if _sib.is_file() else pathlib.Path.home() / ".local/bin/llm-panel"
+spec = importlib.util.spec_from_loader("lp", importlib.machinery.SourceFileLoader("lp", str(SRC)))
+lp = importlib.util.module_from_spec(spec)
+sys.argv = ["llm-panel", "--help-noop"]
+try:
+    spec.loader.exec_module(lp)
+except SystemExit:
+    pass
+
+FAILED = []
+
+
+@contextlib.contextmanager
+def section(name):
+    """A control that RAISES must report FAIL, not abort the suite."""
+    try:
+        yield
+    except Exception as e:                                # noqa: BLE001
+        FAILED.append(f"{name}: raised {type(e).__name__}: {e}")
+        print(f"  FAIL {name} -- raised {type(e).__name__}: {e}")
+
+
+def check(name, got, want):
+    ok = got == want
+    if not ok:
+        FAILED.append(f"{name}: got {got!r}, want {want!r}")
+    if VERBOSE or not ok:
+        print(f"  {'ok  ' if ok else 'FAIL'} {name}")
+
+
+# --- 1. a multi-turn claude answer must not lose every turn but the last -----
+# `d = ev` overwrote the result event on each `result` message and the body was read from
+# the survivor, so a judge answering across more than one assistant turn had every earlier
+# turn DISCARDED -- silently, with status `ok`. Caught by running the 2026-08-21 audit OF
+# THIS FILE: claude-opus streamed a 25,673-byte review with 16 findings and 2,569 bytes
+# were stored, holding only its closing caveat, which referred to findings that appeared
+# nowhere in the run. The complete text was already in `deltas` (that is what .live.md is
+# written from) and was thrown away for a field whose completeness cannot be checked.
+with section('1. multi-turn claude answer'):
+    check("streamed answer wins when the result event is a fragment",
+          lp.claude_body(["x" * 5000], {"result": "y" * 100})[0], "x" * 5000)
+    check("and the discrepancy is REPORTED, not silently resolved",
+          bool(lp.claude_body(["x" * 5000], {"result": "y" * 100})[1]), True)
+    # positive controls: the ordinary single-turn path must be untouched
+    check("no deltas -> the result event is the answer",
+          lp.claude_body([], {"result": "the answer"})[0], "the answer")
+    check("result longer -> the result event wins",
+          lp.claude_body(["frag"], {"result": "a longer canonical result"})[0],
+          "a longer canonical result")
+    check("equal text -> no spurious note", lp.claude_body(["hi"], {"result": "hi"})[1], "")
+    check("both empty is empty, not a crash", lp.claude_body([], {})[0], "")
+    # the PRE-FIX form must lose the review, or this control proves nothing
+    _prefix = lambda deltas, d: (d.get("result") or "").strip()      # noqa: E731
+    check("  (pre-fix form kept only the fragment)",
+          len(_prefix(["x" * 5000], {"result": "y" * 100})), 100)
+
+    # replayed against the REAL artifacts of the run that exposed it, when present
+    _R = pathlib.Path.home() / ".llm-panel/runs/mjarnold-5de41d3c2d5a/20260821-212351-167027"
+    if (_R / "claude-opus.live.md").is_file():
+        _live = (_R / "claude-opus.live.md").read_text(encoding="utf-8")
+        _kept = (_R / "claude-opus.md").read_text(encoding="utf-8")
+        _t, _n = lp.claude_body([_live], {"result": _kept})
+        check("real run: the 16-finding review is recovered", len(_t) > 20000, True)
+        check("real run: the fragment alone was what shipped", len(_kept) < 3000, True)
+
+# --- 2. the write boundary must fail toward UNSAFE ---------------------------
+# Enumerating four tools that write is a bet that the tool universe is closed. It is not,
+# and the bet has lost three times on this one boundary (permission-has-no-write-key;
+# subagent-falls-back-to-build; custom tools). All 4 judges of the 2026-08-21 audit raised
+# it again, each by a different route. Inverted to a read-only ALLOW-LIST: a tool that is
+# enabled and not known-read-only counts as writable, so unknown fails toward unsafe --
+# the only direction it is safe to be wrong in.
+import json as _json, tempfile as _tf
+
+with section('2. write boundary fails toward unsafe'):
+    _d = pathlib.Path(_tf.mkdtemp())
+    _real = lp.CONFIG_DIR
+
+    def _cfg(obj, root=None):
+        (pathlib.Path(root or _d) / "opencode.json").write_text(_json.dumps(obj))
+
+    def _verdict(obj):
+        lp.CONFIG_DIR = _d
+        try:
+            _cfg(obj)
+            return lp.agent_can_write("panelist")
+        finally:
+            lp.CONFIG_DIR = _real
+
+    W = {"write": False, "edit": False, "patch": False, "bash": False}
+    check("array-form tools answers instead of crashing",
+          _verdict({"agent": {"panelist": {"tools": ["read", "write"]}}}), True)
+    check("an MCP/custom write tool counts as writable",
+          _verdict({"agent": {"panelist": {"tools": {**W, "filesystem_write_file": True}}}}), True)
+    check("`shell` counts as writable",
+          _verdict({"agent": {"panelist": {"tools": {**W, "shell": True}}}}), True)
+    check("`task` (which grants every other tool) counts as writable",
+          _verdict({"agent": {"panelist": {"tools": {**W, "task": True}}}}), True)
+    check("no tools grant at all is NOT a clearance",
+          _verdict({"agent": {"panelist": {"description": "x"}}}), True)
+    check("a shape we do not understand is not a clearance",
+          _verdict({"agent": {"panelist": {"tools": "everything"}}}), True)
+    # POSITIVE CONTROLS: a genuinely read-only agent must still clear, or the guard is
+    # useless in the other direction and every run dies.
+    check("a genuinely read-only grant still clears",
+          _verdict({"agent": {"panelist": {"tools": {**W, "read": True, "grep": True,
+                                                     "glob": True, "list": True}}}}), False)
+    check("an undefined agent is unknown, not safe",
+          _verdict({"agent": {"other": {"tools": {}}}}), None)
+    check("THE SHIPPED opencode.jsonc still certifies panelist read-only",
+          lp.agent_can_write("panelist"), False)
+    # repo-local override: opencode loads a project config from the tree under review
+    _r = pathlib.Path(_tf.mkdtemp())
+    _cfg({"agent": {"panelist": {"tools": {"write": True}}}}, _r)
+    check("a repo-local config re-enabling write is seen",
+          lp.agent_can_write("panelist", _r), True)
+    # the pre-fix predicate MUST clear the custom-tool config, or this proves nothing
+    _pre = lambda t: any((t or {}).get(x, True) for x in ("write", "edit", "patch", "bash"))
+    check("  (pre-fix predicate cleared the custom-tool config)",
+          _pre({**W, "filesystem_write_file": True}), False)
+    # written first as `isinstance(... if False else None, object)` -- a tautology that
+    # passes on anything. That is the defect class this whole file exists to catch, so it
+    # is asserted properly: the pre-fix predicate must actually RAISE on the array form.
+    try:
+        _pre(["read", "write"])
+        check("  (pre-fix predicate crashed on the array form)", "no exception", "AttributeError")
+    except AttributeError:
+        check("  (pre-fix predicate crashed on the array form)", "AttributeError", "AttributeError")
+
+# --- 3. one letter map, not two ---------------------------------------------
+# Round 2 assigned letters over `status == "ok"`; run.json rebuilt its own over
+# `ok` + `incomplete`. One incomplete judge shifts every later letter, so a renderer
+# attributes each `B<n>` to the WRONG judge -- silently, both maps internally consistent.
+# Raised by codex and opus. Two constructions of one fact IS the defect.
+with section('3. one letter map'):
+    _judges = ["codex", "big-pickle", "nemotron"]
+    _res = {"codex": {"status": "ok"}, "big-pickle": {"status": "incomplete"},
+            "nemotron": {"status": "ok"}}
+    # Bound to the SHIPPED assigner, not a copy of it: written first as local arithmetic,
+    # which made this control an echo of my own reasoning and left it GREEN against the
+    # pre-fix binary -- the exact failure mode this suite exists to catch.
+    _round2 = lp.assign_letters(_judges, _res)
+    _emitted = {L: j for j, L in _round2.items()}
+    check("letters skip a judge that did not answer", _round2, {"codex": "A", "nemotron": "B"})
+    check("run.json agrees with the round that assigned the letters",
+          _emitted, {"A": "codex", "B": "nemotron"})
+    # the PRE-FIX construction must disagree, or this proves nothing
+    _pre = {chr(ord("A") + i): j for i, j in
+            enumerate(j for j in _judges if _res[j]["status"] in ("ok", "incomplete"))}
+    check("  (pre-fix map put B on the wrong judge)", _pre["B"], "big-pickle")
+    check("  (and round 2 meant nemotron by B)", _round2["nemotron"], "B")
+
+# --- 4. every phase that spent money is counted ------------------------------
+# The Cost section was assembled BEFORE the rebuttal and synthesis had run, and
+# run_rebuttals' results were discarded into `_`. Measured on a live 2-judge --rebut run
+# 2026-08-21: round 1 $0.0085, rebuttal $0.0146 -- the rebuttal cost MORE than round one
+# and was reported as zero, a ~60% under-report. Raised by codex and opus.
+with section('4. all phases counted'):
+    _r1 = [{"cost": 0.0085, "billing": None, "tokens": {"input": 10, "output": 1}}]
+    _r2 = [{"cost": 0.0146, "billing": None, "tokens": {"input": 20, "output": 2}}]
+    _sum = lambda ms, sub: sum(m.get("cost") or 0 for m in ms
+                               if (m.get("billing") == "subscription") == sub)  # noqa: E731
+    check("both phases add up", round(_sum(_r1 + _r2, False), 4), 0.0231)
+    check("  (round one alone was the pre-fix figure)", round(_sum(_r1, False), 4), 0.0085)
+    check("subscription stays separate from billed", _sum(_r1 + _r2, True), 0)
+    # C1: unknown is not zero
+    _none = [{"cost": None, "billing": None}, {"cost": None, "billing": None}]
+    check("no transport priced anything -> not a measured zero",
+          sum(1 for m in _none if m.get("cost") is not None), 0)
+    check("  (summing them would have said $0.0000)", _sum(_none, False), 0)
+    # First written as a source grep for "UNMEASURED, not zero" -- which FAILED, because
+    # the literal spans a line break in the source. A control that greps for a string is
+    # testing the text, not the behaviour; the logic is a function now and is called.
+    check("no price reported -> says UNMEASURED",
+          "UNMEASURED" in lp.billed_note(0, 0), True)
+    check("priced and genuinely zero -> says nothing metered",
+          lp.billed_note(0, 3), " (nothing metered)")
+    check("a real bill gets no qualifier at all", lp.billed_note(1.25, 3), "")
+
+# --- 5. blame lands on the right party ---------------------------------------
+# 401/402 are OUR account and were reported as the model REFUSING -- `--check` printed
+# refused=4 with "You have depleted your credits". 5xx is the provider failing and fell
+# through to `harness`, whose text says the fault is on our side. Raised by all 4 judges.
+with section('5. blame classification'):
+    def _st(code):
+        return lp._classify_error("j", {"name": "APIError", "status": code,
+                                        "message": "m"}, 1.0, {})["status"]
+    check("401 (our key) is ours", _st(401), "harness")
+    check("402 (our credits) is ours", _st(402), "harness")
+    check("403 (provider forbids) is a refusal", _st(403), "refused")
+    for c in (429, 500, 502, 503, 504, 529):
+        check(f"{c} is provider-unavailable, not our plumbing", _st(c), "unavailable")
+    check("an unmapped code is still ours", _st(418), "harness")
+    # pre-fix maps must disagree, or this proves nothing
+    check("  (pre-fix called 402 a refusal)", 402 in {401: 1, 402: 1, 403: 1}, True)
+    check("  (pre-fix had no 5xx entry at all)", 500 in {429: 1, 503: 1, 529: 1}, False)
+
+# --- 6. a vision check that can fail -----------------------------------------
+# The needle was written INTO the text prompt and the reply was never inspected, so a
+# blank image returned `ok` whether the judge answered the needle or CANNOT_SEE.
+with section('6. vision check can fail'):
+    check("the needle on the first line passes",
+          lp.vision_verdict("PELICAN-42\nreview...", "PELICAN-42")[0], True)
+    check("case-insensitive", lp.vision_verdict("pelican-42", "PELICAN-42")[0], True)
+    check("CANNOT_SEE fails", lp.vision_verdict("CANNOT_SEE", "PELICAN-42")[0], False)
+    check("an answer that ignores the image fails",
+          lp.vision_verdict("I reviewed the code and found...", "PELICAN-42")[0], False)
+    check("empty fails", lp.vision_verdict("", "PELICAN-42")[0], False)
+    check("failure says why", "did not see" in lp.vision_verdict("x", "N")[1]
+          or "could not read" in lp.vision_verdict("x", "N")[1], True)
+    check("the needle is not named in the prompt the judge receives",
+          "{vision_check}" in __import__("inspect").getsource(lp._ask), False)
+
+# --- 7. consensus is not manufactured from a shared basename ------------------
+# `f.split("/")[-1]` discarded the directory, so src/config.py:20 and tests/config.py:20
+# merged into one row reporting 2/2 agreement between judges reading DIFFERENT files.
+with section('7. consensus file identity'):
+    check("same file cited two ways matches", lp.same_file("config.py", "src/config.py"), True)
+    check("different directories do NOT match",
+          lp.same_file("src/config.py", "tests/config.py"), False)
+    check("./ prefix matches", lp.same_file("./config.py", "src/config.py"), True)
+    check("deeper suffix matches", lp.same_file("a/b/c.py", "b/c.py"), True)
+    _res = {"A": {"status": "ok", "text": "bug at src/config.py:20"},
+            "B": {"status": "ok", "text": "bug at tests/config.py:20"}}
+    check("no false 2/2 across different files",
+          any("2/2" in r for r in lp.consensus_view(["A", "B"], _res)), False)
+    _res2 = {"A": {"status": "ok", "text": "bug at config.py:20"},
+             "B": {"status": "ok", "text": "bug at src/config.py:20"}}
+    check("real agreement still reported",
+          any("2/2" in r for r in lp.consensus_view(["A", "B"], _res2)), True)
+    check("  (pre-fix basename collapse merged them)",
+          "src/config.py".split("/")[-1] == "tests/config.py".split("/")[-1], True)
+
+# --- 8. the single-argv ceiling is checked before launching -------------------
+# MEASURED on this machine: 131,071 bytes passes, 131,072 raises E2BIG. Every CLI transport
+# passes the prompt as one argv element, so an oversize prompt killed codex, claude and
+# opencode simultaneously with a bare OSError.
+with section('8. argv ceiling'):
+    check("the limit used is the measured one", lp.MAX_ARGV_BYTES, 131_072)
+    _r = lp._ask("codex", "x" * 200_000, "/tmp", 5)
+    check("oversize prompt fails as harness", _r["status"], "harness")
+    check("and names the real cause", "MAX_ARG_STRLEN" in _r["text"], True)
+    check("without launching anything", _r["secs"] < 2.0, True)
+
+# --- 9. an ollama session is resumable only if it can be REPLAYED -------------
+# The banner counted any non-empty file as resumable while ask() dropped malformed JSON,
+# so `{broken` announced "1 judge resuming" and then sent no context at all.
+with section('9. ollama session'):
+    import tempfile as _t2
+    _d2 = pathlib.Path(_t2.mkdtemp())
+    _bad = _d2 / "b.session"; _bad.write_text("{broken")
+    _empty = _d2 / "e.session"; _empty.write_text("[]")
+    _good = _d2 / "g.session"; _good.write_text("[1,2,3]")
+    check("malformed is not resumable", lp.ollama_context(_bad), None)
+    check("empty list is not resumable", lp.ollama_context(_empty), None)
+    check("a real context is resumable", lp.ollama_context(_good), [1, 2, 3])
+    check("  (pre-fix banner counted the malformed file as resumable)",
+          bool(lp.read_session(_bad)), True)
+
+# --- 10. --diff must not read out of the repository --------------------------
+# `git ls-files --others` reports an untracked SYMLINK by its in-repo path and opening it
+# followed the link out of the tree: a secret file's contents were embedded in the prompt
+# sent to every REMOTE judge. Verified by execution 2026-08-21.
+with section('10. diff symlink containment'):
+    import subprocess as _sp, tempfile as _t3
+    _w = pathlib.Path(_t3.mkdtemp()); _repo = _w / "repo"; _repo.mkdir()
+    (_w / "secret.txt").write_text("SENTINEL-DO-NOT-LEAK\n")
+    _sp.run(["git", "init", "-q", str(_repo)], check=True)
+    (_repo / "main.py").write_text("x = 1\n")
+    _sp.run(["git", "-C", str(_repo), "add", "main.py"], check=True)
+    _sp.run(["git", "-C", str(_repo), "-c", "user.email=a@b", "-c", "user.name=c",
+             "commit", "-qm", "init"], check=True)
+    (_repo / "newfile.py").write_text("def real_new_code(): pass\n")
+    (_repo / "linked.txt").symlink_to(_w / "secret.txt")
+    _d3 = lp.collect_diff(str(_repo))
+    check("a symlink out of the repo is NOT read", "SENTINEL-DO-NOT-LEAK" in _d3, False)
+    check("and the omission is reported", "NOT read" in _d3, True)
+    check("a genuine untracked file is still included", "real_new_code" in _d3, True)
+
+# --- 11. run-directory containment is PHYSICAL -------------------------------
+with section('11. containment is physical'):
+    _l = _w / "cachelink"
+    (_repo / ".cache").mkdir(exist_ok=True)
+    _l.symlink_to(_repo / ".cache")
+    check("a symlink into the repo is detected", lp.cache_is_inside(_l, _repo), True)
+    check("a genuinely outside cache is not", lp.cache_is_inside("/home", _repo), False)
+    check("a relative path resolves before comparing",
+          lp.cache_is_inside(_repo / ".cache" / "..", _repo), True)
+    check("  (the lexical test missed it)",
+          str(_l).startswith(str(_repo) + "/"), False)
+
+# --- 12. a repo is its REAL path ---------------------------------------------
+with section('12. repo identity'):
+    _alias = _w / "repo-link"
+    _alias.symlink_to(_repo)
+    check("an aliased path yields the SAME run key",
+          lp.repo_key(str(_alias)), lp.repo_key(str(_repo)))
+    check("and the same thread key",
+          lp.thread_key("design", str(_alias)), lp.thread_key("design", str(_repo)))
+
+# --- 13. round-2 anonymity: position must carry no information ---------------
+# Letters followed ROSTER ORDER, so a judge that knows the roster maps every letter to a
+# name -- and in the 2026-08-21 audit the roster sat in the file under review, in a ROSTER
+# dict, in order. All four judges raised it. Reproduced before fixing: with five judges
+# or-kimi sees A,B,D,E, learns it is C, and roster order gives it the rest.
+with section('13. rebuttal anonymity'):
+    _J = ["codex", "claude-opus", "or-kimi", "or-deepseek", "or-glm"]
+    _R = {j: {"status": "ok"} for j in _J}
+    _ro = [chr(ord("A") + i) for i in range(len(_J))]
+    _same = sum(1 for i in range(12)
+                if [lp.assign_letters(_J, _R, seed=f"s{i}")[j] for j in _J] == _ro)
+    check("letters do not track roster order", _same <= 1, True)
+    check("stable within one run (prompt, legend and run.json must agree)",
+          lp.assign_letters(_J, _R, seed="X"), lp.assign_letters(_J, _R, seed="X"))
+    check("different runs differ",
+          lp.assign_letters(_J, _R, seed="X") != lp.assign_letters(_J, _R, seed="Y"), True)
+    check("still a bijection", sorted(lp.assign_letters(_J, _R, seed="X").values()), _ro)
+    _R2 = dict(_R); _R2["or-kimi"] = {"status": "harness"}
+    _m2 = lp.assign_letters(_J, _R2, seed="X")
+    check("a judge that did not answer gets no letter", "or-kimi" in _m2, False)
+    check("and the rest stay contiguous", sorted(_m2.values()), ["A", "B", "C", "D"])
+    # the pre-fix assignment MUST equal roster order, or this proves nothing
+    _pre = {j: chr(ord("A") + i)
+            for i, j in enumerate([j for j in _J if _R[j]["status"] == "ok"])}
+    check("  (pre-fix assignment WAS roster order)", [_pre[j] for j in _J], _ro)
+
+# --- 14. the 2026-08-22 re-audit --------------------------------------------
+# A second panel reviewed this file after the 22 fixes of 2026-08-21, with abstention
+# licensed. or-glm returned ZERO findings on two areas it named as examined-and-clean, and
+# then found the one below that mattered most. codex returned 14 and abstained on three.
+with section('14. re-audit findings'):
+    import json as _j5, tempfile as _t5
+
+    # #3 -- A CRASH INTRODUCED BY THE 2026-08-21 FIX ITSELF. Growing the main return to
+    # three values missed the early skip branch, so `--judges X --rebut` raised ValueError
+    # out of main() and wrote NO panel.md and NO run.json: the whole run lost on the
+    # ordinary path where only one judge answers.
+    import inspect as _i5
+    _src5 = _i5.getsource(lp.run_rebuttals)
+    check("the skip branch returns three values",
+          _src5.count("return ([\"\", \"_Rebuttal round skipped") or
+          "}, {})" in _src5.split("Rebuttal round skipped")[1][:200], True)
+
+    # #5 -- an explicit denial outranks a substring match
+    check("'CANNOT_SEE CAT' fails the vision check",
+          lp.vision_verdict("CANNOT_SEE CAT", "CAT")[0], False)
+    check("  (a real sighting still passes)", lp.vision_verdict("CAT\nreview", "CAT")[0], True)
+
+    # #11 -- 408 means the provider was reached and timed out
+    check("408 is provider-unavailable",
+          lp._classify_error("j", {"name": "E", "status": 408, "message": "m"}, 1, {})["status"],
+          "unavailable")
+
+    _d5 = pathlib.Path(_t5.mkdtemp())
+    _real5 = lp.CONFIG_DIR
+
+    def _verdict5(text):
+        lp.CONFIG_DIR = _d5
+        try:
+            (_d5 / "opencode.json").write_text(text)
+            return lp.agent_can_write("panelist")
+        finally:
+            lp.CONFIG_DIR = _real5
+
+    # #10 -- a VALID JSONC config was read as "unknown" and killed the run with exit 9
+    check("inline comments and trailing commas parse",
+          _verdict5('{\n "agent": { // primary\n  "panelist": {"tools": ["read"]},\n }\n}'), False)
+    check("a // inside a STRING is not stripped as a comment",
+          _verdict5('{"agent":{"panelist":{"description":"see http://x","tools":["read"]}}}'), False)
+    # #1 -- opencode refuses a subagent and falls back to write-capable `build`
+    check("mode:subagent counts as writable",
+          _verdict5('{"agent":{"panelist":{"mode":"subagent","tools":["read","grep"]}}}'), True)
+    check("  (a primary read-only agent still clears)",
+          _verdict5('{"agent":{"panelist":{"mode":"primary","tools":["read","grep"]}}}'), False)
+
+    # #4 / or-glm -- shuffling the LETTERS was only half the fix; the BLOCKS were still
+    # emitted in roster order, so position gave the mapping away regardless of the letter.
+    _J5 = ["codex", "big-pickle", "nemotron", "deepseek"]
+    _R5 = {j: {"status": "ok"} for j in _J5}
+    _same = 0
+    for _s5 in [f"s{i}" for i in range(12)]:
+        _L5 = lp.assign_letters(_J5, _R5, seed=_s5)
+        for _me in _J5:
+            _oth = sorted((o for o in _J5 if o != _me), key=lambda o: _L5[o])
+            if _oth == [o for o in _J5 if o != _me]:
+                _same += 1
+    check("block order no longer tracks roster order for every judge", _same < 12, True)
+    check("the shipped code sorts by letter",
+          "key=lambda o: letters[o]" in SRC.read_text(encoding="utf-8"), True)
+
+    # #2 -- reviewing a repo rooted at $HOME put the FALLBACK inside it too
+    _home = str(pathlib.Path.home())
+    check("the usual fallback is detected as inside a $HOME-rooted repo",
+          lp.cache_is_inside(pathlib.Path(_home) / ".llm-panel", _home), True)
+
+    # #9 -- the size check must be the LAST thing before dispatch
+    _r9 = lp._ask("codex", "-x" * 70000, "/tmp", 5)
+    check("an oversize prompt is caught AFTER the leading-dash fix", _r9["status"], "harness")
+    check("  and it names the real cause", "MAX_ARG_STRLEN" in _r9["text"], True)
+
+# --- 15. oversized material is spilled to a file, not refused ---------------
+# The argv ceiling stopped llm-panel auditing ITSELF: round two re-sends the full source
+# plus every review, hit 153,506 bytes, and ALL FOUR judges were refused, so the rebuttal
+# produced nothing. Refusing was right as a guard (it replaced a bare OSError) but is not an
+# answer for a panel whose job is reviewing large files.
+with section('15. material spill'):
+    import tempfile as _t6
+    _d6 = pathlib.Path(_t6.mkdtemp())
+    _big = "BRIEF: review this.\n" + ("x" * 200000)
+    # `shared=True` is now REQUIRED: the invariant that only shared content is
+    # spilled became a signature after claude-opus found _ask spilling per-judge
+    # round-two prompts (peers' reviews) into the judge-readable directory.
+    _p6 = lp.spill_material(_big, _d6, shared=True)
+    check("the pointer fits under the ceiling",
+          len(_p6.encode("utf-8")) < lp.MAX_ARGV_BYTES, True)
+    _f6 = list(_d6.glob("material-*.md"))
+    check("exactly one material file", len(_f6), 1)
+    check("it holds the COMPLETE text", _f6[0].read_text(encoding="utf-8"), _big)
+    check("the brief stays inline", "BRIEF: review this." in _p6, True)
+    check("the path is named", str(_f6[0]) in _p6, True)
+    check("the judge is told to read it", "READ THAT FILE NOW" in _p6, True)
+    # same content -> one file, so concurrent judges share rather than clobber
+    lp.spill_material(_big, _d6, shared=True)
+    check("identical material reuses one file", len(list(_d6.glob("material-*.md"))), 1)
+    # different content -> a different file
+    lp.spill_material(_big + "z", _d6, shared=True)
+    check("different material gets its own file", len(list(_d6.glob("material-*.md"))), 2)
+
+    # _ask must SPILL rather than refuse when it has somewhere to put it...
+    _d7 = pathlib.Path(_t6.mkdtemp())
+    # `material_shared=True` is now required from the CALLER: _ask asserting it itself made
+    # the flag meaningless, and the synthesis path leaked identified reviews through it.
+    _r7 = lp._ask("codex", _big, "/tmp", 5, material_dir=_d7, material_shared=True)
+    check("an oversize prompt is no longer refused outright",
+          "MAX_ARG_STRLEN" in (_r7.get("text") or ""), False)
+    # ...and still fail loudly when it has nowhere
+    _r8 = lp._ask("codex", _big, "/tmp", 5, material_dir=None)
+    check("with nowhere to spill it still fails loudly",
+          "could not be spilled" in _r8["text"], True)
+
+    # THE ANONYMITY CONSTRAINT: only the SHARED round-one material is ever spilled. Spilling
+    # per-judge round-two prompts would put one judge's own review where another could read
+    # it, which destroys the round. Guarded by construction -- assert the shipped code
+    # spills `prompt` (shared), not `prompts[me]` (per-judge).
+    _srcs = SRC.read_text(encoding="utf-8")
+    # The two checks that were here grepped the SOURCE for `spill_material(prompt,`
+    # and `spill_material(prompts[`. Both passed while the leak was live, because
+    # they inspected one call site and the leak was at the other. Replaced by
+    # section 18, which CALLS the function and asserts it refuses.
+
+    # It lives in the reviewed tree because that is the only place a read tool reaches
+    # (verified 2026-08-22: ~/.cache is NOT readable from a cwd elsewhere), so it must be
+    # removed when the run ends.
+    check("the material dir is named", lp.MATERIAL_DIRNAME, ".llm-panel-material")
+    check("the run removes it", "_mat.rmdir()" in _srcs, True)
+
+# --- 16. repeat passes -------------------------------------------------------
+# Multi-Review (2025) measured Self-Agg at n=10 improving recall 118.8% over a single pass:
+# a model's misses are largely stochastic, so asking the same judge again finds different
+# things. `--repeat N` spells them `codex~2` etc. Only the ROSTER lookup strips the suffix;
+# everywhere else a repeat is a full judge, so passes that DISAGREE stay visible.
+with section('16. repeat passes'):
+    check("a repeat resolves to its base transport", lp.ROSTER["codex~3"], lp.ROSTER["codex"])
+    check("membership tolerates the suffix", "codex~3" in lp.ROSTER, True)
+    check("an unknown judge is still unknown", "not-a-judge" in lp.ROSTER, False)
+    check("provider is the base judge's (so peer/rate-limit counting is right)",
+          lp.provider_of("or-glm~2"), lp.provider_of("or-glm"))
+    try:
+        lp.ROSTER["not-a-judge"]
+        check("an unknown judge still raises", "no error", "KeyError")
+    except KeyError:
+        check("an unknown judge still raises", "KeyError", "KeyError")
+    # a repeat must be a FULL judge -- collapsing them would hide the disagreement between
+    # passes, which is the entire reason to run them
+    _J16 = ["or-glm", "or-glm~2", "or-glm~3"]
+    _R16 = {j: {"status": "ok"} for j in _J16}
+    _L16 = lp.assign_letters(_J16, _R16, seed="s")
+    check("each pass gets its own letter", sorted(_L16.values()), ["A", "B", "C"])
+    check("the base judge is not special-cased", len(set(_L16.values())), 3)
+
+# --- 17. protocol traffic is not an answer -----------------------------------
+# The timeout handler kept any body over 200 bytes and called it an `incomplete` review. A
+# CLI judge's stdout is a JSON EVENT STREAM, so the 2026-08-22 audit stored 143,505 bytes of
+# codex protocol -- 46 events, 100% protocol -- as codex's review and reported it as a
+# partial answer. codex predicted both halves of this in the PREVIOUS audit and I did not
+# act on it; the next run then demonstrated it live.
+with section('17. protocol traffic is not an answer'):
+    check("codex agent_message is extracted",
+          lp.stream_text('{"type":"item.completed","item":{"type":"agent_message","text":"hi"}}'),
+          "hi")
+    check("opencode text part is extracted",
+          lp.stream_text('{"type":"text","part":{"text":"hello"}}'), "hello")
+    check("pure protocol yields nothing", lp.stream_text('{"type":"turn.started"}'), "")
+    check("malformed json is skipped, not raised", lp.stream_text('{"broken'), "")
+    check("non-json is not mistaken for an answer", lp.stream_text("plain stderr"), "")
+    check("multiple messages are joined",
+          lp.stream_text('{"item":{"type":"agent_message","text":"a"}}\n'
+                         '{"item":{"type":"agent_message","text":"b"}}'), "a\nb")
+    # replayed against the REAL artifact from the run that exposed it
+    _art = pathlib.Path("/home/mjarnold/.cache/llm-panel/runs/mini-c9c77efac7e0/"
+                        "20260822-023521-3057141/codex.md")
+    if _art.is_file():
+        _raw = _art.read_text(encoding="utf-8", errors="replace")
+        _t17 = lp.stream_text(_raw)
+        check("real run: words recovered from 143 KB of protocol", 200 < len(_t17) < 5000, True)
+        check("real run: nothing json survives",
+              any(l.strip().startswith("{") for l in _t17.splitlines()), False)
+        check("  (the raw artifact WAS almost entirely protocol)",
+              sum(1 for l in _raw.splitlines() if l.strip().startswith("{")) > 40, True)
+
+# --- 18. the 2026-08-22 re-audit (third pass) --------------------------------
+# claude-opus returned 8 findings, ALL REAL, and cleared a long list explicitly. The most
+# important is #1: I wrote a docstring guaranteeing only SHARED material is ever spilled,
+# wrote a control to enforce it, and BOTH missed the real path -- run_rebuttals passed
+# material_dir down to ask(), so _ask spilled the PER-JUDGE round-two prompt, containing
+# every peer's review, into the judge-readable directory. My control grepped the source for
+# `spill_material(prompts[` and passed, because it checked one call site and the leak was at
+# the other. THE INVARIANT IS NOW A SIGNATURE, and this control CALLS the code.
+with section('18. re-audit 3'):
+    import tempfile as _t8
+    _d8 = pathlib.Path(_t8.mkdtemp())
+    _per = ("BRIEF\n\nYour own review was:\n\nMY SECRET\n\n"
+            "### Reviewer A\nA PEER REVIEW\n" + "x" * 140000)
+    try:
+        lp.spill_material(_per, _d8)
+        check("non-shared content is refused", "spilled", "ValueError")
+    except ValueError:
+        check("non-shared content is refused", "ValueError", "ValueError")
+    check("nothing was written", len(list(_d8.glob("material-*.md"))), 0)
+    # the rebuttal path hands _ask no spill target at all
+    _r8 = lp._ask("codex", _per, "/tmp", 5, material_dir=None)
+    check("an oversized round-2 prompt fails loudly, not silently", _r8["status"], "harness")
+    check("and still writes no file", len(list(_d8.glob("material-*.md"))), 0)
+    # POSITIVE CONTROL: shared material must still spill, or the whole feature is dead
+    _p8 = lp.spill_material("BRIEF\n" + "y" * 140000, _d8, shared=True)
+    check("shared material still spills", len(list(_d8.glob("material-*.md"))), 1)
+    check("and the pointer fits", len(_p8.encode()) < lp.MAX_ARGV_BYTES, True)
+
+    # #2 -- spill_material raised out of _ask and took the whole run down after round one
+    _bad = pathlib.Path(_t8.mkdtemp()) / "notadir"
+    _bad.write_text("i am a file, not a directory")
+    _r9 = lp._ask("codex", "z" * 140000, "/tmp", 5, material_dir=_bad)
+    check("a write failure is DATA, not a traceback", _r9["status"], "harness")
+    check("  and names the cause", "could not be spilled" in _r9["text"], True)
+
+    # #3 -- cleanup globbed every material-*.md and deleted a CONCURRENT run's file
+    _foreign = _d8 / "material-deadbeef0000.md"
+    _foreign.write_text("another run's file")
+    check("this run tracks only what it wrote",
+          all(f in lp._SPILLED for f in lp._SPILLED) and _foreign not in lp._SPILLED, True)
+
+    # #4 -- JSONC block comments, the construct the previous fix did not enumerate
+    _cfg = pathlib.Path(_t8.mkdtemp())
+    _real8 = lp.CONFIG_DIR
+
+    def _v8(text):
+        lp.CONFIG_DIR = _cfg
+        try:
+            (_cfg / "opencode.jsonc").write_text(text)
+            return lp.agent_can_write("panelist")
+        finally:
+            lp.CONFIG_DIR = _real8
+
+    # These fixtures now spell out the denials. ABSENCE IS NOT DENIAL any more (codex~2,
+    # audit 4): opencode enables its tools by default, so a map naming only read-only tools
+    # leaves write/edit/bash on. The control is about JSONC PARSING, so its fixture has to
+    # be a genuinely read-only config or it tests two things at once.
+    _RO = ('"tools":{"write":false,"edit":false,"patch":false,"bash":false,"read":true}')
+    check("/* block comments */ parse",
+          _v8('{\n/* read-only */\n"agent":{"panelist":{"mode":"primary",' + _RO + '}}}'), False)
+    check("a /* inside a string is not stripped",
+          _v8('{"agent":{"panelist":{"description":"a /* b */ c",' + _RO + '}}}'), False)
+
+    # #6 -- chr(ord("A")+i) past 26 produced punctuation, and `\` is a markdown escape
+    check("letters stay alphabetic past Z",
+          [lp._letter(i) for i in (0, 25, 26, 27, 51, 52)],
+          ["A", "Z", "AA", "AB", "AZ", "BA"])
+    _J8 = [f"j{i}" for i in range(30)]
+    _R8 = {j: {"status": "ok"} for j in _J8}
+    _L8 = lp.assign_letters(_J8, _R8, seed="x")
+    check("30 judges get 30 distinct alphabetic labels",
+          len(set(_L8.values())) == 30 and all(v.isalpha() for v in _L8.values()), True)
+
+    # #5 -- the single-file guard compared raw strings, so one file spelled two ways at
+    # different lines read as two files and bare line numbers were discarded
+    _res8 = {"A": {"status": "ok", "text": "bug at bug.py:14"},
+             "B": {"status": "ok", "text": "bug at src/bug.py:31"},
+             "C": {"status": "ok", "text": "see line 14"}}
+    check("a bare line number resolves when one file is cited two ways",
+          any("2/3" in r for r in lp.consensus_view(["A", "B", "C"], _res8)), True)
+
+    # #8 -- the synthesizer was handed images it cannot use and does not need
+    check("synthesis is not passed images",
+          "1, None, a.effort, None, None," in SRC.read_text(encoding="utf-8"), True)
+
+# --- 19. fourth audit (repeat 2: the two passes found DIFFERENT things) ------
+# codex and codex~2 overlapped only partially; each raised criticals the other missed. That
+# divergence is the entire argument for --repeat, measured here on this file.
+with section('19. audit 4'):
+    import tempfile as _t9, json as _j9, hashlib as _h9
+
+    # codex #3 -- MY OWN "make the invariant a signature" fix was cosmetic: _ask asserted
+    # shared=True ITSELF, so no caller ever asserted it, and the SYNTHESIS path supplied a
+    # material dir for a prompt built as "### Reviewer <REAL NAME>\n<full review>".
+    _d9 = pathlib.Path(_t9.mkdtemp())
+    _big9 = "BRIEF\n" + "x" * 140000
+    _r = lp._ask("codex", _big9, "/tmp", 5, material_dir=_d9, material_shared=False)
+    check("un-asserted content is not spilled", len(list(_d9.glob("material-*.md"))), 0)
+    check("  and it fails loudly", _r["status"], "harness")
+    check("caller-asserted shared content still spills",
+          bool(lp._ask("codex", _big9, "/tmp", 5, material_dir=_d9, material_shared=True)
+               is not None) and len(list(_d9.glob("material-*.md"))) == 1, True)
+    check("synthesis asserts NOT shared",
+          "1, None, a.effort, None, None, None, False)" in SRC.read_text(encoding="utf-8"), True)
+
+    # codex #2 -- the target sits in the reviewed tree, which the reviewed thing controls
+    _d10 = pathlib.Path(_t9.mkdtemp())
+    _dig = _h9.sha256(_big9.encode()).hexdigest()[:12]
+    _out = pathlib.Path(_t9.mkdtemp()) / "leaked"
+    (_d10 / f"material-{_dig}.md").symlink_to(_out)
+    try:
+        lp.spill_material(_big9, _d10, shared=True)
+        check("a symlink at the target is refused", "wrote through it", "OSError")
+    except OSError:
+        check("a symlink at the target is refused", "OSError", "OSError")
+    check("  and nothing was written outside the tree", _out.exists(), False)
+
+    # codex #4 -- a file pointer is useless to a transport with no filesystem
+    _d11 = pathlib.Path(_t9.mkdtemp())
+    lp._ask("local-llama", _big9, "/tmp", 2, material_dir=_d11, material_shared=True)
+    check("an ollama judge is never handed a path", len(list(_d11.glob("material-*.md"))), 0)
+
+    # codex~2 #1 -- a judge NAME is a path component. `_Roster` strips at `~`, so the name
+    # resolved while the raw string still reached STATE/state/<name>, and copy2 writes
+    # OpenCode CREDENTIALS there. The earlier `~` guard only ran under --repeat > 1.
+    _NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*(?:" + re.escape(lp.REPEAT_SEP) + r"\d+)?$")
+    for _n, _want in [("codex", True), ("or-glm", True), ("codex~2", True),
+                      ("big-pickle~/../../x", False), ("../../etc", False),
+                      ("a/b", False), ("codex~abc", False), ("", False)]:
+        check(f"name {_n!r:22s}", bool(_NAME.match(_n)), _want)
+    check("the shipped tool validates names", "illegal judge name" in SRC.read_text(encoding="utf-8"), True)
+
+    # codex~2 #2 -- ABSENCE IS NOT DENIAL. opencode enables tools by default and a `tools`
+    # map only toggles what it names, so a read-only-looking map leaves write/edit/bash on.
+    # The pre-allow-list form had this right; the open-set fix regressed it.
+    _cfg9 = pathlib.Path(_t9.mkdtemp())
+    _real9 = lp.CONFIG_DIR
+
+    def _v9(t):
+        lp.CONFIG_DIR = _cfg9
+        try:
+            (_cfg9 / "opencode.json").write_text(_j9.dumps(t))
+            return lp.agent_can_write("panelist")
+        finally:
+            lp.CONFIG_DIR = _real9
+
+    _W = {"write": False, "edit": False, "patch": False, "bash": False}
+    check("read-only names with mutators ABSENT is NOT a clearance",
+          _v9({"agent": {"panelist": {"tools": {"read": True, "grep": True}}}}), True)
+    check("explicit denial clears (positive control)",
+          _v9({"agent": {"panelist": {"tools": {**_W, "read": True}}}}), False)
+    check("the open-set guard survives the change",
+          _v9({"agent": {"panelist": {"tools": {**_W, "shell": True}}}}), True)
+    check("THE SHIPPED config still clears", lp.agent_can_write("panelist"), False)
+
+# --- 20. fifth audit -- the write guard pivots from predicting to OBSERVING --
+# Six rounds of judges have shown the config guard cannot be sound: opencode ENABLES tools by
+# default so a config denying four names leaves `task` (which delegates to a write-capable
+# subagent) and every MCP tool live; OPENCODE_CONFIG_CONTENT outranks the files it reads; and
+# modern agents declare `permission`, not `tools`. Each round's fix added a name and the next
+# round came through a name nobody listed. A predicate over config files cannot see what
+# opencode will do -- a fingerprint of the tree can see what it DID.
+with section('20. write guard observes instead of predicting'):
+    import tempfile as _ta, json as _ja, time as _tia
+    _d = pathlib.Path(_ta.mkdtemp())
+    (_d / "a.py").write_text("x=1\n")
+    (_d / "b.py").write_text("y=2\n")
+    _before = lp.repo_fingerprint(_d)
+    check("the tree is fingerprinted", len(_before), 2)
+    check("an untouched tree shows no delta",
+          lp.fingerprint_delta(_before, lp.repo_fingerprint(_d)), ([], [], []))
+    (_d / "PWNED").write_text("a judge wrote this\n")
+    _tia.sleep(0.01)
+    (_d / "a.py").write_text("x=999\n")
+    (_d / "b.py").unlink()
+    _add, _rem, _mod = lp.fingerprint_delta(_before, lp.repo_fingerprint(_d))
+    check("a created file is seen", _add, ["PWNED"])
+    check("a deleted file is seen", _rem, ["b.py"])
+    check("a modified file is seen", _mod, ["a.py"])
+    check("the run reports it loudly",
+          "THE REVIEWED TREE CHANGED WHILE THE PANEL RAN" in SRC.read_text(encoding="utf-8"), True)
+    # AN EMPTY TREE IS NOT A MISSING SNAPSHOT. The first wiring stored `{}` for both and
+    # tested `if _fp_before:`, so a panel on an empty repo skipped the check entirely --
+    # and an empty repo that GAINS files is exactly the case worth catching. A predicate
+    # that could not tell two states apart, inside the code written to catch exactly that.
+    # Every unit check below passed while the wiring was dead; only an end-to-end run with
+    # a file planted mid-panel exposed it.
+    _empty = pathlib.Path(_ta.mkdtemp())
+    check("an empty tree fingerprints to {}, not None", lp.repo_fingerprint(_empty), {})
+    check("and {} is falsy, which is why the sentinel must be None", bool({}), False)
+    _src20 = SRC.read_text(encoding="utf-8")
+    check("the snapshot sentinel is None", "_fp_before = None if a.check else" in _src20, True)
+    check("and the check tests identity, not truthiness",
+          "if _fp_before is not None:" in _src20, True)
+    (_empty / "PLANTED").write_text("x")
+    check("a file appearing in a previously EMPTY tree is caught",
+          lp.fingerprint_delta({}, lp.repo_fingerprint(_empty))[0], ["PLANTED"])
+    # .git and the material dir must not raise false alarms every run
+    (_d / ".git").mkdir(exist_ok=True)
+    (_d / ".git" / "index").write_text("churn")
+    (_d / lp.MATERIAL_DIRNAME).mkdir(exist_ok=True)
+    (_d / lp.MATERIAL_DIRNAME / "material-abc.md").write_text("x")
+    _fp2 = lp.repo_fingerprint(_d)
+    check("git internals are excluded", any(".git" in k for k in _fp2), False)
+    check("the material dir is excluded", any(lp.MATERIAL_DIRNAME in k for k in _fp2), False)
+
+    # #7 -- a deny-by-default `permission` map is safe and was being REFUSED (exit 9)
+    _c = pathlib.Path(_ta.mkdtemp())
+    _real = lp.CONFIG_DIR
+
+    def _v(t):
+        lp.CONFIG_DIR = _c
+        try:
+            (_c / "opencode.json").write_text(_ja.dumps(t))
+            return lp.agent_can_write("panelist")
+        finally:
+            lp.CONFIG_DIR = _real
+
+    check("deny-by-default permission map clears",
+          _v({"agent": {"panelist": {"permission": {"*": "deny", "read": "allow"}}}}), False)
+    check("an allowed non-read-only verb does not",
+          _v({"agent": {"panelist": {"permission": {"*": "deny", "bash": "allow"}}}}), True)
+    check("THE SHIPPED config still clears", lp.agent_can_write("panelist"), False)
+
+    # spill hardening from the same audit
+    _big = "BRIEF\n" + "x" * 140000
+    _sd = pathlib.Path(_ta.mkdtemp())
+    lp._SPILLED.clear()
+    lp.spill_material(_big, _sd, shared=True)
+    _first = len(lp._SPILLED)
+    lp._SPILLED.clear()
+    lp.spill_material(_big, _sd, shared=True)
+    check("the creator tracks the file", _first, 1)
+    check("a second panel adopting it tracks NOTHING (so cannot delete it)",
+          len(lp._SPILLED), 0)
+    _w = pathlib.Path(_ta.mkdtemp())
+    (_w / "real").mkdir()
+    (_w / "matdir").symlink_to(_w / "real")
+    try:
+        lp.spill_material(_big, _w / "matdir", shared=True)
+        check("a symlinked material DIRECTORY is refused", "wrote", "OSError")
+    except OSError:
+        check("a symlinked material DIRECTORY is refused", "OSError", "OSError")
+    import hashlib as _ha
+    _pd = pathlib.Path(_ta.mkdtemp())
+    (_pd / f"material-{_ha.sha256(_big.encode()).hexdigest()[:12]}.md").write_text("PLANTED")
+    try:
+        lp.spill_material(_big, _pd, shared=True)
+        check("an existing target that does not hash to its name is refused", "served", "OSError")
+    except OSError:
+        check("an existing target that does not hash to its name is refused", "OSError", "OSError")
+
+# --- 21. audit 5, second pass (claude-opus's findings) -----------------------
+with section('21. audit 5 opus findings'):
+    import tempfile as _tb, hashlib as _hb
+    # #3 -- THE SAME BODY LOSS `claude_body` EXISTS TO FIX, in the transport next door.
+    # `out = item["text"]` overwrote on every agent message, so a codex judge answering
+    # across more than one message kept only the last. A fix applied to one instance of a
+    # class and not to the class.
+    check("multiple codex agent messages accumulate",
+          lp.stream_text('{"item":{"type":"agent_message","text":"a"}}\n'
+                         '{"item":{"type":"agent_message","text":"b"}}'), "a\nb")
+    check("the transport accumulates too",
+          'out = (out + "\\n" + item["text"]) if out else item["text"]'
+          in SRC.read_text(encoding="utf-8"), True)
+
+    # #9 -- the reviewed repo supplies this file, so its SHAPE is attacker-controlled.
+    # `{"agent": "oops"}` raised AttributeError and took the whole panel down.
+    _c = pathlib.Path(_tb.mkdtemp())
+    for _shape in ('{"agent":"oops"}', '{"agent":[1,2]}', '"not an object"',
+                   '{"agent":{"panelist":"bad"}}', '{"agent":{"panelist":{"tools":42}}}'):
+        (_c / "opencode.json").write_text(_shape)
+        try:
+            lp.agent_can_write("panelist", _c)
+            check(f"malformed config does not raise: {_shape[:26]}", True, True)
+        except Exception as e:                                  # noqa: BLE001
+            check(f"malformed config does not raise: {_shape[:26]} ({type(e).__name__})",
+                  False, True)
+    # and a shape we cannot read is never a CLEARANCE
+    _real = lp.CONFIG_DIR
+    lp.CONFIG_DIR = pathlib.Path(_tb.mkdtemp())
+    try:
+        (_c / "opencode.json").write_text('{"agent":"oops"}')
+        check("unreadable shape is unknown, not safe", lp.agent_can_write("panelist", _c), None)
+        (_c / "opencode.json").write_text('{"agent":{"panelist":"bad"}}')
+        check("a non-dict agent spec is WRITABLE, not cleared",
+              lp.agent_can_write("panelist", _c), True)
+    finally:
+        lp.CONFIG_DIR = _real
+
+    # #7 -- a total built from SOME judges is not the run's bill. codex reports no cost on
+    # any path, so any panel including it printed a complete-looking figure.
+    check("partial pricing is disclosed",
+          lp.billed_note(1.5, 1, 3), " (from 1 of 3 judges; the rest reported no cost)")
+    check("full pricing gets no qualifier", lp.billed_note(1.5, 3, 3), "")
+    check("no pricing at all is UNMEASURED", "UNMEASURED" in lp.billed_note(0, 0, 3), True)
+    check("priced-and-genuinely-zero is distinguished",
+          "reported zero" in lp.billed_note(0, 2, 3), True)
+
+    # #4 -- O_EXCL turned a present, readable file into a harness failure when two judges in
+    # ONE panel spilled identical content. Losing that race is the normal case.
+    _big = "BRIEF\n" + "x" * 140000
+    _d = pathlib.Path(_tb.mkdtemp())
+    lp._SPILLED.clear()
+    lp.spill_material(_big, _d, shared=True)
+    _first = len(lp._SPILLED)
+    lp._SPILLED.clear()
+    lp.spill_material(_big, _d, shared=True)          # must NOT raise
+    check("the creator tracks it", _first, 1)
+    check("the adopter tracks nothing and does not fail", len(lp._SPILLED), 0)
+    _pd = pathlib.Path(_tb.mkdtemp())
+    (_pd / f"material-{_hb.sha256(_big.encode()).hexdigest()[:12]}.md").write_text("PLANTED")
+    try:
+        lp.spill_material(_big, _pd, shared=True)
+        check("adoption still verifies the content hash", "served", "OSError")
+    except OSError:
+        check("adoption still verifies the content hash", "OSError", "OSError")
+
+# --- or-kimi: a provider's own stop reason is not our harness failing --------
+# or-kimi was dropped from the roster after three "harness failures". They were three
+# DIFFERENT things and only one was ours:
+#   1. no OPENROUTER_API_KEY   -- config, fixed by adding the key to `withkeys`
+#   2. finish reason 'length'  -- the model spent its output budget before answering
+#   3. a 396-byte answer       -- which was simply a correct answer to a one-line question
+# Case 2 spent 470s and $0.58, then reported "our harness failed, not the model" above 600
+# bytes of raw JSON -- while meta["finish"] had said 'length' since the stream was parsed.
+#
+# REAL EXECUTION: these drive the shipped _ask() against a stub `opencode` on PATH, so the
+# subprocess, the stream parse and the classification all actually run. A fixture calling
+# the classifier directly would have passed against the pre-fix code, because the defect
+# was in which exit path the recovery was wired into, not in the classifier.
+import os as _os, stat as _stat
+
+
+def _oc_stub(events):
+    _d = pathlib.Path(_tf.mkdtemp())
+    _f = _d / "opencode"
+    _f.write_text("#!/bin/sh\ncat <<'EOF'\n"
+                  + "\n".join(_json.dumps(e) for e in events) + "\nEOF\n")
+    _f.chmod(0o755)
+    _os.environ["PATH"] = str(_d) + _os.pathsep + _os.environ["PATH"]
+    return _d
+
+
+def _ask_stub(events):
+    _os.environ.setdefault("OPENROUTER_API_KEY", "dummy-for-control")
+    _oc_stub(events)
+    return lp._ask("or-kimi", "q", str(pathlib.Path(_tf.mkdtemp())), 60)
+
+
+_LENGTH = [{"type": "step_start", "part": {"type": "step-start"}},
+           {"type": "step_finish",
+            "part": {"reason": "length", "tokens": {"input": 10, "output": 9000},
+                     "cost": 0.58}}]
+# The words ARE in the stream, in a shape the inline collector does not look for.
+_ODDSHAPE = [{"item": {"type": "agent_message", "text": "The real review body."}},
+             {"type": "step_finish", "part": {"reason": "stop"}}]
+
+with section("kimi.1 a provider stop reason is not blamed on our harness"):
+    _r = _ask_stub(_LENGTH)
+    check("kimi.1 finish='length' with no text is NOT 'harness'", _r["status"], "unavailable")
+
+with section("kimi.2 the reason is stated in words, not dumped as protocol"):
+    _r = _ask_stub(_LENGTH)
+    check("kimi.2 the message names the stop reason", "'length'" in _r["text"], True)
+
+with section("kimi.3 the report does not show raw JSON as the failure detail"):
+    _r = _ask_stub(_LENGTH)
+    check("kimi.3 no raw event JSON in the message", _r["text"].lstrip().startswith("{"), False)
+
+with section("kimi.4 the stop reason survives into meta"):
+    _r = _ask_stub(_LENGTH)
+    check("kimi.4 meta records the finish reason", _r["meta"].get("finish"), "length")
+
+# THE ONE THAT MATTERS: pre-fix this threw a complete review away and called it our bug.
+with section("kimi.5 words in an unexpected shape are recovered, not discarded"):
+    _r = _ask_stub(_ODDSHAPE)
+    check("kimi.5 the review body is recovered", _r["text"], "The real review body.")
+
+with section("kimi.6 a recovered body is marked incomplete, never ok"):
+    _r = _ask_stub(_ODDSHAPE)
+    check("kimi.6 recovered text is not passed off as a clean answer",
+          _r["status"], "incomplete")
+
+print(f"\n{'FAILED' if FAILED else 'all controls green'}"
+      f" ({len(FAILED)} failing)" if FAILED else "\nall controls green")
+for f in FAILED:
+    print("  -", f)
+sys.exit(1 if FAILED else 0)

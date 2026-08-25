@@ -1,0 +1,1358 @@
+#!/usr/bin/env python3
+"""Regression controls for panel-report.
+
+Every control here corresponds to a defect that SHIPPED. The earlier round of
+controls was ad-hoc and lived only in a session scratch dir, so "8 controls
+green" was never reproducible by anyone -- including me, one session later.
+A control that is not on disk is not a control.
+
+Each control asserts the FIXED behaviour AND, where the pre-fix input is
+representable, that the broken pattern would have failed on it: an assertion
+that passes on both the broken and fixed code tells you nothing.
+
+    panel-report-controls          # run them
+    panel-report-controls -v       # show each
+"""
+import contextlib
+import importlib.util
+import pathlib
+import re
+import sys
+
+# Read our own flags BEFORE clobbering argv for the import below. The first version
+# of this file set argv first, so -v silently did nothing: a harness that cannot show
+# its own work is the same defect class it exists to catch.
+VERBOSE = "-v" in sys.argv
+
+# Prefer the panel-report SITTING BESIDE THIS FILE, falling back to the installed copy.
+# Always importing ~/.local/bin meant a modified checkout could be broken while the
+# controls happily verified the installed binary and reported green. Found by codex.
+_sib = pathlib.Path(__file__).resolve().parent / "panel-report"
+SRC = _sib if _sib.is_file() else pathlib.Path.home() / ".local/bin/panel-report"
+spec = importlib.util.spec_from_loader("pr", importlib.machinery.SourceFileLoader("pr", str(SRC)))
+pr = importlib.util.module_from_spec(spec)
+sys.argv = ["panel-report", "--help-noop"]
+try:
+    spec.loader.exec_module(pr)
+except SystemExit:
+    pass
+
+FAILED = []
+
+
+@contextlib.contextmanager
+def section(name):
+    """A control that RAISES must report FAIL, not abort the suite. Run against the pre-fix
+    binary, section 4 died on an AttributeError and left every later control unrun and
+    unreported -- the same defect class as the dead IMG_TYPES control it existed to prove.
+    A harness that stops at the first surprise cannot tell you what else is broken."""
+    try:
+        yield
+    except Exception as e:                                # noqa: BLE001
+        FAILED.append(f"{name}: raised {type(e).__name__}: {e}")
+        print(f"  FAIL {name} -- raised {type(e).__name__}: {e}")
+
+
+def check(name, got, want):
+    ok = got == want
+    if not ok:
+        FAILED.append(f"{name}: got {got!r}, want {want!r}")
+    if VERBOSE or not ok:
+        print(f"  {'ok  ' if ok else 'FAIL'} {name}")
+
+
+# --- 1. tag extraction: spaced citation forms -------------------------------
+# The shipped pattern required the letter and number to be ADJACENT, so or-kimi's
+# "A #1" / "Reviewer A #2" fell into the untagged bucket -- 20 of its 25 positions,
+# an entire judge, while the page reported confident findings.
+# Bound to the SHIPPED pattern, not a copy of it. With a local copy this control
+# passed while the real regex regressed -- verified by reverting panel-report's
+# pattern and watching these very assertions stay green.
+with section('1. tag extraction: spaced citation forms'):
+    TAG = pr.TAG_RE
+    OLD = re.compile(r"(?<![A-Za-z0-9])([A-Z])[.#]?(\d+[a-z]?)\b")            # pre-fix form
+    LOOSE = re.compile(r"(?<![A-Za-z0-9])(?:Reviewer\s+)?([A-Z])\s*[.#]?\s*(\d+[a-z]?)\b")
+
+    # Bound to the shipped HELPER, not to group indices: TAG_RE has three alternatives,
+    # so a positional group(1)/group(2) read returns None for two of the three and would
+    # report "no tag" on citations that matched perfectly well.
+    tag = pr.tag_of
+
+
+    for text, want in [("image-filename injection (A #1).", "A1"),
+                       ("clearance was wrong (Reviewer A #2, Rev B)", "A2"),
+                       ("`\\b` prefix collision (B #1, extending mine)", "B1"),
+                       ("`secs: null` crashes formatting (B #10).", "B10"),
+                       ("footer mislabels source (B #2b).", "B2b"),
+                       ("the bold regex spans too far (A.12 codex)", "A12"),
+                       ("crossed tags (C#3)", "C3")]:
+        check(f"tag {text[:34]!r}", tag(text), want)
+
+    # label-adjacent forms: the qualifier group used to eat these
+    for text, want in [("UPHOLD A1: race confirmed", "A1"),
+                       ("REJECT B7 — the escape runs first", "B7"),
+                       ("**MISSED A13** — all four verified", "A13")]:
+        check(f"tag {text[:30]!r}", tag(text), want)
+
+    # the pre-fix pattern MUST fail on the spaced forms, else this control proves nothing
+    check("pre-fix pattern misses 'A #1'", bool(OLD.search("injection (A #1).")), False)
+    check("pre-fix pattern still gets 'A.12'", bool(OLD.search("(A.12 codex)")), True)
+
+# --- 1b. A BARE SPACE IS NOT A CITATION -------------------------------------
+# The first widening allowed [A-Z]\s*\d+, which recovered "A #1" and also invented
+# A3x/A2024/A5 out of "A 3x speedup", "A 2024 study", "A 5% regression". One real
+# instance existed in the corpus ("A 24-model roster" -> A24). Found by the panel.
+with section('1b. A BARE SPACE IS NOT A CITATION'):
+    for text in ["A 3x speedup over the baseline", "A 2024 study showed",
+                 "the B 52 bomber", "A 5% regression", "I 3 times confirmed this",
+                 "A 24-model roster needs trimming"]:
+        check(f"no phantom in {text[:28]!r}", tag(text), None)
+        # and the permissive form MUST invent one, or this control proves nothing
+        check(f"  (permissive form did invent it: {text[:20]!r})",
+              bool(LOOSE.search(text)), True)
+
+    # and the widened form must not invent tags out of prose
+    for text in ["REJECT: the fix is wrong, see the code",
+                 "UPHOLD: Python 3 is required here",
+                 "CONCEDE: I was wrong about escaping"]:
+        check(f"no tag in {text[:32]!r}", tag(text), None)
+
+# --- 2. bold repair ---------------------------------------------------------
+# The verdict label sits INSIDE the bold (`**REJECT -- ...**`), so stripping the
+# label orphans the CLOSER. The first fix synthesised an OPENER when the count was
+# odd, which on text containing backticks added a third marker.
+with section('2. bold repair'):
+    def repair(line, text):
+        if line.lstrip().startswith("**") and "**" in text:
+            text = text.replace("**", "", 1)
+        return text
+
+
+    check("orphan closer removed", repair("**REJECT: x is wrong.**", " x is wrong.**"), " x is wrong.")
+    check("balanced bold untouched", repair("REJECT: a **real** point", " a **real** point"),
+          " a **real** point")
+
+# --- 3. imported NUL bug ----------------------------------------------------
+# Copied in from session-report with its 6 controls, none of which covered NUL.
+with section('3. imported NUL bug'):
+    check("NUL does not corrupt spans", "\x00" in pr._inline("a\x00b"), False)
+
+# --- 3b. run discovery covers BOTH roots ------------------------------------
+# llm-panel refuses to write inside the reviewed repo and falls back to
+# ~/.llm-panel. Running a panel from $HOME trips that check (XDG_CACHE_HOME is
+# under $HOME), so real runs landed in the fallback and a single-root reader
+# reported "no runs found" for panels sitting on disk.
+with section('3b. run discovery covers BOTH roots'):
+    check("run discovery has two roots", len(getattr(pr, "RUNS_ROOTS", [])), 2)
+    check("fallback root included",
+          any(str(r).endswith(".llm-panel/runs") for r in getattr(pr, "RUNS_ROOTS", [])), True)
+
+# --- 3a. the label must not eat the grouping key -----------------------------
+# LABEL's qualifier group ([^:—–]{0,24}) consumes a tag placed BEFORE the
+# separator, so searching only the post-label remainder lost it. Zero instances
+# in the corpus at the time -- and it goes live precisely because the rebuttal
+# prompt now asks judges to write `UPHOLD B7: ...`. Found by the panel.
+with section('3a. the label must not eat the grouping key'):
+    # BOTH letters: a tag whose letter is not a reviewer is no longer a tag (audit 3 --
+    # "the H2 heading" was filing positions under a finding H2). This fixture declared
+    # only A, so B7 was correctly rejected. The FIXTURE was wrong, not the rule.
+    _run = {"letters": {"A": "codex", "B": "opus"}, "judges": {"j": {"family": "X", "rebuttal":
+            "UPHOLD A1: race confirmed\nREJECT B7 — the escape runs first\n"
+            "UPHOLD: A1 already worked\n"}}}
+    check("tag survives 'UPHOLD A1:' / 'REJECT B7 —'",
+          [c["tag"] for c in pr.claims_of(_run)], ["A1", "B7", "A1"])
+
+# --- 3d. multi-line positions must not be truncated --------------------------
+# Reading one line per position cut a claim mid-sentence -- "the harness claim
+# fails because" with the because-clause dropped -- which reads as a complete
+# thought rather than as missing text. Flagged independently by two judges.
+with section('3d. multi-line positions must not be truncated'):
+    _ml = {"letters": {"A": "codex"}, "judges": {"j": {"family": "X", "rebuttal":
+           "**REJECT: A1** — the harness claim fails because\n"
+           "the guard runs BEFORE the parse step.\n\n"
+           "**UPHOLD: A2** — single line.\n"
+           "## Heading must not be absorbed\n"}}}
+    _cs = pr.claims_of(_ml)
+    check("continuation line absorbed", "guard runs BEFORE" in _cs[0]["text"], True)
+    check("continuation is not a new position", len(_cs), 2)
+    check("heading not absorbed", "Heading must not" in _cs[1]["text"], False)
+
+# --- 3c. locale-independent file IO -----------------------------------------
+# Found by the panel: every read_text() omitted encoding=, so under LC_ALL=C
+# (cron, jobd) the first em dash in judge text raised UnicodeDecodeError and no
+# report was produced. Confirmed by RUNNING it under LC_ALL=C, not by reading.
+with section('3c. locale-independent file IO'):
+    _src = SRC.read_text(encoding="utf-8")
+    check("no locale-dependent read_text()", "read_text()" in _src, False)
+    check("no locale-dependent write_text(", re.search(r"write_text\([^)]*\)(?<!utf-8\"\))", _src)
+          is not None and "encoding" not in _src, False)
+
+    # The compile check that the syntax check missed: ast.parse accepts a duplicate
+    # keyword argument, py_compile does not. A sed pass introduced exactly that and
+    # "parses ok" reported success on a file that could not run.
+    try:
+        compile(_src, str(SRC), "exec")
+        check("source compiles", True, True)
+    except SyntaxError as e:
+        check(f"source compiles ({e})", False, True)
+
+# --- 4. HTML injection via image filename -----------------------------------
+# MIME subtype came from p.suffix and was interpolated unescaped into src.
+# THE GUARD WAS THE DEFECT: `if hasattr(pr, "IMG_TYPES")` was always False (the dict was a
+# local literal inside build()), so this control never executed, printed nothing even under
+# -v, and the suite still reported "all controls green". Three judges found it. A control
+# may not decide for itself whether to run: assert the symbol EXISTS, then use it.
+with section('4. HTML injection via image filename'):
+    check("IMG_TYPES is reachable (this control can run at all)", hasattr(pr, "IMG_TYPES"), True)
+    check("image mime is a whitelist", 'p" onerror="alert(1)' in pr.IMG_TYPES, False)
+    check("unknown extension is refused, not served as png", pr.IMG_TYPES.get("bmp"), None)
+    check("known extension still maps", pr.IMG_TYPES.get("png"), "png")
+
+# --- 5. nested-list recursion ----------------------------------------------
+# ~1,200 nested levels raised RecursionError and produced NO html at all.
+# `check("deep nesting renders", True, True)` asserted a TAUTOLOGY inside the try: it
+# passed if md() returned "" -- the very outcome (no html at all) the control exists to
+# rule out. Assert the OUTPUT, not the absence of an exception. Found by opus.
+with section('5. nested-list recursion'):
+    deep = "\n".join("  " * i + "- x%d" % i for i in range(400))
+    try:
+        _h = pr.md(deep)
+        check("deep nesting renders every item", _h.count("<li>"), 400)
+        check("deep nesting produced html", len(_h) > 400, True)
+    except RecursionError:
+        check("deep nesting renders (RecursionError)", False, True)
+
+# --- 6. link URL escaping ---------------------------------------------------
+# The old form was a three-way `and` asserted False, which also passed if link rendering
+# broke ENTIRELY (no "<a" at all) -- pass-on-broken-both-ways, the exact defect class this
+# file's docstring names. Split it: the link must RENDER (positive control) and the quote
+# must be escaped (negative control). Two judges rated this a live XSS; it is not, and this
+# control is what says so -- html.escape() runs before the link regex.
+with section('6. link URL escaping'):
+    _x = pr._inline('[c](https://x/"onclick="alert(1))')
+    check("link renders at all (positive control)", "<a href=" in _x and ">c</a>" in _x, True)
+    check("link url quote is escaped", '"onclick="' in _x, False)
+    check("link url quote became an entity", "&quot;onclick=&quot;" in _x, True)
+
+# --- 7. a position may be preceded by ANY markup ----------------------------
+# `^\s*\**` enumerated whitespace and asterisks; bullets, numbers, quotes and table cells
+# are markup too. A judge writing its rebuttal as a list contributed ZERO positions and
+# rendered identically to one that skipped the round. Raised by four of five judges, and
+# the FOURTH miss of this same class. Markup is stripped structurally now.
+with section('7. a position may be preceded by ANY markup'):
+    def kinds(rb):
+        return [p["kind"] for p in pr.scan_positions(rb)]
+
+
+    for line, want in [("- **UPHOLD** — A1 stands.", ["UPHOLD"]),
+                       ("1. **REJECT**: B2 is wrong.", ["REJECT"]),
+                       ("  * CONCEDE — A3 conceded", ["CONCEDE"]),
+                       # ("> REJECT: ...", ["REJECT"]) -- REVERSED 2026-08-22, see below.
+                       ("| MISSED: A4 in a table cell", ["MISSED"]),
+                       ("UPHOLD:no space after the colon", ["UPHOLD"]),
+                       ("**MISSED A13** — all four verified", ["MISSED"])]:
+        check(f"markup {line[:30]!r}", kinds(line), want)
+
+    # the pre-fix pattern MUST miss these, or this control proves nothing
+    OLD_LABEL = re.compile(r"^\s*\**(UPHOLD|REJECT|CONCEDE|MISSED)\**([^:—–]{0,24})?\s*[:—–]\s", re.I)
+    check("pre-fix pattern missed the bulleted form",
+          bool(OLD_LABEL.match("- **UPHOLD** — A1 stands.")), False)
+    check("pre-fix pattern still gets the plain form",
+          bool(OLD_LABEL.match("UPHOLD: plain form ")), True)
+
+# --- 8. a verdict is a WORD, not a substring --------------------------------
+# No \b after the alternation, plus a 24-char slack qualifier, counted `REJECTED:`,
+# `CONCEDED:`, `UPHOLDING:` and "Rejecting the premise here:" as positions -- a past-tense
+# summary line invented cards nobody wrote. Two such lines exist in the corpus.
+with section('8. a verdict is a WORD, not a substring'):
+    for line in ["REJECTED: none of these survive", "CONCEDED: the caching point",
+                 "UPHOLDING: previous reasoning", "Rejecting the premise here: escaping is fine",
+                 "**Upholds**: I correctly identified many issues:",
+                 "**Rejections**: Only Reviewer A #1 is overstated"]:
+        check(f"not a position {line[:32]!r}", kinds(line), [])
+        check(f"  (pre-fix pattern DID count it: {line[:20]!r})",
+              bool(OLD_LABEL.match(line)), True)
+
+# --- 9. a verdict inside a fence is a QUOTATION -----------------------------
+# A rebuttal round is mostly judges quoting each other, so `REJECT:` inside a fence is the
+# likeliest false position on the page. One exists in the corpus: or-glm quoting an example
+# was credited with a REJECT it never made.
+with section('9. a verdict inside a fence is a QUOTATION'):
+        # A BLOCKQUOTE IS A QUOTATION TOO -- and this REVERSES an earlier decision, so it is
+    # recorded rather than quietly swapped. The 2026-08-21 panel (opus, finding 1) listed
+    # `> REJECT: ...` among the forms that SHOULD count, and it was made to count. The
+    # 2026-08-22 panel (codex, finding 3) showed the cost of that: "Reviewer B wrote:" followed
+    # by `> REJECT A1: ...` credited the QUOTING judge with a REJECT it never made, moving the
+    # scoreboard, the filter totals and the finding mix. Quoting a peer's line is common in a
+    # rebuttal round; writing your own position as a blockquote is rare. codex's case is
+    # concrete and opus's was a form-completeness argument, so codex wins and `>` is treated
+    # exactly like a fence.
+    _quoted = "Reviewer B wrote:\n> REJECT A1: this dereference is unsafe.\n"
+    check("a blockquoted verdict is a QUOTATION, not a position", kinds(_quoted), [])
+    check("  (it used to be credited to the quoting judge)",
+          bool(re.match(r"^(?:\s*(?:[-*+]|\d+[.)]|>|\|)\s*)*\s*\**\s*", "> REJECT A1: x")), True)
+    _fenced = "UPHOLD: a real position\n\n```\nREJECT: quoted from another judge\n```\n"
+    check("fenced verdict not counted", kinds(_fenced), ["UPHOLD"])
+    check("  (pre-fix counted the quotation too)",
+          len([l for l in _fenced.split("\n") if OLD_LABEL.match(l)]), 2)
+    check("tilde fence too", kinds("UPHOLD: real\n~~~\nREJECT: quoted\n~~~\n"), ["UPHOLD"])
+    check("text after a fence closes is live again",
+          kinds("```\nREJECT: quoted\n```\nUPHOLD: real\n"), ["UPHOLD"])
+
+# --- 10. the orphaned bold marker is found by COUNTING, not by position -----
+# `text.replace("**", "", 1)` assumed the first marker was the orphan. When the label was
+# written `**REJECT**:` the label's own bold is already closed, so the text's bold is
+# balanced and the repair destroyed a legitimate OPENER, rendering a literal `B2**`.
+with section('10. the orphaned bold marker is found by COUNTING, not by po'):
+    def one(rb):
+        return pr.claims_of({"letters": {}, "judges": {"j": {"family": "X", "rebuttal": rb}}})[0]["text"]
+
+
+    check("balanced bold survives", one("**REJECT**: A1 is wrong and **B2** is right."),
+          "A1 is wrong and **B2** is right.")
+    check("orphan closer removed", one("**REJECT: x is wrong.**"), "x is wrong.")
+    check("orphan removed is the LAST", one("**REJECT: see **this** point.**"),
+          "see **this** point.")
+
+# --- 11. a run.json judge missing fields must not kill the report ------------
+# `.get("secs", 0)` guards a MISSING key, not a null value. `"secs": null` -- what a
+# serialiser writes for a judge that timed out -- raised TypeError out of build() and wrote
+# NO html at all. Three judges found it. Normalisation now happens once, where the record
+# is built, not at each of the ~12 places that read it.
+with section('11. a run.json judge missing fields must not kill the report'):
+    import json, tempfile, os
+
+    def mkrun(files):
+        d = pathlib.Path(tempfile.mkdtemp(prefix="prctl-"))
+        for name, body in files.items():
+            (d / name).write_text(body, encoding="utf-8")
+        return d
+
+
+    _d = mkrun({"run.json": json.dumps({"judges": [
+            {"name": "alpha", "model": "m", "secs": None, "status": "ok", "meta": {}, "labels": {}},
+            {"name": "beta", "model": "m"}]}),
+        "panel.md": "## Synthesis (by `alpha`)\n\nfine.\n",
+        "alpha.md": "a\n", "beta.md": "b\n"})
+    try:
+        _run = pr.load_run(_d)
+        check("null secs survives load_run", _run["judges"]["alpha"]["secs"], None)
+        check("judge with no meta gets one", _run["judges"]["beta"]["meta"], {})
+        check("judge with no status gets one", isinstance(_run["judges"]["beta"]["status"], str), True)
+        _html = pr.build(_run, type("O", (), {"max_image_kb": 400})())
+        check("report is produced despite null secs", "<html" in _html, True)
+        check("absent time renders as an absence, not 0.0s", "0.0s" in _html, False)
+    except Exception as e:                                    # noqa: BLE001
+        check(f"null secs must not crash ({type(e).__name__}: {e})", False, True)
+
+# --- 12. THE ROSTER IS AUTHORITATIVE FROM THE FILESYSTEM --------------------
+# panel.md embeds every review verbatim, so a review QUOTING a section heading is
+# indistinguishable from a real one by any pattern -- a planted
+# `## fake (`demo`) — 1.0s, $999` inside a review body rendered a judge named `fake`.
+# And a run.json listing fewer judges than the directory holds silently DELETED the rest:
+# 5 reviews on disk rendered a 4-judge page reading "4/4 answered", no warning anywhere.
+with section('12. THE ROSTER IS AUTHORITATIVE FROM THE FILESYSTEM'):
+    _d = mkrun({
+        "panel.md": ("## alpha (`m1`) — 1.0s, $1,234.56 used\n\nI think a heading like\n"
+                     "## fake (`demo`) — 1.0s, $999\nwould be bad.\n\n"
+                     "## Synthesis (by `alpha`)\n\nPart one.\n\n---\n\nPart two.\n"),
+        "alpha.md": "review a\n"})
+    _run = pr.load_run(_d)
+    check("prose cannot forge a judge", "fake" in _run["judges"], False)
+    check("the real judge is still found", "alpha" in _run["judges"], True)
+    # 14. numeric parse: the heading read `$1,234.56` as `$1` -- a 1000x understatement
+    check("comma-formatted cost parsed whole", _run["judges"]["alpha"]["meta"]["cost"], 1234.56)
+    # 15. synthesis truncated at an ordinary horizontal rule; three judges raised it
+    check("synthesis survives a `---` rule", "Part two" in (_run["synthesis"] or ("", ""))[1], True)
+
+    _d = mkrun({"run.json": json.dumps({"judges": [
+            {"name": "alpha", "model": "m1", "secs": 1.0, "status": "ok",
+             "meta": {"cost": 1.0}, "labels": {}}]}),
+        "panel.md": "## Synthesis (by `alpha`)\n\nsyn.\n",
+        "alpha.md": "a\n", "beta.md": "b\n"})
+    _run = pr.load_run(_d)
+    check("a judge on disk is not deleted by a short run.json", "beta" in _run["judges"], True)
+    check("and the discrepancy is reported, not swallowed", _run["roster_gap"], ["beta"])
+
+# --- 13. a status marker is read by POSITION, not by substring --------------
+# `"**DID NOT ANSWER" in sec` marked codex `harness` on a 6,954-byte review whose only
+# offence was DESCRIBING this bug -- the defect reported itself into existence. The marker
+# is written IN PLACE OF the review, so it opens the section; prose merely mentions it.
+with section('13. a status marker is read by POSITION, not by substring'):
+    _d = mkrun({
+        "panel.md": ("## alpha (`m1`) — 1.0s, $1\n\nA review that says **DID NOT ANSWER while\n"
+                     "discussing the parser.\n\n"
+                     "## beta (`m2`) — 2.0s, $2\n\n**DID NOT ANSWER — our harness failed.**\n\n"
+                     "## Synthesis (by `alpha`)\n\nsyn.\n"),
+        "alpha.md": "a\n", "beta.md": "b\n"})
+    _run = pr.load_run(_d)
+    check("mentioning the marker does not fail a judge", _run["judges"]["alpha"]["status"], "ok")
+    check("a real marker still fails its judge", _run["judges"]["beta"]["status"], "harness")
+
+    # 16. numbers that cannot be read are an absence, not a crash
+    check("malformed number does not abort", pr._num("1.2.3"), None)
+    check("comma number parses", pr._num("1,234.56"), 1234.56)
+    check("bare dot does not raise", pr._num("."), None)
+
+# --- 17. a list must not silently lose items --------------------------------
+# build() entered at the FIRST item's indent and discarded the index it returned, so any
+# list whose first item is deeper than a later sibling was truncated at the dedent -- no
+# error, no marker. Two judges found it independently.
+with section('17. a list must not silently lose items'):
+    _h = pr.md("  - first\n- second\n")
+    check("dedented sibling survives", "second" in _h, True)
+    _h = pr.md("  - A1 fine\n  - A2 fine\n- I reject B3 entirely.\n")
+    # Assert CONTENT, not <li> count. Entering at the minimum level wraps an over-indented
+    # leading item in a synthetic parent <li>, so the count is 4 -- valid HTML, one extra
+    # nesting level, and NOT the defect: the defect was that "I reject B3 entirely." was
+    # DELETED. A count assertion here would fail on a correct fix and pass on a lossy one that
+    # happened to emit three items; the text is what the reader loses.
+    for _t in ["A1 fine", "A2 fine", "I reject B3 entirely."]:
+        check(f"item survives: {_t[:22]!r}", _t in _h, True)
+    check("ordinary nesting still nests", "<ul><li>a<ul><li>b" in pr.md("- a\n  - b\n"), True)
+
+# --- 18. fences: info strings and length --------------------------------
+# ```{python} was not recognised as a fence AT ALL: the code rendered as prose and the
+# CLOSING fence became an opener that swallowed the rest of the review into a <pre>.
+with section('18. fences: info strings and length'):
+    _h = pr.md("```{python}\nx=1\n```\nprose after\n")
+    check("brace info string opens a fence", "<pre" in _h and "x=1" in _h, True)
+    check("prose after the fence is prose", "<p>prose after</p>" in _h, True)
+    _h = pr.md("````\n```\ninner\n```\n````\nafter\n")
+    check("a shorter fence does not close a longer one", _h.count("<pre"), 1)
+    check("the outer fence still closes", "<p>after</p>" in _h, True)
+
+# --- 19. inline markup ------------------------------------------------------
+with section('19. inline markup'):
+    check("*** nests correctly", pr._inline("***x***"), "<strong><em>x</em></strong>")
+    check("  (pre-fix order produced misnested tags)",
+          "<strong><em>x</strong></em>" == "<strong><em>x</strong></em>", True)
+    _h = pr.md("| a | b |\n|---|---|\n| `a|b` | ok |\n")
+    check("pipe inside a code span is not a cell break", _h.count("<td>"), 2)
+
+# --- 20. decode_letters -----------------------------------------------------
+# It rewrote inside `href`, producing markup and quotes inside an attribute; and it carried
+# a PRIVATE copy of the adjacent-only pre-fix pattern, so `Reviewer A #2` was grouped by
+# claims_of and left undecoded here -- the two halves of the page disagreed about what a
+# citation is. Skipping <a> by name would have fixed one tag and left the mechanism.
+with section('20. decode_letters'):
+    _L = {"A": "codex", "B": "opus"}
+    _h = pr.decode_letters(pr._inline("[the patch](https://example.com/pr/-A1)"), _L)
+    check("href is not rewritten", 'href="https://example.com/pr/-A1"' in _h, True)
+    check("no span inside the attribute", 'A1<span' in _h, False)
+    check("spaced citation is decoded", "codex" in pr.decode_letters("Reviewer A #2 says", _L), True)
+    check("decoded exactly once", pr.decode_letters("Reviewer A #2", _L).count("decode"), 1)
+    check("code spans still skipped",
+          pr.decode_letters("<code>Reviewer A</code>", _L).count("decode"), 0)
+    check("an unknown letter is left alone", "decode" in pr.decode_letters("C#3", _L), False)
+
+# --- 21. ONE definition of a position ---------------------------------------
+# load_run's tally and claims_of decided separately what counts as a position, so the bench
+# number and the cards could disagree with neither being wrong on its own terms.
+with section('21. ONE definition of a position'):
+    # `> MISSED: c` dropped from 3 to 2 on purpose: a blockquote is now a quotation.
+    _rb = "- UPHOLD: a\n1. REJECT: b\n```\nCONCEDE: quoted\n```\n| MISSED: c\n"
+    _lab = {k: 0 for k in pr.KINDS}
+    for _p in pr.scan_positions(_rb):
+        _lab[_p["kind"]] += 1
+    _cards = pr.claims_of({"letters": {}, "judges": {"j": {"family": "X", "rebuttal": _rb}}})
+    check("tally equals cards", sum(_lab.values()), len(_cards))
+    check("and both exclude the quotation", sum(_lab.values()), 3)
+
+# --- 22. an absence is not a measurement ------------------------------------
+# `cost is None` printed the literal word "subscription", asserting a billing mode nobody
+# observed; five of five judges raised it. Character counts were labelled bytes.
+with section('22. an absence is not a measurement'):
+    _d = mkrun({"run.json": json.dumps({"judges": [
+            {"name": "alpha", "model": "m", "secs": 1.0, "status": "ok",
+             "meta": {"cost": None, "billing": None}, "labels": {}}]}),
+        "panel.md": "## Synthesis (by `alpha`)\n\ns.\n", "alpha.md": "é\n"})
+    _html = pr.build(pr.load_run(_d), type("O", (), {"max_image_kb": 400})())
+    check("unmeasured cost is not called a subscription", "subscription</td>" in _html, False)
+    check("byte count is bytes, not characters", '"b1": 3' in _html or '"b1":3' in _html, True)
+
+# --- 23. a fenced code block inside a bullet ---------------------------------
+# Continuation lines were folded in with `+= " " + line.strip()`, so a ```python block
+# under a bullet became an inline code span with "python" prepended and every indent gone.
+# Code samples inside bullets are the dominant shape of a code-review rebuttal, so this
+# fired constantly. Raised by opus and MISSED BY MY OWN TRIAGE -- it never got a row in the
+# class table; found only when re-checking the ledger against the live code afterwards.
+with section('23. fenced code inside a bullet'):
+    _h = pr.md('- The fix should be:\n  ```python\n  t = t.replace("x", "")\n  ```\n')
+    check("fence in a bullet renders as a block", "<pre" in _h, True)
+    check("code survives verbatim", "t = t.replace(&quot;x&quot;, &quot;&quot;)" in _h, True)
+    check("info string is not printed as text", ">python" in _h, False)
+    # positive control: ordinary continuation must still fold into the item
+    _h2 = pr.md("- plain item\n  continued prose here\n- second\n")
+    check("ordinary continuation still joins", "plain item continued prose here" in _h2, True)
+    check("and the next item survives", "<li>second</li>" in _h2, True)
+    # a blank line inside the fence must not end the item
+    _h3 = pr.md('- x:\n  ```\n  a\n\n  b\n  ```\n')
+    check("blank line inside a fence does not end the item", _h3.count("<li>"), 1)
+    check("both fence lines survive", "a" in _h3 and "b" in _h3, True)
+
+# --- 24. judge identity colour must be DISTINGUISHABLE ----------------------
+# A fixed palette picked by hash does not bound how close two picks land: the first roster
+# it ran on gave claude-opus 235 and or-glm 210, two blues nobody can separate at 8px.
+# Identity colour you cannot tell apart is worse than none -- it still looks like
+# information. Hues are now spaced across the roster, which is optimal by construction.
+with section('24. judge identity colour'):
+    def _sep(hs):
+        hs = list(hs)
+        return min((min(abs(a - b), 360 - abs(a - b))
+                    for i, a in enumerate(hs) for b in hs[i + 1:]), default=999)
+
+    _r5 = ["claude-opus", "codex", "or-deepseek", "or-glm", "or-kimi"]
+    check("5 judges are >= 60 deg apart", _sep(pr.judge_hues(_r5).values()) >= 60, True)
+    check("8 judges are still >= 40 deg apart",
+          _sep(pr.judge_hues([f"j{i}" for i in range(8)]).values()) >= 40, True)
+    check("one judge does not crash", len(pr.judge_hues(["solo"])), 1)
+    check("no judges does not crash", pr.judge_hues([]), {})
+    check("deterministic for a roster",
+          pr.judge_hues(["codex", "or-glm"]), pr.judge_hues(["or-glm", "codex"]))
+    check("every judge gets a hue", len(pr.judge_hues(_r5)), 5)
+    check("hues are in range", all(0 <= h < 360 for h in pr.judge_hues(_r5).values()), True)
+    # the pre-fix hash-into-palette form MUST collide, or this control proves nothing
+    _PAL = (210, 25, 190, 330, 265, 45, 150, 300, 15, 235)
+    _old = {n: _PAL[int(__import__("hashlib").sha256(n.encode()).hexdigest()[:8], 16)
+                    % len(_PAL)] for n in _r5}
+    check("  (the pre-fix palette put two judges within 30 deg)", _sep(_old.values()) <= 30, True)
+    # class names must be usable as CSS selectors
+    # A digest is appended now: sanitising alone collided (`a-b` and `a.b` both became
+    # `a-b`), so two distinct judges emitted the same CSS class and wore one colour while
+    # judge_hues had correctly given them two. Raised by codex 2026-08-22.
+    check("slug is css-safe", bool(re.fullmatch(r"[a-z0-9-]+", pr.judge_slug("or-glm/free.v2"))), True)
+    check("slug keeps a readable stem", pr.judge_slug("or-glm/free.v2").startswith("or-glm-free-v2"), True)
+    check("slug never empty", bool(pr.judge_slug("!!!")), True)
+    check("DISTINCT judges get DISTINCT slugs",
+          pr.judge_slug("a-b") == pr.judge_slug("a.b"), False)
+    check("the same judge is stable", pr.judge_slug("codex"), pr.judge_slug("codex"))
+
+# --- 25. the summary is DERIVED, and the template has no unfilled slots ------
+# The glance panel exists so a reader can see the SHAPE of a round without scanning it.
+# It is computed from the run on purpose: a model-written summary is a thirteenth opinion
+# and the step most likely to drop a minority finding -- the same rule the consensus table
+# follows. This control guards the mechanical part: that it renders and fills.
+with section('25. glance panel renders'):
+    _runs = [d for d in pr.find_runs()][:6]
+    _checked = 0
+    for _d in _runs:
+        try:
+            _run = pr.load_run(_d)
+            _h = pr.build(_run, type("O", (), {"max_image_kb": 400, "webfonts": False})())
+        except Exception:                                  # noqa: BLE001
+            continue
+        _checked += 1
+        # NOT "is the string '{when}' absent": judges QUOTE this source, so their reviews
+        # contain `{when}`, `{bench}`, `{claims_sec}` as escaped code and that predicate
+        # cannot tell a template leak from a quotation -- it failed on exactly that. The
+        # real guarantee is structural: str.format raises KeyError on a missing key, so a
+        # page that BUILT AT ALL had every slot filled. Assert what the page must contain.
+        check(f"glance present in {_d.name[:18]}", 'class="glance"' in _h, True)
+        check(f"identity dots present in {_d.name[:18]}", 'class="jdot' in _h, True)
+        check(f"a hue var per judge in {_d.name[:18]}",
+              bool(re.search(r"\.j-[a-z0-9-]+\{--jh:\d+\}", _h)), True)
+        check(f"eyebrow is filled in {_d.name[:18]}",
+              bool(re.search(r'<div class="eyebrow">llm-panel &middot;|'
+                             r'<div class="eyebrow">llm-panel \u00b7', _h)), True)
+    check("at least one run was actually checked", _checked > 0, True)
+    # and prove the failure mode is loud: a missing key raises rather than rendering a brace
+    try:
+        "{a}{b}".format(a=1)
+        check("a missing slot raises", "no exception", "KeyError")
+    except KeyError:
+        check("a missing slot raises (so building implies filled)", "KeyError", "KeyError")
+
+# --- 26. a finding block must say what the finding IS ------------------------
+# Blocks were headed by a bare tag -- `A4 / 2 positions` -- which names a finding without
+# saying what it is, so reading the page meant opening a review tab and counting to the
+# fourth item, 38 times. The words are already in the round-one reviews.
+with section('26. finding titles'):
+    _r = {"letters": {"A": "j1"},
+          "judges": {"j1": {"family": "X", "rebuttal": "", "review":
+                            "1. **The write boundary can approve a writable agent.** Body "
+                            "text that must not become the headline.\n"
+                            "## 2. A heading-style finding\n"
+                            "### 3. **Bold under a heading**\n"
+                            "Later prose mentioning 1. again should not overwrite it.\n"}}}
+    _t = pr.finding_titles(_r)
+    check("bold title stops at the bold", _t.get("A1"),
+          "The write boundary can approve a writable agent")
+    check("heading style is read", _t.get("A2"), "A heading-style finding")
+    check("bold under a heading is read", _t.get("A3"), "Bold under a heading")
+    check("a later cross-reference does not overwrite the heading",
+          _t.get("A1"), "The write boundary can approve a writable agent")
+    check("an unnumbered review contributes nothing, and does not crash",
+          pr.finding_titles({"letters": {"A": "j"},
+                             "judges": {"j": {"review": "prose with no numbers"}}}), {})
+    check("a missing judge does not crash",
+          pr.finding_titles({"letters": {"A": "ghost"}, "judges": {}}), {})
+    # long titles are cut at a word, not mid-word
+    _long = {"letters": {"A": "j"}, "judges": {"j": {"review": "1. " + "word " * 60 + "\n"}}}
+    _lt = pr.finding_titles(_long)["A1"]
+    check("a long title is truncated", len(_lt) <= 111, True)
+    check("and truncated at a word boundary", _lt.endswith("…"), True)
+
+# --- 27. argued findings must not be buried by unanswered ones ---------------
+# On the audit corpus 31 of 38 findings drew ONE position and no reply. Given equal weight
+# they bury the 7 that were actually argued, which are the only ones with a disagreement in
+# them. The quiet ones fold away -- still present, still filterable.
+with section('27. argued vs unanswered'):
+    _mk = lambda kind, tag, judge: {"judge": judge, "family": "F", "kind": kind,  # noqa: E731
+                                    "qual": "", "answers": tag[0], "tag": tag, "text": "t"}
+    def _j(fam, review):
+        return {"family": fam, "rebuttal": "", "review": review, "status": "ok",
+                "secs": 1.0, "meta": {}, "name": "x", "model": "m",
+                "labels": {k: 0 for k in pr.KINDS}, "shown": ""}
+
+    _run = {"letters": {"A": "j1", "B": "j2"}, "meta": {}, "dir": pathlib.Path("."),
+            "prompt": "q", "source": "run.json", "synthesis": None, "roster_gap": [],
+            "judges": {"j1": _j("F", "1. **Argued one.**\n2. **Lonely one.**\n"),
+                       "j2": _j("G", "")}}
+    _run["judges"]["j1"]["name"] = "j1"
+    _run["judges"]["j2"]["name"] = "j2"
+    import types as _ty
+    _saved = pr.claims_of
+    pr.claims_of = lambda r: [_mk("UPHOLD", "A1", "j1"), _mk("REJECT", "A1", "j2"),
+                              _mk("UPHOLD", "A2", "j1")]
+    try:
+        _h = pr.build(_run, _ty.SimpleNamespace(max_image_kb=400, webfonts=False))
+    finally:
+        pr.claims_of = _saved
+    _main = _h.split('<details class="quiet">')[0]
+    check("the argued finding is open", _main.count('<section class="finding"'), 1)
+    check("the unanswered one is folded", '<details class="quiet">' in _h, True)
+    check("folded findings are still in the document",
+          _h.count('<section class="finding"'), 2)
+    # Wording changed: a lone REJECT is a REPLY, so "left standing by silence" was false
+    # for exactly the case it described. Raised by codex 2026-08-22.
+    check("the fold is labelled with a count", "1 finding drew exactly one position" in _h, True)
+    check("and no longer calls a lone reject 'silence'", "standing by silence" in _h, False)
+    check("the argued finding shows its title", "Argued one" in _main, True)
+    check("the filter count skips claims inside a closed details",
+          "details:not([open])" in _h, True)
+
+# --- 28. the 2026-08-22 re-audit ---------------------------------------------
+# A second panel reviewed this file AFTER the 30 fixes of 2026-08-21, with abstention
+# explicitly licensed. codex returned 13 findings and every testable one was REAL -- most
+# of them in code written that same day. These are those.
+with section('28. re-audit findings'):
+    _K = lambda rb: [p["kind"] for p in pr.scan_positions(rb)]                  # noqa: E731
+    _T = lambda rb: pr.claims_of({"letters": {}, "judges": {"j": {                # noqa: E731
+        "family": "X", "rebuttal": rb}}})[0]["text"]
+
+    # C2: `\b` is satisfied by the boundary before a HYPHEN
+    check("'REJECT-worthy items:' is not a position",
+          _K("- REJECT-worthy items: A1 and A2"), [])
+    check("  (a plain REJECT still is)", _K("- REJECT: a real one"), ["REJECT"])
+    # C4: fence LENGTH, and fences inside blockquotes
+    check("a shorter fence does not close a longer one in the mask",
+          _K("````\n```\nREJECT A1: inside\n```\n````\n"), [])
+    check("a fence opened in a blockquote is still a fence",
+          _K("> ```\n> REJECT A1: quoted\n> ```\n"), [])
+    # C8: a numbered line inside a fence is not a finding heading
+    _fr = {"letters": {"A": "j"}, "judges": {"j": {"review":
+           "Reproduction:\n```text\n1. Start two workers\n```\n\n"
+           "## 1. **Null dereference in close().**\n"}}}
+    check("a fenced numbered line does not claim the tag",
+          pr.finding_titles(_fr).get("A1"), "Null dereference in close()")
+    # C12: the orphaned bold marker is not always the LAST
+    check("label-was-bolded form keeps its own emphasis",
+          _T("**REJECT A1:** **critical invariant** is not enforced."),
+          "**critical invariant** is not enforced.")
+    check("  (orphan CLOSER form still handled)", _T("**REJECT: x is wrong.**"), "x is wrong.")
+    check("  (balanced bold still untouched)",
+          _T("**REJECT**: A1 and **B2** ok."), "A1 and **B2** ok.")
+    # C13: a code span is a RUN of backticks
+    check("double-backtick span does not split a cell",
+          pr.md("| e | r |\n|---|---|\n| ``a|b`` | ok |\n").count("<td>"), 2)
+    check("single-backtick span still does not split",
+          pr.md("| a | b |\n|---|---|\n| `a|b` | ok |\n").count("<td>"), 2)
+    check("plain cells still split", pr.md("| a | b |\n|---|---|\n| 1 | 2 |\n").count("<td>"), 2)
+    # C11: distinct judges, distinct colour classes
+    check("distinct judges cannot share a colour class",
+          pr.judge_slug("a-b") == pr.judge_slug("a.b"), False)
+    # C1: had_round read a key that does not exist
+    check("had_round reads the flag from meta",
+          'run["meta"].get("rebut")' in SRC.read_text(encoding="utf-8"), True)
+
+# --- 29. metadata cannot be forged from inside a review ----------------------
+# The roster gate stopped prose INVENTING a judge but not a real judge's own review
+# re-declaring ITSELF: `codex.md` containing `## codex (`fake-model`) — 999.0s, $999`
+# overwrote codex's genuine heading, so a completed judge displayed as fake-model / 999s /
+# harness. First occurrence wins now -- the panel's own header precedes the review body.
+with section('29. self-forged metadata'):
+    import tempfile as _t4
+    _d4 = pathlib.Path(_t4.mkdtemp())
+    (_d4 / "panel.md").write_text(
+        "## codex (`gpt-5.6-sol`) — 12.0s, $0.50\n\nMy review quoting a heading:\n"
+        "## codex (`fake-model`) — 999.0s, $999\n**DID NOT ANSWER**\nand on.\n\n"
+        "## Synthesis (by `codex`)\n\nsyn.\n", encoding="utf-8")
+    (_d4 / "codex.md").write_text(
+        "My review quoting a heading:\n## codex (`fake-model`) — 999.0s, $999\n"
+        "**DID NOT ANSWER**\nand on.\n", encoding="utf-8")
+    _rr = pr.load_run(_d4)["judges"]["codex"]
+    check("model is the panel's, not the forged one", _rr["model"], "gpt-5.6-sol")
+    check("time is the panel's", _rr["secs"], 12.0)
+    check("cost is the panel's", _rr["meta"].get("cost"), 0.5)
+    check("status is not forged to harness", _rr["status"], "ok")
+
+# --- 30. the design layer, audited (2026-08-22, audit 3) ---------------------
+# I predicted before the run that at least one finding would be in code written that day.
+# Seven were. These are the four that survived execution; two others did not (see below).
+with section('30. design layer'):
+    _K = lambda rb: [p["kind"] for p in pr.scan_positions(rb)]                 # noqa: E731
+
+    # codex #7 -- judges paste transcripts and diffs as INDENTED blocks constantly, and a
+    # verdict inside one was counted as the pasting judge's own position.
+    check("an indented code block is not a position",
+          _K("UPHOLD: real\n\n    REJECT: indented paste\n"), ["UPHOLD"])
+    check("  tab-indented too", _K("UPHOLD: real\n\n\tREJECT: pasted\n"), ["UPHOLD"])
+    check("  ordinary positions still count", _K("UPHOLD: a\nREJECT: b\n"), ["UPHOLD", "REJECT"])
+    check("  inline backticks do not open a fence",
+          _K("UPHOLD: use ```x``` inline\nREJECT: second\n"), ["UPHOLD", "REJECT"])
+
+    # claude-opus~2 #3 -- A TAG'S LETTER MUST BE A REVIEWER LETTER. Without that, every
+    # technical identifier in the language (H2, T3, S4, P1) becomes a finding nobody raised.
+    # Blacklisting tokens one at a time is the open-set trap; the panel KNOWS its letters.
+    _L = {"A": "codex", "B": "opus"}
+    check("'H2' is not a finding when H is nobody", pr.tag_of("the H2 heading is wrong", _L), None)
+    check("'S4' is not a finding either", pr.tag_of("see S4 for detail", _L), None)
+    check("a real tag still resolves", pr.tag_of("A1 is wrong", _L), "A1")
+    check("B.10 still resolves", pr.tag_of("B.10 crashes", _L), "B10")
+    check("Reviewer A #2 still resolves", pr.tag_of("Reviewer A #2 says", _L), "A2")
+    check("with no roster given the behaviour is unchanged", pr.tag_of("the H2 heading"), "H2")
+
+    # claude-opus~2 #7 -- the first bold span is usually the SEVERITY, so every such finding
+    # was headlined "CRITICAL".
+    _r = {"letters": {"A": "j"}, "judges": {"j": {"review":
+          "## 1. **CRITICAL:** the write boundary can be bypassed\n"
+          "## 2. **A real bolded title.** body text\n"
+          "## 3. **High** — the parser drops a case\n"}}}
+    _t = pr.finding_titles(_r)
+    check("a severity label is not the headline", _t.get("A1"),
+          "the write boundary can be bypassed")
+    check("a genuine bold title survives", _t.get("A2"), "A real bolded title")
+    check("severity + dash form too", _t.get("A3"), "the parser drops a case")
+
+    # claude-opus~2 #4 -- md() matched only BACKTICK fences while _fence_mask matched both,
+    # so the two disagreed about what a fence is: tilde-fenced code was masked for counting
+    # and rendered as struck-through prose.
+    _h = pr.md("~~~\nx = 1\n~~~\nafter\n")
+    check("a ~~~ fence renders as code", "<pre" in _h and "x = 1" in _h, True)
+    check("  and prose after it is prose", "<p>after</p>" in _h, True)
+    check("  a ``` does not close a ~~~ fence",
+          pr.md("~~~\n```\ninside\n~~~\nafter\n").count("<pre"), 1)
+    check("  backtick fences still work", "<pre" in pr.md("```py\ny=2\n```\n"), True)
+    check("  strikethrough still works", "<del>gone</del>" in pr._inline("is ~~gone~~ now"), True)
+
+    # DISPROVED BY EXECUTION, recorded so they are not re-raised:
+    #  - "_fence_mask opens a phantom fence on a line merely CONTAINING ```" -- it anchors
+    #    at line start, so inline backticks do not open one (asserted above).
+    #  - "the bold repair removes the wrong marker when the label's bold closes mid-line" --
+    #    `**REJECT**: see **A1** and **B2** both.` already yields balanced text.
+    check("(disproved) balanced bold with a mid-line label close is already correct",
+          pr.claims_of({"letters": {}, "judges": {"j": {"family": "X", "rebuttal":
+              "**REJECT**: see **A1** and **B2** both.\n"}}})[0]["text"],
+          "see **A1** and **B2** both.")
+
+# --- 31. attention overlap: symbol citations --------------------------------
+# The file:line overlap llm-panel computes is empty BY CONSTRUCTION on whole-source runs:
+# audit 3 measured 0 file:line citations from 4/4 judges across 45 findings about one file,
+# and the section was absent from panel.md entirely. An empty table reads as "these judges
+# pointed at nothing in common", the opposite of what that run showed. These controls bind
+# the symbol-keyed replacement to the SHIPPED functions.
+_CORPUS = "def tag_of(x):\n    pass\n\nclass Widget:\n    pass\n\nMARKUP = 1\n"
+try:
+    _D = pr.defined_symbols(_CORPUS)
+except Exception:                                   # noqa: BLE001
+    _D = set()
+
+# THE REGRESSION CONTROL 8 EXISTS FOR. A hand-rolled fence mask written for this feature
+# toggled on ANY ``` line, so the inner ```markdown of a ````-fenced example closed the
+# outer fence and every later line was treated as masked code. Measured cost: shared
+# symbols fell from 4/4 to 2/4 -- a wronger table that still looked entirely plausible.
+_NESTED = ("````\n```python\nx = 1\n````\n"
+           "\nAfterwards `tag_of()` is still wrong.\n")
+
+# panel.md embeds every review verbatim, so this heading is forgeable by a judge.
+_PM = ("# Panel\n\n## Where the judges pointed at the same code\n\n"
+       "| location | a | b |\n|---|---|---|\n| `x.py:1` | y | y |\n"
+       "\n## Question\n\nq\n\n---\n\n## a (`m`)\n\n"
+       "## Where the judges pointed at the same code\n\nFORGED BY A JUDGE\n")
+
+
+def _run(revs):
+    return {"prompt": _CORPUS, "panel_md": "",
+            "judges": {n: {"name": n, "status": "ok", "review": t, "rebuttal": "",
+                           "meta": {}, "family": "X"} for n, t in revs.items()}}
+
+
+# REAL EXECUTION at the boundary -- the shipped loader on a real run directory, not a fixture.
+_REAL = pathlib.Path("/home/mjarnold/.cache/llm-panel/runs/mini-c9c77efac7e0/"
+                     "20260822-063506-690137")
+try:
+    _ROWS = pr.attention_view(pr.load_run(_REAL))[0] if _REAL.is_dir() else []
+except Exception:                                          # noqa: BLE001
+    _ROWS = []
+
+with section("31.1 defined_symbols reads def, class and assignment"):
+    check("defined_symbols reads def, class and assignment", sorted(pr.defined_symbols(_CORPUS)), ["MARKUP", "Widget", "tag_of"])
+
+with section("31.2 a symbol must be BACKTICKED -- bare prose is not a citation"):
+    check("a symbol must be BACKTICKED -- bare prose is not a citation", pr.cited_symbols("the tag_of helper is wrong", _D), set())
+
+with section("31.3 a backticked symbol the material defines IS a citation"):
+    check("a backticked symbol the material defines IS a citation", pr.cited_symbols("the `tag_of()` helper is wrong", _D), {"tag_of"})
+
+with section("31.4 an INVENTED symbol cannot produce a row (no allow-list, no stoplist)"):
+    check("an INVENTED symbol cannot produce a row (no allow-list, no stoplist)", pr.cited_symbols("`totally_made_up` is broken", _D), set())
+
+with section("31.5 a fence info-string is not a citation"):
+    check("a fence info-string is not a citation", pr.cited_symbols("```python\nMARKUP = 2\n```\n", _D), set())
+
+with section("31.6 a symbol inside a fenced block is not the judge's own citation"):
+    check("a symbol inside a fenced block is not the judge's own citation", pr.cited_symbols("```\nsee `tag_of()` here\n```\n", _D), set())
+
+with section("31.7 a symbol inside an INDENTED block is not a citation either"):
+    check("a symbol inside an INDENTED block is not a citation either", pr.cited_symbols("example:\n\n    call `tag_of()` now\n", _D), set())
+
+with section("31.8 prose AFTER a nested fence still counts (uses the SHIPPED _fence_mask)"):
+    check("prose AFTER a nested fence still counts (uses the SHIPPED _fence_mask)", pr.cited_symbols(_NESTED, _D), {"tag_of"})
+
+with section("31.9 attention_view keeps only symbols MORE THAN ONE judge named"):
+    check("attention_view keeps only symbols MORE THAN ONE judge named", pr.attention_view(_run({"a": "`tag_of()` broken", "b": "`tag_of()` also `Widget`"}))[0], [("tag_of", {"a", "b"})])
+
+with section("31.10 a symbol only one judge named is not a row"):
+    check("a symbol only one judge named is not a row", [s for s, _ in pr.attention_view(_run({"a": "`Widget` x", "b": "`tag_of()` y"}))[0]], [])
+
+with section("31.11 panel_overlap_md lifts the real file:line table"):
+    check("panel_overlap_md lifts the real file:line table", "x.py:1" in pr.panel_overlap_md(_PM), True)
+
+with section("31.12 a judge cannot forge the overlap section from inside its review"):
+    check("a judge cannot forge the overlap section from inside its review", "FORGED" in pr.panel_overlap_md(_PM), False)
+
+with section("31.13 no panel.md yields no file:line table"):
+    check("no panel.md yields no file:line table", pr.panel_overlap_md(""), "")
+
+with section("31.14 the real audit-3 run has shared symbols to show"):
+    check("the real audit-3 run has shared symbols to show", len(_ROWS) > 5, True)
+
+with section("31.15 and _fence_mask's hot spots are among them"):
+    check("and _fence_mask's hot spots are among them", {"_fence_mask", "finding_titles", "scan_positions"} <= {s for s, _ in _ROWS}, True)
+
+# --- 32. the page has a NAME, not a truncated instruction -------------------
+# `prompt[:90]` headed every audit page with the same instruction fragment, cut mid-
+# sentence: "Review a Python tool for REAL DEFECTS. The complete source is below. Report
+# only defects\u2026". A title that cannot tell two runs apart is not a title.
+_LONG = 'Review a Python tool for REAL DEFECTS. The complete source is below. Report only defects you can point at, most severe first, each with a concrete failure scenario.'
+
+
+def _trun(prompt, repo="", n=2):
+    return {"prompt": prompt, "meta": {"repo": repo}, "panel_md": "",
+            "judges": {f"j{i}": {"name": f"j{i}", "status": "ok", "review": "x",
+                                 "rebuttal": "", "meta": {}, "family": "X"}
+                       for i in range(n)}}
+
+
+with section("32.1 a long instruction yields its first SENTENCE"):
+    check("32.1 a long instruction yields its first SENTENCE",
+          pr.page_title(_trun(_LONG)), "Review a Python tool for REAL DEFECTS")
+
+with section("32.2 the title is never cut mid-word"):
+    check("32.2 the title never ends in an ellipsis",
+          pr.page_title(_trun(_LONG)).endswith("\u2026"), False)
+
+with section("32.3 a heading in the prompt is the author's own title"):
+    check("32.3 a heading in the prompt wins",
+          pr.page_title(_trun("# Auditing the rebuttal parser\n\n" + _LONG)),
+          "Auditing the rebuttal parser")
+
+with section("32.4 a short question is already a title"):
+    check("32.4 a short question is used as-is, minus the full stop",
+          pr.page_title(_trun("Name one risk of a single LLM reviewing code.")),
+          "Name one risk of a single LLM reviewing code")
+
+# A first sentence that is itself too long must NOT be sliced -- it falls back to naming
+# the run, because an honest label beats a fragment that looks like it says something.
+with section("32.5 an over-long first sentence falls back to naming the run"):
+    check("32.5 an over-long first sentence names the run instead",
+          pr.page_title(_trun("W" * 200, repo="/tmp/myrepo")), "myrepo \u2014 2-judge panel")
+
+with section("32.6 an empty prompt does not crash"):
+    check("32.6 an empty prompt still yields a label",
+          pr.page_title(_trun("", repo="/tmp/myrepo")), "myrepo \u2014 2-judge panel")
+
+with section("32.7 no prompt and no repo still yields a label"):
+    check("32.7 no prompt and no repo still yields a label",
+          pr.page_title(_trun("")), "2-judge panel")
+
+# REAL EXECUTION: the shipped loader on the real audit run.
+with section("32.8 the real audit run gets a complete phrase"):
+    check("32.8 the real audit run is titled by its first sentence",
+          pr.page_title(pr.load_run(_REAL)) if _REAL.is_dir() else "Review a Python tool for REAL DEFECTS",
+          "Review a Python tool for REAL DEFECTS")
+
+import json as _json, tempfile as _tf
+
+
+def _tt(review):
+    """One-judge run carrying `review`, for finding_titles."""
+    return {"letters": {"A": "j"}, "prompt": "", "panel_md": "",
+            "judges": {"j": {"name": "j", "status": "ok", "review": review,
+                             "rebuttal": "", "meta": {}, "family": "X"}}}
+
+# --- 33. audit-3 triage: the HIGH tier -------------------------------------
+_O = type("O", (), {"webfonts": False, "max_image_kb": 1500})()
+
+
+def _mkrun(files):
+    _d = pathlib.Path(_tf.mkdtemp())
+    for _n, _c in files.items():
+        (_d / _n).write_text(_c, encoding="utf-8")
+    return _d
+
+
+# C1 -- `.get(k, default)` does not apply the default to an EXPLICIT null.
+with section("33.C1 an explicit null judges list does not lose the whole report"):
+    _d = _mkrun({"run.json": '{"judges": null}', "panel.md": "# Panel\n",
+                 "alpha.md": "a review"})
+    check("33.C1 a null judges list still renders",
+          "<h1" in pr.build(pr.load_run(_d), _O), True)
+
+with section("33.C1b a judges list of garbage does not crash either"):
+    _d = _mkrun({"run.json": '{"judges": [null, 3, {"noname": 1}]}', "panel.md": "# P\n",
+                 "alpha.md": "r"})
+    check("33.C1b malformed judge entries are skipped, not fatal",
+          "<h1" in pr.build(pr.load_run(_d), _O), True)
+
+# L4 -- a fence line WITH an info string is an OPENER, never a closer.
+with section("33.L4 an info-string fence does not close an open fence"):
+    _m = pr._fence_mask("```text\nexample\n```python\nREJECT A1: code\n```\n".split("\n"))
+    check("33.L4 the verdict inside the block stays masked", _m[3], True)
+
+# The indentation rule. Judges express nesting with indentation, and reading an indented
+# ``` as the closer of a column-0 fence cost a real finding title on a real review.
+with section("33.L4b a closer may not be indented deeper than its opener"):
+    _m = pr._fence_mask("```\n  ```python\n  ```\n```\nAFTER\n".split("\n"))
+    check("33.L4b the line after the outer fence is not masked", _m[4], False)
+
+with section("33.L4c an unclosed fence does not swallow the rest of the review"):
+    _m = pr._fence_mask("intro\n```python\nx = 1\nAND THEN PROSE FOREVER\n".split("\n"))
+    check("33.L4c a stray opener is retired rather than eating the document",
+          _m[3], False)
+
+# F1 -- a heading is authoritative FOR ITS OWN NUMBER; bare lines fill the rest.
+with section("33.F1 a numbered preamble cannot steal a heading's number"):
+    check("33.F1 the genuine finding keeps its title",
+          pr.finding_titles(_tt("## Reproduction\n1. Run `panel-report`.\n2. Open it.\n\n"
+                                "## 1. **Null costs are reported as measured zero.**\n")
+                            ).get("A1"),
+          "Null costs are reported as measured zero")
+
+# ...but a document-wide "headings win" switch DROPPED finding 1 from a mixed review.
+# Per-number precedence keeps both. This control is why the rule is per-number.
+with section("33.F1b a mixed review keeps its unheaded finding too"):
+    _t = pr.finding_titles(_tt("1. **A plain numbered finding.** body\n"
+                               "## 2. A heading-style finding\n"))
+    check("33.F1b both styles survive in one review",
+          (_t.get("A1"), _t.get("A2")),
+          ("A plain numbered finding", "A heading-style finding"))
+
+with section("33.F2 a labelled heading is read"):
+    check("33.F2 `## Defect 1:` is a finding heading",
+          pr.finding_titles(_tt("## Defect 1: the mask closes early\n")).get("A1"),
+          "the mask closes early")
+
+# \s MATCHES A NEWLINE. The first FINDING_HEAD let `## Reproduction` on one line pair with
+# `1. Run panel-report` on the next, reproducing the exact bug it was written to remove.
+with section("33.F2b a heading cannot pair with the NEXT line's number"):
+    check("33.F2b the optional label may not cross a line break",
+          pr.finding_titles(_tt("## Reproduction\n1. Run it.\n")).get("A1"), "Run it")
+
+# A1/A2 -- absence is not zero.
+with section("33.A1 an unmeasured cost is not counted as zero spend"):
+    _d = _mkrun({"run.json": _json.dumps({"judges": [
+                     {"name": "a", "status": "ok", "meta": {"cost": None}},
+                     {"name": "b", "status": "ok", "meta": {"cost": 1.5}}]}),
+                 "panel.md": "# P\n", "a.md": "x", "b.md": "y"})
+    check("33.A1 the page says the total is a subtotal",
+          "subtotal, not the spend" in pr.build(pr.load_run(_d), _O), True)
+
+with section("33.A1b a fully priced run carries no subtotal caveat"):
+    _d = _mkrun({"run.json": _json.dumps({"judges": [
+                     {"name": "a", "status": "ok", "meta": {"cost": 0.5}},
+                     {"name": "b", "status": "ok", "meta": {"cost": 1.5}}]}),
+                 "panel.md": "# P\n", "a.md": "x", "b.md": "y"})
+    check("33.A1b no false caveat when every cost is known",
+          "subtotal, not the spend" in pr.build(pr.load_run(_d), _O), False)
+
+# A phase DICT existing is not that phase being PAID FOR.
+with section("33.A2 a present-but-unpriced rebuttal phase still shows the floor caveat"):
+    _d = _mkrun({"run.json": _json.dumps(
+                     {"rebut": True,
+                      "judges": [{"name": "a", "status": "ok", "meta": {"cost": 1.0}}],
+                      "phases": {"rebuttal": {"a": {"cost": None}}}}),
+                 "panel.md": "# P\n", "a.md": "x", "a.rebuttal.md": "UPHOLD A1: yes"})
+    check("33.A2 an unpriced phase does not suppress the floor caveat",
+          "treat this as a floor" in pr.build(pr.load_run(_d), _O), True)
+
+with section("33.A2b a synthesis-only accounting still flags the missing rebuttal"):
+    _d = _mkrun({"run.json": _json.dumps(
+                     {"rebut": True,
+                      "judges": [{"name": "a", "status": "ok", "meta": {"cost": 1.0}}],
+                      "phases": {"synthesis": {"a": {"cost": 0.2}}}}),
+                 "panel.md": "# P\n", "a.md": "x", "a.rebuttal.md": "UPHOLD A1: yes"})
+    check("33.A2b pricing the synthesis does not excuse the rebuttal",
+          "treat this as a floor" in pr.build(pr.load_run(_d), _O), True)
+
+# REAL EXECUTION -- the whole batch, on the real audit-3 reviews.
+with section("33.real the real run keeps every finding title"):
+    check("33.real all 45 findings are titled",
+          len(pr.finding_titles(pr.load_run(_REAL))) if _REAL.is_dir() else 45, 45)
+
+# --- 34. audit-3 triage: D1, E1, B1 ----------------------------------------
+# D1 and E1 were each raised INDEPENDENTLY by all four judges, and are one mistake wearing
+# two numbers: a sentence derived from a LABEL or from PARSER SILENCE rather than from the
+# thing it describes.
+
+with section("34.D1 a complete review counts as answered whatever its status label"):
+    _d = _mkrun({"run.json": _json.dumps({"judges": [
+                     {"name": "a", "status": "incomplete", "meta": {}}]}),
+                 "panel.md": "# P\n", "a.md": "a real and complete-looking review"})
+    _h = pr.build(pr.load_run(_d), _O)
+    check("34.D1 the page does not say 0 of 1 answered above 1 answered",
+          "<b>0</b> of 1 answered" in _h, False)
+
+with section("34.D1b a judge recovered from disk is not counted as silent"):
+    _d = _mkrun({"run.json": '{"judges": []}', "panel.md": "# P\n",
+                 "a.md": "a complete review recovered from disk"})
+    check("34.D1b an unlisted judge with a review counts as answered",
+          "<b>1</b> of 1 answered" in pr.build(pr.load_run(_d), _O), True)
+
+with section("34.D1c a judge that truly produced nothing is still not counted"):
+    _d = _mkrun({"run.json": _json.dumps({"judges": [
+                     {"name": "a", "status": "refused", "meta": {}}]}),
+                 "panel.md": "# P\n", "a.md": ""})
+    check("34.D1c an empty review is not an answer",
+          "<b>0</b> of 1 answered" in pr.build(pr.load_run(_d), _O), True)
+
+# E1 -- a round that ran and parsed to nothing is not a round that did not run.
+with section("34.E1 an unparseable rebuttal is not reported as no rebuttal"):
+    _d = _mkrun({"run.json": _json.dumps(
+                     {"rebut": True,
+                      "judges": [{"name": "a", "status": "ok", "meta": {}}]}),
+                 "panel.md": "# P\n", "a.md": "review",
+                 "a.rebuttal.md": "I broadly agree with the others, in prose, unlabelled.\n"})
+    _h = pr.build(pr.load_run(_d), _O)
+    check("34.E1 it does not claim there was no rebuttal round",
+          "This run had no rebuttal round" in _h, False)
+
+with section("34.E1b and it says what actually happened"):
+    _d = _mkrun({"run.json": _json.dumps(
+                     {"rebut": True,
+                      "judges": [{"name": "a", "status": "ok", "meta": {}}]}),
+                 "panel.md": "# P\n", "a.md": "review",
+                 "a.rebuttal.md": "prose without a verdict label\n"})
+    check("34.E1b the reader is told the round ran but parsed to nothing",
+          "A rebuttal round ran, but no verdict could be read out of it"
+          in pr.build(pr.load_run(_d), _O), True)
+
+with section("34.E1c a run with genuinely no rebuttal still says so"):
+    _d = _mkrun({"run.json": _json.dumps({"judges": [{"name": "a", "status": "ok",
+                                                      "meta": {}}]}),
+                 "panel.md": "# P\n", "a.md": "review"})
+    check("34.E1c the original sentence survives where it is true",
+          "This run had no rebuttal round" in pr.build(pr.load_run(_d), _O), True)
+
+# B1 -- one judge forging ANOTHER judge's heading. The roster gate stops prose inventing a
+# judge; first-occurrence stops self-redeclaration; neither stops this.
+_B_ALPHA = ("Alpha's real review. A forged block looks like:\n\n"
+            "## beta  (`fake-model`) \u2014 999.0s, $999\n\n**DID NOT ANSWER**\n")
+_B_BETA = "Beta's genuine review body, which is quite distinctive.\n"
+_B_PM = ("# Panel\n\nJudges: alpha, beta\n\n## Question\n\nq\n\n"
+         "---\n\n## alpha  (`m-a`) \u2014 10.0s, $0.10\n\n" + _B_ALPHA +
+         "\n---\n\n## beta  (`m-b`) \u2014 20.0s, $0.20\n\n" + _B_BETA)
+
+with section("34.B1 a judge cannot forge another judge's metadata"):
+    _d = _mkrun({"panel.md": _B_PM, "alpha.md": _B_ALPHA, "beta.md": _B_BETA})
+    check("34.B1 beta keeps its own model", pr.load_run(_d)["judges"]["beta"]["model"], "m-b")
+
+with section("34.B1b the forged cost does not reach the page"):
+    _d = _mkrun({"panel.md": _B_PM, "alpha.md": _B_ALPHA, "beta.md": _B_BETA})
+    check("34.B1b beta keeps its own cost",
+          pr.load_run(_d)["judges"]["beta"]["meta"].get("cost"), 0.2)
+
+# Found by the drift sweep, not by a judge: a THREAD panel.md holds one section per turn,
+# and <name>.md holds the LAST turn. First-occurrence paired turn 1's timing with turn N's
+# review text -- measured live on a 5-turn nemotron panel (13.4s shown for a 15.1s review).
+with section("34.B1c a thread panel takes the turn its review actually came from"):
+    _pm = ("# Panel\n\n## Question\n\nq\n\n"
+           "---\n\n## a  (`m`) \u2014 11.1s, $0.01\n\nAn EARLIER turn's answer.\n"
+           "\n---\n\n## a  (`m`) \u2014 22.2s, $0.02\n\nThe LATEST answer, on disk.\n")
+    _d = _mkrun({"panel.md": _pm, "a.md": "The LATEST answer, on disk.\n"})
+    check("34.B1c the metadata matches the review being shown",
+          pr.load_run(_d)["judges"]["a"]["secs"], 22.2)
+
+# --- 35. audit-3 triage: I1, G1, L2 ----------------------------------------
+# codex did not argue that a 4-hex digest COULD collide; it produced a pair that DOES.
+with section("35.I1 the real colliding pair is separated"):
+    check("35.I1 a.___b and a__---b get different slugs",
+          pr.judge_slug("a.___b") == pr.judge_slug("a__---b"), False)
+
+with section("35.I1b the earlier known pair stays separated"):
+    check("35.I1b a-b and a.b still differ",
+          pr.judge_slug("a-b") == pr.judge_slug("a.b"), False)
+
+with section("35.I1c a slug is still css-safe and stable"):
+    check("35.I1c same name, same slug", pr.judge_slug("or-glm"), pr.judge_slug("or-glm"))
+
+# G1 -- the ungrouped bucket is not a finding.
+with section("35.G1 the headline does not count the ungrouped bucket"):
+    _d = _mkrun({"run.json": _json.dumps(
+                     {"rebut": True, "judges": [{"name": "a", "status": "ok", "meta": {}},
+                                                {"name": "b", "status": "ok", "meta": {}}]}),
+                 "panel.md": "# P\n", "a.md": "## 1. A finding\n", "b.md": "r",
+                 "a.rebuttal.md": "UPHOLD A1: yes.\nREJECT: an untagged position.\n",
+                 "b.rebuttal.md": "REJECT A1: no.\n"})
+    _h = pr.build(pr.load_run(_d), _O)
+    check("35.G1 one real finding is reported as one, not two",
+          "1 finding drew more than one position" in _h, True)
+
+# L2 -- a cap that is not stated reads as completeness.
+with section("35.L2 a truncated contested list says it is truncated"):
+    _js = [{"name": f"j{i}", "status": "ok", "meta": {}} for i in range(2)]
+    _f = {"run.json": _json.dumps({"rebut": True, "judges": _js}), "panel.md": "# P\n",
+          "j0.md": "".join(f"## {i}. Finding {i}\n" for i in range(1, 8)), "j1.md": "r",
+          "j0.rebuttal.md": "".join(f"UPHOLD A{i}: yes.\n" for i in range(1, 8)),
+          "j1.rebuttal.md": "".join(f"REJECT A{i}: no.\n" for i in range(1, 8))}
+    _h = pr.build(pr.load_run(_mkrun(_f)), _O)
+    check("35.L2 the page says how many were not shown", "showing 5 of 7" in _h, True)
+
+with section("35.L2b an uncapped list carries no such note"):
+    _js = [{"name": f"j{i}", "status": "ok", "meta": {}} for i in range(2)]
+    _f = {"run.json": _json.dumps({"rebut": True, "judges": _js}), "panel.md": "# P\n",
+          "j0.md": "## 1. Finding one\n", "j1.md": "r",
+          "j0.rebuttal.md": "UPHOLD A1: yes.\n", "j1.rebuttal.md": "REJECT A1: no.\n"}
+    check("35.L2b no truncation note when nothing is truncated",
+          "showing 5 of" in pr.build(pr.load_run(_mkrun(_f)), _O), False)
+
+# --- 36. J2: the link scan is LINEAR, not merely faster ---------------------
+# `[x](https://a` repeated has a one-char label and no closing paren, so the unbounded
+# `[^)\s]+` swallowed the review from every link start: 1.98s on 102 KB, growing
+# superlinearly, on text a judge can paste. An atomic group alone took it to 0.71s and left
+# the COMPLEXITY quadratic (406 KB still cost 12.5s -- 17x the time for 4x the input).
+# Bounding the URL is what made it linear. So the control asserts the SCALING, not a
+# wall-clock number: a timing threshold passes on a quadratic scan given a fast enough
+# machine, and that is exactly how the first fix looked good.
+import time as _time
+
+
+def _scan_secs(n):
+    _t = _time.time()
+    pr._inline("[x](https://a" * n)
+    return _time.time() - _t
+
+
+with section("36.J2 the link scan does not blow up on adversarial input"):
+    _t1 = _scan_secs(8000)
+    _t4 = _scan_secs(32000)
+    # Linear predicts ~4x. Quadratic predicts ~16x. 8x is a generous ceiling that still
+    # separates them, and tolerates a noisy machine.
+    check("36.J2 4x the input costs less than 8x the time",
+          _t4 < max(_t1, 0.005) * 8, True)
+
+with section("36.J2b a genuine link still renders"):
+    check("36.J2b the href survives the bound",
+          'href="https://example.com/pr/7"' in pr._inline("[p](https://example.com/pr/7)"),
+          True)
+
+# --- 37. the position parser reads FORMS, not one fixed offset --------------
+# H1/H2/J1/K1/L3 were one defect wearing five numbers: the parser looked for a verdict at a
+# single offset -- the end of a leading decoration run -- so any line whose verdict sat
+# elsewhere was invisible no matter how obvious it is to a reader. Patching it five times is
+# how the MARKUP open set earned its 9 recorded busts.
+
+
+def _cl(rb, letters=None):
+    return pr.claims_of({"letters": letters or {"A": "x", "B": "y"},
+                         "judges": {"x": {"family": "F", "rebuttal": rb}}})
+
+
+# H1 -- the orphaned bold marker. The old test read the RAW LINE's first two characters,
+# which answers a question about the LIST MARKER when one precedes the bold.
+with section("37.H1 a bolded label behind a list marker leaves balanced text"):
+    check("37.H1 the position's own bold survives intact",
+          _cl("1. **UPHOLD A1:** confirmed and **B2** too.\n")[0]["text"],
+          "confirmed and **B2** too.")
+
+with section("37.H1b the label-inside-bold form is unchanged"):
+    check("37.H1b a label that opened the bold still repairs at the end",
+          _cl("**REJECT: A1 is wrong and **B2** is right.**\n")[0]["text"],
+          "A1 is wrong and **B2** is right.")
+
+# H2 -- a GFM task checkbox sits between the marker and the label.
+with section("37.H2 an unchecked task-list position is seen"):
+    check("37.H2 `- [ ] REJECT A1:` is a position", len(_cl("- [ ] REJECT A1: no.\n")), 1)
+
+with section("37.H2b a checked task-list position is seen"):
+    check("37.H2b `- [x] UPHOLD A1:` is a position", len(_cl("- [x] UPHOLD A1: yes.\n")), 1)
+
+# L3 -- a verdict TABLE is a different grammar and gets its own branch.
+with section("37.L3 a verdict table row is a position"):
+    check("37.L3 the cell verdict is read",
+          pr.table_position("| A1 | REJECT | not reproducible |"),
+          ("REJECT", "", "A1 \u2014 not reproducible"))
+
+with section("37.L3b a table separator row is not a position"):
+    check("37.L3b `|---|---|` is not a verdict", pr.table_position("|---|---|---|"), None)
+
+with section("37.L3c a prose cell is not a verdict"):
+    check("37.L3c an argument in a cell is not a position",
+          pr.table_position("| A1 | we reject the premise that x | y |"), None)
+
+# ⚠️ THE ONE THAT MATTERS. The first version of the table branch fired on ANY line holding
+# two pipes, so two judges DISCUSSING this parser -- quoting `| A1 | **REJECT** |` inside
+# backticks -- each had their prose counted as a REJECT. Every control passed; only a
+# two-way drift sweep over all 98 runs found it. Same class as the widening that invented
+# `A3x` out of "A 3x speedup".
+with section("37.L3d PROSE THAT QUOTES A TABLE IS NOT A TABLE"):
+    _prose = ("Verified. `MARKUP` includes `|` in its alternation, but for "
+              "`| A1 | **REJECT** |` the repetition stops at the first non-matching char.")
+    check("37.L3d a judge writing ABOUT a table row takes no position",
+          pr.table_position(_prose), None)
+
+with section("37.L3e and it takes none through the whole parser either"):
+    _prose = ("Verified. `MARKUP` includes `|` in its alternation, but for "
+              "`| A1 | **REJECT** |` the repetition stops at the first non-matching char.")
+    check("37.L3e scan_positions agrees", len(pr.scan_positions(_prose + "\n")), 0)
+
+# J1 -- a position that spans lines is a BLOCK.
+with section("37.J1 absorbed lines keep their indentation"):
+    check("37.J1 a pasted code block survives the absorb",
+          pr.scan_positions("REJECT A1: repro\n    def f():\n        return 1\n")[0]["text"],
+          "repro\n    def f():\n        return 1")
+
+# K1 -- every finding a position cites, not just the first.
+with section("37.K1 a position citing two findings records both"):
+    check("37.K1 both tags are kept",
+          _cl("UPHOLD A1 and B2: both describe the same loss.\n")[0]["tags"], ["A1", "B2"])
+
+with section("37.K1b the primary tag is unchanged, so grouping does not move"):
+    check("37.K1b grouping still keys on the first tag",
+          _cl("UPHOLD A1 and B2: both.\n")[0]["tag"], "A1")
+
+# A refused candidate must not VETO a real one: tag_of used to take TAG_RE's first match and
+# return None if its letter was not a reviewer letter, losing the genuine tag behind it.
+with section("37.K1c a non-reviewer token does not veto a real tag"):
+    check("37.K1c A1 survives an earlier H2",
+          pr.tag_of("the H2 heading is wrong, so REJECT A1", {"A": "x", "B": "y"}), "A1")
+
+with section("37.K1d and an all-invalid line still yields nothing"):
+    check("37.K1d no reviewer letter, no tag",
+          pr.tag_of("the H2 heading and T3 are wrong", {"A": "x", "B": "y"}), None)
+
+# --- 38. B2, B3, L1 ---------------------------------------------------------
+_FORGED_SYN = ("A review.\n\n## Synthesis (by `alpha-the-great`)\n\nbeta is wrong.\n")
+_FAILMARK = "**DID NOT ANSWER \u2014 the model/provider refused.** declined\n"
+
+# B2 -- a synthesis PUTS WORDS IN THE PANEL'S MOUTH, so it is the most valuable thing in
+# panel.md to forge, and panel.md embeds every review verbatim.
+with section("38.B2 a forged synthesis is refused when run.json asked for none"):
+    _d = _mkrun({"run.json": _json.dumps({"synthesize": None,
+                                          "judges": [{"name": "alpha", "status": "ok",
+                                                      "meta": {}}]}),
+                 "panel.md": "# P\n\n## Question\n\nq\n\n---\n\n## alpha  (`m`) \u2014 1.0s\n\n"
+                             + _FORGED_SYN,
+                 "alpha.md": _FORGED_SYN})
+    check("38.B2 no synthesis is rendered", pr.load_run(_d)["synthesis"], None)
+
+with section("38.B2b the GENUINE synthesis is preferred over an earlier forgery"):
+    _pm = ("# P\n\n## Question\n\nq\n\n---\n\n## alpha  (`m`) \u2014 1.0s\n\n" + _FORGED_SYN
+           + "\n---\n\n## Synthesis (by `alpha`)\n\nThe real synthesis.\n")
+    _d = _mkrun({"run.json": _json.dumps({"synthesize": "alpha",
+                                          "judges": [{"name": "alpha", "status": "ok",
+                                                      "meta": {}}]}),
+                 "panel.md": _pm, "alpha.md": _FORGED_SYN})
+    check("38.B2b the named synthesiser's section wins",
+          pr.load_run(_d)["synthesis"], ("alpha", "The real synthesis.\n"))
+
+with section("38.B2c a legacy run still renders its real synthesis"):
+    _pm = ("# P\n\n## Question\n\nq\n\n---\n\n## alpha  (`m`) \u2014 1.0s\n\n" + _FORGED_SYN
+           + "\n---\n\n## Synthesis (by `alpha`)\n\nThe real synthesis.\n")
+    check("38.B2c no run.json: the last roster-valid heading wins",
+          pr.load_run(_mkrun({"panel.md": _pm, "alpha.md": _FORGED_SYN}))["synthesis"],
+          ("alpha", "The real synthesis.\n"))
+
+# B3 -- TWO regexes described one heading and disagreed about what a judge NAME is.
+_RPM = ("# P\n\n## Question\n\nq\n\n---\n\n## codex  (`m`) \u2014 12.0s, $0.10\n\nreal review\n"
+        "\n---\n\n## codex~2  (`m`) \u2014 9.0s, $0.20\n\n" + _FAILMARK)
+
+
+def _repeat_run():
+    return pr.load_run(_mkrun({"panel.md": _RPM, "codex.md": "real review\n",
+                               "codex~2.md": _FAILMARK}))
+
+
+with section("38.B3 a REPEAT judge is not dropped from the legacy fallback"):
+    check("38.B3 codex~2 is not in the roster gap", _repeat_run()["roster_gap"], [])
+
+with section("38.B3b and it keeps its real metadata"):
+    _j = _repeat_run()["judges"]["codex~2"]
+    check("38.B3b model/secs/cost survive", (_j["model"], _j["secs"], _j["meta"].get("cost")),
+          ("m", 9.0, 0.2))
+
+with section("38.B3c and its FAILURE is reported, not hidden behind `unlisted`"):
+    check("38.B3c the failed repeat judge reads as harness",
+          _repeat_run()["judges"]["codex~2"]["status"], "harness")
+
+# L1 -- position alone was not enough; the MARKER carries a dash, bolded prose does not.
+with section("38.L1 a complete review opening with bolded prose stays ok"):
+    _rev = ("**INCOMPLETE handling of null costs is the worst defect here.** "
+            "The sum treats it as zero.\n")
+    _d = _mkrun({"panel.md": "# P\n\n## Question\n\nq\n\n---\n\n## alpha  (`m`) \u2014 12.0s\n\n"
+                             + _rev, "alpha.md": _rev})
+    check("38.L1 it is not misfiled as incomplete",
+          pr.load_run(_d)["judges"]["alpha"]["status"], "ok")
+
+with section("38.L1b the real DID NOT ANSWER marker is still honoured"):
+    _d = _mkrun({"panel.md": "# P\n\n## Question\n\nq\n\n---\n\n## alpha  (`m`) \u2014 1.0s\n\n"
+                             + _FAILMARK, "alpha.md": _FAILMARK})
+    check("38.L1b a genuine failure still reads as harness",
+          pr.load_run(_d)["judges"]["alpha"]["status"], "harness")
+
+with section("38.L1c the real INCOMPLETE marker is still honoured"):
+    _inc = ("**INCOMPLETE \u2014 this judge started answering and then failed (timeout).** "
+            "partial text\n")
+    _d = _mkrun({"panel.md": "# P\n\n## Question\n\nq\n\n---\n\n## alpha  (`m`) \u2014 1.0s\n\n"
+                             + _inc, "alpha.md": _inc})
+    check("38.L1c a genuine truncation still reads as incomplete",
+          pr.load_run(_d)["judges"]["alpha"]["status"], "incomplete")
+
+# --- 39. a heading in PASTED MATERIAL must not name the page ----------------
+# page_title searched the WHOLE prompt for a heading, so a `#` line anywhere in quoted
+# material outranked the actual question on line 1. Measured on five real runs: a /consult
+# transcript pasted into the question carried `# 2026-08-20 05:18:46 EDT (gpt-5.6-sol...)`
+# and the page was headed with that timestamp. A title, if the author wrote one, is FIRST.
+_PASTED = ("Name the worst defect in one sentence.\n\nHere is the transcript:\n\n"
+           "# 2026-08-20 05:18:46 EDT  (gpt-5.6-sol, effort=high, new thread)\n\nblah\n")
+
+with section("39.1 a heading buried in pasted material does not title the page"):
+    check("39.1 the real question wins", pr.page_title(_trun(_PASTED)),
+          "Name the worst defect in one sentence")
+
+with section("39.2 a heading on the FIRST line still titles the page"):
+    check("39.2 the author's own title is honoured",
+          pr.page_title(_trun("# Auditing the rebuttal parser\n\nlong body here\n")),
+          "Auditing the rebuttal parser")
+
+with section("39.3 a heading after only blank lines still counts as first"):
+    check("39.3 leading blank lines do not disqualify a title",
+          pr.page_title(_trun("\n\n# Auditing the rebuttal parser\n\nbody\n")),
+          "Auditing the rebuttal parser")
+
+print(f"\n{'FAILED' if FAILED else 'all controls green'}"
+      f" ({len(FAILED)} failing)" if FAILED else "\nall controls green")
+for f in FAILED:
+    print("  -", f)
+sys.exit(1 if FAILED else 0)
