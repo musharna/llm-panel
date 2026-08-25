@@ -1,7 +1,7 @@
 {
   "ex_info": {
-    "start_time": "2026-08-25T17:16:12.608065",
-    "results_dir": "/home/mjarnold/llm-panel/recall/benchmarks/results-pilot-2judge/pos",
+    "start_time": "2026-08-25T17:15:10.995167",
+    "results_dir": "/home/mjarnold/llm-panel/recall/benchmarks/results-clean-3judge/pos",
     "reviewer": "llm-panel",
     "line_k": 1,
     "limit": null,
@@ -13,15 +13,15 @@
     "evaluated_instances": 18,
     "missing_instances": 0,
     "expected_notes": 123,
-    "generated_notes": 59,
-    "matched_line_notes": 16,
-    "matched_semantic_notes": 7,
-    "semantic_match_rate": 0.119,
-    "line_match_rate": 0.271,
-    "semantic_recall_rate": 0.057,
-    "line_recall_rate": 0.13,
-    "semantic_f1": 0.077,
-    "line_f1": 0.176,
+    "generated_notes": 79,
+    "matched_line_notes": 26,
+    "matched_semantic_notes": 13,
+    "semantic_match_rate": 0.165,
+    "line_match_rate": 0.329,
+    "semantic_recall_rate": 0.106,
+    "line_recall_rate": 0.211,
+    "semantic_f1": 0.129,
+    "line_f1": 0.257,
     "total_duration_seconds": 0.0,
     "avg_duration_seconds": 0.0,
     "total_input_tokens": 0,
@@ -59,7 +59,7 @@
           "to_line": 221,
           "line_match": true,
           "semantic_match": true,
-          "matched_note": "- **High — `src/draw/lv_draw_label.c:221`**: `text_size.x` is trusted for every `LV_TEXT_FLAG_EXPAND` descriptor, but only the label widget populates it. Input: initialize a draw descriptor with `lv_draw_label_dsc_init`, set text to `\"ABC\"` and enable `LV_TEXT_FLAG_EXPAND`, then call `lv_draw_label`. `text_size.x` remains zero, so the renderer uses a zero line width and splits/clips the text instead of drawing one expanded line."
+          "matched_note": "**DEFECT 1: EXPAND mode uses width-constrained cached size instead of unconstrained size**\n\n**File:** `src/draw/lv_draw_label.c`  \n**Line:** ~221 (in hunk `@@ -218,10 +218,7 @@`)\n\n**Failure scenario:**  \nA label with `long_mode = LV_LABEL_LONG_MODE_SCROLL` (which enables EXPAND) and text wider than the widget width.  \n- `lv_label_refr_text()` calculates `text_size` with `max_w = widget width` (constrained)  \n- `lv_draw_label_iterate_characters()` reads `dsc->text_size.x` for EXPAND mode  \n- Since cached size was constrained, `text_size.x == widget width` (not full text width)  \n- EXPAND logic thinks text fits, fails to scroll/show full text  \n\n**Root cause:** Old code called `lv_text_get_size(..., LV_COORD_MAX, ...)` for unconstrained measurement. New code uses `dsc->text_size.x` which was computed with constrained `max_w`.\n\n---"
         },
         {
           "note": "`label->text_size` is reused later for scroll alignment/scroll-circular logic, but it’s only updated in `lv_label_refr_text()`. If font/letter_space/line_space/flags/max_w or `label->text` change and `lv_label_refr_text()` is not called before `draw_main()`, `text_size` can become stale and cause wrong alignment/scroll behavior. Consider either recomputing size in the specific draw paths when needed, or ensure all setters that impact text metrics update `label->text_size` (or invalidate and trigger `lv_label_refr_text()`) before draw.",
@@ -87,9 +87,9 @@
           "side": "right",
           "from_line": 54,
           "to_line": 56,
-          "line_match": false,
-          "semantic_match": false,
-          "matched_note": ""
+          "line_match": true,
+          "semantic_match": true,
+          "matched_note": "**DEFECT 2: `text_size` field uninitialized until first `lv_label_refr_text()` call**\n\n**File:** `src/widgets/label/lv_label_private.h`  \n**Line:** 53 (in hunk `@@ -50,6 +50,8 @@`)\n\n**Failure scenario:**  \nLabel created → drawn before any text set / `lv_label_refr_text()` runs → `label->text_size` contains garbage → `lv_draw_label_iterate_characters()` reads garbage `text_size.x` → incorrect width used for layout/draw.\n\n**Note:** `invalid_size_cache` flag (line 52) is added but never checked/used in this diff, suggesting intended lazy-invalidation logic is missing."
         },
         {
           "note": "The new text_size field is not consistently updated when the cache is invalidated. In LV_EVENT_GET_SELF_SIZE handler, when invalid_size_cache is true, only size_cache gets updated but text_size remains stale. This creates inconsistency between the two cached size fields.",
@@ -113,7 +113,7 @@
           "side": "right",
           "from_line": 1866,
           "to_line": 1866,
-          "line_match": true,
+          "line_match": false,
           "semantic_match": false,
           "matched_note": ""
         },
@@ -179,9 +179,9 @@
           "side": "right",
           "from_line": 568,
           "to_line": 568,
-          "line_match": false,
-          "semantic_match": false,
-          "matched_note": ""
+          "line_match": true,
+          "semantic_match": true,
+          "matched_note": "**DEFECT 1: Validation allows `max_analyzed_offset: 0` which is not a meaningful value**\n\n**File:** `server/src/main/java/org/elasticsearch/search/fetch/subphase/highlight/AbstractHighlighterBuilder.java`  \n**Line:** 567 (in the changed hunk: `if (maxAnalyzedOffset != null && maxAnalyzedOffset < -1)`)\n\n**Failure scenario:**  \nUser sends a highlight request with `\"max_analyzed_offset\": 0`. The validation passes (0 ≥ -1). `QueryMaxAnalyzedOffset.create(0, indexMax)` returns `QueryMaxAnalyzedOffset(0)`. `LimitTokenOffsetAnalyzer(analyzer, 0)` is constructed. Depending on `LimitTokenOffsetAnalyzer` implementation, this either:\n- Analyzes **zero tokens** → highlighting returns empty fragments silently, or\n- Treats 0 as \"no limit\" → analyzes entire field, risking OOM on large fields (the very problem `max_analyzed_offset` exists to prevent).\n\nThe old validation correctly rejected `≤ 0` with \"must be a positive integer\". The new validation allows 0, which was almost certainly not intended (only `-1` was meant as the new sentinel value).\n\n---"
         },
         {
           "note": "`QueryMaxAnalyzedOffset.create(...)` returns `null` when the query param is unset. That part is fine, but the current code mixes wrapper-vs-null semantics in a confusing way:\n\n- In the `if` guard, `queryMaxAnalyzedOffset == null || queryMaxAnalyzedOffset.getNotNull() > maxAnalyzedOffset` is logically equivalent to the previous Integer-based check, but it obscures intent and invites mistakes.\n- `wrapAnalyzer(...)` takes a `QueryMaxAnalyzedOffset` yet still checks for null; this is OK functionally, but the naming (`maxAnalyzedOffset`) suggests a primitive/int, and makes it easy to accidentally call `getNotNull()` without guarding in future edits.\n\nSuggestion: keep an `Integer` variable for the query param and only construct the wrapper when non-null (or rename the wrapper variable to `queryMaxAnalyzedOffsetWrapper` / `queryMaxOffset`), so nullability is obvious and `getNotNull()` is only used on a clearly non-null reference.\n\n```suggestion\n        final Integer queryMaxAnalyzedOffset = fieldContext.field.fieldOptions().maxAnalyzedOffset();\n        final QueryMaxAnalyzedOffset queryMaxAnalyzedOffsetWrapper = QueryMaxAnalyzedOffset.create(queryMaxAnalyzedOffset, maxAnalyzedOffset);\n        Analyzer analyzer = wrapAnalyzer(\n            context.getSearchExecutionContext().getIndexAnalyzer(f -> Lucene.KEYWORD_ANALYZER),\n            queryMaxAnalyzedOffsetWrapper\n        );\n```",
@@ -235,9 +235,9 @@
           "side": "right",
           "from_line": 120,
           "to_line": 122,
-          "line_match": false,
-          "semantic_match": false,
-          "matched_note": ""
+          "line_match": true,
+          "semantic_match": true,
+          "matched_note": "- **High — `internal/parser/reparser.go:120`**: `importTag.ImportClause` is optional but is dereferenced unconditionally. Input `/** @import \"./side-effects.js\" */` produces a tag without an import clause, causing a nil-pointer panic instead of normal compilation."
         },
         {
           "note": "Directly mutating IsTypeOnly after cloning may violate immutability assumptions present in other parts of the codebase. Consider using a factory method or reconstruction pattern consistent with how similar mutations are performed elsewhere.",
@@ -245,7 +245,7 @@
           "side": "right",
           "from_line": 122,
           "to_line": 122,
-          "line_match": false,
+          "line_match": true,
           "semantic_match": false,
           "matched_note": ""
         },
@@ -265,7 +265,7 @@
           "side": "right",
           "from_line": 66,
           "to_line": 66,
-          "line_match": false,
+          "line_match": true,
           "semantic_match": false,
           "matched_note": ""
         },
@@ -407,7 +407,7 @@
           "side": "right",
           "from_line": 70,
           "to_line": 74,
-          "line_match": true,
+          "line_match": false,
           "semantic_match": false,
           "matched_note": ""
         },
@@ -447,7 +447,7 @@
           "side": "right",
           "from_line": 12,
           "to_line": 14,
-          "line_match": true,
+          "line_match": false,
           "semantic_match": false,
           "matched_note": ""
         },
@@ -467,9 +467,9 @@
           "side": "right",
           "from_line": 18,
           "to_line": 23,
-          "line_match": true,
-          "semantic_match": true,
-          "matched_note": "### Defect 2 (Critical): `makeManual.mts` cannot find the gen file when passed a bare test name\n\n**File:** `internal/fourslash/_scripts/makeManual.mts` line 22\n\nThe gen directory contains files named `{test.name}_test.go` (written by `convertFourslash.mts` at line 75). But `makeManual.mts` line 22 constructs the lookup path as `path.join(genDir, testFileName)` with no `_test.go` appended. If the user passes the logical test name (e.g. `myTest`), the script looks for `gen/myTest`, which does not exist; it errors with \"Test file not found\".\n\n**Failure scenario:** User runs `npm run makemanual -- myTest`. Script prints `Test file not found: .../tests/gen/myTest` and exits 1. The file that actually exists is `.../tests/gen/myTest_test.go`.\n\n**Fix needed:** Append `_test.go` when constructing the gen file path:\n```ts\nconst genTestFile = path.join(genDir, `${testFileName}_test.go`);\n```\n\n---\n\nBoth defects are independently sufficient to make the `makeManual` workflow non-functional. Together they guarantee no manual test is ever excluded from generation."
+          "line_match": false,
+          "semantic_match": false,
+          "matched_note": ""
         },
         {
           "note": "Missing error handling: The `renameSync` operation can fail (e.g., permission issues, disk full, file locked). If it fails after the existence check, the script will crash. Consider wrapping file operations in try-catch blocks to handle errors gracefully and provide meaningful error messages.",
@@ -477,7 +477,7 @@
           "side": "right",
           "from_line": 29,
           "to_line": 30,
-          "line_match": false,
+          "line_match": true,
           "semantic_match": false,
           "matched_note": ""
         },
@@ -487,7 +487,7 @@
           "side": "right",
           "from_line": 32,
           "to_line": 36,
-          "line_match": true,
+          "line_match": false,
           "semantic_match": false,
           "matched_note": ""
         },
@@ -619,7 +619,7 @@
           "side": "right",
           "from_line": 342,
           "to_line": 355,
-          "line_match": false,
+          "line_match": true,
           "semantic_match": false,
           "matched_note": ""
         },
@@ -645,7 +645,7 @@
           "side": "right",
           "from_line": 1502,
           "to_line": 1502,
-          "line_match": false,
+          "line_match": true,
           "semantic_match": false,
           "matched_note": ""
         },
@@ -656,8 +656,8 @@
           "from_line": 242,
           "to_line": 242,
           "line_match": true,
-          "semantic_match": false,
-          "matched_note": ""
+          "semantic_match": true,
+          "matched_note": "**File: `src/Mod/TechDraw/App/DrawViewPart.h` (lines 242-244)**"
         },
         {
           "note": "The newly added member functions `isCosmeticVertex`, `isCosmeticEdge`, and `isCenterLine` are incorrectly declared as `static` with an unnecessary `owner` parameter; remove `static` and the `App::DocumentObject* owner` argument to correctly implement them as non-static member functions operating on the current instance.",
@@ -666,8 +666,8 @@
           "from_line": 242,
           "to_line": 245,
           "line_match": false,
-          "semantic_match": true,
-          "matched_note": "**DEFECT 1: Signature mismatch between header declaration and implementation — compile error**\n\n**File:** `src/Mod/TechDraw/App/DrawViewPart.h` lines 242–244 (declared) vs `src/Mod/TechDraw/App/DrawViewPart.cpp` lines 1501–1506 (defined)\n\nThe header declares all three methods as **`static`** with **two parameters**:\n\n```cpp\nstatic bool isCosmeticVertex(App::DocumentObject* owner, std::string element);\nstatic bool isCosmeticEdge(App::DocumentObject* owner, std::string element);\nstatic bool isCenterLine(App::DocumentObject* owner, std::string element);\n```\n\nThe .cpp defines them as **non-static** with **one parameter**:\n\n```cpp\nbool DrawViewPart::isCosmeticVertex(std::string element) { ... }\nbool DrawViewPart::isCosmeticEdge(std::string element) { ... }\nbool DrawViewPart::isCenterLine(std::string element) { ... }\n```\n\nThese are entirely different signatures. The compiler will reject the definitions because they don't match any declaration in the class. Any call site using the header's 2-parameter static form will get an unresolved-symbol linker error; any call site trying to use the 1-parameter non-static form from the header won't find a declaration at all. **This code does not compile.**\n\nThe implementations in the .cpp are logically correct — they call `this->getProjVertexByIndex()` / `this->getEdge()` directly and don't need the old `owner` parameter. The header is the one that was not updated to match."
+          "semantic_match": false,
+          "matched_note": ""
         }
       ]
     },
@@ -683,7 +683,7 @@
           "to_line": 205,
           "line_match": true,
           "semantic_match": true,
-          "matched_note": "### 3. `linera-core/src/node.rs` — **Incomplete typo fix** (line 205 in diff)\n\n**Defect:** Error message fixes `\"Reponse\"` → `\"Response\"` but leaves `\"ceritifcates\"` misspelled (should be `\"certificates\"`).\n\n**Failure scenario:** Any code matching on this error string (logging, alerting, tests) fails to match the still-misspelled word.\n\n---"
+          "matched_note": "**Defect 3: node.rs:205 — Incomplete typo fix in error message**\n\n**File:** `linera-core/src/node.rs` (diff hunk line 205)\n**Failure scenario:** User triggers `MissingCertificates` error. Error message reads: `\"Response doesn't contain requested ceritifcates: [...]\"` — \"ceritifcates\" still misspelled (missing 'a' after 't'). Cosmetic but persists in logs/monitoring, greps for \"certificates\" miss this error."
         },
         {
           "note": "The `grace_period` parameter should use `Option<f64>` instead of `impl Into<Option<f64>>` to maintain strong type checking and code normalization standards.",
@@ -727,7 +727,7 @@
           "side": "right",
           "from_line": 202,
           "to_line": 202,
-          "line_match": false,
+          "line_match": true,
           "semantic_match": false,
           "matched_note": ""
         },
@@ -737,9 +737,9 @@
           "side": "right",
           "from_line": 94,
           "to_line": 94,
-          "line_match": true,
-          "semantic_match": true,
-          "matched_note": "**DEFECT 3: `kvcache/encoder.go:94` (hunk `@@ -91,7 +91,7 @@`)**\nPotential index out of range. `batch.Positions.Ints()[batch.Multimodal[...].Index]` assumes the multimodal index is within the flattened positions length. If `Positions` is multi-dimensional or the index exceeds the first dimension, this panics. No bounds check."
+          "line_match": false,
+          "semantic_match": false,
+          "matched_note": ""
         },
         {
           "note": "Potential issue: `batch.Positions.Ints()` is called inside the unwind loop. If `Ints()` materializes/copies tensor data, this can be unnecessarily expensive (and potentially unsafe if it depends on ctx/lifetime). Also you iterate `range curPositions` but index `batch.Sequences[k]`; this assumes `len(batch.Sequences)==len(curPositions)`—consider validating once or using a shared length variable.\n\nSuggestion: hoist `curPositions := batch.Positions.Ints()` outside the `for j := ...` loop and iterate up to `min(len(batch.Sequences), len(curPositions))` (or assert equality).\n\n```suggestion\n\t\t\tcurPositions := batch.Positions.Ints()\n\t\t\tfor j := i - 1; j >= 0; j-- {\n\t\t\t\t// assuming sequences and positions align\n\t\t\t\tfor k := 0; k < len(curPositions) && k < len(batch.Sequences); k++ {\n\t\t\t\t\t_ = c.caches[j].Remove(batch.Sequences[k], curPositions[k], math.MaxInt32)\n\t\t\t\t}\n\t\t\t}\n```",
@@ -807,7 +807,7 @@
           "side": "right",
           "from_line": 285,
           "to_line": 285,
-          "line_match": true,
+          "line_match": false,
           "semantic_match": false,
           "matched_note": ""
         },
@@ -837,7 +837,7 @@
           "side": "right",
           "from_line": 711,
           "to_line": 712,
-          "line_match": true,
+          "line_match": false,
           "semantic_match": false,
           "matched_note": ""
         }
@@ -855,7 +855,7 @@
           "to_line": 176,
           "line_match": true,
           "semantic_match": true,
-          "matched_note": "**DEFECT 2: `mp_rand_in_range32` truncates `max` to 32 bits, breaking large playlists**\n- **File:** `common/playlist.c` (hunk starting at `+170`)\n- **Line:** `+176` (`size_t j = mp_rand_in_range32(&s, n, pl->num_entries);`)\n- **Failure scenario:** Playlist with `num_entries > UINT32_MAX` (4,294,967,295 entries). The `max` argument is silently truncated to 32 bits, so `mp_rand_in_range32` returns values in `[n, truncated_max)` instead of `[n, num_entries)`. Fisher-Yates then only shuffles the first 4B entries; entries beyond that never move. Even though such playlists are unrealistic today, the API contract (`size_t` entries vs `uint32_t` range) is violated."
+          "matched_note": "### 3. `common/playlist.c:177` — Playlist shuffle truncation for large playlists\n**Failure scenario:** Playlist with `num_entries > UINT32_MAX` (4,294,967,295 entries). `mp_rand_in_range32(&s, n, pl->num_entries)` truncates `pl->num_entries` to `uint32_t`, silently reducing the shuffle range. Entries beyond `UINT32_MAX` are never swapped.\n```c\nsize_t j = mp_rand_in_range32(&s, n, pl->num_entries);  // pl->num_entries is size_t\n```\nFunction signature: `uint32_t mp_rand_in_range32(..., uint32_t max)`\n\n---"
         },
         {
           "note": "The new per-function RNG state (`struct mp_rand_state s = mp_rand_seed(0);`) changes behavior from using a global RNG (`mp_rand_next()` without state) to a locally-seeded stream. Seeding with a constant `0` makes the sequence deterministic for every call, which can increase collision risk across concurrent calls/processes. If the goal is merely to avoid global state, consider seeding from a higher-entropy source (time/PID/urandom) or document why determinism is acceptable here. Also consider moving the seed outside the loop is fine (as done), but ensure `mp_rand_seed(0)` is not an expensive call in this hot path.",
@@ -863,7 +863,7 @@
           "side": "right",
           "from_line": 43,
           "to_line": 47,
-          "line_match": false,
+          "line_match": true,
           "semantic_match": false,
           "matched_note": ""
         },
@@ -893,7 +893,7 @@
           "side": "right",
           "from_line": 89,
           "to_line": 89,
-          "line_match": false,
+          "line_match": true,
           "semantic_match": false,
           "matched_note": ""
         },
@@ -903,9 +903,9 @@
           "side": "right",
           "from_line": 93,
           "to_line": 99,
-          "line_match": false,
-          "semantic_match": false,
-          "matched_note": ""
+          "line_match": true,
+          "semantic_match": true,
+          "matched_note": "- **High — `misc/random.c:94`**: `mp_round_next_power_of_2(range)` overflows to `0` when `range > 2^31`, making `mask` equal `UINT32_MAX`. Rejection sampling then accepts only values below `range`, which remains correct but can be extraordinarily slow for small acceptance? For range just over 2^31 acceptance ~1/2, not defect. Wait.\n\nNO, need exact. Perhaps seeding state directly with random bytes can all zero, astronomically theoretical? xoshiro all-zero absorbing. av_random_bytes could return all zero, then shuffle identity and mkostemps repeats same filename UINT32_MAX times. Concrete but ultra improbable, real? More significant deterministic seed construction flawed: ret.v[0]=seed; ret.v[1..] splitmix using seed, whereas old state[0]=seed and same. seed nonzero, can state all zero? no.\n\nmp_rand_in_range32 arguments from playlist ints implicitly uint32. If num_entries could exceed UINT32 max impossible int. n int positive.\n\nKey defect in mp_mkostemps: mp_rand_next returns 64 bits, formatted \"%06zx\" into char[7]. snprintf/tprintf likely for values > 0xffffff: output truncation behavior? Existing same. no.\n\nmp_rand seed fallback XOR function pointer to integer: portability compile? uintptr_t function pointer cast forbidden? C permits implementation-defined? likely warning.\n\nInclude order common/common perhaps mp_round_next_power_of_2 takes int? Need inspect actual source maybe files exist. But diff enough. Search web current mpv source? Explicit no need web. Workspace perhaps blank. Could browse technical primary if niche, but user expects direct. Let's investigate helper online or apt? rg root read allowed current.**Defects found (most severe first):**\n\n---"
         },
         {
           "note": "The project convention prohibits typedef'ing internal structs; retain `mp_rand_state` as `struct mp_rand_state` without typedef to maintain consistency.",
@@ -931,7 +931,7 @@
           "to_line": 44,
           "line_match": true,
           "semantic_match": true,
-          "matched_note": "**DEFECT 1: `toLSPDiagnostic` called with `nil` converters — likely panic or incorrect conversion**\n\n**File:** `internal/ls/diagnostics.go`  \n**Line:** ~43 (in the new `toLSPDiagnostics` function, the call `toLSPDiagnostic(diag, nil)`)\n\nThe new helper `toLSPDiagnostics` passes `nil` for the `converters` parameter:\n```go\nlspDiagnostics = append(lspDiagnostics, toLSPDiagnostic(diag, nil)) // converters can be nil if not needed\n```\n\nBut the original code always passed `l.converters`:\n```go\nlspDiagnostics = append(lspDiagnostics, toLSPDiagnostic(diag, l.converters))\n```\n\nThe `toLSPDiagnostic` function (visible at the bottom of the diff) takes `converters *Converters` and uses it — the comment \"converters can be nil if not needed\" is an unverified assumption. If `toLSPDiagnostic` dereferences `converters` (e.g., for position/range conversion), this will **panic at runtime** on any diagnostic.\n\n**Failure scenario:** Any file with syntax/semantic/suggestion diagnostics triggers `GetDocumentDiagnostics` → `toLSPDiagnostics` → `toLSPDiagnostic(diag, nil)` → nil pointer dereference.\n\n---"
+          "matched_note": "- **Critical — `internal/ls/diagnostics.go:44`:** Any file-local diagnostic (e.g. `const x: string = 1`) is passed to `toLSPDiagnostic` with `converters == nil`. Converting its source range dereferences `converters`, so `textDocument/diagnostic` panics instead of returning the type error."
         }
       ]
     },
@@ -1131,7 +1131,7 @@
           "side": "right",
           "from_line": 502,
           "to_line": 505,
-          "line_match": false,
+          "line_match": true,
           "semantic_match": false,
           "matched_note": ""
         },
@@ -1161,7 +1161,7 @@
           "side": "right",
           "from_line": 533,
           "to_line": 549,
-          "line_match": false,
+          "line_match": true,
           "semantic_match": false,
           "matched_note": ""
         },
@@ -1237,9 +1237,9 @@
           "side": "right",
           "from_line": 461,
           "to_line": 464,
-          "line_match": false,
-          "semantic_match": false,
-          "matched_note": ""
+          "line_match": true,
+          "semantic_match": true,
+          "matched_note": "- **Medium — `src/Functions/array/arrayAggregation.cpp:463,485,507,529,551`; `src/Functions/array/arrayAll.cpp:77-78`; `src/Functions/array/arrayExists.cpp:77`; `src/Functions/array/arrayFirstLast.cpp:217-218,239-240,261,264,286,289`; `src/Functions/array/arrayFirstLastIndex.cpp:139-140,159-160`**: The multi-argument lambdas omit required parentheses. For example, executing `SELECT arrayMax(x, y -> x/y, [4,8], [1,2])` produces a parse/name-resolution error instead of the documented result; it must use `(x, y) -> ...`."
         },
         {
           "note": "The returned_value description incorrectly states 'minimum element' when this is the arrayMax function. It should say 'maximum element' to match the function's behavior.\n\n```suggestion\n    FunctionDocumentation::ReturnedValue returned_value_max = \"Returns the maximum element in the source array, or the maximum element of the lambda results if provided.\";\n```",
@@ -1247,9 +1247,9 @@
           "side": "right",
           "from_line": 482,
           "to_line": 482,
-          "line_match": false,
-          "semantic_match": false,
-          "matched_note": ""
+          "line_match": true,
+          "semantic_match": true,
+          "matched_note": "- **Medium — `src/Functions/array/arrayAggregation.cpp:482`**: The `arrayMax` return documentation claims the lambda form returns the minimum. For lambda results `[4,4,12,8]`, the function returns `12` while the documentation says it returns the minimum, `4`."
         },
         {
           "note": "Inconsistent syntax notation: `arrayFirst` uses `λ(x[, y1, ..., yN])` while `arrayFirstOrNull` uses `func(x[, y1, ..., yN])`. For consistency, all four functions should use the same notation style (either λ or func).",
@@ -1267,9 +1267,9 @@
           "side": "right",
           "from_line": 262,
           "to_line": 266,
-          "line_match": false,
-          "semantic_match": false,
-          "matched_note": ""
+          "line_match": true,
+          "semantic_match": true,
+          "matched_note": "- **Low — `src/Functions/array/arrayFirstLast.cpp:264`**: The “No match” example under `arrayLast` invokes `arrayFirst`. With source `[1,2,3]` and a predicate matching every element, adapting this example returns `1` rather than the expected last match, `3`."
         },
         {
           "note": "Inconsistent quotation mark usage detected. The word '0' is sometimes enclosed in backticks (\\`0\\`) and sometimes in single quotes ('0'). Consistent formatting improves readability.",
@@ -1307,9 +1307,9 @@
           "side": "right",
           "from_line": 166,
           "to_line": 166,
-          "line_match": false,
-          "semantic_match": false,
-          "matched_note": ""
+          "line_match": true,
+          "semantic_match": true,
+          "matched_note": "- **High — `src/Functions/array/arrayFirstLastIndex.cpp:166`**: `documentation_last` is never passed to `registerFunction`. Running the documentation/version checks after this change still reports `arrayLastIndex` as undocumented and without version information."
         },
         {
           "note": "The documentation string for `ArraySplit` requires two clarifications:  \n- Replace \"returns something other than zero\" with \"returns true\" for boolean accuracy.  \n- Change \"on the left hand side of the element\" to \"to the left of the element\" for concise phrasing.",

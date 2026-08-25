@@ -211,23 +211,25 @@ nothing.
   code, tests, and execution is still yours to do.
 - **Recall is measured on a 27-defect Python corpus.** That number does not transfer to
   other languages or to defect classes the corpus doesn't contain.
-- **On real PRs the number is much lower, and location agreement badly overstates it.**
+- **On real PRs the number is much lower, and location agreement overstates it ~2x.**
   Scored by [AACR-Bench](https://github.com/alibaba/aacr-bench)'s **own** evaluator with a
-  real LLM judge, an 18-PR sample gave **40.7% line recall but 8.9% semantic recall**: of
-  50 findings landing on the correct file *and* line, only 11 expressed the same concern as
-  the human reviewer. An earlier location-based matcher of mine scored the same benchmark
-  at 83% — a ~4.6x overstatement it was structurally unable to detect about itself, which
-  is why scoring is delegated to upstream. Treat 8.9% as a floor: that run was degraded to
-  two judges on 12 of 18 PRs. See `recall/benchmarks/results-pilot-2judge/README.md`.
-- **Do not read the valid-vs-rejected gap as discrimination.** The panel matched 8.9% of
-  accepted review comments and 5.6% of *rejected* ones — a 1.61x ratio with Fisher exact
-  **p = 0.734** and near-total CI overlap. Detecting that effect at 80% power needs ~919
-  references per arm; the benchmark's entire negative pool is 639, so the comparison is
-  not answerable there at that effect size no matter how much you spend.
-- **The false-positive rate rests on one fixture and eleven reviews.** `p01` is the only
-  case with proven absence, so it is the only place a false finding can be shown false.
-  One fixture of one shape (a pure function over a finite domain) is a signal, not a
-  result — a second proven fixture that is stateful or I/O-bearing is what would settle it.
+  real LLM judge, a full-roster 18-PR run gives **21.1% line recall but 10.6% semantic
+  recall**: half the findings that land on the right file and line are the panel talking
+  about that line for a different reason. Precision is 16.5%. A location-based matcher
+  cannot detect that gap about itself, which is why scoring is delegated upstream. See
+  `recall/benchmarks/results-clean-3judge/README.md`.
+- **A degraded roster costs about half the recall.** The same sample with one judge's quota
+  spent and a 300s timeout scores 5.7% semantic recall against 10.6% — same extractor, so
+  only roster and timeout differ. Two instances returned nothing at 300s purely by hitting
+  the cap while holding 20 of the 123 references.
+- **Do not read the valid-vs-rejected gap as discrimination.** The panel matched 10.6% of
+  accepted review comments and 2.8% of *rejected* ones — 3.80x, but Fisher exact
+  **p = 0.194**. It is answerable with a larger negative sample (~138 references per arm
+  against the benchmark's 639 available); it is not answered by this one.
+- **Unlocated findings are withheld from upstream, not handed over empty.** Upstream skips
+  its path filter when the generated path is falsy and its line filter when the line is
+  None, so a location-less comment matches *every* reference. Passing them through inflated
+  line matches from 20 to 50 on the first scoring run.
 - **Every other fixture has verified _scope_, not proven absence.** Their known unplanted
   defects are recorded in each `truth.json` and re-checked by execution in
   `validate_corpus.py`, so a judge that finds one is not scored as wrong. Anything not yet
