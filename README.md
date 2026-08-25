@@ -57,23 +57,36 @@ install. A missing tool is one judge's problem, never the whole panel's.
 **The built-in judge list is a default, not a fixture — it names the author's accounts.**
 Yours will be different. Point the roster at models you actually have:
 
-```jsonc
-// ~/.config/llm-panel/roster.json      ($XDG_CONFIG_HOME honoured; $LLM_PANEL_CONFIG wins)
+Copy [`roster.example.json`](roster.example.json) to
+`~/.config/llm-panel/roster.json` (`$XDG_CONFIG_HOME` honoured; `$LLM_PANEL_CONFIG` wins).
+It is strict JSON — no comments, no trailing commas — because a typo'd key is fatal rather
+than silently ignored:
+
+```json
 {
+  "default": ["codex", "nemotron", "glm", "kimi", "or-deepseek", "or-grok"],
   "judges": {
     "my-gpt": {
       "transport": "opencode",
       "model": "openrouter/openai/gpt-5.6",
-      "family": "OpenAI",
+      "family": "OpenAI"
     },
-    "big-pickle": null, // drop a shipped judge entirely
-  },
-  "default": ["codex", "my-gpt"], // the panel run when --judges is absent
+    "big-pickle": null
+  }
 }
 ```
 
+`null` drops a shipped judge. `default` is the panel run when `--judges` is absent.
 `llm-panel --list` shows the roster offline and marks config-defined judges.
 `llm-panel --check` actually pings each one. `llm-panel --help-config` prints this schema.
+
+**Pick for vendor diversity, not judge count.** Three judges from one vendor is one opinion
+wearing three hats. The six above are six distinct families (OpenAI / NVIDIA / Zhipu /
+Moonshot / DeepSeek / xAI); measured against the corpus they find 6/6 where a two-vendor
+panel finds 4/6. Two further constraints worth knowing: wall-clock is the **slowest** judge,
+not the sum, so one slow model sets the pace for every run; and `claude-*` are deliberately
+absent from the default, because when Claude wrote the code under review a Claude judge
+shares the author's blind spots. Add it explicitly when that isn't the case — it is strong.
 
 A malformed config is **fatal** and names the offending key. Quietly falling back to the
 built-in roster would run a panel you didn't ask for, and bill you for it.
@@ -100,13 +113,22 @@ Treat their findings accordingly.
 planted in real code, each one **proven to misbehave by execution**, so "the panel missed
 it" is a measurement rather than an impression.
 
-On the 27-defect corpus the panel finds **25/27 (93%)**.
+On the 27-defect corpus a **two-vendor** panel (codex + claude-opus, each twice) finds
+**25/27 (93%)**. Which panel found it is part of the number, not a footnote — see below.
 
-Two results worth knowing before you trust any of the output:
+Three results worth knowing before you trust any of the output:
 
+- **Recall was limited by the roster, not by the models.** The two defects that panel
+  never found — a `.get(k, default)` that doesn't apply to an explicit `null`, and a
+  corrupt cache file silently becoming empty — are both found by a **six-vendor** panel
+  (OpenAI / NVIDIA / Zhipu / Moonshot / DeepSeek / xAI): 4/6 → **6/6** on those two
+  fixtures. The best two judges there, at 4/6 each, beat codex at 2/6 — and both were
+  broken or out of credit until the roster was repaired. If your panel is missing things,
+  check who is actually answering before concluding the models can't see it.
 - **Running the same model twice recovered nothing.** First passes 25/27, with repeats
   25/27. The repeat-passes idea is well supported in the literature and did not reproduce
-  here. An earlier grader bug reported +1 and it was an artifact.
+  here. An earlier grader bug reported +1 and it was an artifact. Adding a _different
+  vendor_ did what adding a second pass of the same one could not.
 - **Telling judges they may say "nothing is wrong here" costs real findings.** Removing
   one sentence of abstention licence moved findings from 0.42 to 2.17 per fixture and
   abstention from 67% to 0%. But the licence bought that abstention by suppressing
