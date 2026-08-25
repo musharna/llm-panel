@@ -1316,6 +1316,33 @@ with section("quota.4 a limit maps onto the EXISTING unavailable status, not a n
           'answered = [j for j in judges if results[j]["status"] in ("ok", "incomplete")]' in _src,
           True)
 
+with section("quota.7 EVERY transport is accounted for, not just codex"):
+    # The class-not-instance bug, caught live: accounting was wired into the codex failure
+    # branch, so when nemotron came back `unavailable` from the OPENCODE path nothing
+    # recorded it and limits.json knew about exactly one judge. It now lives in `result()`,
+    # the choke point every transport returns through.
+    import json as _json
+    _f = pathlib.Path(lp.STATE) / lp.LIMIT_STATE
+    _before = _f.read_text() if _f.is_file() else None
+    try:
+        lp.result("ctl-openrouter", "unavailable", "OpenRouter 429: try again in 60 seconds", 1.0)
+        lp.result("ctl-overloaded", "unavailable", "provider overloaded (503)", 1.0)
+        lp.result("ctl-healthy", "ok", "a perfectly good review", 1.0)
+        _d = _json.loads(_f.read_text()) if _f.is_file() else {}
+        check("quota.7 an opencode-style 429 is recorded", "ctl-openrouter" in _d, True)
+        check("quota.7 its reset hint is parsed", (_d.get("ctl-openrouter") or {}).get("reset_hint"),
+              "60 seconds")
+        check("quota.7 an unavailable WITHOUT a reason is still recorded",
+              "ctl-overloaded" in _d, True)
+        # NEGATIVE CONTROL: without it this passes if result() recorded everything.
+        check("quota.7 a HEALTHY judge is not recorded as limited", "ctl-healthy" in _d, False)
+    finally:
+        if _before is not None:
+            _f.write_text(_before)
+        elif _f.is_file():
+            _f.unlink()
+
+
 with section("quota.6 WITNESS: the codex failure path no longer reports stderr alone"):
     # Version-independent, so it fails on pre-fix code for the STATED reason rather than
     # AttributeError. Pre-fix the non-zero branch was, verbatim:

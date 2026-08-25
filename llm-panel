@@ -593,7 +593,33 @@ def recent_limits():
 
 
 def result(name, status, text, secs, meta=None):
-    return {"name": name, "status": status, "text": text, "secs": round(secs, 1), "meta": meta or {}}
+    """THE choke point every transport returns through -- which is why the quota accounting
+    lives here and not in one transport's failure branch.
+
+    I first wired `note_limit` into the codex path only. nemotron then came back
+    `unavailable` from the opencode path and nothing recorded it, so `limits.json` knew
+    about exactly one judge: a fix applied to an instance rather than to the class it
+    belonged to, for the third time in one session. Every judge that reports itself
+    unavailable is rate-limited or overloaded, whatever transport carried the news, so the
+    accounting belongs where they all converge.
+    """
+    meta = meta or {}
+    if status == "unavailable":
+        limited, _ = is_usage_limit(text)
+        # The reset hint is read STRUCTURALLY ("try again in/at X"), not gated on the
+        # phrase list. A judge that came back `unavailable` saying "OpenRouter 429: try
+        # again in 60 seconds" matches no phrase in _LIMIT_HINT -- 429 is not in it, and
+        # adding it would just be one more name on a list that cannot enumerate an open
+        # set. The provider already told us when to come back; take that, and let the
+        # classification stay a separate, optional judgement on top.
+        _m = _RESET_HINT.search(text or "")
+        reset = _m.group(1).strip() if _m else None
+        # A provider that says "unavailable" without saying why is still worth recording;
+        # the message is stored verbatim either way and the reset hint is best-effort.
+        note_limit(name, text, reset or meta.get("reset_hint"))
+        if limited and "limit" not in meta:
+            meta = {**meta, "limit": True, "reset_hint": reset, "provider_said": text}
+    return {"name": name, "status": status, "text": text, "secs": round(secs, 1), "meta": meta}
 
 
 STREAM_ECHO = False       # set by --stream
@@ -986,7 +1012,7 @@ def _ask(name, prompt, repo, timeout, agent="panelist", session_file=None,
                 said = codex_json_error(r.stdout)
                 limited, reset = is_usage_limit(said)
                 if limited:
-                    note_limit(name, said, reset)
+                    # `result()` does the recording now, for every transport at once.
                     # `unavailable` is the status this panel ALREADY uses for a judge that
                     # is rate-limited rather than refusing -- it is excluded from
                     # `answered`, so a spent quota can never read as a judge who reviewed
