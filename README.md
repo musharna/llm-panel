@@ -30,7 +30,10 @@ panel-triage --bad           # which runs went wrong, across every run root
 | `panel-report`        | renders a run as one self-contained HTML page, grouped by claim               |
 | `panel-triage`        | finds the runs that _failed_, which a listing shows as ordinary rows          |
 | `recall/panel-recall` | measures what the panel **misses**, against a corpus of planted defects       |
-| `*-controls`          | the regression suites — 539 controls, every one tied to a defect that shipped |
+| `recall/aacr-upstream`| runs the panel over AACR-Bench PRs and hands the findings to **upstream's** evaluator |
+| `recall/aacr-score`   | invokes that evaluator, and refuses to report a number from a judge that isn't running |
+| `claimlib.py`         | the one measurement boundary: reviews → span-grounded observations           |
+| `*-controls`          | the regression suites — 715 controls, every one tied to a defect that shipped |
 
 ## Install
 
@@ -186,9 +189,11 @@ Three results worth knowing before you trust any of the output:
 ## Tests
 
 ```sh
-./llm-panel-controls        # 224
-./panel-report-controls     # 300
-./panel-triage-controls     #  15
+./claimlib-controls              #  77
+./llm-panel-controls             # 277
+./panel-report-controls          # 307
+./panel-triage-controls          #  15
+./recall/aacr-upstream-controls  #  39
 cd recall && ./panel-recall selftest && python3 validate_corpus.py
 ```
 
@@ -206,6 +211,19 @@ nothing.
   code, tests, and execution is still yours to do.
 - **Recall is measured on a 27-defect Python corpus.** That number does not transfer to
   other languages or to defect classes the corpus doesn't contain.
+- **On real PRs the number is much lower, and location agreement badly overstates it.**
+  Scored by [AACR-Bench](https://github.com/alibaba/aacr-bench)'s **own** evaluator with a
+  real LLM judge, an 18-PR sample gave **40.7% line recall but 8.9% semantic recall**: of
+  50 findings landing on the correct file *and* line, only 11 expressed the same concern as
+  the human reviewer. An earlier location-based matcher of mine scored the same benchmark
+  at 83% — a ~4.6x overstatement it was structurally unable to detect about itself, which
+  is why scoring is delegated to upstream. Treat 8.9% as a floor: that run was degraded to
+  two judges on 12 of 18 PRs. See `recall/benchmarks/results-pilot-2judge/README.md`.
+- **Do not read the valid-vs-rejected gap as discrimination.** The panel matched 8.9% of
+  accepted review comments and 5.6% of *rejected* ones — a 1.61x ratio with Fisher exact
+  **p = 0.734** and near-total CI overlap. Detecting that effect at 80% power needs ~919
+  references per arm; the benchmark's entire negative pool is 639, so the comparison is
+  not answerable there at that effect size no matter how much you spend.
 - **The false-positive rate rests on one fixture and eleven reviews.** `p01` is the only
   case with proven absence, so it is the only place a false finding can be shown false.
   One fixture of one shape (a pure function over a finite domain) is a signal, not a
