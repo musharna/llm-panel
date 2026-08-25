@@ -915,6 +915,93 @@ with section("kimi.6 a recovered body is marked incomplete, never ok"):
     check("kimi.6 recovered text is not passed off as a clean answer",
           _r["status"], "incomplete")
 
+# --- roster config ------------------------------------------------------------------
+# The built-in ROSTER names one person's accounts. Making it config-driven is what lets
+# anyone else run this, so the loader gets controls on BOTH halves: that a good config
+# does what it says, and that a bad one dies loudly instead of quietly running a panel
+# the author did not ask for -- which would bill them for it.
+#
+# Every negative below is paired with `roster.0 valid config still loads` running in the
+# SAME harness. Without that, a loader broken so badly it rejected everything would score
+# a perfect run of "correctly refused", and read as green.
+import json as _json          # noqa: E402
+import tempfile               # noqa: E402
+
+
+def _load(obj, roster=None, default=None):
+    """Run load_roster over a config written to a real file. Returns (default, roster,
+    families, added). Raises ValueError exactly as the tool would."""
+    roster = lp._Roster(dict(lp.SHIPPED_ROSTER) if roster is None else roster)
+    fams, added = {}, set()
+    with tempfile.TemporaryDirectory() as td:
+        p = pathlib.Path(td) / "roster.json"
+        p.write_text(obj if isinstance(obj, str) else _json.dumps(obj), encoding="utf-8")
+        d = lp.load_roster(p, roster, list(default or lp.SHIPPED_DEFAULT), fams, added)
+    return d, roster, fams, added
+
+
+def _rejects(name, obj, fragment):
+    """Assert the config is refused AND that the message names the actual problem.
+    'some exception was raised' passes on a loader that rejects everything."""
+    with section(name):
+        try:
+            _load(obj)
+        except ValueError as e:
+            check(f"{name} message names the problem", fragment in str(e), True)
+            if fragment not in str(e):
+                print("      message was:", e)
+        else:
+            check(f"{name} was refused", "accepted", "refused")
+
+
+with section("roster.0 a valid config still loads (positive control for every negative)"):
+    _d, _r, _f, _a = _load({"judges": {"x": {"transport": "opencode", "model": "or/a/b",
+                                             "family": "Acme"}},
+                            "default": ["codex", "x"]})
+    check("roster.0 judge added", _r["x"], ("opencode", "or/a/b"))
+    check("roster.0 family recorded", _f, {"x": "Acme"})
+    check("roster.0 marked as config-sourced", _a, {"x"})
+    check("roster.0 default replaced", _d, ["codex", "x"])
+
+with section("roster.1 an absent config changes nothing"):
+    _roster = lp._Roster(dict(lp.SHIPPED_ROSTER))
+    _fams, _added = {}, set()
+    _d = lp.load_roster(pathlib.Path("/nonexistent/roster.json"), _roster,
+                        list(lp.SHIPPED_DEFAULT), _fams, _added)
+    check("roster.1 roster untouched", dict(_roster), dict(lp.SHIPPED_ROSTER))
+    check("roster.1 default untouched", _d, list(lp.SHIPPED_DEFAULT))
+    check("roster.1 nothing marked as config-sourced", (_fams, _added), ({}, set()))
+
+with section("roster.2 null deletes a shipped judge"):
+    _d, _r, _f, _a = _load({"judges": {"codex": None}})
+    check("roster.2 judge removed", "codex" in dict(_r), False)
+
+with section("roster.3 a config judge resolves through the ~N repeat suffix"):
+    _d, _r, _f, _a = _load({"judges": {"x": {"transport": "ollama", "model": "m"}}})
+    check("roster.3 x~3 resolves to x", _r["x~3"], ("ollama", "m"))
+
+with section("roster.4 transports are DERIVED from the roster, not a second list"):
+    # A hand-maintained literal drifts the first time a transport is added. Assert the
+    # set is exactly what the shipped roster actually uses.
+    check("roster.4 derived transports", lp.TRANSPORTS,
+          {k for k, _ in lp.SHIPPED_ROSTER.values()})
+
+_rejects("roster.5 malformed JSON", "{not json", "not valid JSON")
+_rejects("roster.6 non-object top level", "[]", "top level must be an object")
+_rejects("roster.7 unknown top-level key", {"judgez": {}}, "unknown key")
+_rejects("roster.8 unknown transport",
+         {"judges": {"x": {"transport": "smoke", "model": "m"}}}, "known transports are")
+_rejects("roster.9 blank model",
+         {"judges": {"x": {"transport": "opencode", "model": "   "}}}, "non-empty 'model'")
+_rejects("roster.10 unknown judge field",
+         {"judges": {"x": {"transport": "opencode", "model": "m", "colour": "red"}}},
+         "unknown field")
+_rejects("roster.11 ~ in a judge name",
+         {"judges": {"x~2": {"transport": "opencode", "model": "m"}}}, "reserved for repeat")
+_rejects("roster.12 default is not a list", {"default": "codex"}, "must be a list")
+_rejects("roster.13 default is empty", {"default": []}, "needs at least one judge")
+_rejects("roster.14 default names an unknown judge", {"default": ["nope"]}, "unknown judge")
+
 print(f"\n{'FAILED' if FAILED else 'all controls green'}"
       f" ({len(FAILED)} failing)" if FAILED else "\nall controls green")
 for f in FAILED:
