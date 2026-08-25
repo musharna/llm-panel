@@ -152,14 +152,42 @@ def score(observations, truths, pad=DEFAULT_PAD):
 
 
 def separation(runs, pad=DEFAULT_PAD):
-    """Valid-hit rate MINUS invalid-hit rate, in percentage points.
+    """Valid-hit rate minus invalid-hit rate. REPORTED, NEVER USED TO JUDGE THE MATCHER.
+
+    ⚠️ THIS FUNCTION WAS CONCEPTUALLY CONFUSED WHEN WRITTEN, twice over, and the reframe
+    is worth more than the number.
+
+    A label-0 annotation is a comment a human REJECTED AS WRONG about a particular place.
+    A label-1 annotation is a comment accepted as right about a particular place. Both are
+    ABOUT the same kind of thing in the same file, often two lines apart -- measured here,
+    median distance 2. They differ in CORRECTNESS, not in ABOUTNESS.
+
+    A matcher's job is aboutness: does this panel finding refer to the same place and the
+    same thing as this annotation. So when the panel repeats a claim a human rejected, the
+    matcher SHOULD match it -- that is the matcher working, and the hit is a PANEL
+    false-positive signal, which is exactly why `score()` reports hit_neg separately and
+    never folds it in. Treating that hit rate as evidence of matcher looseness was a
+    category error: it measures the PANEL, not the instrument.
+
+    Two attempts to make it a matcher metric both failed, and both failures are informative:
+      * Counting all negatives -- forced by geometry, since 8 of 10 co-located negatives sit
+        inside the pad, so correctly finding the valid item necessarily hits the invalid one.
+      * Restricting to ISOLATED negatives -- leaves 11, where one item moves the figure ~9pp.
+    Lexical content overlap was then measured as a tie-breaker and does not separate them
+    either: valid median 0.17 vs invalid 0.16, with the sign flipping across thresholds.
+    It cannot, for the reason above -- a wrong claim about line N shares its vocabulary with
+    a right one. Embedding similarity would fail identically; the distinction is correctness,
+    which no surface measure carries.
+
+    WHAT ACTUALLY DIAGNOSES THE MATCHER is the pad sweep below, which needs no negatives:
+
 
     THE NUMBER THAT DECIDES WHETHER ANY RECALL FIGURE HERE MEANS ANYTHING. AACR-Bench
     carries annotations a human REJECTED (label 0). A matcher that lands on rejected
     comments as often as on valid ones is not identifying defects; it is reporting
     proximity, and its "recall" is a restatement of its own tolerance.
 
-    Measured on the 20-PR pilot, sweeping the pad:
+    Measured on the 20-PR pilot:
 
         pad    valid%   invalid%   separation
           0     37.7      36.8       +0.9      <- no discrimination at all
@@ -170,7 +198,8 @@ def separation(runs, pad=DEFAULT_PAD):
 
     Recall climbs monotonically from 37.7% to 98.1% purely as the tolerance widens, and
     the separation stays ~20pp throughout rather than sharpening as the match tightens.
-    Both facts say the same thing: this matches WHERE a finding is, not WHAT it claims.
+    Both facts say the same thing: this matches WHERE a finding is, not WHAT it claims --
+    and THAT is the finding that survives, because it rests on the 53 positives alone.
     """
     # ONLY ISOLATED NEGATIVES COUNT. Measured on the 20-PR pilot: of 19 label-0
     # annotations, 10 share a file with a label-1 annotation and among those the median
@@ -388,20 +417,14 @@ def main():
         print(f"  valid {sep['valid_pct']:.1f}%  vs  known-INVALID {sep['invalid_pct']:.1f}%"
               f"   separation {sep['separation_pp']:+.1f} pp"
               f"   (on {sep['n_neg']} ISOLATED negatives)")
-        if not sep["powered"]:
-            print(f"\n  *** SEPARATION IS UNDERPOWERED: {sep['n_neg']} isolated negatives ***")
-            print(f"  One item moves this figure by ~{100/max(sep['n_neg'],1):.0f} pp, so it cannot")
-            print(f"  license a recall claim in either direction. Reported, not thresholded.")
-        elif sep["separation_pp"] < MIN_SEPARATION_PP:
-            print(f"\n  *** NOT REPORTABLE AS RECALL ***")
-            print(f"  The matcher lands on comments a human REJECTED almost as often as on")
-            print(f"  valid ones, so the figure above measures PROXIMITY, not identification.")
-            print(f"  Widening the pad raises it (37.7% -> 98.1% across pad 0 -> 200); that is")
-            print(f"  the tolerance talking. Fix the matcher before quoting a number.")
-        else:
-            print(f"\n  Reportable, WITH ITS TOLERANCE: pad={DEFAULT_PAD} lines. This still")
-            print(f"  matches WHERE a finding is, not WHAT it claims -- see separation() for the")
-            print(f"  pad sweep. Treat as an upper bound on location agreement, not as recall.")
+        print(f"  (a hit on a REJECTED annotation is a PANEL false-positive signal, not a")
+        print(f"   matcher fault -- the panel repeated a claim a human turned down.)")
+        print(f"\n  *** NOT REPORTABLE AS RECALL ***")
+        print(f"  This matcher agrees on WHERE a finding is, not on WHAT it claims, and the")
+        print(f"  figure tracks the tolerance: 37.7% at pad=0 rising to 98.1% at pad=200 on")
+        print(f"  the same stored runs. Treat {tp}/{tn} as LOCATION AGREEMENT at pad={DEFAULT_PAD},")
+        print(f"  never as recall. Content overlap was tried as a tie-breaker and does not")
+        print(f"  separate valid from invalid (median 0.17 vs 0.16) -- see separation().")
         print(f"  rewrote {f}")
         return 0
 
