@@ -58,12 +58,26 @@ PROMPT_BARE = _BASE
 
 
 def cases(only=None):
+    """Corpus cases, optionally filtered to a COMMA-SEPARATED list of id prefixes.
+
+    `--only` took a single prefix and matched with startswith, so
+    `--only h01-render-summary,h04-index-cache` matched NOTHING -- and a run over zero
+    cases still printed "wrote <path>" (see cmd_run). Accepting a list is half the fix;
+    the other half is that an empty selection must be fatal, not silent.
+    """
+    prefixes = [p.strip() for p in (only or "").split(",") if p.strip()]
+    found = []
     for d in sorted(CORPUS.iterdir()):
         if not (d / "truth.json").is_file():
             continue
-        if only and not d.name.startswith(only):
+        if prefixes and not any(d.name.startswith(p) for p in prefixes):
             continue
+        found.append(d)
         yield d, json.loads((d / "truth.json").read_text())
+    if prefixes and not found:
+        raise SystemExit(
+            f"--only {only!r} matched no corpus case.\n"
+            f"available: {', '.join(sorted(x.name for x in CORPUS.iterdir() if (x/'truth.json').is_file()))}")
 
 
 def run_case(d, judges, effort, timeout, repeat=1, bare=False):
@@ -264,7 +278,15 @@ def cmd_run(a):
         # only records its work at the end has no partial result, only a total loss.
         f = RESULTS / f"{a.tag}.json"
         f.write_text(json.dumps(out, indent=2) + "\n")
-    print(f"\nwrote {RESULTS / f'{a.tag}.json'}")
+    # The write lives INSIDE the loop, so a run over zero cases writes no file at all --
+    # while this line, being outside it, cheerfully reported "wrote <path>". Observed:
+    # a --only with a comma list matched nothing, the run took 0 seconds, printed
+    # "wrote .../wide6.json", exited 0, and no such file existed. Report the artifact
+    # only after confirming it is on disk, and say how many cases produced it.
+    f = RESULTS / f"{a.tag}.json"
+    if not out or not f.is_file():
+        sys.exit(f"ran 0 cases -- NOTHING was written to {f}")
+    print(f"\nwrote {f}  ({len(out)} case(s))")
 
 
 def cmd_grade(a):
