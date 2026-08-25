@@ -1,0 +1,26 @@
+{
+  "review": {
+    "comments": [
+      {
+        "content": "**DEFECT 1: Signature mismatch between header declaration and implementation \u2014 compile error**\n\n**File:** `src/Mod/TechDraw/App/DrawViewPart.h` lines 242\u2013244 (declared) vs `src/Mod/TechDraw/App/DrawViewPart.cpp` lines 1501\u20131506 (defined)\n\nThe header declares all three methods as **`static`** with **two parameters**:\n\n```cpp\nstatic bool isCosmeticVertex(App::DocumentObject* owner, std::string element);\nstatic bool isCosmeticEdge(App::DocumentObject* owner, std::string element);\nstatic bool isCenterLine(App::DocumentObject* owner, std::string element);\n```\n\nThe .cpp defines them as **non-static** with **one parameter**:\n\n```cpp\nbool DrawViewPart::isCosmeticVertex(std::string element) { ... }\nbool DrawViewPart::isCosmeticEdge(std::string element) { ... }\nbool DrawViewPart::isCenterLine(std::string element) { ... }\n```\n\nThese are entirely different signatures. The compiler will reject the definitions because they don't match any declaration in the class. Any call site using the header's 2-parameter static form will get an unresolved-symbol linker error; any call site trying to use the 1-parameter non-static form from the header won't find a declaration at all. **This code does not compile.**\n\nThe implementations in the .cpp are logically correct \u2014 they call `this->getProjVertexByIndex()` / `this->getEdge()` directly and don't need the old `owner` parameter. The header is the one that was not updated to match.",
+        "path": "src/Mod/TechDraw/App/DrawViewPart.h",
+        "start_line": 242,
+        "end_line": 242,
+        "observation_id": "4246788afc087d59",
+        "claimed_path": "src/Mod/TechDraw/App/DrawViewPart.h",
+        "path_resolution": "exact"
+      },
+      {
+        "content": "**DEFECT 1: Signature mismatch between header declaration and implementation in DrawViewPart**\n\n**File:** `src/Mod/TechDraw/App/DrawViewPart.h` (lines 242-244) vs `src/Mod/TechDraw/App/DrawViewPart.cpp` (lines 1501, 1513, 1525)\n\n**Failure scenario:** Any compilation of this code will fail. The header declares three `static` methods taking `(App::DocumentObject* owner, std::string element)`, but the `.cpp` defines them as non-static member functions taking only `(std::string element)`.\n\n```cpp\n// DrawViewPart.h:242-244\nstatic bool isCosmeticVertex(App::DocumentObject* owner, std::string element);\nstatic bool isCosmeticEdge(App::DocumentObject* owner, std::string element);\nstatic bool isCenterLine(App::DocumentObject* owner, std::string element);\n\n// DrawViewPart.cpp:1501, 1513, 1525\nbool DrawViewPart::isCosmeticVertex(std::string element)  // missing 'static', missing owner param\nbool DrawViewPart::isCosmeticEdge(std::string element)\nbool DrawViewPart::isCenterLine(std::string element)\n```\n\n**Concrete result:** Linker errors (undefined references to the static versions) or compiler errors (redefinition with different signatures), depending on whether the static declarations are treated as separate declarations.",
+        "path": "src/Mod/TechDraw/App/DrawViewPart.h",
+        "start_line": 242,
+        "end_line": 242,
+        "observation_id": "ecdaf353830edc97",
+        "claimed_path": "src/Mod/TechDraw/App/DrawViewPart.h",
+        "path_resolution": "exact"
+      }
+    ]
+  },
+  "rundir": "/home/mjarnold/.cache/llm-panel/runs/aacr-up-blvhkhqm-26c89a511208/20260825-124202-1075067",
+  "extractor": "1"
+}

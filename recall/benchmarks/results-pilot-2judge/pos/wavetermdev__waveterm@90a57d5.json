@@ -1,0 +1,161 @@
+{
+  "review": {
+    "comments": [
+      {
+        "content": "- **High \u2014 `pkg/blockcontroller/blockcontroller.go:354`, `pkg/shellexec/shellexec.go:554`**: Command environments are stored only in the swap token and no longer applied directly to the process. A local Bash command block with `cmd: \"printf %s \\\"$FOO\\\"\"` and `cmd:env: {\"FOO\":\"bar\"}` runs via non-interactive `bash -c`, which does not load the token-consuming integration script, so it prints an empty string instead of `bar`.",
+        "path": "pkg/blockcontroller/blockcontroller.go",
+        "start_line": 354,
+        "end_line": 354,
+        "observation_id": "545f7e33d5056665",
+        "claimed_path": "pkg/blockcontroller/blockcontroller.go",
+        "path_resolution": "exact"
+      },
+      {
+        "content": "- **High \u2014 `pkg/blockcontroller/blockcontroller.go:516`**: A WSL command block with `cmd:nowsh: true` is routed to `StartWslShellProcNoWsh`, which ignores `cmdStr`. For `cmd: \"echo ok\"` on a connected WSL distro, Wave opens the distro\u2019s interactive shell instead of executing `echo ok`.",
+        "path": "pkg/blockcontroller/blockcontroller.go",
+        "start_line": 516,
+        "end_line": 516,
+        "observation_id": "c5562988255c733e",
+        "claimed_path": "pkg/blockcontroller/blockcontroller.go",
+        "path_resolution": "exact"
+      },
+      {
+        "content": "- **Medium \u2014 `pkg/blockcontroller/blockcontroller.go:541`**: The SSH branch tests `conn.WshEnabled` instead of the already-computed `connUnion.WshEnabled`. With a WSH-capable SSH connection and `cmd:nowsh: true`, it still starts the WSH-enabled path and creates a JWT; if the remote WSH integration is unavailable, startup fails instead of opening the requested raw shell.",
+        "path": "pkg/blockcontroller/blockcontroller.go",
+        "start_line": 541,
+        "end_line": 541,
+        "observation_id": "3b2f88dff9aae3fa",
+        "claimed_path": "pkg/blockcontroller/blockcontroller.go",
+        "path_resolution": "exact"
+      },
+      {
+        "content": "- **Medium \u2014 `pkg/blockcontroller/blockcontroller.go:402`**: Returning before resolving local shell settings when WSH is disabled discards configured shell overrides. With `cmd:nowsh: true`, `term:localshellpath: \"/usr/bin/fish\"`, and Bash as the system default, the block starts Bash rather than Fish.",
+        "path": "pkg/blockcontroller/blockcontroller.go",
+        "start_line": 402,
+        "end_line": 402,
+        "observation_id": "74c18cf2eb22d6d7",
+        "claimed_path": "pkg/blockcontroller/blockcontroller.go",
+        "path_resolution": "exact"
+      },
+      {
+        "content": "- **Medium \u2014 `pkg/blockcontroller/blockcontroller.go:269`**: `resolveEnvMap` accepts `connName` but never reads `blockMeta.GetConnectionOverride(connName)`. With top-level `cmd:env: {\"API_URL\":\"staging\"}` and `[prod] cmd:env: {\"API_URL\":\"production\"}`, an interactive shell on connection `prod` receives `API_URL=staging` instead of `production`.",
+        "path": "pkg/blockcontroller/blockcontroller.go",
+        "start_line": 269,
+        "end_line": 269,
+        "observation_id": "5d690c39df42c8ff",
+        "claimed_path": "pkg/blockcontroller/blockcontroller.go",
+        "path_resolution": "exact"
+      },
+      {
+        "content": "**DEFECT 1: Local shell processes lose all environment variables from `cmd:env` meta and `env` block file**\n\n**File:** `pkg/shellexec/shellexec.go` (function `StartLocalShellProc`, hunk `@@ -557,7 +550,6 @@`)",
+        "path": "pkg/shellexec/shellexec.go",
+        "start_line": 550,
+        "end_line": 550,
+        "observation_id": "3ea52876dc69b4db",
+        "claimed_path": "pkg/shellexec/shellexec.go",
+        "path_resolution": "exact"
+      },
+      {
+        "content": "**Failure scenario:**",
+        "path": "",
+        "start_line": null,
+        "end_line": null,
+        "observation_id": "6b6df993ccd7df08",
+        "claimed_path": null,
+        "path_resolution": "absent"
+      },
+      {
+        "content": "1. User creates a Cmd-type block with meta `\"cmd:env\": { \"MY_VAR\": \"my_value\" }`",
+        "path": "",
+        "start_line": null,
+        "end_line": null,
+        "observation_id": "d6d3fa9e0c66badc",
+        "claimed_path": null,
+        "path_resolution": "absent"
+      },
+      {
+        "content": "2. User runs the block locally (no remote connection)",
+        "path": "",
+        "start_line": null,
+        "end_line": null,
+        "observation_id": "5c95edcd93153869",
+        "claimed_path": null,
+        "path_resolution": "absent"
+      },
+      {
+        "content": "3. `makeSwapToken()` correctly populates `swapToken.Env` with `MY_VAR` (via `resolveEnvMap`)",
+        "path": "",
+        "start_line": null,
+        "end_line": null,
+        "observation_id": "965f62b1068de5d0",
+        "claimed_path": "swapToken.Env",
+        "path_resolution": "not-in-diff"
+      },
+      {
+        "content": "4. `setupAndStartShellProcess()` passes `cmdOpts.SwapToken = swapToken` to `StartLocalShellProc`",
+        "path": "",
+        "start_line": null,
+        "end_line": null,
+        "observation_id": "033cd6e85d77be16",
+        "claimed_path": null,
+        "path_resolution": "absent"
+      },
+      {
+        "content": "5. **`StartLocalShellProc` ignores `cmdOpts.SwapToken` entirely** \u2014 it only applied `cmdOpts.Env` (which was removed from the struct)",
+        "path": "",
+        "start_line": null,
+        "end_line": null,
+        "observation_id": "f1c695a1aea60811",
+        "claimed_path": "cmdOpts.Env",
+        "path_resolution": "not-in-diff"
+      },
+      {
+        "content": "6. Shell process starts without `MY_VAR` set \u2192 any command referencing `$MY_VAR` fails",
+        "path": "",
+        "start_line": null,
+        "end_line": null,
+        "observation_id": "2dbf38dd30dd4e80",
+        "claimed_path": null,
+        "path_resolution": "absent"
+      },
+      {
+        "content": "**Evidence from diff:**\n- `CommandOptsType.Env` field removed (line `-\tEnv         map[string]string         `json:\\\"env,omitempty\\\"``)\n- `StartLocalShellProc` had `shellutil.UpdateCmdEnv(ecmd, cmdOpts.Env)` removed with no replacement using `cmdOpts.SwapToken.Env`\n- `makeSwapToken` builds correct env map but `StartLocalShellProc` never reads it\n\nThis is a regression for Cmd-type local blocks (which previously worked via `cmdOpts.Env`) and a missing feature for Shell-type local blocks.\n\n---",
+        "path": "",
+        "start_line": null,
+        "end_line": null,
+        "observation_id": "7ca008fb6d506615",
+        "claimed_path": "CommandOptsType.Env",
+        "path_resolution": "not-in-diff"
+      },
+      {
+        "content": "**DEFECT 2: `GetConn` and `GetWslConn` signature changes break external callers not shown in diff**",
+        "path": "",
+        "start_line": null,
+        "end_line": null,
+        "observation_id": "ac14c08786c98077",
+        "claimed_path": null,
+        "path_resolution": "absent"
+      },
+      {
+        "content": "**Files:** \n- `pkg/remote/conncontroller/conncontroller.go` (hunk `@@ -812,7 +812,7 @@`)\n- `pkg/wslconn/wslconn.go` (hunk `@@ -751,11 +755,8 @@`)",
+        "path": "pkg/remote/conncontroller/conncontroller.go",
+        "start_line": 812,
+        "end_line": 812,
+        "observation_id": "1c4c89ad6522799b",
+        "claimed_path": "pkg/remote/conncontroller/conncontroller.go",
+        "path_resolution": "exact"
+      },
+      {
+        "content": "**Failure scenario:**\nAny code outside the modified files calling `GetConn(ctx, opts, keywords)` or `GetWslConn(ctx, name, shouldConnect)` will fail to compile. The diff updates call sites in `blockcontroller.go` and `wshserver.go` but cannot update callers in other packages (e.g., tests, other controllers, plugins). Since these are exported functions (`GetConn`, `GetWslConn`), this is a breaking API change with no compatibility layer.\n\n---\n\nNO DEFECTS FOUND (beyond the two above)",
+        "path": "pkg/blockcontroller/blockcontroller.go",
+        "start_line": null,
+        "end_line": null,
+        "observation_id": "16555a93f4c783a9",
+        "claimed_path": "blockcontroller.go",
+        "path_resolution": "basename"
+      }
+    ]
+  },
+  "rundir": "/home/mjarnold/.cache/llm-panel/runs/aacr-up-c1txgqwx-a4bf91945b6a/20260825-123415-986026",
+  "extractor": "1"
+}

@@ -1,0 +1,44 @@
+{
+  "review": {
+    "comments": [
+      {
+        "content": "**DEFECT 1: Incorrect xoshiro256** state update in `mp_rand_next`**\n- **File:** `misc/random.c` (hunk starting at `+41`)\n- **Lines:** ~78\u201381 in new file (the four XOR-assignment lines in `mp_rand_next`)\n- **Failure scenario:** Any caller using `mp_rand_next` gets output from a broken PRNG. The state transition uses wrong indices vs. the reference algorithm (xoshiro256** requires `s[2]^=s[0]; s[3]^=s[1]; s[1]^=s[2]; s[0]^=s[3]` but code does `s[1]^=s[0]; s[3]^=s[2]; s[2]^=s[1]; s[0]^=s[3]`). This produces a different permutation with unvetted statistical properties \u2014 likely shorter period, failed equidistribution, or linear artifacts. All downstream users (shuffle, temp names, etc.) inherit biased randomness.",
+        "path": "misc/random.c",
+        "start_line": 78,
+        "end_line": 78,
+        "observation_id": "1e6ae9878544945f",
+        "claimed_path": "misc/random.c",
+        "path_resolution": "exact"
+      },
+      {
+        "content": "**DEFECT 2: `mp_rand_in_range32` truncates `max` to 32 bits, breaking large playlists**\n- **File:** `common/playlist.c` (hunk starting at `+170`)\n- **Line:** `+176` (`size_t j = mp_rand_in_range32(&s, n, pl->num_entries);`)\n- **Failure scenario:** Playlist with `num_entries > UINT32_MAX` (4,294,967,295 entries). The `max` argument is silently truncated to 32 bits, so `mp_rand_in_range32` returns values in `[n, truncated_max)` instead of `[n, num_entries)`. Fisher-Yates then only shuffles the first 4B entries; entries beyond that never move. Even though such playlists are unrealistic today, the API contract (`size_t` entries vs `uint32_t` range) is violated.",
+        "path": "common/playlist.c",
+        "start_line": 176,
+        "end_line": 176,
+        "observation_id": "3b7de3008f9298ef",
+        "claimed_path": "common/playlist.c",
+        "path_resolution": "exact"
+      },
+      {
+        "content": "**DEFECT 3: Fuzzing determinism bypassed when system RNG works**\n- **File:** `misc/random.c` (hunk starting at `+41`)\n- **Lines:** `+12\u2013+13` / `+16\u2013+22` (the `#ifdef FUZZING_BUILD_MODE_UNSAFE_FOR_PRODUCTION` block only sets `seed=42` but the `if (seed == 0)` block still calls `av_random_bytes` first)\n- **Failure scenario:** Build with `FUZZING_BUILD_MODE_UNSAFE_FOR_PRODUCTION=1`. Caller passes `seed=0`. Code sets `seed=42` but then enters `if (seed == 0)`? No \u2014 wait, `seed` is now 42, so it skips the `av_random_bytes` block. **Correction:** this path is actually correct for fuzzing. The defect is the *opposite*: when `seed != 0` is passed explicitly in fuzzing mode, the `#ifdef` overwrites it to 42 (line `+13`), which *is* deterministic. No defect here.",
+        "path": "misc/random.c",
+        "start_line": 12,
+        "end_line": 12,
+        "observation_id": "5c9e75ed7263d8d0",
+        "claimed_path": "misc/random.c",
+        "path_resolution": "exact"
+      },
+      {
+        "content": "**DEFECT 4: `mp_rand_seed` returns unvalidated raw entropy as PRNG state**\n- **File:** `misc/random.c` (hunk starting at `+41`)\n- **Lines:** `+17\u2013+19` (`if (av_random_bytes(...) == 0) return ret;`)\n- **Failure scenario:** `av_random_bytes` succeeds but returns all-zero 32 bytes (probability 2\u207b\u00b2\u2075\u2076, non-zero). xoshiro256** with all-zero state is a fixed point \u2014 `mp_rand_next` returns 0 forever. Old code used `splitmix64` which never produces zero from non-zero seed. New code has no such guarantee.",
+        "path": "misc/random.c",
+        "start_line": 17,
+        "end_line": 17,
+        "observation_id": "09fa6d1b5c62afc7",
+        "claimed_path": "misc/random.c",
+        "path_resolution": "exact"
+      }
+    ]
+  },
+  "rundir": "/home/mjarnold/.cache/llm-panel/runs/aacr-up-0kn0qw60-766044ffd892/20260825-125033-1129824",
+  "extractor": "1"
+}
