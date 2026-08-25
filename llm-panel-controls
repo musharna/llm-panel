@@ -1002,6 +1002,26 @@ _rejects("roster.12 default is not a list", {"default": "codex"}, "must be a lis
 _rejects("roster.13 default is empty", {"default": []}, "needs at least one judge")
 _rejects("roster.14 default names an unknown judge", {"default": ["nope"]}, "unknown judge")
 
+# --- missing external CLIs ------------------------------------------------------------
+# A degraded panel already fails loud, names each judge, and exits 4. What it did not do
+# was say what to DO: "No such file or directory: 'opencode'" is complete information for
+# the person who wrote this and none at all for anyone else. Derived from BINARY rather
+# than spelled out, so adding a transport without a hint fails here instead of shipping
+# a first-run dead end.
+with section("cli.1 every CLI transport has an install hint"):
+    check("cli.1 hints cover BINARY", sorted(lp.INSTALL_HINT), sorted(set(lp.BINARY.values())))
+
+with section("cli.2 each hint names a way to get the tool, not just its name"):
+    # A hint that only restates the binary name is the dead end this exists to remove.
+    _useless = [exe for exe, hint in lp.INSTALL_HINT.items()
+                if len(hint) < 30 or exe == hint]
+    check("cli.2 no placeholder hints", _useless, [])
+
+with section("cli.3 ollama is NOT treated as a CLI transport"):
+    # It speaks HTTP. Judges were once refused for want of a CLI this program no longer
+    # uses; asserting the absence keeps that fix from being undone by a tidy-up.
+    check("cli.3 ollama absent from BINARY", "ollama" in lp.BINARY, False)
+
 print(f"\n{'FAILED' if FAILED else 'all controls green'}"
       f" ({len(FAILED)} failing)" if FAILED else "\nall controls green")
 for f in FAILED:

@@ -263,6 +263,17 @@ DEFAULT = ["codex", "big-pickle", "nemotron", "deepseek"]
 
 # ollama is deliberately absent: that transport uses the HTTP API, not the CLI.
 BINARY = {"codex": "codex", "opencode": "opencode", "claude": "claude"}
+# What to DO about a missing one. Deliberately says what the tool is and who bills for it,
+# because the two subscription transports are the reason a panel can be cheap, and that is
+# not guessable from the binary's name.
+INSTALL_HINT = {
+    "codex":    "OpenAI's CLI -- `npm i -g @openai/codex`, then `codex login` "
+                "(uses a ChatGPT plan, not metered API billing)",
+    "opencode": "the multi-provider CLI most judges route through -- see opencode.ai; "
+                "then `opencode auth login` for OpenRouter/HuggingFace",
+    "claude":   "Anthropic's CLI -- see claude.ai/code (uses a claude.ai subscription; "
+                "setting ANTHROPIC_API_KEY switches it to metered billing instead)",
+}
 STATE = pathlib.Path(os.environ.get("XDG_CACHE_HOME") or os.path.expanduser("~/.cache")) / "llm-panel"
 
 
@@ -2662,6 +2673,20 @@ def main():
         for j in broken:
             first = (results[j]["text"] or "").strip().splitlines()
             sys.stderr.write(f"!!   {j}: {first[0][:150] if first else 'no detail'}\n")
+        # Name the remedy, not just the symptom. "No such file or directory: 'opencode'"
+        # is complete information for the person who wrote this and no information at all
+        # for anyone else -- it does not say what opencode IS or how to get it, and a
+        # first-run failure with no next step is where a tool loses someone.
+        missing = {BINARY[ROSTER[j][0]] for j in broken
+                   if ROSTER[j][0] in BINARY
+                   and "transport missing" in (results[j]["text"] or "")}
+        if missing:
+            sys.stderr.write("!!\n!! Missing command-line tool(s). Each judge speaks through "
+                             "one of these:\n")
+            for exe in sorted(missing):
+                sys.stderr.write(f"!!   {exe:<9} {INSTALL_HINT.get(exe, 'not on PATH')}\n")
+            sys.stderr.write("!! Or run `llm-panel --help-config` to point the roster at "
+                             "judges you already have.\n")
         sys.stderr.write("!! Exit 4. The report above is real but INCOMPLETE.\n")
         sys.exit(4)
 
