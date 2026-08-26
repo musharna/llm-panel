@@ -32,8 +32,9 @@ Fisher exact two-sided **p = 0.0025**.
 tells judges "do not propose refactors" and demands "a concrete failure scenario". So the
 pooled 10.6% was measuring the instruction, not the panel.
 
-Quote the scoped number with its scope -- 18.5% on defect-type references -- rather than a
-pooled figure whose denominator is half out of scope by construction.
+An earlier version of this file told the reader to quote "18.5% on defect-type references"
+instead of the pooled figure. Do not: on the benchmark's own labels that scope has no
+effect, and the number below it measures the classifier's definition, not the panel.
 
 ## Category does NOT predict acceptance
 
