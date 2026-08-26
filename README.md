@@ -211,13 +211,18 @@ nothing.
   code, tests, and execution is still yours to do.
 - **Recall is measured on a 27-defect Python corpus.** That number does not transfer to
   other languages or to defect classes the corpus doesn't contain.
-- **On real PRs the number is much lower, and location agreement overstates it ~2x.**
-  Scored by [AACR-Bench](https://github.com/alibaba/aacr-bench)'s **own** evaluator with a
-  real LLM judge, a full-roster 18-PR run gives **21.1% line recall but 10.6% semantic
-  recall**: half the findings that land on the right file and line are the panel talking
-  about that line for a different reason. Precision is 16.5%. A location-based matcher
-  cannot detect that gap about itself, which is why scoring is delegated upstream. See
-  `recall/benchmarks/results-clean-3judge/README.md`.
+- **On real PRs, what you ask for determines what you get.** Scored by
+  [AACR-Bench](https://github.com/alibaba/aacr-bench)'s **own** evaluator with a real LLM
+  judge, on 18 PRs at full roster: the shipped `defect` prompt scores **10.6% semantic
+  recall / 16.5% precision**, and a `broad` prompt asking for what a careful maintainer
+  would actually raise scores **26.0% / 13.6%** — 2.45x the recall for a slightly lower hit
+  rate and 3x the output. Recall splits on what the reference asks for: DEFECT 18.5% ->
+  35.4%, IMPROVEMENT 1.7% -> 15.5% (pooled p = 0.0027). The default stays `defect`; both
+  ship behind `--prompt-style`. See `recall/benchmarks/results-broad-3judge/README.md`.
+- **Location agreement overstates semantic agreement ~2x.** 21.1% of references had a
+  finding at the right file and line; 10.6% had one a judge called the same concern. A
+  location-based matcher cannot detect that gap about itself, which is why scoring is
+  delegated upstream.
 - **A degraded roster costs about half the recall.** The same sample with one judge's quota
   spent and a 300s timeout scores 5.7% semantic recall against 10.6% — same extractor, so
   only roster and timeout differ. Two instances returned nothing at 300s purely by hitting
