@@ -1,0 +1,206 @@
+{
+  "review": {
+    "comments": [
+      {
+        "content": "- **Defect \u2014 `server/src/main/java/org/elasticsearch/search/SearchService.java:866` (also line 910):** Follow-up query/scroll phases now decide whether the `error_trace` transport header is supported using the `ShardSearchRequest` stored in the reader context, rather than the current transport channel\u2019s version. During a rolling upgrade, a scroll can be created through an old coordinator and continued through a new one, or vice versa. The stored version then disagrees with the current channel: stack traces may be transported despite `error_trace=false`, or cleared when communicating with a node that cannot send the header. Keep passing the current `channel.getVersion()` separately.",
+        "path": "server/src/main/java/org/elasticsearch/search/SearchService.java",
+        "start_line": 866,
+        "end_line": 866,
+        "observation_id": "bee0438fc971e56b",
+        "claimed_path": "server/src/main/java/org/elasticsearch/search/SearchService.java",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "- **Test defect \u2014 `x-pack/plugin/async-search/src/internalClusterTest/java/org/elasticsearch/xpack/search/AsyncSearchErrorTraceIT.java:180` (also lines 214 and 248):** Each test waits for one async search to finish before installing `MockLog`, then submits a second request with `wait_for_completion_timeout=0ms` and immediately asserts the logging expectations. The second request can return before its background shard searches log anything, making these tests timing-dependent. The completed first request is also irrelevant and leaves a retained async-search result because `keep_on_completion=true`.",
+        "path": "x-pack/plugin/async-search/src/internalClusterTest/java/org/elasticsearch/xpack/search/AsyncSearchErrorTraceIT.java",
+        "start_line": 180,
+        "end_line": 180,
+        "observation_id": "6dfd1133d51ecc6b",
+        "claimed_path": "x-pack/plugin/async-search/src/internalClusterTest/java/org/elasticsearch/xpack/search/AsyncSearchErrorTraceIT.java",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "- **Test isolation defect \u2014 `qa/smoke-test-http/src/internalClusterTest/java/org/elasticsearch/http/SearchErrorTraceIT.java:50`, `x-pack/plugin/async-search/src/internalClusterTest/java/org/elasticsearch/xpack/search/AsyncSearchErrorTraceIT.java:51`, and `server/src/test/java/org/elasticsearch/search/SearchServiceTests.java:186`:** `Configurator.setLevel` changes a JVM-global logger level and none of these sites restores it. Any test class that runs afterward inherits DEBUG logging, potentially changing log assertions and substantially increasing output. Use the test framework\u2019s scoped logging annotation/rule or restore the previous level in cleanup.",
+        "path": "qa/smoke-test-http/src/internalClusterTest/java/org/elasticsearch/http/SearchErrorTraceIT.java",
+        "start_line": 50,
+        "end_line": 50,
+        "observation_id": "00f85003170fdedf",
+        "claimed_path": "qa/smoke-test-http/src/internalClusterTest/java/org/elasticsearch/http/SearchErrorTraceIT.java",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "- **Defensive test-utility defect \u2014 `test/framework/src/main/java/org/elasticsearch/test/MockLog.java:345`:** `event.getThrown().getMessage().equals(exceptionMessage)` throws `NullPointerException` for exceptions without a message. A test using this reusable expectation with `new Exception()` would fail inside the appender instead of reporting whether the event matched. Use a null-safe equality check.",
+        "path": "test/framework/src/main/java/org/elasticsearch/test/MockLog.java",
+        "start_line": 345,
+        "end_line": 345,
+        "observation_id": "4a034d004d1e79bf",
+        "claimed_path": "test/framework/src/main/java/org/elasticsearch/test/MockLog.java",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "**1. Missing `@AfterClass` to restore log level \u2014 test isolation defect**\n\n**File:** `SearchErrorTraceIT.java` (line 48\u201350), `AsyncSearchErrorTraceIT.java` (line 49\u201351), `SearchServiceTests.java` (line 132 area)\n\n`@BeforeClass setDebugLogLevel()` calls `Configurator.setLevel(\"org.elasticsearch.search.SearchService\", Level.DEBUG)` but there is no corresponding `@AfterClass` to restore the previous level. Since `Configurator.setLevel` mutates the global Log4j2 configuration, any test class that runs after these in the same JVM will see DEBUG-level logging from `SearchService`. This can cause log noise, CI flakiness, and can trigger unrelated `MockLog` expectations in sibling test classes.\n\nIn `SearchServiceTests.testMaybeWrapListenerForStackTraceLogs` the same problem exists inline: `Configurator.setLevel(...)` is called mid-test with no restore, affecting subsequent test methods in the same class.\n\n**Kind:** Test defect / test isolation problem.\n\n---",
+        "path": "qa/smoke-test-http/src/internalClusterTest/java/org/elasticsearch/http/SearchErrorTraceIT.java",
+        "start_line": 48,
+        "end_line": 48,
+        "observation_id": "4c4cb31034dba4f0",
+        "claimed_path": "SearchErrorTraceIT.java",
+        "path_resolution": "basename",
+        "merged_from": []
+      },
+      {
+        "content": "**2. `PatternAndExceptionSeenEventExpectation` will never count down if `event.getThrown().getMessage()` is null \u2014 NPE crash in test code**\n\n**File:** `test/framework/src/main/java/org/elasticsearch/test/MockLog.java`, new `PatternAndExceptionSeenEventExpectation.match()`, the `exceptionMatches` branch (approximately line 355 in the diff)\n\n```java\nboolean exceptionMatches = event.getThrown() != null\n    && event.getThrown().getClass() == clazz\n    && event.getThrown().getMessage().equals(exceptionMessage);\n```\n\n`event.getThrown().getMessage()` can return `null`. `null.equals(exceptionMessage)` throws `NullPointerException`. Because `match()` is called from the log event pipeline, an NPE here would propagate up and potentially disrupt test execution or cause confusing failures unrelated to the actual test.\n\n**Kind:** Real defect \u2014 NPE in test framework code.\n\n---",
+        "path": "test/framework/src/main/java/org/elasticsearch/test/MockLog.java",
+        "start_line": 355,
+        "end_line": 355,
+        "observation_id": "6d53c60037e0d049",
+        "claimed_path": "test/framework/src/main/java/org/elasticsearch/test/MockLog.java",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "**3. `@BeforeClass` log level change is visible to other parallel test workers \u2014 test isolation at scale**\n\n**File:** `SearchErrorTraceIT.java` (line 48\u201350), `AsyncSearchErrorTraceIT.java` (line 49\u201351)\n\nEven if `@AfterClass` were added, `Configurator.setLevel()` mutates a JVM-global state. Elasticsearch's integration test framework can run test classes in the same JVM. This static log-level change will be visible to any other test class running concurrently in the same process, altering log-verification behavior for unrelated tests.\n\n**Kind:** Test isolation / latent flakiness risk.\n\n---",
+        "path": "qa/smoke-test-http/src/internalClusterTest/java/org/elasticsearch/http/SearchErrorTraceIT.java",
+        "start_line": 48,
+        "end_line": 48,
+        "observation_id": "8fb72b78f209419e",
+        "claimed_path": "SearchErrorTraceIT.java",
+        "path_resolution": "basename",
+        "merged_from": []
+      },
+      {
+        "content": "**4. New `pattern` field in `PatternAndExceptionSeenEventExpectation` shadows parent's `pattern` field \u2014 misleading name, maintenance hazard**\n\n**File:** `test/framework/src/main/java/org/elasticsearch/test/MockLog.java`, new class (approximately line 318)\n\nThe parent class `SeenEventExpectation` stores the pattern as a `String` field named `pattern`. The new subclass declares `private final Pattern pattern` (compiled regex) with the same name. Java resolves fields statically, so the child's `match()` override uses its own `Pattern` field \u2014 this works today. But any future code in the parent that accesses `pattern` (for example, a `toString()` or logging method) will silently get the wrong field (the `String` vs. the `Pattern`). The field should be renamed (e.g. `compiledPattern`) to avoid this trap.\n\n**Kind:** Misleading name / future bug preclusion.\n\n---",
+        "path": "test/framework/src/main/java/org/elasticsearch/test/MockLog.java",
+        "start_line": 318,
+        "end_line": 318,
+        "observation_id": "fb7caeafabc2d138",
+        "claimed_path": "test/framework/src/main/java/org/elasticsearch/test/MockLog.java",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "**5. `addSeenLoggingExpectations` regex can fail on multi-word node IDs**\n\n**File:** `test/framework/src/main/java/org/elasticsearch/search/ErrorTraceHelper.java`, `addSeenLoggingExpectations` method (approximately line 67\u201370)\n\n```java\nString nodesDisjunction = format(\n    \"(%s)\",\n    Arrays.stream(internalCluster().getNodeNames()).map(ESIntegTestCase::getNodeId).collect(Collectors.joining(\"|\"))\n);\n```\n\nIf any node ID contains characters that are special in regex (e.g. `.`, `-`, `(`, `)`), the alternation will not match as intended. Standard Elasticsearch node IDs contain `-` (e.g. `node-1`), which is safe inside a regex alternation group. However, if node IDs ever contain `.` or other metacharacters (which is possible in custom discovery setups or cloud environments), the regex silently fails to match, producing false test failures. The node IDs should be `Pattern.quote()`-escaped.\n\n**Kind:** Missing defensive check \u2014 latent test failure on non-trivial node names.\n\n---\n\n**6. No defect found in the production code change itself** (for completeness)\n\nThe refactoring in `SearchService.java` and `SearchTransportService.java` \u2014 moving from `channel.getVersion()` to `request.getChannelVersion()`, removing the `TransportVersion` parameter, and adding the debug log before stack trace clearing \u2014 is logically sound. The version source change is semantically equivalent (the `ShardSearchRequest`'s `channelVersion` is set from the same transport channel that the old code read directly). The debug log is gated behind `header == false` and uses a lambda supplier, so there is no performance cost when DEBUG is off.### Real Defects",
+        "path": "test/framework/src/main/java/org/elasticsearch/search/ErrorTraceHelper.java",
+        "start_line": 67,
+        "end_line": 67,
+        "observation_id": "343eaaf811829aa3",
+        "claimed_path": "test/framework/src/main/java/org/elasticsearch/search/ErrorTraceHelper.java",
+        "path_resolution": "exact",
+        "merged_from": [
+          "db63e39c40ce6628"
+        ]
+      },
+      {
+        "content": "**1. SearchService.java:547 \u2014 Log format mismatch breaks new logging feature and tests**\nThe debug log statement:\n```java\nlogger.debug(\n    () -> format(\"[%s]%s Clearing stack trace before transport:\", clusterService.localNode().getId(), request.shardId()),\n    e\n);\n```\nProduces `[nodeId]shardId` (e.g., `[node1]0`), but:\n- **ErrorTraceHelper.java:83** expects `\\[%s\\]\\[%s\\]\\[%d\\]` \u2192 `[nodeId][indexName][shardId]`\n- **ErrorTraceHelper.java:109** expects same format\n- **SearchServiceTests.java:177** expects `\\[node\\]\\[%s\\]\\[%d\\]` \u2192 `[node][index][shardId]`\n\nAll new tests (`testLoggingInSearchFailingQueryErrorTrace*`, `testLoggingInMultiSearchFailingQueryErrorTrace*`, `testLoggingInAsyncSearchFailingQueryErrorTrace*`, `testMaybeWrapListenerForStackTraceLogs`) will fail because the pattern never matches. The logging feature is effectively dead on arrival.",
+        "path": "server/src/main/java/org/elasticsearch/search/SearchService.java",
+        "start_line": 547,
+        "end_line": 547,
+        "observation_id": "912af8f1303d8192",
+        "claimed_path": "SearchService.java",
+        "path_resolution": "basename",
+        "merged_from": []
+      },
+      {
+        "content": "**2. SearchService.java:547 \u2014 Missing index name in log message**\nThe log message doesn't include the index name (`request.index()` or similar), but all test expectations require it. The shard ID alone isn't sufficient to identify which index triggered the error.",
+        "path": "server/src/main/java/org/elasticsearch/search/SearchService.java",
+        "start_line": 547,
+        "end_line": 547,
+        "observation_id": "65877fdba7639a9f",
+        "claimed_path": "SearchService.java",
+        "path_resolution": "basename",
+        "merged_from": []
+      },
+      {
+        "content": "**3. SearchService.java:537 \u2014 Static method accessing `logger` field (potential compile error)**\n`maybeWrapListenerForStackTrace` is `static` but calls `logger.debug(...)`. This only compiles if `logger` is `static` (standard in Elasticsearch, but not visible in diff). If `logger` is instance-level, this fails to compile.\n\n---\n\n### Worth Raising (Not Yet Wrong But Problematic)",
+        "path": "server/src/main/java/org/elasticsearch/search/SearchService.java",
+        "start_line": 537,
+        "end_line": 537,
+        "observation_id": "43f85cf0cec8325b",
+        "claimed_path": "SearchService.java",
+        "path_resolution": "basename",
+        "merged_from": [
+          "7be153bf435bf170"
+        ]
+      },
+      {
+        "content": "**4. MockLog.java:343-351 \u2014 `PatternAndExceptionSeenEventExpectation.match` swallows partial matches silently**\n```java\nboolean exceptionMatches = event.getThrown() != null\n    && event.getThrown().getClass() == clazz\n    && event.getThrown().getMessage().equals(exceptionMessage);\n\nif (exceptionMatches) {\n    if (patternMatches) {\n        seenLatch.countDown();\n    }\n}\n```\nIf pattern matches but exception doesn't (or vice versa), the latch is never counted down \u2192 test times out with no diagnostic about *which* part failed. Should either split into two expectations or log mismatch details.",
+        "path": "test/framework/src/main/java/org/elasticsearch/test/MockLog.java",
+        "start_line": 343,
+        "end_line": 343,
+        "observation_id": "0853f9fbbfba926a",
+        "claimed_path": "MockLog.java",
+        "path_resolution": "basename",
+        "merged_from": []
+      },
+      {
+        "content": "**5. ErrorTraceHelper.java:78-81 \u2014 `nodesDisjunction` regex injection risk**\n```java\nString nodesDisjunction = format(\n    \"(%s)\",\n    Arrays.stream(internalCluster().getNodeNames()).map(ESIntegTestCase::getNodeId).collect(Collectors.joining(\"|\"))\n);\n```\nNode IDs aren't sanitized for regex metacharacters. If a node ID contains `|`, `(`, `)`, etc., the pattern breaks. Use `Pattern.quote()` on each ID.",
+        "path": "test/framework/src/main/java/org/elasticsearch/search/ErrorTraceHelper.java",
+        "start_line": 78,
+        "end_line": 78,
+        "observation_id": "e56f7d8ad4aec6be",
+        "claimed_path": "ErrorTraceHelper.java",
+        "path_resolution": "basename",
+        "merged_from": []
+      },
+      {
+        "content": "**6. SearchService.java:547 \u2014 Format string missing delimiter**\n`format(\"[%s]%s Clearing stack trace before transport:\", ...)` produces `[nodeId]shardId` with no separator. Should be `format(\"[%s][%s] Clearing stack trace before transport:\", ...)` at minimum, and ideally include index name: `format(\"[%s][%s][%d] Clearing stack trace before transport:\", nodeId, indexName, shardId)`.",
+        "path": "server/src/main/java/org/elasticsearch/search/SearchService.java",
+        "start_line": 547,
+        "end_line": 547,
+        "observation_id": "6aae1eb3c10b687c",
+        "claimed_path": "SearchService.java",
+        "path_resolution": "basename",
+        "merged_from": []
+      },
+      {
+        "content": "**7. SearchService.java:863 \u2014 `readerContext.getShardSearchRequest(null)` passing null**\nIn `executeQueryPhase(InternalScrollSearchRequest)`, `getShardSearchRequest(null)` is called. Unclear if `null` is a valid argument; should be verified against `ReaderContext` implementation.",
+        "path": "server/src/main/java/org/elasticsearch/search/SearchService.java",
+        "start_line": 863,
+        "end_line": 863,
+        "observation_id": "cecc498b0ae9817a",
+        "claimed_path": "SearchService.java",
+        "path_resolution": "basename",
+        "merged_from": []
+      },
+      {
+        "content": "**9. SearchTransportService.java:459, 472 \u2014 Removed `channel.getVersion()` without comment**\nTwo call sites changed from `new ChannelActionListener<>(channel), channel.getVersion()` to just `new ChannelActionListener<>(channel)`. The version is now sourced from `request.getChannelVersion()` inside `SearchService`. This is correct *if* the request's channel version equals the channel's version \u2014 should be confirmed (likely true, but a comment would help future readers).",
+        "path": "server/src/main/java/org/elasticsearch/action/search/SearchTransportService.java",
+        "start_line": 459,
+        "end_line": 459,
+        "observation_id": "13deed423bc4490a",
+        "claimed_path": "SearchTransportService.java",
+        "path_resolution": "basename",
+        "merged_from": []
+      },
+      {
+        "content": "**10. CONTRIBUTING.md:470 \u2014 References `org.elasticsearch.test.MockLog` but class is `MockLog` in test framework**\nThe fully-qualified name is correct (`org.elasticsearch.test.MockLog`), but the class was added in this PR (MockLog.java). Ensure the doc update matches the actual new API.\n\n---",
+        "path": "CONTRIBUTING.md",
+        "start_line": 470,
+        "end_line": 470,
+        "observation_id": "ea8268529cd692bc",
+        "claimed_path": "CONTRIBUTING.md",
+        "path_resolution": "exact",
+        "merged_from": []
+      }
+    ]
+  },
+  "rundir": "/home/user/.cache/llm-panel/runs/aacr-up-sw1dedc1-56b117959ac2/20260825-203625-2676734",
+  "extractor": "1",
+  "unlocated": [
+    {
+      "content": "**8. SearchErrorTraceIT.java / AsyncSearchErrorTraceIT.java \u2014 Massive test code duplication**\nEach of the 6 new test methods in `SearchErrorTraceIT` and 3 in `AsyncSearchErrorTraceIT` duplicates:\n- `setupIndexWithDocs()` call\n- Request JSON construction\n- `MockLog.capture()` + `ErrorTraceHelper` expectation setup + `assertAllExpectationsMatched()`\nShould extract into a parameterized helper.",
+      "observation_id": "9cd7f7972dfcb84a",
+      "claimed_path": "SearchErrorTraceIT.java",
+      "path_resolution": "basename"
+    },
+    {
+      "content": "### Summary\n\n| Severity | File | Line (from diff) | Issue |\n|----------|------|------------------|-------|\n| **Defect** | SearchService.java | 547 | Log format doesn't match test expectations; logging feature broken |\n| **Defect** | ErrorTraceHelper.java | 83, 109 | Test expectations expect index name in log, but code doesn't log it |\n| **Defect** | SearchServiceTests.java | 177 | Test expectation",
+      "observation_id": "96d4fbde8cdb975d",
+      "claimed_path": "SearchService.java",
+      "path_resolution": "basename"
+    }
+  ]
+}

@@ -1,0 +1,237 @@
+{
+  "review": {
+    "comments": [
+      {
+        "content": "- **Medium \u2014 Functional defect:** `web/src/components/api-service/embed-modal/index.tsx:81` \u2014 The checkbox is labeled `avatarHidden`, but checking it sets `visibleAvatar` and emits `visible_avatar=1`. A user selecting \u201cHide avatar\u201d will generate an embed URL that explicitly shows the avatar. Rename/relabel the option or invert the state/query behavior.",
+        "path": "web/src/components/api-service/embed-modal/index.tsx",
+        "start_line": 81,
+        "end_line": 81,
+        "observation_id": "d4acf1b439cf8c92",
+        "claimed_path": "web/src/components/api-service/embed-modal/index.tsx",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "- **Low \u2014 Localization defect:** `web/src/components/api-service/embed-modal/index.tsx:80` \u2014 `\"Option\"` is hard-coded even though the modal uses translated strings. In a non-English session, this heading remains English. It should use a translation key.",
+        "path": "web/src/components/api-service/embed-modal/index.tsx",
+        "start_line": 80,
+        "end_line": 80,
+        "observation_id": "54dfe393a283ef56",
+        "claimed_path": "web/src/components/api-service/embed-modal/index.tsx",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "- **Low \u2014 Localization defect:** `web/src/components/api-service/embed-modal/index.tsx:89` \u2014 `\"Select a locale\"` is also hard-coded, producing a partially untranslated modal. Use the existing translation mechanism.",
+        "path": "web/src/components/api-service/embed-modal/index.tsx",
+        "start_line": 89,
+        "end_line": 89,
+        "observation_id": "c563fae775213a36",
+        "claimed_path": "web/src/components/api-service/embed-modal/index.tsx",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "**1. Stale, broken prompt text copied verbatim \u2014 `agent/component/rewrite.py`, lines 48\u201350 (new numbering)**\n\n`\"If the user's latest question is completely, don't do anything, just return the original question.\"` \u2014 \"completely\" is a sentence fragment that never finishes. This was already a bug before this diff; the diff restructures where this fragment appears but does not fix it, and now it is emitted in a *more* prominent position (unconditional, outside the `language` branch). An LLM receiving a malformed instruction like this may behave unpredictably. **Type: real defect (wrong output).**",
+        "path": "agent/component/rewrite.py",
+        "start_line": 48,
+        "end_line": 48,
+        "observation_id": "b9f651ce0d710df9",
+        "claimed_path": "agent/component/rewrite.py",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "**2. Removed the blank-line separator between prompt sections \u2014 `agent/component/rewrite.py`, line 38 area**\n\nThe original had `\\\"\\\"\\\"\\n\\n` (blank line) between the closing `\"\"\"` and the `language` block, and again before the next section. The new version removes those blank lines, collapsing the prompt into a denser string. For prompt-based systems this can change model behaviour; collapsing sections without blank-line separation can make the prompt less parseable by the model. **Type: potential defect (behavioural change to prompt parsing).**",
+        "path": "agent/component/rewrite.py",
+        "start_line": 38,
+        "end_line": 38,
+        "observation_id": "ad1602599534a14a",
+        "claimed_path": "agent/component/rewrite.py",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "**3. `iframeSrc` is recomputed on every render, not memoized or placed in `useEffect` \u2014 `web/src/components/api-service/embed-modal/index.tsx`, lines 50\u201363**\n\n`generateIframeSrc()` is called unconditionally in the render body and assigned to `iframeSrc`. It reads `location.origin` and closure-captured props (`token`, `form`, `beta`) on every render. This is minor but: the `text` template literal on line 67 also uses `iframeSrc`, so it too recomputes on every render (including the `CopyToClipboard` `text` prop). A `useMemo` would be more appropriate and make the dependency explicit. **Type: not-yet-wrong / design smell.**",
+        "path": "web/src/components/api-service/embed-modal/index.tsx",
+        "start_line": 50,
+        "end_line": 50,
+        "observation_id": "0f9aa66dddd61cc4",
+        "claimed_path": "web/src/components/api-service/embed-modal/index.tsx",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "**4. `text` template literal is stale \u2014 it still uses the old expression even though `iframeSrc` is now a variable, but the template is only built once outside any memoization \u2014 `index.tsx`, lines 65\u201373**\n\nThe `text` template is built as a `const` inside the component body with no memoization, meaning the HTML shown to the user can briefly disagree with the `src` attribute if React batches a stale render. Same fix as #3: `useMemo` over both. **Type: potential defect (race between rendered iframe and copied text).**",
+        "path": "web/src/components/api-service/embed-modal/index.tsx",
+        "start_line": 65,
+        "end_line": 65,
+        "observation_id": "d442dad9c3b51177",
+        "claimed_path": "index.tsx",
+        "path_resolution": "basename",
+        "merged_from": []
+      },
+      {
+        "content": "**5. Locale value is not URL-encoded \u2014 `index.tsx`, line 57**\n\n`src += \"&locale=${locale}\"` \u2014 if `languageOptions` ever contains a value with `&`, `=`, `#`, or non-ASCII characters, this will corrupt the query string. The `token` and `form` parameters are also not encoded, but this diff *adds* a new parameter and doesn't encode it. **Type: missing validation / encoding.**",
+        "path": "web/src/components/api-service/embed-modal/index.tsx",
+        "start_line": 57,
+        "end_line": 57,
+        "observation_id": "89a63f20f10964ab",
+        "claimed_path": "index.tsx",
+        "path_resolution": "basename",
+        "merged_from": []
+      },
+      {
+        "content": "**6. `visibleAvatar` checkbox label is potentially misleading \u2014 `index.tsx`, line 84**\n\n`t('avatarHidden')` is the label, but the checkbox `checked` state is `visibleAvatar` (true = show avatar). \"Hidden\" vs \"visible\" inversion means a user must mentally negate the label to understand the control. If the i18n key name in `config` matches the display text, users see \"Avatar Hidden\" but ticking it *shows* the avatar. This will confuse translators and users. **Type: name misleads.**",
+        "path": "web/src/components/api-service/embed-modal/index.tsx",
+        "start_line": 84,
+        "end_line": 84,
+        "observation_id": "8ba4d0578d35f445",
+        "claimed_path": "index.tsx",
+        "path_resolution": "basename",
+        "merged_from": []
+      },
+      {
+        "content": "**7. \"Option\" heading is hard-coded and not translated \u2014 `index.tsx`, line 78**\n\n`<h2>Option</h2>` is a bare English string inside a component that otherwise uses `t(...)` for all visible text. Should be `t('option')` or similar. **Type: real defect for i18n (will show English regardless of locale).**",
+        "path": "web/src/components/api-service/embed-modal/index.tsx",
+        "start_line": 78,
+        "end_line": 78,
+        "observation_id": "45ebc4e3e43b6443",
+        "claimed_path": "index.tsx",
+        "path_resolution": "basename",
+        "merged_from": []
+      },
+      {
+        "content": "**8. No way to clear the locale back to empty string \u2014 `index.tsx`, line 94**\n\nThe `Select` has no `allowClear` or empty option. Once a locale is chosen, the user cannot revert to \"no locale specified\" (which means \"use the same language as the original question\" per the prompt in `rewrite.py`). **Type: missing validation / UX defect.****CRITICAL**",
+        "path": "web/src/components/api-service/embed-modal/index.tsx",
+        "start_line": 94,
+        "end_line": 94,
+        "observation_id": "0a4dbb1c89583eb6",
+        "claimed_path": "index.tsx",
+        "path_resolution": "basename",
+        "merged_from": [
+          "c39b8298adf843c6"
+        ]
+      },
+      {
+        "content": "1. **web/src/components/api-service/embed-modal/index.tsx:52** \u2014 `iframeSrc` is computed once on mount and never updates when `visibleAvatar` or `locale` change. The iframe will always show the initial URL. Fix: wrap in `useMemo` with `[visibleAvatar, locale, token, form, beta]` deps, or compute inline in render.",
+        "path": "web/src/components/api-service/embed-modal/index.tsx",
+        "start_line": 52,
+        "end_line": 52,
+        "observation_id": "151e5e4bc8affd74",
+        "claimed_path": "web/src/components/api-service/embed-modal/index.tsx",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "2. **web/src/components/api-service/embed-modal/index.tsx:44** \u2014 `location.origin` will crash during SSR (Next.js) because `location`/`window` is undefined on the server. Guard with `typeof window !== 'undefined' ? window.location.origin : ''` or read origin from a config/context.",
+        "path": "web/src/components/api-service/embed-modal/index.tsx",
+        "start_line": 44,
+        "end_line": 44,
+        "observation_id": "591fd393ae2a63ac",
+        "claimed_path": "web/src/components/api-service/embed-modal/index.tsx",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "3. **web/src/components/api-service/embed-modal/index.tsx:43-49** \u2014 `generateIframeSrc` references `form` and `beta` but they are not in scope (not destructured from props, not in state, not in closure). The original inline template used them, so they must be props \u2014 add them to the component's destructured params and to the `useMemo` deps.\n\n**HIGH**",
+        "path": "web/src/components/api-service/embed-modal/index.tsx",
+        "start_line": 43,
+        "end_line": 43,
+        "observation_id": "b27579a11934b620",
+        "claimed_path": "web/src/components/api-service/embed-modal/index.tsx",
+        "path_resolution": "exact",
+        "merged_from": [
+          "600c54453df1e0a6"
+        ]
+      },
+      {
+        "content": "4. **agent/component/rewrite.py:49** \u2014 Requirement text is truncated: `\"If the user's latest question is completely\"` \u2014 missing predicate (e.g., \"completely unrelated\"). This ships incomplete instructions to the LLM.",
+        "path": "agent/component/rewrite.py",
+        "start_line": 49,
+        "end_line": 49,
+        "observation_id": "1d9c0268543d6348",
+        "claimed_path": "agent/component/rewrite.py",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "5. **agent/component/rewrite.py:53** \u2014 `prompt += f\"\"\"` uses an f-string with no interpolations. Works but misleading; use plain triple quotes.",
+        "path": "agent/component/rewrite.py",
+        "start_line": 53,
+        "end_line": 53,
+        "observation_id": "70f58586ed02883c",
+        "claimed_path": "agent/component/rewrite.py",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "6. **agent/component/rewrite.py:43-52** \u2014 Logic inversion: when `language` is provided, the \"same language as original\" requirement is dropped entirely. If the intent is \"use specified language OR fall back to original\", the fallback text should still be present (or the condition should be `if not language:`). Current behavior silently changes the contract.\n\n**MEDIUM**",
+        "path": "agent/component/rewrite.py",
+        "start_line": 43,
+        "end_line": 43,
+        "observation_id": "8523d6ac705a3306",
+        "claimed_path": "agent/component/rewrite.py",
+        "path_resolution": "exact",
+        "merged_from": [
+          "7e9a3cfec51cfeb8"
+        ]
+      },
+      {
+        "content": "7. **web/src/components/api-service/embed-modal/index.tsx:42** \u2014 `generateIframeSrc` is recreated every render. Wrap in `useCallback`/`useMemo` to stabilize reference (also fixes #1 if deps are correct).",
+        "path": "web/src/components/api-service/embed-modal/index.tsx",
+        "start_line": 42,
+        "end_line": 42,
+        "observation_id": "164b968272b52ffa",
+        "claimed_path": "web/src/components/api-service/embed-modal/index.tsx",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "8. **web/src/components/api-service/embed-modal/index.tsx:66,69** \u2014 `t('avatarHidden')` and `t('locale')` assume translation keys exist. If missing, UI shows raw keys. Verify keys in locale files or add fallbacks.",
+        "path": "web/src/components/api-service/embed-modal/index.tsx",
+        "start_line": 66,
+        "end_line": 66,
+        "observation_id": "d03a13dfc6807c89",
+        "claimed_path": "web/src/components/api-service/embed-modal/index.tsx",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "9. **web/src/components/api-service/embed-modal/index.tsx:15** \u2014 `languageOptions` imported from `@/locales/config` \u2014 unverified shape. Ant Design `Select` expects `{ label, value }[]`. If it exports something else (e.g., `{ code, name }[]`), the dropdown will be broken.\n\n**LOW**",
+        "path": "web/src/components/api-service/embed-modal/index.tsx",
+        "start_line": 15,
+        "end_line": 15,
+        "observation_id": "2143beec715ffc1d",
+        "claimed_path": "web/src/components/api-service/embed-modal/index.tsx",
+        "path_resolution": "exact",
+        "merged_from": [
+          "e8df4fe789db2c23"
+        ]
+      },
+      {
+        "content": "10. **agent/component/rewrite.py:43-52** \u2014 Inconsistent indentation in the `else` block (extra 8 spaces) vs `if` block. Cosmetic but hurts readability.",
+        "path": "agent/component/rewrite.py",
+        "start_line": 43,
+        "end_line": 43,
+        "observation_id": "17a87ea8d4f063f3",
+        "claimed_path": "agent/component/rewrite.py",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "11. **web/src/components/api-service/embed-modal/index.tsx:63-71** \u2014 Checkbox and Select lack explicit `id`/`htmlFor` pairing for accessibility. `Form.Item label` helps but not sufficient for all screen readers. Add `id` to inputs and `htmlFor` to labels or use `Form.Item`'s `colon={false}` with proper control binding.",
+        "path": "web/src/components/api-service/embed-modal/index.tsx",
+        "start_line": 63,
+        "end_line": 63,
+        "observation_id": "869ab4aaca91107d",
+        "claimed_path": "web/src/components/api-service/embed-modal/index.tsx",
+        "path_resolution": "exact",
+        "merged_from": []
+      }
+    ]
+  },
+  "rundir": "/home/user/.cache/llm-panel/runs/aacr-up-370_6354-c8881d710871/20260825-212546-2730046",
+  "extractor": "1",
+  "unlocated": []
+}

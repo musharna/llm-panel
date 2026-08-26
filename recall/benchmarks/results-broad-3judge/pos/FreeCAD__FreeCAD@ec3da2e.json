@@ -1,0 +1,66 @@
+{
+  "review": {
+    "comments": [
+      {
+        "content": "- **Defect \u2014 build failure:** [DrawViewPart.h:242](/tmp/aacr-up-zpyehsqq/src/Mod/TechDraw/App/DrawViewPart.h:242) declares all three methods as `static` with `(App::DocumentObject*, std::string)`, while [DrawViewPart.cpp:1503](/tmp/aacr-up-zpyehsqq/src/Mod/TechDraw/App/DrawViewPart.cpp:1503) defines non-static methods taking only `std::string`. Compiling `DrawViewPart.cpp` will fail with \u201cno declaration matches\u201d for each method. The header declarations need to match the new instance-method definitions.",
+        "path": "src/Mod/TechDraw/App/DrawViewPart.h",
+        "start_line": 242,
+        "end_line": 242,
+        "observation_id": "fa7eacaaca1a4838",
+        "claimed_path": "DrawViewPart.h",
+        "path_resolution": "basename",
+        "merged_from": []
+      },
+      {
+        "content": "**1. CRITICAL \u2014 Signature mismatch between header declaration and implementation (will not compile)**\n\nThe header (`DrawViewPart.h`, line ~242 in the new block) declares these as **static** member functions with the **old two-parameter signature**:\n\n```cpp\nstatic bool isCosmeticVertex(App::DocumentObject* owner, std::string element);\nstatic bool isCosmeticEdge(App::DocumentObject* owner, std::string element);\nstatic bool isCenterLine(App::DocumentObject* owner, std::string element);\n```\n\nBut the implementation (`DrawViewPart.cpp`, line ~1501 in the new block) defines them as **non-static** member functions with a **new one-parameter signature**:\n\n```cpp\nbool DrawViewPart::isCosmeticVertex(std::string element)\nbool DrawViewPart::isCosmeticEdge(std::string element)\nbool DrawViewPart::isCenterLine(std::string element)\n```\n\nThese are completely different functions. The linker will fail to find definitions for the static methods declared in the header, and the non-static implementations in the `.cpp` have no corresponding declaration. This is a compile/link break \u2014 the PR cannot be merged in this state.\n\nThe header declarations need to drop `static` and drop the `App::DocumentObject* owner` parameter to match the implementations.\n\n**2. ISSUE \u2014 Caller sites not updated (missing from this diff)**\n\nThe original functions in `DrawUtil` took `(App::DocumentObject* owner, std::string element)` and were called as free-standing statics like `DrawUtil::isCosmeticVertex(owner, element)`. The new member-function API requires callers to use `someDrawViewPart->isCosmeticVertex(element)` instead. No caller updates appear in this diff. If the intent is to change the call sites in a separate commit, that's fine as a process matter, but it should be noted \u2014 if this lands alone, every existing caller is a compile error too (on top of defect #1).**DEFECT: Signature mismatch between header declaration and implementation**",
+        "path": "src/Mod/TechDraw/App/DrawViewPart.h",
+        "start_line": 242,
+        "end_line": 242,
+        "observation_id": "6a5ce0601e34140c",
+        "claimed_path": "DrawViewPart.h",
+        "path_resolution": "basename",
+        "merged_from": [
+          "dfdec4e8839967b9",
+          "6b11ba62b53a04ef"
+        ]
+      },
+      {
+        "content": "**File: `src/Mod/TechDraw/App/DrawViewPart.h` (lines 242-244) vs `src/Mod/TechDraw/App/DrawViewPart.cpp` (lines 1501, 1513, 1525)**\n\nThe header declares three `static` methods taking two parameters:\n```cpp\nstatic bool isCosmeticVertex(App::DocumentObject* owner, std::string element);\nstatic bool isCosmeticEdge(App::DocumentObject* owner, std::string element);\nstatic bool isCenterLine(App::DocumentObject* owner, std::string element);\n```\n\nBut the implementation defines them as non-static instance methods taking only one parameter:\n```cpp\nbool DrawViewPart::isCosmeticVertex(std::string element)\nbool DrawViewPart::isCosmeticEdge(std::string element)\nbool DrawViewPart::isCenterLine(std::string element)\n```\n\n**Failure scenario:** This will not compile/link. The declared static methods have no definition, and the implemented non-static methods have no declaration. Any existing callers using `DrawUtil::isCosmeticVertex(owner, element)` will also fail to compile since those were removed from `DrawUtil`.\n\n---\n\n**DEFECT: Missing `owner` parameter in implementation logic**",
+        "path": "src/Mod/TechDraw/App/DrawViewPart.h",
+        "start_line": 242,
+        "end_line": 242,
+        "observation_id": "0390913fe71daecc",
+        "claimed_path": "src/Mod/TechDraw/App/DrawViewPart.h",
+        "path_resolution": "exact",
+        "merged_from": [
+          "32515d20cd4439b2"
+        ]
+      },
+      {
+        "content": "**File: `src/Mod/TechDraw/App/DrawViewPart.cpp` (lines 1501-1537)**\n\nThe original `DrawUtil` versions took an `owner` parameter and cast it: `static_cast<TechDraw::DrawViewPart*>(owner)`. The new implementation uses `this` implicitly (via `getProjVertexByIndex`, `getEdge`), but the header still declares an `owner` parameter that the implementation ignores. If the header is corrected to match the implementation (removing `owner` and `static`), callers must change from `DrawUtil::isCosmeticVertex(obj, elem)` to `dvp->isCosmeticVertex(elem)` \u2014 a breaking API change with no migration path shown in the diff.\n\n---\n\n**DESIGN CONCERN: Inconsistent method placement**",
+        "path": "src/Mod/TechDraw/App/DrawViewPart.cpp",
+        "start_line": 1501,
+        "end_line": 1501,
+        "observation_id": "1a418ed87c592186",
+        "claimed_path": "src/Mod/TechDraw/App/DrawViewPart.cpp",
+        "path_resolution": "exact",
+        "merged_from": [
+          "fdd4cfe5c9f63b27"
+        ]
+      },
+      {
+        "content": "**File: `src/Mod/TechDraw/App/DrawViewPart.h` (lines 242-244)**\n\nThese methods are placed in the middle of the class declaration (between `waitingForResult()` and `public Q_SLOTS:`) without clear grouping. They would be better placed in a dedicated section (e.g., under a `// Element classification` comment) for maintainability.",
+        "path": "src/Mod/TechDraw/App/DrawViewPart.h",
+        "start_line": 242,
+        "end_line": 242,
+        "observation_id": "9078172303428275",
+        "claimed_path": "src/Mod/TechDraw/App/DrawViewPart.h",
+        "path_resolution": "exact",
+        "merged_from": []
+      }
+    ]
+  },
+  "rundir": "/home/user/.cache/llm-panel/runs/aacr-up-zpyehsqq-a179f9b8cad8/20260825-192750-2491594",
+  "extractor": "1",
+  "unlocated": []
+}

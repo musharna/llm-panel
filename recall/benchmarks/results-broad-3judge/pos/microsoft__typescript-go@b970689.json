@@ -1,0 +1,234 @@
+{
+  "review": {
+    "comments": [
+      {
+        "content": "- **High \u2014 Defect (crash): `internal/parser/reparser.go:120`**  \n  `ImportClause` is optional, but it is dereferenced unconditionally. An incomplete or malformed comment such as `/** @import */` produces a `JSDocImportTag` without a clause and crashes parsing instead of reporting/recovering from the syntax error. Guard `importTag.ImportClause == nil` before cloning it.",
+        "path": "internal/parser/reparser.go",
+        "start_line": 120,
+        "end_line": 120,
+        "observation_id": "3c8966c602dcad42",
+        "claimed_path": "internal/parser/reparser.go",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "- **High \u2014 Defect (wrong module resolution): `testdata/baselines/reference/submodule/conformance/importTag17.errors.txt:1`**  \n  The new baseline shows that `\"resolution-mode\": \"import\"` is ignored: the import resolves to the package\u2019s default `index` declaration and reports that `Import` is missing. The `\"require\"` case likewise resolves the wrong declaration kind. Packages with conditional `import`/`require` typings will therefore receive incorrect types or false missing-export errors.",
+        "path": "testdata/baselines/reference/submodule/conformance/importTag17.errors.txt",
+        "start_line": 1,
+        "end_line": 1,
+        "observation_id": "cda81beb1a36629b",
+        "claimed_path": "testdata/baselines/reference/submodule/conformance/importTag17.errors.txt",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "- **Medium \u2014 Defect (false diagnostics): `internal/parser/reparser.go:122`**  \n  Modeling every JSDoc import by setting `IsTypeOnly` applies ordinary `import type` grammar restrictions that do not apply to `@import`. The included baselines demonstrate valid `@import Foo, { I }` receiving TS1363 and valid import attributes receiving TS2857. The synthetic kind needs type-only semantics without being subjected to those syntax-only restrictions.",
+        "path": "internal/parser/reparser.go",
+        "start_line": 122,
+        "end_line": 122,
+        "observation_id": "f2ba129d660d351e",
+        "claimed_path": "internal/parser/reparser.go",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "- **Medium \u2014 Defect (AST corruption): `internal/parser/reparser.go:123`**  \n  The synthetic declaration reuses the original tag\u2019s modifiers, module specifier, attributes, and\u2014because `ImportClause.Clone` is shallow\u2014its nested bindings. Once parent pointers and symbols are assigned, these nodes belong simultaneously to the JSDoc tree and the synthetic statement, with one parent overwriting the other. For `@import { Foo } from \"./m\"`, position-based language-service operations can consequently walk into the wrong tree or associate edits/diagnostics with the synthetic declaration. Deep-clone the entire imported subtree.",
+        "path": "internal/parser/reparser.go",
+        "start_line": 123,
+        "end_line": 123,
+        "observation_id": "9166f5f015c6e0d0",
+        "claimed_path": "internal/parser/reparser.go",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "- **Medium \u2014 Defect (misleading result): `testdata/baselines/reference/submodule/conformance/importTag3.types:18`**  \n  This baseline blesses a default import named `Foo` being displayed as `default`. Quick info and printed signatures for `@import Foo from \"./types\"` will show `(foo: default) => void` instead of `(foo: Foo) => void`; `importTag16.types` records the same regression.",
+        "path": "testdata/baselines/reference/submodule/conformance/importTag3.types",
+        "start_line": 18,
+        "end_line": 18,
+        "observation_id": "22680defd92375fc",
+        "claimed_path": "testdata/baselines/reference/submodule/conformance/importTag3.types",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "- **Medium \u2014 Defect (unsafe abstraction): `internal/ast/utilities.go:1668`**  \n  `IsAnyImportSyntax` previously guaranteed a genuine `ImportDeclaration` or `ImportEqualsDeclaration`. Including the reparsed JSDoc-only kind silently widens every caller, including import-edit/organize-import paths that are entitled to cast or rewrite real syntax. A file containing `@import` can therefore reach code that cannot handle `KindJSImportDeclaration`. Keep this predicate narrow and introduce a separate permissive import predicate.\n\n- **Low \u2014 Defect (API regression/panic): `internal/ast/ast.go:753`**  \n  Reparsing does not remove the original `KindJSDocImportTag`, yet `Node.ModuleSpecifier` no longer handles it. Any JSDoc-aware AST consumer calling `tag.ModuleSpecifier()` now reaches the panic despite the tag still owning a module specifier. The original case should remain.",
+        "path": "internal/ast/utilities.go",
+        "start_line": 1668,
+        "end_line": 1668,
+        "observation_id": "67c643d6a7a967b1",
+        "claimed_path": "internal/ast/utilities.go",
+        "path_resolution": "exact",
+        "merged_from": [
+          "f6a424a6caf635c0"
+        ]
+      },
+      {
+        "content": "**1. (Defect \u2014 missing case, potential panic) `internal/ast/ast.go` line ~753 and `internal/ast/utilities.go` line ~1677: Removal of `KindJSDocImportTag` from `ModuleSpecifier()` and `GetExternalModuleName()` panics on un-reparsed nodes.**\n\nBoth `ModuleSpecifier()` and `GetExternalModuleName()` have `panic(\"Unhandled case \u2026\")` fall-throughs. The PR removes the `KindJSDocImportTag` case from both. While the reparser now converts `KindJSDocImportTag` \u2192 `KindJSImportDeclaration`, any code that inspects raw AST *before* the reparser runs (or any code path that bypasses reparsing) will hit the panic. The `KindJSDocImportTag` kind constant still exists in `kind.go` (it was not removed), so these nodes can still exist in the AST. The safe pattern is to keep the `KindJSDocImportTag` case handling or at minimum route it to the same `AsImportDeclaration()` path alongside `KindJSImportDeclaration` rather than deleting it.",
+        "path": "internal/ast/ast.go",
+        "start_line": 753,
+        "end_line": 753,
+        "observation_id": "f0ef024ec8096a41",
+        "claimed_path": "internal/ast/ast.go",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "**2. (Defect \u2014 silent wrong result) No `UpdateJSImportDeclaration` factory method; `UpdateImportDeclaration` likely hardcodes `KindImportDeclaration`.**\n\n`internal/ast/ast.go` around line 4047 shows `UpdateImportDeclaration` in context (unchanged). Based on the codebase pattern, `UpdateImportDeclaration` almost certainly calls `f.newNode(KindImportDeclaration, data)` with a hardcoded kind. If any transformation or checker code calls `UpdateImportDeclaration` on a `JSImportDeclaration` node, the resulting node silently changes its kind back to `KindImportDeclaration`, undoing the entire purpose of this PR. The PR adds `NewImportDeclaration` and `NewJSImportDeclaration` but does not add the corresponding `UpdateJSImportDeclaration` that would preserve the kind. Every `New*` pattern in this codebase has a matching `Update*`; this one is missing.",
+        "path": "internal/ast/ast.go",
+        "start_line": 4047,
+        "end_line": 4047,
+        "observation_id": "83e77ca5691b0f4f",
+        "claimed_path": "internal/ast/ast.go",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "**3. (Defect \u2014 silent behavior change) `internal/ast/utilities.go` line ~2364: `IsDefaultImport()` no longer handles `KindJSDocImportTag`.**\n\nThe old code set `importClause` from `AsJSDocImportTag().ImportClause` for `KindJSDocImportTag`, then checked it at the bottom. The new code only handles `KindImportDeclaration` and `KindJSImportDeclaration` (with an early return inside the case), and returns `false` for everything else. If any call site passes a `KindJSDocImportTag` node (pre-reparse), `IsDefaultImport` now silently returns `false` instead of checking the import clause. This is the same category of issue as item 1: the `KindJSDocImportTag` kind is not removed from the enum, but all handling of it is being stripped from switch statements that panic-or-return-false on unmatched cases.",
+        "path": "internal/ast/utilities.go",
+        "start_line": 2364,
+        "end_line": 2364,
+        "observation_id": "418bd47368c8bdde",
+        "claimed_path": "internal/ast/utilities.go",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "**4. (Latent defect \u2014 duplicated kind handling without shared update logic) `internal/ast/ast.go` line ~4040: `newImportOrJSImportDeclaration` deduplicates creation but not mutation.**\n\nThe PR correctly refactors the *creation* path (`NewImportDeclaration` / `NewJSImportDeclaration` \u2192 shared `newImportOrJSImportDeclaration`). But the *update* path (`UpdateImportDeclaration`) is left unchanged. If another kind pair follows this pattern (e.g., `KindJSExportAssignment` which already exists), the same gap will recur. The naming convention also splits: `newImportOrJSImportDeclaration` is unexported and shared, while `NewImportDeclaration` and `NewJSImportDeclaration` are exported wrappers \u2014 but there is no `newImportOrJSImportDeclaration`-style shared update function.### **CRITICAL: Transformers silently drop `JSImportDeclaration` nodes**",
+        "path": "internal/ast/ast.go",
+        "start_line": 4040,
+        "end_line": 4040,
+        "observation_id": "7c9a17028dab4cc0",
+        "claimed_path": "internal/ast/ast.go",
+        "path_resolution": "exact",
+        "merged_from": [
+          "9d96bebea9831d96"
+        ]
+      },
+      {
+        "content": "**File: `internal/transformers/commonjsmodule.go:66-67`**\n```go\ncase ast.KindJSImportDeclaration:\n    node = nil\n```",
+        "path": "internal/transformers/commonjsmodule.go",
+        "start_line": 66,
+        "end_line": 66,
+        "observation_id": "e1f8a66b028a87e8",
+        "claimed_path": "internal/transformers/commonjsmodule.go",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "**File: `internal/transformers/esmodule.go:42-43`**\n```go\ncase ast.KindJSImportDeclaration:\n    node = nil\n```\n\n**Failure scenario**: When `--module commonjs` or `--module esnext` is used, JSDoc `@import` tags are converted to `JSImportDeclaration` nodes during reparsing, but these transformers then **delete them entirely** by returning `nil`. This loses all type information from `@import` tags in the emitted output. The `importelision.go` and `typeeraser.go` transformers correctly group `JSImportDeclaration` with `ImportDeclaration`, but these two module transformers do not.\n\n---\n\n### **CRITICAL: Missing `UpdateJSImportDeclaration` factory method**",
+        "path": "internal/transformers/esmodule.go",
+        "start_line": 42,
+        "end_line": 42,
+        "observation_id": "eb94aaffe4d1f9ad",
+        "claimed_path": "internal/transformers/esmodule.go",
+        "path_resolution": "exact",
+        "merged_from": [
+          "dda52acc12426893"
+        ]
+      },
+      {
+        "content": "**File: `internal/ast/ast.go:4048-4059`**\n\nOnly `NewJSImportDeclaration` exists. There's no corresponding `UpdateJSImportDeclaration`. Since `UpdateImportDeclaration` creates a node with `KindImportDeclaration` (line 4060+), calling it on a `JSImportDeclaration` data struct would **change the node's kind incorrectly**.\n\n---\n\n### **HIGH: Hardcoded `IsTypeOnly = true` in reparser loses fidelity**",
+        "path": "internal/ast/ast.go",
+        "start_line": 4048,
+        "end_line": 4048,
+        "observation_id": "efbe7c1394365d0e",
+        "claimed_path": "internal/ast/ast.go",
+        "path_resolution": "exact",
+        "merged_from": [
+          "de8cd757fbc94c59"
+        ]
+      },
+      {
+        "content": "**File: `internal/parser/reparser.go:123`**\n```go\nimportClause.AsImportClause().IsTypeOnly = true\n```\n\nAll converted `@import` tags are forced to type-only. While JSDoc imports are conceptually type-space, the original `JSDocImportTag` didn't have this flag \u2014 it was inferred from context. This hardcoding may prevent valid use cases or cause incorrect diagnostics.\n\n---\n\n### **HIGH: `GetExternalModuleName` no longer handles `JSDocImportTag`**",
+        "path": "internal/parser/reparser.go",
+        "start_line": 123,
+        "end_line": 123,
+        "observation_id": "9ef91716a3809f86",
+        "claimed_path": "internal/parser/reparser.go",
+        "path_resolution": "exact",
+        "merged_from": [
+          "2602f499ec2534ab"
+        ]
+      },
+      {
+        "content": "**File: `internal/ast/utilities.go:1685-1695`**\n\nThe `KindJSDocImportTag` case was removed. Since the reparser converts these to `JSImportDeclaration` **before** most consumers run, this may be intentional, but any code path that runs **before** reparsing (or on un-reparsed ASTs) will now panic at the `default` case (line 1698: `panic(\"Unhandled case...\")`).\n\n---\n\n### **HIGH: `ForEachDynamicImportOrRequireCall` drops JSDoc import handling**",
+        "path": "internal/ast/utilities.go",
+        "start_line": 1685,
+        "end_line": 1685,
+        "observation_id": "802b02e8a0d15c2f",
+        "claimed_path": "internal/ast/utilities.go",
+        "path_resolution": "exact",
+        "merged_from": [
+          "35a33324fe06758e"
+        ]
+      },
+      {
+        "content": "**File: `internal/ast/utilities.go:2554-2562`**\n\nThe entire `includeTypeSpaceImports && node.Kind == KindJSDocImportTag` block was deleted. If any consumer relies on this callback for type-space imports from JSDoc, it will no longer fire.\n\n---\n\n### **MEDIUM: Stale comment in `IsDefaultImport`**",
+        "path": "internal/ast/utilities.go",
+        "start_line": 2554,
+        "end_line": 2554,
+        "observation_id": "81988c98abe1a71f",
+        "claimed_path": "internal/ast/utilities.go",
+        "path_resolution": "exact",
+        "merged_from": [
+          "1859963348e978d8"
+        ]
+      },
+      {
+        "content": "**File: `internal/ast/utilities.go:2362`**\n```go\nfunc IsDefaultImport(node *Node /*ImportDeclaration | ImportEqualsDeclaration | ExportDeclaration*/) bool {\n```\n\nThe comment still references `JSDocImportTag` which is no longer handled (the function now returns `false` for unhandled kinds). Should update or remove the comment.\n\n---",
+        "path": "internal/ast/utilities.go",
+        "start_line": 2362,
+        "end_line": 2362,
+        "observation_id": "b817cca2d28cae64",
+        "claimed_path": "internal/ast/utilities.go",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "**File: `internal/transformers/externalmoduleinfo.go:54`**\n```go\n// @import versions of above\n```\n\nThe code just falls through to the same `addExternalImport` logic. If `@import` tags need different module resolution (e.g., they're type-only, don't create runtime dependencies), this comment is misleading and the handling may be wrong.\n\n---",
+        "path": "internal/transformers/externalmoduleinfo.go",
+        "start_line": 54,
+        "end_line": 54,
+        "observation_id": "3f7ab8487aaf5f8c",
+        "claimed_path": "internal/transformers/externalmoduleinfo.go",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "### **LOW: Inconsistent grouping in switch statements**\n\nMultiple files group `KindImportDeclaration, KindJSImportDeclaration` together, but some use separate cases with identical bodies (e.g., `printer.go:3956` vs `printer.go:5608`). Not a bug, but inconsistent style that increases maintenance burden.\n\n---\n\n### **LOW: Generated stringer file modified manually?**",
+        "path": "internal/printer/printer.go",
+        "start_line": 3956,
+        "end_line": 3956,
+        "observation_id": "71cf0672d80175d2",
+        "claimed_path": "printer.go",
+        "path_resolution": "basename",
+        "merged_from": [
+          "69d1f09ac9fb6422"
+        ]
+      }
+    ]
+  },
+  "rundir": "/home/user/.cache/llm-panel/runs/aacr-up-ivwlas4j-eb9e7773fd5e/20260825-190948-2414421",
+  "extractor": "1",
+  "unlocated": [
+    {
+      "content": "### **MEDIUM: `externalmoduleinfo.go` comment implies special handling but none exists**",
+      "observation_id": "c1a9fedcf710eaf8",
+      "claimed_path": "externalmoduleinfo.go",
+      "path_resolution": "basename"
+    },
+    {
+      "content": "**File: `internal/ast/kind_stringer_generated.go`**\n\nThis appears to be a generated file (note the `func _()` compile-time checks and the massive `_Kind_name` constant). Manual edits here will be overwritten by the generator. Verify this is regenerated via `go generate` or similar.\n\n---",
+      "observation_id": "1b6b958789baea02",
+      "claimed_path": "internal/ast/kind_stringer_generated.go",
+      "path_resolution": "exact"
+    },
+    {
+      "content": "### Summary\n\n| Severity | Count |\n|----------|-------|\n| Critical | 2 |\n| High | 3 |\n| Medium | 2 |\n| Low | 2 |\n\n**Top fix needed**: The transformers in `commonjsmodule.go` and `esmodule.go` must not return `nil` for `JSImportDeclaration` \u2014 they should either preserve the node or delegate to the same logic as `ImportDeclaration`.",
+      "observation_id": "5311c2e756f87033",
+      "claimed_path": "commonjsmodule.go",
+      "path_resolution": "basename"
+    }
+  ]
+}

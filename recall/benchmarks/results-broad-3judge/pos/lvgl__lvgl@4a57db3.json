@@ -1,0 +1,95 @@
+{
+  "review": {
+    "comments": [
+      {
+        "content": "- **High \u2014 Defect:** [src/draw/lv_draw_label.c:221](src/draw/lv_draw_label.c#L221) \u2014 `text_size.x` is now required for every descriptor using `LV_TEXT_FLAG_EXPAND`, but only `lv_label` populates it. Existing callers such as cropped table cells initialize the descriptor to zero, set `EXPAND`, and never assign `text_size`. With center alignment, text shifts left by half its width; with right alignment, it can move entirely outside the cell\u2019s clip area and disappear. Either retain the calculation here or update every caller and provide a safe fallback.",
+        "path": "src/draw/lv_draw_label.c",
+        "start_line": 221,
+        "end_line": 221,
+        "observation_id": "59466903261afb8d",
+        "claimed_path": "src/draw/lv_draw_label.c",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "- **Medium \u2014 Defect / fragile abstraction:** [src/widgets/label/lv_label.c:826](src/widgets/label/lv_label.c#L826) \u2014 The cached size is captured before the draw task is exposed for descriptor customization. An `LV_EVENT_DRAW_TASK_ADDED` handler may legitimately replace `text`, `font`, or spacing, leaving `text_size` inconsistent with the descriptor actually rendered. In `SCROLL`/`CLIP` modes, centered or right-aligned replacement text is then positioned using the original text\u2019s width. The size should be derived from the final descriptor or invalidated/recomputed when dependent fields change.",
+        "path": "src/widgets/label/lv_label.c",
+        "start_line": 826,
+        "end_line": 826,
+        "observation_id": "aa0041b16eb68a74",
+        "claimed_path": "src/widgets/label/lv_label.c",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "**Item 1 \u2014 Wrong result / potential crash (DEFECT)**\n**File:** `src/widgets/label/lv_label.c`, line 968 (in `lv_label_refr_text`)\n**Also affects:** `src/draw/lv_draw_label.c` line 220, `src/widgets/label/lv_label.c` lines 855 and 894\n\n`label->text_size` is assigned from `lv_text_get_size(&size, ..., max_w, ...)` where `max_w` is the label's content width (a constrained value that varies by `long_mode`). However, the three call sites this caching replaces all previously used **`LV_COORD_MAX`** as the width constraint:\n\n- `lv_draw_label.c:220` (the EXPAND branch) \u2014 explicitly needs the **unconstrained** single-line text width to compute how far to scroll.\n- `lv_label.c:855` (scroll/scroll_circular + center/right align offset) \u2014 used `LV_COORD_MAX` to get the full text extent for alignment correction.\n- `lv_label.c:894` (scroll_circular duplicate-draw) \u2014 same.\n\nIf `max_w` in `lv_label_refr_text` is **not** `LV_COORD_MAX` for any of the affected long modes, `label->text_size.x` will be the *clamped* line width rather than the true unclamped width. Consequences:\n- Scroll offset calculations use the wrong width \u2192 text scrolls the wrong distance or clips.\n- Circular scroll duplication at line 894 draws at the wrong offset \u2192 visible gap or overlap.\n\nIf `max_w` happens to always equal `LV_COORD_MAX` for scroll modes in the current LVGL version, the bug is latent but fragile \u2014 any future change to `max_w` selection silently breaks the draw path. Either way, the correct fix is to cache a **separate** unconstrained text size (computed with `LV_COORD_MAX`) for the draw path, or verify/document the invariant that `max_w == LV_COORD_MAX` for all modes that reach these draw sites.",
+        "path": "src/widgets/label/lv_label.c",
+        "start_line": 968,
+        "end_line": 968,
+        "observation_id": "e7275bd2fa106d4f",
+        "claimed_path": "src/widgets/label/lv_label.c",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "**Item 2 \u2014 Missing initialization / defensive check (DESIGN)**\n**File:** `src/draw/lv_draw_label.h`, line 38; `src/widgets/label/lv_label_private.h`, line 55\n\nThe new `text_size` field is added to `lv_draw_label_dsc_t` (a public draw descriptor) and to `lv_label_t`. The diff only shows it being populated from `lv_label.c`'s widget code. Any caller that constructs an `lv_draw_label_dsc_t` directly (e.g. a custom widget or user code calling `lv_draw_label` without going through `lv_label`) will have `text_size = {0, 0}`, feeding a zero width into the EXPAND branch at `lv_draw_label.c:220` \u2192 `w = 0` \u2192 text draws with zero width or scroll math goes wrong. The field should either be documented as mandatory or the draw path should fall back to `lv_text_get_size` when it is zero/unset.",
+        "path": "src/draw/lv_draw_label.h",
+        "start_line": 38,
+        "end_line": 38,
+        "observation_id": "c2fa6b4785405360",
+        "claimed_path": "src/draw/lv_draw_label.h",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "**CRITICAL: Cached `text_size` uses wrong width constraint for all draw-time consumers**\n\n**File: `src/widgets/label/lv_label.c:967-968`** (and cascading to draw sites)\n`lv_label_refr_text` computes `text_size` with `max_w` (the constrained/wrapping width), but all three draw-time consumers need the unbounded size (`LV_COORD_MAX`):\n- `src/draw/lv_draw_label.c:221` \u2014 EXPAND mode uses `dsc->text_size.x` expecting full single-line width\n- `src/widgets/label/lv_label.c:856` \u2014 scroll alignment check compares against visible area width\n- `src/widgets/label/lv_label.c:894` \u2014 circular scroll same check\n\nOriginal code at all three sites explicitly passed `LV_COORD_MAX` to `lv_text_get_size`. The cached value is the **wrapped** size; consumers need **unwrapped** size. Result: EXPAND mode truncates width, scroll triggers incorrectly/late, circular scroll misbehaves.\n\n---\n\n**HIGH: `invalid_size_cache` flag added but never read**",
+        "path": "src/widgets/label/lv_label.c",
+        "start_line": 967,
+        "end_line": 967,
+        "observation_id": "5d4d365458a3507e",
+        "claimed_path": "src/widgets/label/lv_label.c",
+        "path_resolution": "exact",
+        "merged_from": [
+          "ba3d173b8249db45"
+        ]
+      },
+      {
+        "content": "**File: `src/widgets/label/lv_label_private.h:53`**\nFlag is declared but the diff shows no consumer. `lv_label_refr_text` unconditionally overwrites `text_size` (line 968), so the flag is dead code or the invalidation mechanism is incomplete. If meant to guard recomputation when style props (font, letter_space, line_space) change without text change, it doesn't work.\n\n---\n\n**MEDIUM: `text_size` lacks explicit initialization**",
+        "path": "src/widgets/label/lv_label_private.h",
+        "start_line": 53,
+        "end_line": 53,
+        "observation_id": "f60fbc05c0572279",
+        "claimed_path": "src/widgets/label/lv_label_private.h",
+        "path_resolution": "exact",
+        "merged_from": [
+          "0ca8f6f2fd3ae840"
+        ]
+      },
+      {
+        "content": "**File: `src/widgets/label/lv_label_private.h:54`**\nNew field added to struct with no zero-init shown. LVGL typically zero-inits objects, but any code path reading `text_size` before `lv_label_refr_text` runs (e.g., early draw, scroll query) gets garbage. Should be initialized in `lv_label_init`/`lv_label_create`.\n\n---\n\n**MEDIUM: Stale cache when style properties change without text change**",
+        "path": "src/widgets/label/lv_label_private.h",
+        "start_line": 54,
+        "end_line": 54,
+        "observation_id": "9ba4143d8ff50653",
+        "claimed_path": "src/widgets/label/lv_label_private.h",
+        "path_resolution": "exact",
+        "merged_from": [
+          "f4efcc4815618908"
+        ]
+      },
+      {
+        "content": "**File: `src/widgets/label/lv_label.c:968`**\n`lv_label_refr_text` appears text-change-triggered. If font/letter_space/line_space change via style, `text_size` stays stale. The unused `invalid_size_cache` flag suggests this was recognized but not wired up.",
+        "path": "src/widgets/label/lv_label.c",
+        "start_line": 968,
+        "end_line": 968,
+        "observation_id": "758479b68c8cee9d",
+        "claimed_path": "src/widgets/label/lv_label.c",
+        "path_resolution": "exact",
+        "merged_from": []
+      }
+    ]
+  },
+  "rundir": "/home/user/.cache/llm-panel/runs/aacr-up-cdafznyr-0b98f2498fa4/20260825-185706-2332038",
+  "extractor": "1",
+  "unlocated": []
+}
