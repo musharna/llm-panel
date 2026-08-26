@@ -376,6 +376,59 @@ with section("5.8 a finding whose FIRST path-shaped token is not a file is reloc
     check("5.8 an unresolvable later path is still withheld", len(r2["review"]["comments"]), 0)
 
 
+# --- 7. the checkout arm: where the judges stand -------------------------------------------
+import subprocess  # noqa: E402
+
+def _git(*args, cwd):
+    return subprocess.run(["git", *args], cwd=cwd, capture_output=True, text=True, check=True)
+
+with section("7.1 REAL EXECUTION: checkout() fetches exactly the requested commit, and caches it"):
+    # A local repository stands in for GitHub; the fetch-by-SHA path is the real git.
+    src = pathlib.Path(tempfile.mkdtemp()); _git("init", "-q", cwd=src)
+    _git("-c", "user.email=a@b", "-c", "user.name=c", "commit", "-q", "--allow-empty", "-m", "base", cwd=src)
+    (src / "f.py").write_text("v1\n"); _git("add", "f.py", cwd=src)
+    _git("-c", "user.email=a@b", "-c", "user.name=c", "commit", "-q", "-m", "head", cwd=src)
+    head = _git("rev-parse", "HEAD", cwd=src).stdout.strip()
+    base = _git("rev-parse", "HEAD~1", cwd=src).stdout.strip()
+    # allow fetching an arbitrary reachable SHA, which is what GitHub permits for PR heads
+    _git("config", "uploadpack.allowReachableSHA1InWant", "true", cwd=src)
+    ns["CHECKOUTS"] = pathlib.Path(tempfile.mkdtemp())
+    d, how = ns["checkout"]("org/repo", head, remote=str(src))
+    check("7.1 fetched", how, "fetched")
+    check("7.1 the file is at the HEAD version", (d / "f.py").read_text() if d else None, "v1\n")
+    check("7.1 HEAD is the requested commit",
+          _git("rev-parse", "HEAD", cwd=d).stdout.strip() if d else None, head)
+    check("7.1 shallow -- one commit, no history",
+          _git("rev-list", "--count", "HEAD", cwd=d).stdout.strip() if d else None, "1")
+    d2, how2 = ns["checkout"]("org/repo", head, remote=str(src))
+    check("7.1 second call is served from cache", (d2, how2), (d, "cached"))
+    # NEGATIVE CONTROL: a commit the remote does not have yields no directory at all, not
+    # a directory holding whatever HEAD happened to be.
+    d3, why3 = ns["checkout"]("org/repo", "0" * 40, remote=str(src))
+    check("7.1 an unreachable commit fails loud", d3, None)
+    check("7.1 and leaves nothing behind", (ns["CHECKOUTS"] / "org__repo__0000000").exists(), False)
+    # and a marker for a DIFFERENT commit does not pass as a cache hit
+    (d / ".aacr-checkout-ok").write_text(base + "\n")
+    d4, how4 = ns["checkout"]("org/repo", head, remote=str(src))
+    check("7.1 a stale marker is refetched, not trusted", how4, "fetched")
+    # A fetch that SUCCEEDS but lands on something other than the requested commit: a ref
+    # name resolves at the remote, so `git fetch` is happy, and only the rev-parse check
+    # can tell. Removing that check left every other control here green -- a surviving
+    # mutant, found by mutating the source on 2026-08-26.
+    d5, why5 = ns["checkout"]("org/repo", "HEAD", remote=str(src))
+    check("7.1 a fetch that resolves to a different commit is refused", d5, None)
+    check("7.1 and says what it got", "wanted HEAD" in (why5 or ""), True)
+
+with section("7.2 the checkout sentence is the ONLY difference between the arms"):
+    empty = ns["panel_prompt"]("defect", DIFF, False)
+    withc = ns["panel_prompt"]("defect", DIFF, True)
+    check("7.2 empty mode is byte-identical to the published prompt",
+          empty, ns["PROMPTS"]["defect"] + "```diff\n" + DIFF + "\n```\n")
+    check("7.2 checkout mode adds the sentence", ns["CHECKOUT_NOTE"] in withc, True)
+    check("7.2 and nothing else", withc.replace(ns["CHECKOUT_NOTE"], ""), empty)
+    check("7.2 both carry the diff", DIFF in empty and DIFF in withc, True)
+
+
 print(f"\n{'FAILED' if FAILED else 'all controls green'}"
       f" ({len(FAILED)} failing)" if FAILED else "\nall controls green")
 for f in FAILED:
