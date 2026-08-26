@@ -11,25 +11,81 @@ code, misleading names, missing validation, duplicated state, unclear logic, pre
 refactors.
 
 |                  | refs | findings | line recall | **semantic recall** | precision |
-|------------------|-----:|---------:|------------:|--------------------:|----------:|
+| ---------------- | ---: | -------: | ----------: | ------------------: | --------: |
 | positive, defect |  123 |       79 |       21.1% |           **10.6%** |     16.5% |
 | positive, broad  |  123 |      236 |       48.0% |           **26.0%** |     13.6% |
 | negative, defect |   36 |       30 |       11.1% |                2.8% |      3.3% |
 | negative, broad  |   36 |      155 |       44.4% |               16.7% |      3.9% |
 
-## Recall by what the reference asks for
+## Recall by what the reference asks for — RETRACTED, see below
 
-|             | refs | defect | broad | Fisher p |
-|-------------|-----:|-------:|------:|---------:|
-| DEFECT      |   65 |  18.5% | 35.4% |   0.047  |
-| IMPROVEMENT |   58 |   1.7% | 15.5% |   0.016  |
-| POOLED      |  123 |  10.6% | 26.0% |   0.0027 |
+An earlier version of this file split recall using an LLM classifier I wrote
+(`aacr-classify-refs`, DEFECT vs IMPROVEMENT) and reported DEFECT 18.5% -> 35.4% against
+IMPROVEMENT 1.7% -> 15.5%, concluding that the house prompt was near-blind to the class it
+forbade. **That split does not survive AACR's own labels and is withdrawn.**
 
-Broadening nearly doubled DEFECT recall as well, which was not the expectation -- the panel
-got better at its own stated job, not only at the class it had been forbidden. Three tests
-on one dataset: Bonferroni-adjusted the pooled effect holds (p=0.008), IMPROVEMENT is
-marginal (0.049) and DEFECT alone does not clear (0.14). Treat pooled as established and the
-split as suggestive.
+AACR ships a `category` field on every reference comment. Re-cutting the identical scored
+runs on it (`recall/aacr-recut`, no re-run, no new judge calls):
+
+|                                                 | refs | defect | broad | Fisher p |
+| ----------------------------------------------- | ---: | -----: | ----: | -------: |
+| defect-y (Code Defect + Security + Performance) |   75 |  10.7% | 30.7% |   0.0042 |
+| Maintainability and Readability                 |   48 |  10.4% | 18.8% |    0.386 |
+| POOLED                                          |  123 |  10.6% | 26.0% |   0.0027 |
+
+Under the shipped labels the defect prompt recalls maintainability references at **10.4%**
+and defect references at **10.7%** -- `p = 1.0000`, no difference whatsoever. It was never
+selectively blind to the forbidden class. My classifier put those same two classes at 18.5%
+and 1.7% (p = 0.0025).
+
+**Why the two disagree: the classifier and the panel prompt share a definition.** Both were
+written by me, and the phrase "concrete failure scenario" appears verbatim in each --
+`aacr-upstream` tells the panel to report defects "each with a concrete failure scenario",
+and `aacr-classify-refs` says to answer DEFECT for "something with a concrete failure
+scenario". Both put refactors on the other side. So a reference the panel matched, because
+it was hunting exactly that, is also a reference my classifier calls DEFECT. The split
+measured the shared definition, not the panel.
+
+The agreement rate hides it: my labels match AACR's on 95/123 = **77%** of references. But
+the 28 disagreements are not random with respect to the outcome. Of the 13 references the
+defect prompt actually matched, my classifier called **12 of 13** DEFECT; AACR's field calls
+**8 of 13** defect-y. A classifier can be 77% accurate and still invert a split, when its
+errors correlate with the measured quantity. This is the circular-calibration failure --
+a scale derived from the artifact under test.
+
+Pooled is unaffected: it never used any categorization.
+
+## What the gain actually is: volume, not scope
+
+With references fixed, recall = findings x precision, so the recall ratio must decompose
+exactly -- and it does:
+
+    findings   79 -> 236          x2.99
+    precision  16.5% -> 13.6%     x0.82
+    product                       x2.46
+    recall     10.6% -> 26.0%     x2.46   (exact)
+
+Per finding, `broad` is slightly **worse** (0.165 matches/finding -> 0.136). The entire
+recall gain is accounted for by emitting three times as much. That is a weaker claim than
+"broadening unlocked a class the prompt had excluded", and it is the one the data supports:
+nothing here shows the prompt's _content_ mattered rather than its _volume_. Distinguishing
+those needs an arm that raises volume without widening scope -- not run.
+
+## Who wrote the references
+
+74% of AACR's reference comments are AI-authored (`is_ai_comment`; 1,597 of 2,145
+bench-wide, 90 of 123 in this sample), from GPT-5.2, Claude-4.5-Sonnet, Qwen-Coder-480B,
+GLM-4.7, Deepseek-V3.2 and Gemini-3-Pro. So "semantic recall against references" is mostly
+agreement with other models. That was a live risk to the headline, and it measures null:
+
+|                | refs | defect | broad |
+| -------------- | ---: | -----: | ----: |
+| AI-authored    |   90 |  10.0% | 26.7% |
+| human-authored |   33 |  12.1% | 24.2% |
+
+The panel agrees with human reviewers at about the same rate as with AI ones, so the
+benchmark's AI-heavy composition is not inflating the number. The human arm is small
+(n=33, 95% CI [12.8, 41.0] for broad) -- consistent with no difference, not evidence of none.
 
 ## The cost, stated honestly
 
@@ -48,8 +104,27 @@ actually flagged, at a slightly lower hit rate, and asks a human to triage 3x th
 
 This is a product decision, not a benchmark decision, and the benchmark cannot make it:
 
-* A reviewer who will read everything gets materially more real findings from `broad`.
-* A gate that must not cry wolf keeps `defect`, whose 13:1 ratio is much cleaner.
+- A reviewer who will read everything gets materially more real findings from `broad`.
+- A gate that must not cry wolf keeps `defect`, whose 13:1 ratio is much cleaner.
 
 Both prompts ship (`--prompt-style`). The default stays `defect`, because refusing to emit
 nitpicks is a deliberate choice with real value and this is one benchmark on 18 PRs.
+
+The retraction above strengthens rather than weakens that default. The original case for
+switching was that `defect` had a specific blind spot -- a whole class of valid comments it
+was instructed not to see. AACR's own labels say that blind spot does not exist: the two
+classes are recalled at 10.7% and 10.4%. What `broad` buys is three times the output at a
+slightly lower hit rate, which is a throughput/noise trade a user should make deliberately,
+not a defect being repaired.
+
+## Reproducing the cuts
+
+    recall/aacr-recut          # joins scores/*.json onto aacr-bench.json; no judge calls
+
+`scores/` holds the upstream evaluator's per-reference verdicts (`semantic_match` per
+reference, written in place by `judge.py`) for all four arms. These had been living only in
+a job temp directory -- every number in this file depends on them, so they are now in the
+repo. `aacr-recut` refuses to report on a partial join and asserts that each arm's totals
+reproduce the published figures; both guards were confirmed to fire by breaking the join key
+(`FATAL: 123 references did not join`) and by dropping an instance (`joined 122, summary
+123`).

@@ -1,0 +1,95 @@
+#!/usr/bin/env python3
+"""Re-cut semantic recall by attributes the BENCHMARK ships, not ones I derived.
+
+Two questions the pooled number cannot answer:
+
+  1. My DEFECT/IMPROVEMENT split came from an LLM classifier I wrote. AACR already ships a
+     `category` field per comment. If the two disagree, the split I published rests on my
+     classifier rather than on ground truth -- so cut on the shipped field and compare.
+  2. 74% of AACR's reference comments are AI-authored (`is_ai_comment`). "Recall against
+     references" therefore blends agreement-with-humans and agreement-with-other-models,
+     which are different claims. Cut them apart.
+
+Nothing here re-runs the panel or the judge. It joins the evaluator's per-reference
+verdicts (`eval_res[].comments[].semantic_match`, written in place by judge.py) back onto
+the bench rows. The join is the only thing that can silently go wrong, so it is asserted
+two ways: every reference must join, and the re-cut totals must reproduce the published
+per-arm numbers exactly. A join that drops rows would otherwise read as a real effect.
+"""
+import json, pathlib, sys, collections
+
+HERE = pathlib.Path(__file__).resolve().parent / "benchmarks"
+DEFECTY = {"Code Defect", "Security Vulnerability", "Performance"}
+
+
+def bench_index():
+    """(target-commit-prefix, path, from_line) -> bench row.
+
+    instance_id is `org__repo@<short target commit>`; the reference's own identity is its
+    path and start line. pr_SOURCE_commit does NOT key it -- joining on source matched 0
+    of 174 rows, which is how this key was found.
+    """
+    idx = {}
+    for r in json.load(open(HERE / "aacr-bench.json")):
+        idx[((r.get("pr_target_commit") or "")[:7], r.get("path"), r.get("from_line"))] = r
+    return idx
+
+
+def refs(arm):
+    """Every scored reference in an arm, joined to its bench row."""
+    idx, out, unjoined = bench_index(), [], []
+    for inst in json.load(open(HERE / "scores" / f"{arm}.json"))["eval_res"]:
+        c = inst["instance_id"].split("@")[-1][:7]
+        for cm in inst.get("comments", []):
+            b = idx.get((c, cm.get("path"), cm.get("from_line")))
+            if b is None:
+                unjoined.append((inst["instance_id"], cm.get("path"), cm.get("from_line")))
+                continue
+            out.append((cm, b))
+    if unjoined:
+        sys.exit(f"FATAL: {len(unjoined)} references did not join; first {unjoined[:3]}. "
+                 "A partial join understates every cut below -- refusing to report.")
+    return out
+
+
+def pct(n, d):
+    return f"{100.0*n/d:.1f}%" if d else "--"
+
+
+def cut(rows, key, title):
+    g = collections.defaultdict(lambda: [0, 0])
+    for cm, b in rows:
+        k = key(cm, b)
+        g[k][0] += 1
+        g[k][1] += bool(cm.get("semantic_match"))
+    print(f"\n  {title}")
+    for k in sorted(g, key=lambda x: -g[x][0]):
+        n, m = g[k]
+        print(f"    {str(k):<34} {m:>3}/{n:<4} {pct(m, n):>7}")
+    return g
+
+
+def main():
+    published = {"clean-pos": 123, "broad-pos": 123, "clean-neg": 36, "broad-neg": 36}
+    for arm in ("clean-pos", "broad-pos", "clean-neg", "broad-neg"):
+        rows = refs(arm)
+        s = json.load(open(HERE / "scores" / f"{arm}.json"))["summary"]
+        exp, got = s.get("expected_notes"), len(rows)
+        sem = sum(bool(cm.get("semantic_match")) for cm, _ in rows)
+        # Positive control: the re-cut must reproduce what was published. If these drift,
+        # the cuts below are describing a different denominator than the README's.
+        assert got == exp == published[arm], f"{arm}: joined {got}, summary {exp}, published {published[arm]}"
+        assert sem == s.get("matched_semantic_notes"), f"{arm}: sem {sem} != {s.get('matched_semantic_notes')}"
+        print(f"\n=== {arm}  refs={got}  semantic={sem} ({pct(sem, got)})  [reproduces published]")
+        cut(rows, lambda cm, b: b.get("category"), "by AACR's own `category`")
+        cut(rows, lambda cm, b: "DEFECT-y" if b.get("category") in DEFECTY else "MAINTAINABILITY",
+            "collapsed to defect-y vs maintainability")
+        cut(rows, lambda cm, b: "AI-authored" if b.get("is_ai_comment") else "human-authored",
+            "by who WROTE the reference")
+        cut(rows, lambda cm, b: (("AI" if b.get("is_ai_comment") else "human"),
+                                 "defecty" if b.get("category") in DEFECTY else "maint"),
+            "author x category")
+
+
+if __name__ == "__main__":
+    main()
