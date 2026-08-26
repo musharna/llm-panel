@@ -1,0 +1,145 @@
+{
+  "review": {
+    "comments": [
+      {
+        "content": "- **High \u2014 Defect (wrong test coverage):** `TestSnapshotCases.java:21` and `TestSnapshotCases.java:24` assign both ES 6 constants the ES 5 fixture names (`\"5\"` and `\"5_custom_analyzer\"`). Consequently, all Version 6 archive and searchable-snapshot tests restore the Version 5 ZIPs; an incompatibility specific to an ES 6 snapshot can ship while the purported ES 6 tests remain green.",
+        "path": "x-pack/qa/repository-old-versions-compatibility/src/javaRestTest/java/org/elasticsearch/oldrepos/TestSnapshotCases.java",
+        "start_line": 21,
+        "end_line": 21,
+        "observation_id": "5c868cb8e111f414",
+        "claimed_path": "TestSnapshotCases.java",
+        "path_resolution": "basename",
+        "merged_from": []
+      },
+      {
+        "content": "- **Medium \u2014 Missing validation / future test blind spot:** `ArchiveIndexTestCase.java:39` and `SearchableSnapshotTestCase.java:35` install a no-op warning consumer while recovery unconditionally uses `WarningsHandler.PERMISSIVE`. The ordinary fixture tests will therefore silently accept any newly introduced deprecation or compatibility warning. The default consumer should assert that the warning list is empty, with only tests expecting a warning supplying a different consumer.",
+        "path": "x-pack/qa/repository-old-versions-compatibility/src/javaRestTest/java/org/elasticsearch/oldrepos/archiveindex/ArchiveIndexTestCase.java",
+        "start_line": 39,
+        "end_line": 39,
+        "observation_id": "28dc36c465edddb9",
+        "claimed_path": "ArchiveIndexTestCase.java",
+        "path_resolution": "basename",
+        "merged_from": []
+      },
+      {
+        "content": "- **Low \u2014 Documentation defect:** `README.md:127` labels the ES 6 custom-analyzer recipe as Version 5, and `README.md:146` creates its mapping under type `doc` while the later indexing command uses `_doc`. On ES 6, where a new index cannot acquire a second mapping type, following this recipe can fail when indexing the documents and cannot reliably reproduce the committed Version 6 fixture.**1. [DEFECT \u2014 Wrong results] Copy-paste bug: `ES_VERSION_6` constants have v5 values**",
+        "path": "x-pack/qa/repository-old-versions-compatibility/src/javaRestTest/resources/README.md",
+        "start_line": 127,
+        "end_line": 127,
+        "observation_id": "bf1489e2bf8fb2b7",
+        "claimed_path": "README.md",
+        "path_resolution": "basename",
+        "merged_from": [
+          "046270a316f360c9"
+        ]
+      },
+      {
+        "content": "**File:** `TestSnapshotCases.java`, **lines 21\u201324**\n\n```java\n// Index created in vES_5 - Basic mapping\npublic static final String ES_VERSION_6 = \"5\";\n\n// Index created in vES_5 - Custom-Analyzer - standard token filter\npublic static final String ES_VERSION_6_STANDARD_TOKEN_FILTER = \"5_custom_analyzer\";\n```\n\n`ES_VERSION_6` is `\"5\"` (should be `\"6\"`) and `ES_VERSION_6_STANDARD_TOKEN_FILTER` is `\"5_custom_analyzer\"` (should be `\"6_custom_analyzer\"`). The comments even say \"Index created in vES_5\" \u2014 a straight copy-paste from the v5 entries above.\n\n**Failure scenario:** Every test class using these constants (`RestoreFromVersion6IT`, `RestoreFromVersion6CustomAnalyzerIT`, `MountFromVersion6IT`, `MountFromVersion6CustomAnalyzerIT`) silently loads the version 5 snapshot resources instead of version 6. The v6 backward-compatibility path is never actually exercised. The tests pass (they get a snapshot, restore it, assert a doc count), but they are testing the wrong version entirely \u2014 they duplicate the v5 tests. This is the entire reason the PR added these constants, so it defeats the stated purpose of the change.\n\n---",
+        "path": "x-pack/qa/repository-old-versions-compatibility/src/javaRestTest/java/org/elasticsearch/oldrepos/TestSnapshotCases.java",
+        "start_line": 21,
+        "end_line": 21,
+        "observation_id": "afc303035da9faa3",
+        "claimed_path": "TestSnapshotCases.java",
+        "path_resolution": "basename",
+        "merged_from": []
+      },
+      {
+        "content": "**2. [DEFECT \u2014 Misleading name / documentation] README section headers say \"Version 5\" in the Version 6 block**\n\n**File:** `README.md`, **lines ~127 and ~186** (approximate from the second hunk of the README diff)\n\nTwo sections are added inside the v6 portion of the document:\n- \"Create Index Version 5 - Custom-Analyzer\" \u2014 but this uses `_doc` mapping (v6 type), so it should read \"Version 6\".\n- \"Add documents Version 5 - Custom-Analyzer\" \u2014 same issue, it's in the v6 block and uses `_doc`.\n\nThis mirrors the copy-paste error in the constants and will mislead anyone using the README to create new snapshot resources.\n\n---\n\n**3. [Code smell \u2014 Duplicated state] `warningsConsumer` is threaded through both the instance field and method parameters**",
+        "path": "x-pack/qa/repository-old-versions-compatibility/src/javaRestTest/resources/README.md",
+        "start_line": 127,
+        "end_line": 127,
+        "observation_id": "10b7b7ebdf84f7a3",
+        "claimed_path": "README.md",
+        "path_resolution": "basename",
+        "merged_from": [
+          "9735bad9ea99c1c5"
+        ]
+      },
+      {
+        "content": "**File:** `AbstractUpgradeCompatibilityTestCase.java`, **lines 78\u201384 and 151**\n\nThe constructor stores `warningsConsumer` as `this.warningsConsumer`. Then `verifyCompatibility` accepts `warningsConsumer` as a parameter, and `recover` also accepts it as a parameter. But `testArchiveIndex` (line 230) simply passes `this.warningsConsumer` into `verifyCompatibility`, which passes it into `recover`. The parameter and the field are always the same object. Passing it as a parameter to an abstract method that the subclass overrides is unnecessary \u2014 the subclass already has access to `this.warningsConsumer`. This means there are two ways to get the consumer, which will diverge if someone ever passes a different consumer to `verifyCompatibility` than was given to the constructor. The parameter on `recover` and `verifyCompatibility` should be removed in favor of the field.**DEFECTS FOUND**\n\n---",
+        "path": "x-pack/qa/repository-old-versions-compatibility/src/javaRestTest/java/org/elasticsearch/oldrepos/AbstractUpgradeCompatibilityTestCase.java",
+        "start_line": 78,
+        "end_line": 78,
+        "observation_id": "2f37ef876405742e",
+        "claimed_path": "AbstractUpgradeCompatibilityTestCase.java",
+        "path_resolution": "basename",
+        "merged_from": [
+          "35d817e5328d71ed"
+        ]
+      },
+      {
+        "content": "### 1. **TestSnapshotCases.java:15** \u2014 Wrong constant value (functional bug)\n```java\npublic static final String ES_VERSION_6 = \"5\";\n```\nShould be `\"6\"`. All v6 test classes (`RestoreFromVersion6IT`, `MountFromVersion6IT`, etc.) reference this constant and will incorrectly load the v5 snapshot (`snapshot_v5.zip` instead of `snapshot_v6.zip`).\n\n---",
+        "path": "x-pack/qa/repository-old-versions-compatibility/src/javaRestTest/java/org/elasticsearch/oldrepos/TestSnapshotCases.java",
+        "start_line": 15,
+        "end_line": 15,
+        "observation_id": "e2b2665ad31638e1",
+        "claimed_path": "TestSnapshotCases.java",
+        "path_resolution": "basename",
+        "merged_from": []
+      },
+      {
+        "content": "### 2. **TestSnapshotCases.java:19** \u2014 Wrong constant value (functional bug)\n```java\npublic static final String ES_VERSION_6_STANDARD_TOKEN_FILTER = \"5_custom_analyzer\";\n```\nShould be `\"6_custom_analyzer\"`. The v6 custom-analyzer test classes (`RestoreFromVersion6CustomAnalyzerIT`, `MountFromVersion6CustomAnalyzerIT`) reference this and will load `snapshot_v5_custom_analyzer.zip` instead of the new `snapshot_v6_custom_analyzer.zip`.\n\n---",
+        "path": "x-pack/qa/repository-old-versions-compatibility/src/javaRestTest/java/org/elasticsearch/oldrepos/TestSnapshotCases.java",
+        "start_line": 19,
+        "end_line": 19,
+        "observation_id": "1e36dccf0f494717",
+        "claimed_path": "TestSnapshotCases.java",
+        "path_resolution": "basename",
+        "merged_from": []
+      },
+      {
+        "content": "### 3. **README.md:124** \u2014 Misleading section header (documentation bug)\n```\n### Create Index Version 5 - Custom-Analyzer\n```\nThis second \"Version 5 - Custom-Analyzer\" block uses `_doc` mapping type (ES 6 style) and should be labeled **\"Create Index Version 6 - Custom-Analyzer\"**. The first block (line 67) correctly uses `my_type` for ES 5.\n\n---",
+        "path": "x-pack/qa/repository-old-versions-compatibility/src/javaRestTest/resources/README.md",
+        "start_line": 124,
+        "end_line": 124,
+        "observation_id": "1f0c198de9d8beb8",
+        "claimed_path": "README.md",
+        "path_resolution": "basename",
+        "merged_from": []
+      },
+      {
+        "content": "### 4. **README.md:183** \u2014 Misleading section header (documentation bug)\n```\n### Add documents Version 5 - Custom-Analyzer\n```\nThis second \"Version 5 - Custom-Analyzer\" block uses `_doc` endpoint (ES 6 style) and should be **\"Add documents Version 6 - Custom-Analyzer\"**. The first block (line 103) correctly uses `my_type` for ES 5.\n\n---",
+        "path": "x-pack/qa/repository-old-versions-compatibility/src/javaRestTest/resources/README.md",
+        "start_line": 183,
+        "end_line": 183,
+        "observation_id": "b60b31c0eac69f3f",
+        "claimed_path": "README.md",
+        "path_resolution": "basename",
+        "merged_from": []
+      },
+      {
+        "content": "### 5. **ArchiveIndexTestCase.java:36** \u2014 Missing `assertOK` import (compilation risk)\nThe override uses `assertOK(response);` but the diff shows no import for it. If `assertOK` isn't inherited from `ESRestTestCase` or statically imported, this won't compile. Same issue in **SearchableSnapshotTestCase.java:53**.\n\n---",
+        "path": "x-pack/qa/repository-old-versions-compatibility/src/javaRestTest/java/org/elasticsearch/oldrepos/archiveindex/ArchiveIndexTestCase.java",
+        "start_line": 36,
+        "end_line": 36,
+        "observation_id": "07ddbd2e5e819dda",
+        "claimed_path": "ArchiveIndexTestCase.java",
+        "path_resolution": "basename",
+        "merged_from": []
+      },
+      {
+        "content": "### 6. **ArchiveIndexTestCase.java:39 / SearchableSnapshotTestCase.java:42** \u2014 Empty consumer in delegating constructor (minor: latent bug risk)\n```java\nthis(version, indexCreatedVersion, o -> {});\n```\nIf a test class accidentally calls the 2-arg constructor (e.g., `super(version, \"6\")` instead of the 3-arg), warnings won't be asserted. The new v6 test classes *do* use the 3-arg constructor correctly, but the delegating constructor exists and could be misused. Consider removing the 2-arg constructor or making it `protected` with a comment.\n\n---",
+        "path": "x-pack/qa/repository-old-versions-compatibility/src/javaRestTest/java/org/elasticsearch/oldrepos/archiveindex/ArchiveIndexTestCase.java",
+        "start_line": 39,
+        "end_line": 39,
+        "observation_id": "edd1055ee3b8d4ae",
+        "claimed_path": "ArchiveIndexTestCase.java",
+        "path_resolution": "basename",
+        "merged_from": []
+      },
+      {
+        "content": "### 7. **TestSnapshotCases.java:13,17** \u2014 Inconsistent naming (maintainability)\nConstants are named `ES_VERSION_5_STANDARD_TOKEN_FILTER` and `ES_VERSION_6_STANDARD_TOKEN_FILTER` but the snapshot files are `snapshot_v5_custom_analyzer.zip` / `snapshot_v6_custom_analyzer.zip`. The constant suffix `STANDARD_TOKEN_FILTER` doesn't match `custom_analyzer`. Suggest renaming to `ES_VERSION_5_CUSTOM_ANALYZER` / `ES_VERSION_6_CUSTOM_ANALYZER` for clarity.\n\n---\n\n**Summary:** Items 1\u20132 are **functional bugs** that make all v6 tests exercise v5 snapshots. Items 3\u20134 are **documentation bugs** that mislead snapshot creation. Item 5 is a **potential compilation failure**. Items 6\u20137 are **code quality/maintainability** concerns.",
+        "path": "x-pack/qa/repository-old-versions-compatibility/src/javaRestTest/java/org/elasticsearch/oldrepos/TestSnapshotCases.java",
+        "start_line": 13,
+        "end_line": 13,
+        "observation_id": "9f973713b8808b2c",
+        "claimed_path": "TestSnapshotCases.java",
+        "path_resolution": "basename",
+        "merged_from": []
+      }
+    ]
+  },
+  "rundir": "/home/mjarnold/.cache/llm-panel/runs/aacr-up-042tfp7k-4aa5efba85e7/20260825-212752-2733191",
+  "extractor": "1",
+  "unlocated": []
+}

@@ -1,0 +1,277 @@
+{
+  "review": {
+    "comments": [
+      {
+        "content": "1. **Defect / abstraction leak \u2014 `core/src/main/java/io/kestra/plugin/core/execution/Assert.java:89` and `core/src/main/java/io/kestra/core/models/property/Property.java:40`:** Parsing `conditions.getExpression()` as JSON bypasses the normal `Property` rendering API. A valid dynamic property such as `conditions: \"{{ inputs.assertions }}\"` is not JSON, so `readValue` throws before evaluating conditions or emitting metrics. Making the raw serializer representation public compounds the problem; render the property through `RunContext` instead.",
+        "path": "core/src/main/java/io/kestra/plugin/core/execution/Assert.java",
+        "start_line": 89,
+        "end_line": 89,
+        "observation_id": "5a4e997f2dfaac43",
+        "claimed_path": "core/src/main/java/io/kestra/plugin/core/execution/Assert.java",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "2. **Defensive logic defect \u2014 `core/src/main/java/io/kestra/core/utils/TruthUtils.java:13`:** `isFalsy(null)` returns `false`, although `isTruthy(null)` also returns `false`. This means the methods are not logical complements. A missing/null rendered condition can consequently fall through the assertion\u2019s `else` branch as a success rather than fail; `isFalsy` should normally be `!isTruthy(condition)`.",
+        "path": "core/src/main/java/io/kestra/core/utils/TruthUtils.java",
+        "start_line": 13,
+        "end_line": 13,
+        "observation_id": "1ef937d3e631381b",
+        "claimed_path": "core/src/main/java/io/kestra/core/utils/TruthUtils.java",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "3. **Documentation defect \u2014 `core/src/main/java/io/kestra/plugin/core/output/OutputValues.java:54`:** The example was corrupted to `{{ outputs.output_values.\u00b2}}`. Copying it produces an invalid or nonexistent output expression instead of displaying `taskrun_data`.",
+        "path": "core/src/main/java/io/kestra/plugin/core/output/OutputValues.java",
+        "start_line": 54,
+        "end_line": 54,
+        "observation_id": "b4582e07c9ef7d29",
+        "claimed_path": "core/src/main/java/io/kestra/plugin/core/output/OutputValues.java",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "4. **Documentation defect \u2014 `core/src/main/java/io/kestra/plugin/core/execution/Assert.java:53`:** The generated example contains the literal text `\\n\" +` after `id: fail`, making the published YAML invalid.",
+        "path": "core/src/main/java/io/kestra/plugin/core/execution/Assert.java",
+        "start_line": 53,
+        "end_line": 53,
+        "observation_id": "54bb9ea621177f92",
+        "claimed_path": "core/src/main/java/io/kestra/plugin/core/execution/Assert.java",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "5. **Documentation mismatch \u2014 `core/src/main/java/io/kestra/plugin/core/execution/Assert.java:75`:** The schema says all values other than `0`, `-0`, and `''` coerce to true, but the implementation also treats `\"false\"` as false. This gives users contradictory behavior for the most important assertion value.",
+        "path": "core/src/main/java/io/kestra/plugin/core/execution/Assert.java",
+        "start_line": 75,
+        "end_line": 75,
+        "observation_id": "8f245cd2a03725e9",
+        "claimed_path": "core/src/main/java/io/kestra/plugin/core/execution/Assert.java",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "6. **Dead argument / observability defect \u2014 `core/src/main/java/io/kestra/plugin/core/execution/Assert.java:95`:** The log template has one placeholder but receives both `s` and `renderer`; SLF4J drops the rendered value. When an expression fails, the log therefore omits the value apparently intended for diagnosis. Add a placeholder or remove the unused argument.",
+        "path": "core/src/main/java/io/kestra/plugin/core/execution/Assert.java",
+        "start_line": 95,
+        "end_line": 95,
+        "observation_id": "ad6419abfb378f4f",
+        "claimed_path": "core/src/main/java/io/kestra/plugin/core/execution/Assert.java",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "7. **Encapsulation / future race risk \u2014 `core/src/main/java/io/kestra/plugin/core/execution/Assert.java:68`:** `MAPPER` is a public, globally shared mutable `ObjectMapper`. Any extension can reconfigure it while assertions are running, changing deserialization behavior process-wide. It should be private unless mutation is intentionally part of the API.",
+        "path": "core/src/main/java/io/kestra/plugin/core/execution/Assert.java",
+        "start_line": 68,
+        "end_line": 68,
+        "observation_id": "4802f41b0576a62b",
+        "claimed_path": "core/src/main/java/io/kestra/plugin/core/execution/Assert.java",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "8. **Misleading name \u2014 `core/src/test/java/io/kestra/plugin/core/execution/AssertTest.java:92`:** `dontFailOnCondition` asserts that the execution is `FAILED`. The contradictory name makes future regressions and test failures harder to interpret.**1. DEFINITIVE BUG \u2014 Garbled exception message (`AtomicInteger.toString()` produces object identity, not the count)**",
+        "path": "core/src/test/java/io/kestra/plugin/core/execution/AssertTest.java",
+        "start_line": 92,
+        "end_line": 92,
+        "observation_id": "bd2db876957b7e89",
+        "claimed_path": "core/src/test/java/io/kestra/plugin/core/execution/AssertTest.java",
+        "path_resolution": "exact",
+        "merged_from": [
+          "9bddd4863aa84c2e"
+        ]
+      },
+      {
+        "content": "**File:** `core/src/main/java/io/kestra/plugin/core/execution/Assert.java`, **line 113**\n```java\nthrow new Exception(\n    failed + \" assertion\" + (failed.get() > 1 ? \"s\" : \"\") + \" failed!\" + ...\n);\n```\n\n`failed` is an `AtomicInteger`. `AtomicInteger` does **not** override `toString()` \u2014 it inherits `Object.toString()`, which returns a string like `java.util.concurrent.atomic.AtomicInteger@1b6d3586`. So the exception message will be something like:\n\n```\njava.util.concurrent.atomic.AtomicInteger@1b6d3586 assertion(s) failed!\n```\n\ninstead of `2 assertion(s) failed!`. This is a **wrong-result / crash-adjacent defect** \u2014 the error message is the primary signal to the user, and it is unintelligible. The fix is `failed.get() + \" assertion\"`.\n\nNote: the test at `AssertTest.java:72` asserts `containsString(\"2 assertions failed\")`, which would **fail** against the current code. This means either the test has never been run, or there is a test-infrastructure subtlety that shadows it. Either way it should be resolved.\n\n---\n\n**2. DEFINITIVE BUG \u2014 Template expression corrupted with stray Unicode character**",
+        "path": "core/src/main/java/io/kestra/plugin/core/execution/Assert.java",
+        "start_line": 113,
+        "end_line": 113,
+        "observation_id": "792f5529ff9dd595",
+        "claimed_path": "core/src/main/java/io/kestra/plugin/core/execution/Assert.java",
+        "path_resolution": "exact",
+        "merged_from": [
+          "b652cbb89b84a58d"
+        ]
+      },
+      {
+        "content": "**File:** `core/src/main/java/io/kestra/plugin/core/output/OutputValues.java`, **line 54 (diff hunk line)**\n```java\n-      {{ outputs.output_values.values.taskrun_data }}\n+      {{ outputs.output_values.\u00b2}}\n```\n\nThe replacement `{{ outputs.output_values.\u00b2}}` is not a valid Kestra/PEbble expression. The superscript-two `\u00b2` (U+00B2) is clearly a copy-paste or encoding artifact. This **breaks** the `assert.yaml` test flow (which depends on `OutputValues` producing valid output), and any other flow that references this example. This is a wrong-result / runtime-failure defect.\n\n---\n\n**3. LOGIC BUG \u2014 `isFalsy` returns `true` for `null`**",
+        "path": "core/src/main/java/io/kestra/plugin/core/output/OutputValues.java",
+        "start_line": 54,
+        "end_line": 54,
+        "observation_id": "341f4f5af3252137",
+        "claimed_path": "core/src/main/java/io/kestra/plugin/core/output/OutputValues.java",
+        "path_resolution": "exact",
+        "merged_from": [
+          "78b2230f703b55cb"
+        ]
+      },
+      {
+        "content": "**File:** `core/src/main/java/io/kestra/core/utils/TruthUtils.java`, **line 11**\n```java\npublic static boolean isFalsy(String condition) {\n    return condition != null && FALSE_VALUES.contains(condition);\n}\n```\n\nThis returns `false` when `condition` is `null`. That means `null` is **not** falsy \u2014 implying `null` is truthy. This is almost certainly the wrong semantic: `null` should be falsy in any reasonable boolean-coercion system, and it is inconsistent with how most languages/tools treat `null`/`nil`/`undefined`. The `Assert` plugin calls `TruthUtils.isFalsy(renderer)` after rendering, so a condition that renders to `null` will be treated as **passing**, which is a wrong-result / silent assertion bypass.\n\n---\n\n**4. DEFENSIVE / CORRECTNESS \u2014 `MAPPER.readValue()` on unrendered expression string**",
+        "path": "core/src/main/java/io/kestra/core/utils/TruthUtils.java",
+        "start_line": 11,
+        "end_line": 11,
+        "observation_id": "a2caf76cc510a4fa",
+        "claimed_path": "core/src/main/java/io/kestra/core/utils/TruthUtils.java",
+        "path_resolution": "exact",
+        "merged_from": [
+          "cc2774f4054b77ae"
+        ]
+      },
+      {
+        "content": "**File:** `core/src/main/java/io/kestra/plugin/core/execution/Assert.java`, **line 83**\n```java\nMAPPER.readValue(this.conditions.getExpression(), LIST_TYPE_REFERENCE)\n```\n\nThis parses the **raw, unrendered** property expression as JSON before any variable substitution. It only works when the `conditions` field is a static JSON array literal (e.g. `\"{{ 1 == 1 }}\"` is not valid JSON). If a user writes `conditions: \"{{ myVar }}\"`, or if the property system wraps the value in any non-JSON way, this throws a `JsonProcessingException` at runtime. The design conflates \"property expression\" with \"JSON literal\". A more robust approach would resolve/render the property first, or validate early with a clear error.\n\n---\n\n**5. DEFENSIVE \u2014 No null guard on `conditions.getExpression()`**",
+        "path": "core/src/main/java/io/kestra/plugin/core/execution/Assert.java",
+        "start_line": 83,
+        "end_line": 83,
+        "observation_id": "294a1ff4598c007f",
+        "claimed_path": "core/src/main/java/io/kestra/plugin/core/execution/Assert.java",
+        "path_resolution": "exact",
+        "merged_from": [
+          "4d11141a2a43b89c"
+        ]
+      },
+      {
+        "content": "**File:** `core/src/main/java/io/kestra/plugin/core/execution/Assert.java`, **line 83**\n\nIf `this.conditions` is set but `getExpression()` returns `null` (e.g. when only `.value` was populated via `Property.ofValue(List.of(...))`), `readValue(null, ...)` throws an NPE. The `@NotNull` on the field covers the Jackson-deserialization path but does not prevent programmatic construction via the builder.\n\n---\n\n**6. DESIGN / ENCAPSULATION \u2014 `@Getter` widens `expression` from package-private to public**",
+        "path": "core/src/main/java/io/kestra/plugin/core/execution/Assert.java",
+        "start_line": 83,
+        "end_line": 83,
+        "observation_id": "9db0a4e170fb6ab7",
+        "claimed_path": "core/src/main/java/io/kestra/plugin/core/execution/Assert.java",
+        "path_resolution": "exact",
+        "merged_from": [
+          "deaf784bb85440a5"
+        ]
+      },
+      {
+        "content": "**File:** `core/src/main/java/io/kestra/core/models/property/Property.java`, **line 40**\n\nThe removed `getExpression()` was explicitly annotated `// used only by the serializer` and was package-private. Adding `@Getter` makes it `public`. Any caller in any package can now read `expression`, defeating the original access-control intent. If this is intentional, the old comment should be removed from the diff context (it was); if unintentional, the visibility should be restricted back (e.g., `@Getter(AccessLevel.PACKAGE)`).\n\n---\n\n**7. DEAD/UNNECESSARY \u2014 `AtomicInteger` in single-threaded sequential loop**",
+        "path": "core/src/main/java/io/kestra/core/models/property/Property.java",
+        "start_line": 40,
+        "end_line": 40,
+        "observation_id": "8a82d4e474bd4193",
+        "claimed_path": "core/src/main/java/io/kestra/core/models/property/Property.java",
+        "path_resolution": "exact",
+        "merged_from": [
+          "1eb4cb4ea5c46742"
+        ]
+      },
+      {
+        "content": "**File:** `core/src/main/java/io/kestra/plugin/core/execution/Assert.java`, **lines 78\u201379**\n\n`failed` and `success` are `AtomicInteger`, but the `forEach` that mutates them is sequential (not parallel-stream). Plain `int` counters would be simpler and self-documenting.\n\n---\n\n**8. MINOR \u2014 Missing final newline in test resource**",
+        "path": "core/src/main/java/io/kestra/plugin/core/execution/Assert.java",
+        "start_line": 78,
+        "end_line": 78,
+        "observation_id": "1c0e99419f5f7423",
+        "claimed_path": "core/src/main/java/io/kestra/plugin/core/execution/Assert.java",
+        "path_resolution": "exact",
+        "merged_from": [
+          "f5590da44e73b152"
+        ]
+      },
+      {
+        "content": "**File:** `core/src/test/resources/flows/valids/assert.yaml`, **line 16**\n\nThe file ends without a trailing newline (`\\ No newline at end of file`). Many tools and diff viewers flag this; POSIX requires a trailing newline.",
+        "path": "core/src/test/resources/flows/valids/assert.yaml",
+        "start_line": 16,
+        "end_line": 16,
+        "observation_id": "be1beb2459fa4104",
+        "claimed_path": "core/src/test/resources/flows/valids/assert.yaml",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "### 1. **CRITICAL: Template syntax error in OutputValues.java** (line 54)\n```diff\n-      {{ outputs.output_values.values.taskrun_data }}\n+      {{ outputs.output_values.\u00b2}}\n```\nThe `\u00b2` character is not valid template syntax \u2014 it will fail to render at runtime. This appears to be a typo/corruption. The original `taskrun_data` reference was likely intentional.\n\n**File:** `core/src/main/java/io/kestra/plugin/core/output/OutputValues.java:54`\n\n---",
+        "path": "core/src/main/java/io/kestra/plugin/core/output/OutputValues.java",
+        "start_line": 54,
+        "end_line": 54,
+        "observation_id": "065b5183fe5962a4",
+        "claimed_path": "OutputValues.java",
+        "path_resolution": "basename",
+        "merged_from": []
+      },
+      {
+        "content": "### 2. **HIGH: NPE risk in Assert.java when `errorMessage` is null** (line 97)\n```java\nrunContext.render(errorMessage).as(String.class).map(r -> \"\\n\" + r).orElse(\"\")\n```\nIf `errorMessage` is `null` (the field is nullable, no `@NotNull`), `runContext.render(null)` may throw NPE or return a `RenderedValue` that fails on `.as()`. Should guard:\n```java\nerrorMessage != null ? runContext.render(errorMessage).as(String.class).map(r -> \"\\n\" + r).orElse(\"\") : \"\"\n```\n\n**File:** `core/src/main/java/io/kestra/plugin/core/execution/Assert.java:97`\n\n---",
+        "path": "core/src/main/java/io/kestra/plugin/core/execution/Assert.java",
+        "start_line": 97,
+        "end_line": 97,
+        "observation_id": "3c6dd8661a6ab0a5",
+        "claimed_path": "Assert.java",
+        "path_resolution": "basename",
+        "merged_from": []
+      },
+      {
+        "content": "### 3. **HIGH: Generic `Exception` thrown instead of a typed exception** (line 95-100)\n```java\nthrow new Exception(...)\n```\nThrowing bare `Exception` forces callers to catch `Exception` broadly, hiding other failure modes. Introduce a domain-specific exception (e.g., `AssertionFailedException` extending `IllegalVariableEvaluationException` or `RuntimeException`).\n\n**File:** `core/src/main/java/io/kestra/plugin/core/execution/Assert.java:95-100`\n\n---",
+        "path": "core/src/main/java/io/kestra/plugin/core/execution/Assert.java",
+        "start_line": 95,
+        "end_line": 95,
+        "observation_id": "28f18713c0d31d65",
+        "claimed_path": "core/src/main/java/io/kestra/plugin/core/execution/Assert.java",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "### 4. **MEDIUM: `Property.java` \u2014 `@Getter` on `expression` widens visibility** (line 40)\nThe removed `getExpression()` was package-private (\"used only by the serializer\"). Adding `@Getter` on the private field makes it **public**, exposing internal state beyond serialization. If the serializer only needs package access, keep a package-private getter or use `@Getter(AccessLevel.PACKAGE)`.\n\n**File:** `core/src/main/java/io/kestra/core/models/property/Property.java:40`\n\n---",
+        "path": "core/src/main/java/io/kestra/core/models/property/Property.java",
+        "start_line": 40,
+        "end_line": 40,
+        "observation_id": "074e4400e5924c25",
+        "claimed_path": "Property.java",
+        "path_resolution": "basename",
+        "merged_from": []
+      },
+      {
+        "content": "### 5. **MEDIUM: `Assert.java` \u2014 No validation that `conditions` list is non-empty** (line 63)\n`@NotNull` on `Property<List<String>>` only ensures the `Property` wrapper isn't null. An empty list passes validation but causes the task to succeed silently with 0 assertions \u2014 likely unintended. Add `@Size(min = 1)` or validate in `run()`.\n\n**File:** `core/src/main/java/io/kestra/plugin/core/execution/Assert.java:63`\n\n---",
+        "path": "core/src/main/java/io/kestra/plugin/core/execution/Assert.java",
+        "start_line": 63,
+        "end_line": 63,
+        "observation_id": "2adcf162f389e5a2",
+        "claimed_path": "Assert.java",
+        "path_resolution": "basename",
+        "merged_from": []
+      },
+      {
+        "content": "### 6. **LOW: `Assert.java` \u2014 Catch block too narrow** (line 88-91)\n```java\n} catch (IllegalVariableEvaluationException e) { ... }\n```\n`runContext.render(s)` can throw other exceptions (e.g., `IllegalArgumentException` for malformed templates). Those would escape unlogged and uncounted. Catch `Exception` or at least `RuntimeException` here.\n\n**File:** `core/src/main/java/io/kestra/plugin/core/execution/Assert.java:88-91`\n\n---",
+        "path": "core/src/main/java/io/kestra/plugin/core/execution/Assert.java",
+        "start_line": 88,
+        "end_line": 88,
+        "observation_id": "0296fb178a34492b",
+        "claimed_path": "Assert.java",
+        "path_resolution": "basename",
+        "merged_from": []
+      },
+      {
+        "content": "### 7. **LOW: `AssertTest.java` \u2014 `receive.blockLast()` can hang indefinitely** (line 68)\n```java\nreceive.blockLast();\n```\nIf the expected log entries never arrive (test flake, broker issue), the test hangs forever. Add a timeout: `receive.timeout(Duration.ofSeconds(10)).blockLast()`.\n\n**File:** `core/src/test/java/io/kestra/plugin/core/execution/AssertTest.java:68`\n\n---",
+        "path": "core/src/test/java/io/kestra/plugin/core/execution/AssertTest.java",
+        "start_line": 68,
+        "end_line": 68,
+        "observation_id": "d696fa2e5ff99e7d",
+        "claimed_path": "AssertTest.java",
+        "path_resolution": "basename",
+        "merged_from": []
+      },
+      {
+        "content": "### 8. **LOW: `Assert.java` \u2014 `ObjectMapper` static field mutability risk** (line 55-57)\n```java\npublic static final ObjectMapper MAPPER = JacksonMapper\n    .ofJson()\n    .copy()\n    .configure(JsonParser.Feature.INCLUDE_SOURCE_IN_LOCATION, true);\n```\n`ObjectMapper` is thread-safe *after* configuration, but `copy()` creates a new instance. If any code later calls `MAPPER.configure(...)`, it mutates shared state. Mark the reference `final` (already done) and consider making it `private` to prevent external mutation.\n\n**File:** `core/src/main/java/io/kestra/plugin/core/execution/Assert.java:55-57`\n\n---",
+        "path": "core/src/main/java/io/kestra/plugin/core/execution/Assert.java",
+        "start_line": 55,
+        "end_line": 55,
+        "observation_id": "d5dca57931babcf2",
+        "claimed_path": "Assert.java",
+        "path_resolution": "basename",
+        "merged_from": []
+      },
+      {
+        "content": "### 9. **STYLE: `TruthUtils.java` \u2014 `isFalsy` duplicates logic** (line 11-13)\n```java\npublic static boolean isFalsy(String condition) {\n    return condition != null && FALSE_VALUES.contains(condition);\n}\n```\nThis is just `!isTruthy(condition)` when `condition != null`. Prefer:\n```java\npublic static boolean isFalsy(String condition) {\n    return condition != null && !isTruthy(condition);\n}\n```\n\u2026to avoid duplicating the `FALSE_VALUES` logic (single source of truth).\n\n**File:** `core/src/main/java/io/kestra/core/utils/TruthUtils.java:11-13`\n\n---\n\n### Summary\n| Severity | Count |\n|----------|-------|\n| Critical | 1 |\n| High     | 2 |\n| Medium   | 2 |\n| Low      | 4 |\n\nThe **critical** item (OutputValues template) and **high** items (NPE, generic Exception) should block merge. The rest are follow-up improvements.",
+        "path": "core/src/main/java/io/kestra/core/utils/TruthUtils.java",
+        "start_line": 11,
+        "end_line": 11,
+        "observation_id": "a2e9fa50f6935208",
+        "claimed_path": "TruthUtils.java",
+        "path_resolution": "basename",
+        "merged_from": [
+          "ebf32bfe0ef33dae"
+        ]
+      }
+    ]
+  },
+  "rundir": "/home/mjarnold/.cache/llm-panel/runs/aacr-up-nj2dj8hq-204b1fcc74fe/20260825-213347-2743246",
+  "extractor": "1",
+  "unlocated": []
+}

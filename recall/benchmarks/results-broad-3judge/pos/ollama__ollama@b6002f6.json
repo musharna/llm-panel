@@ -1,0 +1,228 @@
+{
+  "review": {
+    "comments": [
+      {
+        "content": "1. **High \u2014 memory-safety defect:** `ml/backend/ggml/ggml.go:1034` copies `ggml_nbytes(t.t)` into an allocation sized as `nelements * sizeof(int32)` without verifying the tensor is I32. Calling `Ints()` on an I64/F64 tensor can overwrite the Go buffer; other dtypes return misinterpreted or partially uninitialized data. A zero-element synchronized tensor also panics at `&data[0]`. Validate the dtype and handle zero elements before copying.\n\n2. **High \u2014 missing validation causing crashes/wrong results:** `model/model.go:285` assumes `batch.Positions` is non-nil, rank-one, and I32, although changing it from `[]int32` to `ml.Tensor` removes those guarantees. A zero-value batch now panics instead of returning the existing validation error. A `[N, 2]` tensor passes `Dim(0) == len(Sequences)`, but `kvcache/causal.go:221` flattens all `2N` values and eventually indexes beyond `Sequences`. Float positions similarly pass validation and are reinterpreted as integers. Validate presence, dtype, rank, and element count; apply equivalent validation to `Outputs`.\n\n3. **Medium \u2014 abstraction/lifetime hazard:** `ml/backend/ggml/ggml.go:1023` and `ml/backend/ggml/ggml.go:1037` return slices directly over CPU-owned C memory, while synchronized tensors and `testTensor` return independent copies. Mutating the returned slice therefore changes only CPU tensors, and retaining it after its context closes produces a dangling slice. `Causal` now retains such a result in `curPositions`, making the lifetime ambiguity concrete. Return copies consistently or explicitly enforce and document borrowed-slice lifetimes.",
+        "path": "ml/backend/ggml/ggml.go",
+        "start_line": 1034,
+        "end_line": 1034,
+        "observation_id": "7f147bce2f4c8c85",
+        "claimed_path": "ml/backend/ggml/ggml.go",
+        "path_resolution": "exact",
+        "merged_from": [
+          "6ac3b491b237a3c6",
+          "575e069898363f28"
+        ]
+      },
+      {
+        "content": "4. **Medium \u2014 size-overflow defect:** `ml/backend/ggml/ggml.go:1009` narrows `ggml_nbytes`, a `size_t`, to `C.int` for `C.GoBytes`. Calling `Bytes()` on a CPU tensor larger than 2 GiB overflows the length and can panic or truncate, whereas the synchronized-backend path supports the full size. Use a size-preserving copy implementation or reject oversized tensors explicitly.",
+        "path": "ml/backend/ggml/ggml.go",
+        "start_line": 1009,
+        "end_line": 1009,
+        "observation_id": "f82418c6539a5176",
+        "claimed_path": "ml/backend/ggml/ggml.go",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "**1. Missing nil-guard on interface methods \u2014 CRASH (real defect)**\n\n`model/model.go`, lines 285 and 288:\n\n```go\nif batch.Positions.Dim(0) != len(batch.Sequences) {\n```\n```go\nif batch.Positions.Dim(0) < 1 {\n```\n\n`Positions` is now `ml.Tensor` (an interface). Its zero value is `nil`. The old code `len(batch.Positions)` returned `0` on a nil slice without panicking. Calling `.Dim(0)` on a nil interface is a nil-pointer dereference. Any caller that constructs `input.Batch{}` without populating `Positions` (tests, future callers, bug paths) will now panic instead of getting the clean error messages these checks exist to produce.\n\n---",
+        "path": "model/model.go",
+        "start_line": 285,
+        "end_line": 285,
+        "observation_id": "0b6b21ebd0a11e3e",
+        "claimed_path": "model/model.go",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "**2. Removed defensive guard in gptoss \u2014 behavioral regression (defect / missing validation)**\n\n`model/models/gptoss/model.go`, lines 40\u201342 (new):\n\n```go\nif i == len(m.TransformerBlocks)-1 {\n    outputs = batch.Outputs\n}\n```\n\nThe old code had `len(batch.Outputs) > 0 && i == len(...)` \u2014 the `> 0` guard was removed. If `Outputs` is a non-nil tensor with zero elements (which `FromIntSlice([]int32{}, 0)` can produce), the old code would leave `outputs` nil; the new code passes the empty tensor through to `block.Forward`. Every other model in this diff never had this guard, so this is homogenizing to the less-defensive behavior, but it is a silent behavioral change on an error-adjacent code path.\n\n---\n\n**3. `unsafe.Slice` of C-managed memory in `Floats()`/`Ints()` CPU path \u2014 dangling-pointer risk (design defect)**\n\n`ml/backend/ggml/ggml.go`, new `Ints()` method and new `else if` in `Floats()`:\n\n```go\ndata = unsafe.Slice((*int32)(bts), C.ggml_nelements(t.t))\n```\n\nThe CPU-memory path returns a Go slice backed directly by C-allocated memory. If the tensor is freed or closed while the caller still holds the slice, it's use-after-free. Contrast with `Bytes()` on the same file (same hunk), which uses `C.GoBytes` to safely copy into GC-managed memory. `Floats()` and `Ints()` don't copy. Every caller must be aware that the returned slice has a lifetime tied to the tensor \u2014 this is not enforced and easy to get wrong, especially since `Bytes()` sets a different expectation.\n\n---",
+        "path": "model/models/gptoss/model.go",
+        "start_line": 40,
+        "end_line": 40,
+        "observation_id": "1b54cc2dd19e23d1",
+        "claimed_path": "model/models/gptoss/model.go",
+        "path_resolution": "exact",
+        "merged_from": [
+          "d0acccd6f4432c34"
+        ]
+      },
+      {
+        "content": "**4. No dtype assertion in `Ints()` \u2014 wrong data interpretation (defect)**\n\n`ml/backend/ggml/ggml.go`, new `Ints()` method (lines ~1024\u20131035):\n\n```go\ndata = unsafe.Slice((*int32)(bts), C.ggml_nelements(t.t))\n```\n\nThe raw memory pointer is cast to `*int32` unconditionally. If the underlying tensor is stored in a different dtype (e.g., `F32`, `I64`), this reinterprets the bytes as `int32`, producing silently wrong data. There is no `t.DType() == ml.DTypeI32` guard. The caller is responsible for only calling `Ints()` on int32 tensors, but the `Tensor` interface is public and the method name does not enforce this contract. (The same issue exists in the new `Floats()` CPU path, but that method existed before this diff.)\n\n---\n\n**5. `batch.Positions.Ints()` called inside a loop \u2014 redundant allocation (waste)**\n\n`kvcache/wrapper.go`, lines 49\u201351:\n\n```go\nfor j := i - 1; j >= 0; j-- {\n    curPositions := batch.Positions.Ints()\n    for k := range curPositions {\n```\n\n`batch.Positions.Ints()` allocates and populates a new `[]int32` slice on every iteration of the `for j` loop. The tensor does not change between iterations. The call should be hoisted above the outer loop. This is on the error-unwind path so it is not hot, but it is clearly an oversight from the mechanical refactoring.\n\n---",
+        "path": "ml/backend/ggml/ggml.go",
+        "start_line": 1024,
+        "end_line": 1024,
+        "observation_id": "afb240a160a0119c",
+        "claimed_path": "ml/backend/ggml/ggml.go",
+        "path_resolution": "exact",
+        "merged_from": [
+          "898709025f779b21"
+        ]
+      },
+      {
+        "content": "**6. `Ints()` called to extract a single element \u2014 wasteful allocation**\n\n`kvcache/encoder.go`, line 94:\n\n```go\nc.curPos = batch.Positions.Ints()[batch.Multimodal[len(batch.Multimodal)-1].Index]\n```\n\nThis allocates a full `[]int32` slice (via `Ints()`) just to index one element. A `Dim(0)` + element-access method, or a scalar-extract helper, would avoid the allocation. Minor, but this is called on every forward pass.### Defects Found (by severity)\n\n---",
+        "path": "kvcache/encoder.go",
+        "start_line": 94,
+        "end_line": 94,
+        "observation_id": "954b1d2b1b1fdc17",
+        "claimed_path": "kvcache/encoder.go",
+        "path_resolution": "exact",
+        "merged_from": [
+          "a02b497b6b4517f4"
+        ]
+      },
+      {
+        "content": "#### 1. **CRASH / PANIC: `ggml.go` - `Ints()` implementation assumes int32 tensor data without dtype check**\n**File:** `ml/backend/ggml/ggml.go` **Lines:** 1018-1040 (the new `Ints()` method)\n\nThe new `Ints()` method does:\n```go\nfunc (t *Tensor) Ints() (data []int32) {\n    if t.sync != nil {\n        data = make([]int32, C.ggml_nelements(t.t))\n        t.sync()\n        C.ggml_backend_tensor_get(t.t, unsafe.Pointer(&data[0]), 0, C.ggml_nbytes(t.t))\n    } else if bts := C.ggml_get_data(t.t); bts != nil {\n        data = unsafe.Slice((*int32)(bts), C.ggml_nelements(t.t))\n    }\n    return\n}\n```\n\n**Failure scenario:** If a tensor with dtype `float32` (or any non-int32 dtype) calls `Ints()`, it will reinterpret the raw bytes as `int32`, producing garbage values. No dtype validation occurs. The `Floats()` method has the same issue but at least float32 is the \"native\" dtype for most ML tensors. `Ints()` is new and callers (e.g., `causal.go:207`, `encoder.go:94`, `llama4/model_text.go:221`) assume the tensor *contains* int32 values.\n\n**Fix:** Add a dtype check/assertion at the start of `Ints()` \u2014 panic or return error if `t.DType() != ml.DTypeI32`.\n\n---",
+        "path": "ml/backend/ggml/ggml.go",
+        "start_line": 1018,
+        "end_line": 1018,
+        "observation_id": "ca453d7784cf0b22",
+        "claimed_path": "ggml.go",
+        "path_resolution": "basename",
+        "merged_from": []
+      },
+      {
+        "content": "#### 2. **WRONG RESULTS / SILENT CORRUPTION: `causal.go` - `curBatchSize` now uses `len(c.curPositions)` after `Ints()` conversion**\n**File:** `kvcache/causal.go` **Lines:** 202-203\n\n```go\nc.curPositions = batch.Positions.Ints()\nc.curBatchSize = len(c.curPositions)\n```\n\nIf `batch.Positions` is a tensor with shape `[N, 1]` (2D) instead of `[N]` (1D), `Ints()` returns a flat slice of length `N*1 = N` \u2014 this works. But if the tensor has *extra padding* or is shaped `[batch, seq]` unexpectedly, `len(c.curPositions)` reflects total elements, not batch size. The old code `len(batch.Positions)` (when `Positions` was `[]int32`) was explicitly the batch dimension.\n\n**Failure scenario:** A caller passes a 2D positions tensor `[batch, max_seq]` with padding. `Ints()` flattens it; `curBatchSize` becomes `batch * max_seq` instead of `batch`. Downstream loops (e.g., line 217 `for i, pos := range c.curPositions`) iterate wrong count.\n\n**Fix:** Use `batch.Positions.Dim(0)` for batch size, not `len(Ints())`. Or validate `batch.Positions` is 1D.\n\n---",
+        "path": "kvcache/causal.go",
+        "start_line": 202,
+        "end_line": 202,
+        "observation_id": "f4d5fa2365008327",
+        "claimed_path": "causal.go",
+        "path_resolution": "basename",
+        "merged_from": []
+      },
+      {
+        "content": "#### 3. **WRONG RESULTS: `encoder.go` - Index into `Ints()` assumes 1D tensor matching `Multimodal.Index`**\n**File:** `kvcache/encoder.go` **Line:** 94\n\n```go\nc.curPos = batch.Positions.Ints()[batch.Multimodal[len(batch.Multimodal)-1].Index]\n```\n\n`Multimodal.Index` is documented as \"an index into Inputs\". If `Positions` is 2D `[batch, seq]`, `Ints()` flattens row-major; `Index` would need to be `batch*seq + pos` \u2014 but callers likely pass a per-sequence index. The old `[]int32` was 1D by construction.\n\n**Failure scenario:** Multimodal batch with `Positions` as 2D tensor. Index lookup reads wrong position.\n\n**Fix:** Validate `Positions` is 1D, or use `Positions.At(...)` with proper indices.\n\n---\n\n#### 4. **MISSING VALIDATION: `model.go` - Validation uses `Dim(0)` but doesn't check tensor rank**\n**File:** `model/model.go` **Lines:** 285-290\n\n```go\nif batch.Positions.Dim(0) != len(batch.Sequences) {\n    return nil, fmt.Errorf(\"length of positions (%v) must match length of seqs (%v)\", batch.Positions.Dim(0), len(batch.Sequences))\n}\nif batch.Positions.Dim(0) < 1 {\n    return nil, errors.New(\"batch size cannot be less than 1\")\n}\n```\n\n**Failure scenario:** `batch.Positions` is a scalar (0D tensor) or 2D `[batch, seq]`. `Dim(0)` on 0D may panic or return 0; on 2D it returns batch dimension (which might be correct by accident). No check that `Positions` is 1D.\n\n**Fix:** Add `if batch.Positions.Rank() != 1 { return nil, errors.New(\"positions must be 1D tensor\") }`.\n\n---",
+        "path": "kvcache/encoder.go",
+        "start_line": 94,
+        "end_line": 94,
+        "observation_id": "bfc79f6f25ead7ff",
+        "claimed_path": "encoder.go",
+        "path_resolution": "basename",
+        "merged_from": [
+          "aab351d60104271e"
+        ]
+      },
+      {
+        "content": "#### 5. **POTENTIAL PANIC: `wrapper.go` - `Remove` called with `curPositions[k]` but `Sequences` length unchecked**\n**File:** `kvcache/wrapper.go` **Lines:** 50-54\n\n```go\ncurPositions := batch.Positions.Ints()\nfor k := range curPositions {\n    _ = c.caches[j].Remove(batch.Sequences[k], curPositions[k], math.MaxInt32)\n}\n```\n\nIf `len(batch.Sequences) != len(curPositions)`, this panics on out-of-bounds `batch.Sequences[k]`. The old code iterated `range batch.Positions` (the slice), so lengths were inherently equal. Now they're from different sources.\n\n**Failure scenario:** Caller constructs `Batch` with mismatched `Positions` tensor length vs `Sequences` slice length.\n\n**Fix:** Add validation that `len(batch.Sequences) == len(curPositions)` before the loop, or iterate `min(len(Sequences), len(curPositions))` with error.\n\n---",
+        "path": "kvcache/wrapper.go",
+        "start_line": 50,
+        "end_line": 50,
+        "observation_id": "71b0f7c6e37087b1",
+        "claimed_path": "wrapper.go",
+        "path_resolution": "basename",
+        "merged_from": []
+      },
+      {
+        "content": "#### 6. **DEAD CODE / UNUSED FIELD: `input.go` - `Multimodal` field moved but comments not updated**\n**File:** `model/input/input.go` **Lines:** 54-70\n\nThe `Multimodal` field moved below `Outputs` but the comment block above it still says \"Unused for text-only models or for batches without multimodal elements\" \u2014 now it's *after* `Outputs` in the struct, but the comment wasn't moved with it. The comment for `Outputs` (\"Outputs are the set of indicies into Inputs...\") is now on the `Multimodal` field.\n\n**Impact:** Misleading documentation; maintainers will read wrong field descriptions.\n\n**Fix:** Move comments with their fields.\n\n---\n\n#### 7. **INCONSISTENT API: `llama4/model.go` and `mistral3/model.go` - `TextModel.Forward` signature changed but not all callers updated**\n**File:** `model/models/llama4/model.go` **Line:** 178, `model/models/mistral3/model.go` **Line:** 161\n\nBoth now call:\n```go\nreturn m.TextModel.Forward(ctx, batch, m.Cache), nil\n```\n\nBut `TextModel.Forward` in `llama4/model_text.go` (line 208) and `mistral3/model_text.go` (line 97) now takes `(ctx, batch, cache)` \u2014 this matches. However, `qwen25vl/model.go` (line 142) calls `m.TextModel.Forward(ctx, batch, m.Cache)` but its `TextModel.Forward` in `model_text.go` (line 125) returns `(ml.Tensor, error)` \u2014 **signature mismatch**: the caller discards the error.\n\n**File:** `model/models/qwen25vl/model.go` **Line:** 142\n```go\nreturn m.TextModel.Forward(ctx, batch, m.Cache)\n```\nBut `TextModel.Forward` returns `(ml.Tensor, error)`. The error is dropped \u2014 if `Forward` fails, caller returns `nil` tensor silently.\n\n**Fix:** Handle the error return.\n\n---",
+        "path": "model/input/input.go",
+        "start_line": 54,
+        "end_line": 54,
+        "observation_id": "c02980116bb69fdd",
+        "claimed_path": "input.go",
+        "path_resolution": "basename",
+        "merged_from": [
+          "edafc65c58db1609"
+        ]
+      },
+      {
+        "content": "#### 8. **WRONG RESULTS: `ollamarunner/runner.go` - `vocabSize` calculation uses `Outputs.Dim(0)` but `outputs` slice is flat**\n**File:** `runner/ollamarunner/runner.go` **Line:** 711\n\n```go\nvocabSize := len(outputs) / activeBatch.batch.Outputs.Dim(0)\n```\n\n`outputs` is a flat `[]float32` from model output (length = `batchSize * vocabSize`). `Outputs.Dim(0)` is the number of output positions (batch size). This is correct *if* `Outputs` is 1D with `Dim(0) == batch size`. But `Outputs` is now a tensor \u2014 if it's 2D `[batch, num_outputs_per_seq]`, `Dim(0)` is still batch size, so this works. However, the old code used `len(activeBatch.batch.Outputs)` which was the slice length (also batch size). **No defect here, but fragile** \u2014 relies on `Outputs` tensor shape convention.\n\n---",
+        "path": "runner/ollamarunner/runner.go",
+        "start_line": 711,
+        "end_line": 711,
+        "observation_id": "873822bc2b056fb7",
+        "claimed_path": "ollamarunner/runner.go",
+        "path_resolution": "basename",
+        "merged_from": []
+      },
+      {
+        "content": "#### 9. **MISSING VALIDATION: `ollamarunner/runner.go` - `reserveWorstCaseGraph` uses `Arange` for Outputs but doesn't validate `parallel`**\n**File:** `runner/ollamarunner/runner.go` **Line:** 1065\n\n```go\nbatch.Outputs = ctx.Input().Arange(0, float32(s.parallel), 1, ml.DTypeI32)\n```\n\nIf `s.parallel == 0`, `Arange(0, 0, 1, ...)` creates empty tensor. Downstream `Dim(0)` returns 0, causing division by zero at line 711 (`vocabSize := len(outputs) / 0`).\n\n**Fix:** Validate `s.parallel > 0`.\n\n---\n\n#### 10. **ABSTRACTION LEAK: `Tensor.Ints()` returns `[]int32` but `Tensor` interface doesn't constrain dtype**\n**File:** `ml/backend.go` **Line:** 404\n\n```go\nInts() []int32\n```\n\nThe interface promises `[]int32` but any backend implementation can return garbage for non-int32 tensors (as in defect #1). The interface should either:\n- Return `([]int32, error)` to allow dtype mismatch errors, or\n- Have a `DType()` check in the interface contract (documented), or\n- Be named `IntsUnsafe()` to signal caller must verify dtype.\n\n**Impact:** Callers cannot safely use `Ints()` without knowing the tensor's dtype statically.\n\n---",
+        "path": "runner/ollamarunner/runner.go",
+        "start_line": 1065,
+        "end_line": 1065,
+        "observation_id": "153e03c24eaf1067",
+        "claimed_path": "ollamarunner/runner.go",
+        "path_resolution": "basename",
+        "merged_from": [
+          "135754df9f4325e5"
+        ]
+      },
+      {
+        "content": "#### 11. **TEST FRAGILITY: `causal_test.go` - Tests now depend on `testTensor.Ints()` implementation**\n**File:** `kvcache/causal_test.go` **Lines:** 394, 437, 464, 509, 522\n\nTests use `context.FromIntSlice(...)` which returns a real backend tensor. The `testTensor.Ints()` implementation (lines 672-678) does:\n```go\nfunc (t *testTensor) Ints() []int32 {\n    out := make([]int32, len(t.data))\n    for i := range out {\n        out[i] = int32(t.data[i])\n    }\n    return out\n}\n```\n\nThis assumes `t.data` is `[]float32` (per `Floats()`). If `testTensor` is constructed with int32 data, this converts float\u2192int32 truncating. The test passes `test.pos` which is `[]int32` \u2014 but `FromIntSlice` likely stores as float32 internally. This works by accident.\n\n**Failure scenario:** If `testTensor` internal representation changes, tests break silently.\n\n---",
+        "path": "kvcache/causal_test.go",
+        "start_line": 394,
+        "end_line": 394,
+        "observation_id": "98e23af5858c1236",
+        "claimed_path": "causal_test.go",
+        "path_resolution": "basename",
+        "merged_from": []
+      },
+      {
+        "content": "#### 12. **UNUSED VARIABLE: `ollamarunner/runner.go` - `batchInputs` declared but `batch.Sequences` not populated in `reserveWorstCaseGraph`**\n**File:** `runner/ollamarunner/runner.go` **Lines:** 1050-1067\n\n```go\nbatchInputs := make([]int32, len(inputs))\nbatchPositions := make([]int32, len(inputs))\nfor i, inp := range inputs {\n    batchInputs[i] = inp.Token\n    ...\n    batchPositions[i] = int32(i)\n}\nbatch.Sequences = make([]int, len(batchInputs))  // All zeros!\n```\n\n`batch.Sequences` is allocated but never filled with actual sequence IDs \u2014 all zeros. This may be intentional for \"worst case\" graph reservation, but it's suspicious. The old code did the same (implicit zero), so not a regression, but worth noting as a potential latent bug if sequence IDs matter for cache reservation.\n\n---\n\n#### 13. **INCONSISTENT ERROR HANDLING: `qwen25vl/model_text.go` - `Forward` returns error but `model.go` caller ignores it**\n**File:** `model/models/qwen25vl/model_text.go` **Line:** 125 (signature), `model/models/qwen25vl/model.go` **Line:** 142 (caller)\n\nSee defect #7.\n\n---",
+        "path": "runner/ollamarunner/runner.go",
+        "start_line": 1050,
+        "end_line": 1050,
+        "observation_id": "1f4fc0684c63a0d7",
+        "claimed_path": "ollamarunner/runner.go",
+        "path_resolution": "basename",
+        "merged_from": [
+          "35a4521e5f496c41"
+        ]
+      },
+      {
+        "content": "#### 14. **POTENTIAL NIL POINTER: `causal.go` - `batch.Positions.Ints()` called without nil check**\n**File:** `kvcache/causal.go` **Line:** 202\n\n```go\nc.curPositions = batch.Positions.Ints()\n```\n\nIf `batch.Positions` is a nil `ml.Tensor` interface, this panics. The old `[]int32` could be nil safely (`len(nil) == 0`). New code assumes non-nil tensor.\n\n**Failure scenario:** Caller passes `Batch{Positions: nil}`.\n\n**Fix:** Add nil check or document that `Positions` must be non-nil.\n\n---",
+        "path": "kvcache/causal.go",
+        "start_line": 202,
+        "end_line": 202,
+        "observation_id": "f822e2dd8cb297d5",
+        "claimed_path": "causal.go",
+        "path_resolution": "basename",
+        "merged_from": []
+      },
+      {
+        "content": "#### 15. **DUPLICATED STATE: `causal.go` - `curPositions` ([]int32) and `curBatchSize` (int) both stored; `curBatchSize = len(curPositions)`**\n**File:** `kvcache/causal.go` **Lines:** 202-203\n\nStoring both is redundant; `curBatchSize` can be `len(c.curPositions)` wherever used. If they drift (e.g., `curPositions` modified without updating `curBatchSize`), inconsistency arises. The old code had `curBatchSize = len(batch.Positions)` and `curPositions = batch.Positions` \u2014 same issue, but now `curPositions` is a *copy* (via `Ints()`), so mutation is less likely. Still, redundant state.\n\n**Fix:** Remove `curBatchSize` field; compute inline.\n\n---\n\n### Summary by Category\n\n| Severity | Count | Items |\n|----------|-------|-------|\n| Crash/Panic | 3 | #1, #5, #14 |\n| Wrong Results | 3 | #2, #3, #7 |\n| Missing Validation | 3 | #4, #5, #9 |\n| API/Abstraction | 2 | #1, #10 |\n| Dead Code/Docs | 1 | #6 |\n| Error Handling | 1 | #7 |\n| Test Fragility | 1 | #11 |\n| Redundant State | 1 | #15 |\n\n**Most critical:** #1 (silent corruption in `Ints()`), #2 (batch size miscalculation), #7 (dropped error in qwen25vl).\n\n**NO DEFECTS FOUND** would be incorrect \u2014 there are 15 actionable issues above. The three most critical to fix before merge:",
+        "path": "kvcache/causal.go",
+        "start_line": 202,
+        "end_line": 202,
+        "observation_id": "7f8a90d17979120a",
+        "claimed_path": "causal.go",
+        "path_resolution": "basename",
+        "merged_from": [
+          "bdf4818ba3758c75"
+        ]
+      },
+      {
+        "content": "1. **`ml/backend/ggml/ggml.go:1018`** \u2014 `Ints()` lacks dtype check \u2192 silent corruption",
+        "path": "ml/backend/ggml/ggml.go",
+        "start_line": 1018,
+        "end_line": 1018,
+        "observation_id": "60447b4f3ce33411",
+        "claimed_path": "ml/backend/ggml/ggml.go",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "2. **`kvcache/causal.go:202`** \u2014 `curBatchSize = len(Ints())` breaks on non-1D positions tensor",
+        "path": "kvcache/causal.go",
+        "start_line": 202,
+        "end_line": 202,
+        "observation_id": "5e004e90f2f68ed4",
+        "claimed_path": "kvcache/causal.go",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "3. **`model/models/qwen25vl/model.go:142`** \u2014 drops error from `TextModel.Forward`",
+        "path": "model/models/qwen25vl/model.go",
+        "start_line": 142,
+        "end_line": 142,
+        "observation_id": "c419875c0032aa41",
+        "claimed_path": "model/models/qwen25vl/model.go",
+        "path_resolution": "exact",
+        "merged_from": []
+      }
+    ]
+  },
+  "rundir": "/home/mjarnold/.cache/llm-panel/runs/aacr-up-z6ekpdkw-e78c1182e3c4/20260825-202506-2661719",
+  "extractor": "1",
+  "unlocated": []
+}

@@ -1,0 +1,156 @@
+{
+  "review": {
+    "comments": [
+      {
+        "content": "1. **Defect \u2014 `integration-tests/test-helper.ts:315`**: `spawn` inherits the runner\u2019s environment instead of using a rig-scoped `HOME`/`GEMINI_CLI_HOME`. The extension commands can therefore modify the developer or CI account\u2019s real extension directory; the initial uninstall can permanently remove an existing extension named `test-extension`. Pass the isolated test environment explicitly.",
+        "path": "integration-tests/test-helper.ts",
+        "start_line": 315,
+        "end_line": 315,
+        "observation_id": "55bc584d5f364910",
+        "claimed_path": "integration-tests/test-helper.ts",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "2. **Defect \u2014 `integration-tests/extensions-install.test.ts:43`**: The update command receives no confirmation input, while `runCommand` leaves stdin open when none is supplied. If update asks for confirmation, the subprocess waits indefinitely and the test never completes. Supply `stdin: 'y\\n'` or use a noninteractive flag.\n\n3. **Defect/resource leak \u2014 `integration-tests/extensions-install.test.ts:50`**: Uninstall and rig cleanup run only on the success path. If any command or assertion after installation fails, the installed extension and temporary files remain, polluting later runs. Put extension removal in `finally` and rig cleanup in `afterEach`.\n\n4. **Defensive/lifecycle defect \u2014 `integration-tests/test-helper.ts:342`**: The promise listens only for `close`; there is no `error` handler, timeout, or registration of the child for cleanup. A spawn failure produces an unhandled `error`, while a stuck child can survive the test timeout and keep the Vitest worker alive.",
+        "path": "integration-tests/extensions-install.test.ts",
+        "start_line": 43,
+        "end_line": 43,
+        "observation_id": "71fa78b34e72c449",
+        "claimed_path": "integration-tests/extensions-install.test.ts",
+        "path_resolution": "exact",
+        "merged_from": [
+          "aed5b973a5ed7129",
+          "5b3150b647066912"
+        ]
+      },
+      {
+        "content": "5. **Test robustness \u2014 `integration-tests/extensions-install.test.ts:30`**: The blanket catch treats every uninstall failure as \u201cnot installed.\u201d Permission errors, corrupted configuration, or CLI startup failures are discarded, so the subsequent install fails with misleading diagnostics. Ignore only the expected not-found result.\n\n6. **Maintainability/contract issue \u2014 `integration-tests/extensions-install.test.ts:53`**: Removing `rig.testDir` separately duplicates `rig.cleanup()`\u2019s responsibility and bypasses any cleanup policy such as preserving output under `KEEP_OUTPUT`. Cleanup should have one owner.",
+        "path": "integration-tests/extensions-install.test.ts",
+        "start_line": 30,
+        "end_line": 30,
+        "observation_id": "814d010bf51a49e7",
+        "claimed_path": "integration-tests/extensions-install.test.ts",
+        "path_resolution": "exact",
+        "merged_from": [
+          "686b21a63653b25f"
+        ]
+      },
+      {
+        "content": "**Defect 1 \u2014 Real defect: unhandled `error` event \u2192 hung promise / leaked process**\n\n`integration-tests/test-helper.ts`, lines 332\u2013347. The `runCommand` method attaches a `close` handler on the child process but never listens for `error`. If `spawn('node', ...)` itself fails (e.g. `ENOENT`, permission denied), Node emits `error` but may never emit `close` (the docs say \"might or might not\"). The returned promise never settles, the test hangs indefinitely, and the vitest runner must be killed externally.\n\nFix: add `child.on('error', reject)` inside the `new Promise` executor, or add an `error` listener before the promise is constructed.\n\n---",
+        "path": "integration-tests/test-helper.ts",
+        "start_line": 332,
+        "end_line": 332,
+        "observation_id": "57ae76f275ff429f",
+        "claimed_path": "integration-tests/test-helper.ts",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "**Defect 2 \u2014 Potential hang / missing defensive check: stdin left open when no input is supplied**\n\n`integration-tests/test-helper.ts`, lines 317\u2013319. When `options.stdin` is falsy the branch is skipped and `child.stdin` is never written to or closed. Any child command that reads from stdin (e.g. a prompt, a `readline` call) will block forever, producing the same hang described above but for a different reason. The current test only avoids this because every call that needs stdin passes it explicitly, but the method is a general helper \u2014 the next test author who omits `stdin` will silently hang.\n\nFix: unconditionally close stdin after the `if (options.stdin)` block (`child.stdin!.end()`), or at minimum document that callers must always pass `stdin` even if empty.",
+        "path": "integration-tests/test-helper.ts",
+        "start_line": 317,
+        "end_line": 317,
+        "observation_id": "36cc9e2d92bbf77b",
+        "claimed_path": "integration-tests/test-helper.ts",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "### 1. **Defect: Unhandled promise rejection on stdin write failure** \u2014 `integration-tests/test-helper.ts:321-324`\n```typescript\nif (options.stdin) {\n  child.stdin!.write(options.stdin);\n  child.stdin!.end();\n}\n```\nIf `child.stdin.write()` fails (e.g., process already exited), it emits `'error'` but no handler is attached. The write may also return `false` (backpressure), but the code doesn't await `drain`. This can cause silent data loss or an unhandled rejection crashing the test runner.  \n**Fix:** Attach `child.stdin.on('error', ...)` and either `await new Promise(r => child.stdin.once('drain', r))` or use `pipeline()`.\n\n---",
+        "path": "integration-tests/test-helper.ts",
+        "start_line": 321,
+        "end_line": 321,
+        "observation_id": "ae5c49adac0db33d",
+        "claimed_path": "integration-tests/test-helper.ts",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "### 2. **Defect: Race condition \u2014 `stdout`/`stderr` captured after process exit** \u2014 `integration-tests/test-helper.ts:315-341`\nThe `'close'` handler resolves using `stdout`/`stderr` variables that are mutated by `'data'` handlers. Node.js guarantees `'close'` fires after all `'data'`, **but** if the child process crashes before stdout/stderr pipes are fully drained, some data may be lost. More critically, there's no `'error'` handler on `child` \u2014 if `spawn` fails (ENOENT, EACCES), the promise never settles, hanging the test indefinitely.  \n**Fix:** Add `child.on('error', reject)` before the `'close'` handler.\n\n---",
+        "path": "integration-tests/test-helper.ts",
+        "start_line": 315,
+        "end_line": 315,
+        "observation_id": "136cf8e93cad67e5",
+        "claimed_path": "integration-tests/test-helper.ts",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "### 3. **Defect: Test leaves global state (`_lastRunStdout`) on failure** \u2014 `integration-tests/test-helper.ts:335`\n```typescript\nthis._lastRunStdout = stdout;\n```\nThis mutates instance state **only on success** (`code === 0`). On failure, `_lastRunStdout` retains the previous run's output. Subsequent test assertions reading it will see stale data.  \n**Fix:** Either assign on both paths, or don't use instance state for this (return it in the rejection too).\n\n---",
+        "path": "integration-tests/test-helper.ts",
+        "start_line": 335,
+        "end_line": 335,
+        "observation_id": "1f2eebbcc5cf2c11",
+        "claimed_path": "integration-tests/test-helper.ts",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "### 4. **Defect: Test cleanup order is wrong** \u2014 `integration-tests/extensions-install.test.ts:50-52`\n```typescript\nawait rig.runCommand(['extensions', 'uninstall', 'test-extension']);\nawait rig.cleanup();\nrmSync(rig.testDir!, { recursive: true, force: true });\n```\n`rig.cleanup()` likely already removes `rig.testDir`. The subsequent `rmSync` either errors (ENOENT) or double-deletes. If `cleanup()` doesn't remove the dir, the test should document why. Either way, this is fragile.  \n**Fix:** Remove the manual `rmSync` or move it before `cleanup()` with a comment.\n\n---",
+        "path": "integration-tests/extensions-install.test.ts",
+        "start_line": 50,
+        "end_line": 50,
+        "observation_id": "48b9126ec04ce644",
+        "claimed_path": "integration-tests/extensions-install.test.ts",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "### 5. **Missing validation: No timeout on `runCommand`** \u2014 `integration-tests/test-helper.ts:308-344`\nA hung child process (e.g., waiting for stdin that never comes, or deadlock) will hang the test suite indefinitely. Vitest has a default timeout but it applies to the test function, not the promise returned by `runCommand`. If the promise never settles, the test times out with an unhelpful message.  \n**Fix:** Add an optional `timeoutMs` option and wrap with `Promise.race()` against a timeout rejection.\n\n---",
+        "path": "integration-tests/test-helper.ts",
+        "start_line": 308,
+        "end_line": 308,
+        "observation_id": "14b17c434781556d",
+        "claimed_path": "integration-tests/test-helper.ts",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "### 6. **Misleading name / API design: `runCommand` returns `stdout` + `stderr` concatenated** \u2014 `integration-tests/test-helper.ts:336-339`\n```typescript\nlet result = stdout;\nif (stderr) {\n  result += `\\n\\nStdErr:\\n${stderr}`;\n}\nresolve(result);\n```\nCallers must parse this string to separate streams. This forces fragile string matching in tests (e.g., `expect(result).toContain('0.0.2')` could match stderr).  \n**Fix:** Return `{ stdout, stderr, code }` or an object with typed fields.\n\n---",
+        "path": "integration-tests/test-helper.ts",
+        "start_line": 336,
+        "end_line": 336,
+        "observation_id": "f3b7804711309b7c",
+        "claimed_path": "integration-tests/test-helper.ts",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "### 7. **Dead code risk: `env.KEEP_OUTPUT` / `env.VERBOSE` used but `env` not imported** \u2014 `integration-tests/test-helper.ts:318,324`\n```typescript\nif (env.KEEP_OUTPUT === 'true' || env.VERBOSE === 'true') {\n```\n`env` is not imported in the diff hunk. If it's a global (e.g., `import { env } from 'node:process'`), it works but is implicit. If it's missing, this crashes at runtime.  \n**Fix:** Add `import { env } from 'node:process';` at top of file (verify in full file).\n\n---",
+        "path": "integration-tests/test-helper.ts",
+        "start_line": 318,
+        "end_line": 318,
+        "observation_id": "ad44dfced61bbe94",
+        "claimed_path": "integration-tests/test-helper.ts",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "### 8. **Test assumes interactive prompt behavior (`stdin: 'y\\n'`)** \u2014 `integration-tests/extensions-install.test.ts:28`\n```typescript\nconst result = await rig.runCommand(\n  ['extensions', 'install', `--path=${rig.testDir!}`],\n  { stdin: 'y\\n' },\n);\n```\nThis couples the test to a specific CLI prompt (\"Proceed? [y/N]\"). If the prompt text changes, the test breaks silently (hangs or fails).  \n**Fix:** Add a `--yes` / `-y` flag to the CLI for non-interactive use, and use that in tests.\n\n---",
+        "path": "integration-tests/extensions-install.test.ts",
+        "start_line": 28,
+        "end_line": 28,
+        "observation_id": "d908d7de3caf3c1b",
+        "claimed_path": "integration-tests/extensions-install.test.ts",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "### 9. **Minor: Empty catch block swallows all errors** \u2014 `integration-tests/extensions-install.test.ts:21-23`\n```typescript\ntry {\n  await rig.runCommand(['extensions', 'uninstall', 'test-extension']);\n} catch {\n  /* empty */\n}\n```\nIf `uninstall` fails for a reason other than \"not installed\" (e.g., permission error, corruption), the test proceeds silently. At minimum, log or assert the error message contains \"not found\".  \n**Fix:** Check error message or use a \"force uninstall\" flag if the CLI has one.\n\n---\n\n### Summary by severity\n| Severity | Items |\n|----------|-------|\n| **Crash / hang risk** | 1, 2, 5 |\n| **Wrong results / flakiness** | 3, 4, 8 |\n| **API design / maintainability** | 6 |\n| **Missing import / runtime error** | 7 |\n| **Silent error masking** | 9 |",
+        "path": "integration-tests/extensions-install.test.ts",
+        "start_line": 21,
+        "end_line": 21,
+        "observation_id": "f4f444871da8bd27",
+        "claimed_path": "integration-tests/extensions-install.test.ts",
+        "path_resolution": "exact",
+        "merged_from": [
+          "e4121a425f832567"
+        ]
+      }
+    ]
+  },
+  "rundir": "/home/mjarnold/.cache/llm-panel/runs/aacr-up-u10nelsq-19ca55ca7817/20260825-201841-2655053",
+  "extractor": "1",
+  "unlocated": []
+}

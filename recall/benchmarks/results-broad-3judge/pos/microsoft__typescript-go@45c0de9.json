@@ -1,0 +1,89 @@
+{
+  "review": {
+    "comments": [
+      {
+        "content": "- **Defect (crash) \u2014 `internal/ls/diagnostics.go:44`:** `toLSPDiagnostics` passes `nil` instead of `l.converters`. Normal file-backed diagnostics require the converter to map source offsets into LSP ranges, so requesting diagnostics for any syntax/type error can nil-dereference inside `toLSPDiagnostic`. Make this helper a `LanguageService` method or pass the converters explicitly.",
+        "path": "internal/ls/diagnostics.go",
+        "start_line": 44,
+        "end_line": 44,
+        "observation_id": "f86428df8efb48b9",
+        "claimed_path": "internal/ls/diagnostics.go",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "1. **REAL DEFECT \u2014 `toLSPDiagnostic` called with `nil` converters, potential nil-pointer crash.** `internal/ls/diagnostics.go`, new line 42.\n\nThe old code passed `l.converters` to every `toLSPDiagnostic` call. The new `toLSPDiagnostics` helper hard-codes `nil`:\n```go\nlspDiagnostics = append(lspDiagnostics, toLSPDiagnostic(diag, nil))\n```\nThe inline comment \"converters can be nil if not needed\" is an assertion without evidence. If `toLSPDiagnostic` dereferences `converters` for URI normalization, type-node formatting, or any other purpose (the function body continues below the diff hunk), this will panic on every diagnostic request. Even if the nil case happens to be handled today, the old code *was* passing converters \u2014 meaning every diagnostic now silently loses whatever conversion they performed, which is a correctness regression in the output if converters do real work.",
+        "path": "internal/ls/diagnostics.go",
+        "start_line": 42,
+        "end_line": 42,
+        "observation_id": "8961e31a759ae4cf",
+        "claimed_path": "internal/ls/diagnostics.go",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "2. **REAL DEFECT \u2014 `Kind` field removed from `FullDocumentDiagnosticReport`.** `internal/ls/diagnostics.go`, new line 31 (was old line ~40).\n\nThe old code set `Kind: lsproto.StringLiteralFull{}`; the new code omits it entirely. Per the LSP 3.17 specification, `DocumentDiagnosticReport.kind` is a required property (`\"full\"` or `\"unchanged\"`). Removing it produces a protocol-non-compliant response. Clients that switch on `kind` to decide how to merge diagnostic results (the whole point of the discriminator) will not handle the report correctly. This looks like an accidental deletion during the refactor rather than an intentional change, since no other code path was modified to supply the field.",
+        "path": "internal/ls/diagnostics.go",
+        "start_line": 31,
+        "end_line": 31,
+        "observation_id": "b3ff5ff992f21b20",
+        "claimed_path": "internal/ls/diagnostics.go",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "**internal/ls/diagnostics.go:42** \u2014 **DEFECT (crash risk)**  \n`toLSPDiagnostic(diag, nil)` passes `nil` converters. The function `toLSPDiagnostic` (line 48) still declares `converters *Converters` without a nil-check visible in the diff. If the body dereferences `converters` (e.g., for position/range conversion), this will panic. The comment \"converters can be nil if not needed\" is an unverified assumption.",
+        "path": "internal/ls/diagnostics.go",
+        "start_line": 42,
+        "end_line": 42,
+        "observation_id": "6ce6199be77188d9",
+        "claimed_path": "internal/ls/diagnostics.go",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "**internal/ls/diagnostics.go:28** \u2014 **DEFECT (protocol compliance)**  \nThe `Kind: lsproto.StringLiteralFull{}` field was removed from `FullDocumentDiagnosticReport`. LSP 3.17 requires `kind` on full document diagnostic reports (see `textDocument/diagnostic` spec). Clients expecting this field may misinterpret the report.",
+        "path": "internal/ls/diagnostics.go",
+        "start_line": 28,
+        "end_line": 28,
+        "observation_id": "1e80e1c876e26326",
+        "claimed_path": "internal/ls/diagnostics.go",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "**internal/ls/diagnostics.go:20-21** \u2014 **BEHAVIORAL CHANGE (undocumented)**  \nDeclaration diagnostics are now included when `program.Options().GetEmitDeclarations()` is true. The original code only returned syntactic, semantic, and suggestion diagnostics. This changes the diagnostic set sent to clients without a comment or test update explaining why.",
+        "path": "internal/ls/diagnostics.go",
+        "start_line": 20,
+        "end_line": 20,
+        "observation_id": "6c9310ed2d82c14f",
+        "claimed_path": "internal/ls/diagnostics.go",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "**internal/ls/diagnostics.go:42** \u2014 **MISSING DEFENSIVE CHECK**  \nThe new `toLSPDiagnostics` helper assumes `toLSPDiagnostic` tolerates `nil` converters. Add an explicit nil-check in `toLSPDiagnostic` or pass a valid converter (e.g., `l.converters`) to make the contract explicit.",
+        "path": "internal/ls/diagnostics.go",
+        "start_line": 42,
+        "end_line": 42,
+        "observation_id": "5ff488318941e6ce",
+        "claimed_path": "internal/ls/diagnostics.go",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "**internal/ls/diagnostics.go:17** \u2014 **STALE TODO**  \nThe `// !!! user preference...` comment remains unresolved. Either implement the filtering (unnecessary/deprecated only) or remove the comment.",
+        "path": "internal/ls/diagnostics.go",
+        "start_line": 17,
+        "end_line": 17,
+        "observation_id": "50799aa348bb2aa6",
+        "claimed_path": "internal/ls/diagnostics.go",
+        "path_resolution": "exact",
+        "merged_from": []
+      }
+    ]
+  },
+  "rundir": "/home/mjarnold/.cache/llm-panel/runs/aacr-up-656q678y-741e8e291244/20260825-203420-2673838",
+  "extractor": "1",
+  "unlocated": []
+}

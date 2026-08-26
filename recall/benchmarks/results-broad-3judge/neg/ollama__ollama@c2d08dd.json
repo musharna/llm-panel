@@ -1,0 +1,158 @@
+{
+  "review": {
+    "comments": [
+      {
+        "content": "1. **Bug / missing validation \u2014 `api/types.go:614`**  \n   `ContextLength()` returns `uint`, but converting it to `int` can overflow. On 64-bit systems, `OLLAMA_CONTEXT_LENGTH=9223372036854775808` becomes a negative `NumCtx`; other very large positive values can drive absurd allocation estimates or overflow downstream calculations, preventing models from loading. Reject values above `math.MaxInt`\u2014and preferably above a sensible context limit\u2014before conversion.",
+        "path": "api/types.go",
+        "start_line": 614,
+        "end_line": 614,
+        "observation_id": "ddac3021fe72dc52",
+        "claimed_path": "api/types.go",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "2. **Misleading configuration contract \u2014 `envconfig/config.go:170`, `envconfig/config.go:265`**  \n   The comments describe this as a \u201cmaximum,\u201d but it is only a default: model or request `num_ctx` values are applied afterward and can exceed it. An operator setting `OLLAMA_CONTEXT_LENGTH=4096` as a memory-safety cap can still receive a request for 32768 and incur the larger allocation. Describe it as the default context length, or enforce it as an actual maximum.",
+        "path": "envconfig/config.go",
+        "start_line": 170,
+        "end_line": 170,
+        "observation_id": "74befb456d472420",
+        "claimed_path": "envconfig/config.go",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "3. **Duplicated state / future-bug risk \u2014 `envconfig/config.go:171`, `envconfig/config.go:193`**  \n   The default `2048` is repeated in the parser, validator, warning, and return value. Changing only the parser default later\u2014for example to 4096\u2014would leave `OLLAMA_CONTEXT_LENGTH=0` returning and reporting 2048. Define one constant and reuse it.",
+        "path": "envconfig/config.go",
+        "start_line": 171,
+        "end_line": 171,
+        "observation_id": "5b9e7c1c96852227",
+        "claimed_path": "envconfig/config.go",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "4. **Unclear validation \u2014 `envconfig/config.go:192`**  \n   `ctxLength` is unsigned, so `ctxLength <= 0` can only mean zero, while the warning claims the value is \u201cless than 0.\u201d Negative strings never reach this check because `ParseUint` rejects them first. This obscures which layer performs validation and makes the negative-value tests misleading; either validate a signed value here or reduce this to an explicit zero check with an accurate message.",
+        "path": "envconfig/config.go",
+        "start_line": 192,
+        "end_line": 192,
+        "observation_id": "33d1ab0d934bc9a6",
+        "claimed_path": "envconfig/config.go",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "**1. Missing upper-bound validation \u2192 `int` overflow can produce negative `NumCtx` (real defect)**\n- **File:** `envconfig/config.go`, lines 189\u2013193 (the `CheckContextLength` function)\n- **File:** `api/types.go`, line 614 (`int(envconfig.ContextLength())`)\n\n`CheckContextLength` accepts `uint` and only rejects `<= 0`. `NumCtx` is typed `int`. On a 64-bit platform, any `uint` value in the range `[math.MaxInt64+1, math.MaxUint64]` passes validation and is then silently cast to a **negative** `int` (e.g., `OLLAMA_CONTEXT_LENGTH=9223372036854775808` \u2192 `NumCtx = -1`). The original code was safe because the literal `2048` is compile-time constant; the refactor introduced an unguarded narrowing conversion. This is likely to crash or cause undefined behavior in the runner. The fix is to add an upper-bound check in `CheckContextLength` (e.g., reject values > `math.MaxInt`).\n\n---",
+        "path": "envconfig/config.go",
+        "start_line": 189,
+        "end_line": 189,
+        "observation_id": "3e1c904eb4e87aa1",
+        "claimed_path": "envconfig/config.go",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "**2. `CheckContextLength` guard is dead code for negative values; warning message is wrong (misleading logic)**\n- **File:** `envconfig/config.go`, lines 189\u2013193\n\nThe parameter is `uint` (unsigned). `ctxLength <= 0` is equivalent to `ctxLength == 0` \u2014 the `< 0` branch is unreachable. The warning log `\"context length is less than 0\"` can never be true. A maintainer or operator seeing this warning would waste time debugging a condition that is impossible for the type. Either the parameter should be `int` (to actually accept and reject negatives), or the check and message should say `== 0` / `\"context length is zero\"`.\n\n---",
+        "path": "envconfig/config.go",
+        "start_line": 189,
+        "end_line": 189,
+        "observation_id": "8bc6e7edd737f0d0",
+        "claimed_path": "envconfig/config.go",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "**3. `AsMap()` triggers a warning log as a side effect (latent defect)**\n- **File:** `envconfig/config.go`, line 265 (the `AsMap` entry for `OLLAMA_CONTEXT_LENGTH`)\n\n`AsMap()` calls `ContextLength()` eagerly, which in turn calls `CheckContextLength`, which may `slog.Warn`. `AsMap` is an inspection/display function \u2014 callers expect no side effects. This means any code path that calls `AsMap` (e.g., `ollama show`, diagnostic logging, an API endpoint listing env vars) will emit a warning to the log if `OLLAMA_CONTEXT_LENGTH` is set to `0`. The other entries in `AsMap` (e.g., `Origins()`, `SchedSpread()`) don't validate. Either `AsMap` should use the raw parsed value (bypassing validation), or validation should be separated from the accessor.\n\n---",
+        "path": "envconfig/config.go",
+        "start_line": 265,
+        "end_line": 265,
+        "observation_id": "33a52cfee9956428",
+        "claimed_path": "envconfig/config.go",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "### 1. **Bug: `CheckContextLength` condition is logically wrong for `uint`** (envconfig/config.go:190)\n```go\nif ctxLength <= 0 {\n```\n`ctxLength` is `uint` (unsigned). `ctxLength <= 0` is **only true when `ctxLength == 0`** \u2014 negative values cannot be represented. The warning message \"context length is less than 0\" is impossible. The function should check `ctxLength == 0` and the message should say \"context length is 0\".\n\n**Failure scenario**: If `Uint` parsing behavior changes (e.g., switched to `strconv.ParseInt`), a negative input like `-1` would wrap to `18446744073709551615` on 64-bit and pass the check, allocating a massive context.\n\n---",
+        "path": "envconfig/config.go",
+        "start_line": 190,
+        "end_line": 190,
+        "observation_id": "53beb77baa02524b",
+        "claimed_path": "envconfig/config.go",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "### 2. **Missing upper-bound validation on context length** (envconfig/config.go:169, 190)\nNo maximum limit is enforced. A user could set `OLLAMA_CONTEXT_LENGTH=100000000` and cause OOM at model load time.\n\n**Failure scenario**: Malicious or mistaken config exhausts GPU/CPU memory, crashing the server or OOM-killing other processes.\n\n---",
+        "path": "envconfig/config.go",
+        "start_line": 169,
+        "end_line": 169,
+        "observation_id": "44e938b96866ebcf",
+        "claimed_path": "envconfig/config.go",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "### 3. **Test covers wrong code path for negative input** (envconfig/config_test.go:278)\n```go\n\"-1\":   2048,\n```\nThis test passes because `strconv.ParseUint(\"-1\", ...)` fails and `Uint` returns the default (2048) \u2014 **not** because `CheckContextLength` handles it. If `Uint` is later changed to use signed parsing, the test would still pass but for a different reason, masking a regression.\n\n---",
+        "path": "envconfig/config_test.go",
+        "start_line": 278,
+        "end_line": 278,
+        "observation_id": "3ac78e756081e988",
+        "claimed_path": "envconfig/config_test.go",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "### 4. **No validation in `DefaultOptions` before casting to `int`** (api/types.go:614)\n```go\nNumCtx:    int(envconfig.ContextLength()),\n```\nOn 32-bit platforms, a `uint` value > `math.MaxInt32` (2,147,483,647) overflows to a negative `int`. Even on 64-bit, an extremely large value could cause downstream allocations to panic or OOM.\n\n---",
+        "path": "api/types.go",
+        "start_line": 614,
+        "end_line": 614,
+        "observation_id": "5229b3202c6eb163",
+        "claimed_path": "api/types.go",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "### 5. **Misleading log message in `CheckContextLength`** (envconfig/config.go:191)\n```go\nslog.Warn(\"context length is less than 0, using default\", ...)\n```\nAs noted, `uint` cannot be \"less than 0\". This confuses operators debugging config issues.\n\n---",
+        "path": "envconfig/config.go",
+        "start_line": 191,
+        "end_line": 191,
+        "observation_id": "7b1c0dd53059ae1b",
+        "claimed_path": "envconfig/config.go",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "### 6. **Inconsistent default between code and documentation** (envconfig/config.go:265)\n```go\n\"OLLAMA_CONTEXT_LENGTH\":    {\"OLLAMA_CONTEXT_LENGTH\", ContextLength(), \"Maximum context length\"},\n```\nThe `AsMap` description says \"Maximum context length\" but doesn't mention the default (2048) or the 0/negative handling. Other entries like `OLLAMA_SCHED_SPREAD` include behavioral notes.\n\n---",
+        "path": "envconfig/config.go",
+        "start_line": 265,
+        "end_line": 265,
+        "observation_id": "8a087da9bc1f1300",
+        "claimed_path": "envconfig/config.go",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "### 7. **Test dependency on package-level initialization timing** (api/types_test.go:243)\n```go\nt.Setenv(\"OLLAMA_CONTEXT_LENGTH\", tt.contextLength)\nopts := DefaultOptions()\n```\nThis works because `ContextLength()` re-reads the env var on each call (via `Uint(...)()`). However, if `ContextLength` is ever changed to a cached value (e.g., `var ContextLength = Uint(...)`), all subtests would see the first test's value. Consider documenting the non-cached semantics or adding a test that verifies re-reading works across calls.\n\n---\n\n### Summary by category\n| Severity | Type | Count |\n|----------|------|-------|\n| High | Bug (logic error on unsigned check) | 1 |\n| High | Missing validation (no upper bound) | 1 |\n| Medium | Test fragility (tests wrong path) | 1 |\n| Medium | Missing validation (no int overflow guard) | 1 |\n| Low | Misleading log message | 1 |\n| Low | Incomplete documentation in AsMap | 1 |\n| Low | Implicit test assumption on caching | 1 |",
+        "path": "api/types_test.go",
+        "start_line": 243,
+        "end_line": 243,
+        "observation_id": "4e5067bc06392ec1",
+        "claimed_path": "api/types_test.go",
+        "path_resolution": "exact",
+        "merged_from": [
+          "c8276976232a716f"
+        ]
+      }
+    ]
+  },
+  "rundir": "/home/mjarnold/.cache/llm-panel/runs/aacr-up-mhjlqtq1-5e1bc4e8f4cc/20260825-213052-2740006",
+  "extractor": "1",
+  "unlocated": [
+    {
+      "content": "**4. Test case `\"-1\"` gives false coverage \u2014 it tests `Uint` fallback, not `CheckContextLength` (misleading test)**\n- **File:** `envconfig/config_test.go`, case `\"-1\": 2048`\n\nThe `-1` test passes because `Uint` internally calls `strconv.ParseUint(\"-1\", 10, 64)`, which returns an error, causing `Uint` to return its default (`2048`). `CheckContextLength` never sees a negative value. This test create",
+      "observation_id": "bbbba8678b5b1c1e",
+      "claimed_path": "envconfig/config_test.go",
+      "path_resolution": "exact"
+    }
+  ]
+}

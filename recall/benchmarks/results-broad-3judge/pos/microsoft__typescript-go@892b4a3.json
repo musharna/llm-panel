@@ -1,0 +1,191 @@
+{
+  "review": {
+    "comments": [
+      {
+        "content": "- **P1 \u2014 Actual defect:** `internal/fourslash/_scripts/convertFourslash.mts:29` unconditionally reads `manualTests.txt`, but this diff does not add that file. A fresh checkout running `npm run convertfourslash` will fail with `ENOENT` before generating tests. Handle a missing file as an empty set or commit the file.",
+        "path": "internal/fourslash/_scripts/convertFourslash.mts",
+        "start_line": 29,
+        "end_line": 29,
+        "observation_id": "97d45f7870f72a50",
+        "claimed_path": "internal/fourslash/_scripts/convertFourslash.mts",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "- **P1 \u2014 Actual defect:** `internal/fourslash/_scripts/makeManual.mts:39` records the raw generated filename, while `internal/fourslash/_scripts/convertFourslash.mts:70` checks a capitalized logical test name without the `_test.go` suffix. Since the command requires an existing generated filename such as `foo_test.go`, it records `foo_test.go` but later checks `Foo`; the test is regenerated instead of skipped, producing duplicate Go test declarations across `gen` and `manual`.",
+        "path": "internal/fourslash/_scripts/makeManual.mts",
+        "start_line": 39,
+        "end_line": 39,
+        "observation_id": "7eb2236260cf45b0",
+        "claimed_path": "internal/fourslash/_scripts/makeManual.mts",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "- **P1 \u2014 Actual data-loss defect:** `internal/fourslash/_scripts/makeManual.mts:30` renames onto the manual destination without checking whether it already exists. On platforms where rename replaces the destination, rerunning the command can silently overwrite a manually edited test.",
+        "path": "internal/fourslash/_scripts/makeManual.mts",
+        "start_line": 30,
+        "end_line": 30,
+        "observation_id": "0a4c384dadd0c48b",
+        "claimed_path": "internal/fourslash/_scripts/makeManual.mts",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "- **P2 \u2014 Missing defensive validation:** `internal/fourslash/_scripts/makeManual.mts:18` joins an unchecked command-line value into the source path. An argument containing `../` can select and move an arbitrary existing repository file into the manual-test directory. Require a basename matching the generated-test naming convention and verify that the resolved path remains inside `genDir` and is a regular file.",
+        "path": "internal/fourslash/_scripts/makeManual.mts",
+        "start_line": 18,
+        "end_line": 18,
+        "observation_id": "c002968f2a863a4c",
+        "claimed_path": "internal/fourslash/_scripts/makeManual.mts",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "**1. Real defect \u2014 name mismatch makes the entire feature non-functional**\n\n`makeManual.mts` line 14\u201315 / line 41, and `convertFourslash.mts` line 69 / line 71.\n\n`makeManual` pushes the raw CLI arg into `manualTests.txt`:\n```js\nconst testName = args[0];          // line 15 \u2014 e.g. \"completion_test.go\"\nmanualTests.push(testName);        // line 41\n```\n\n`convertFourslash` capitalizes the first letter of the *parsed test name* (without `_test.go`) before the lookup:\n```js\nconst testName = test.name[0].toUpperCase() + test.name.substring(1);  // line 69 \u2014 e.g. \"Completion\"\nif (manualTests.has(testName)) {  // line 71\n```\n\nNo combination of user input works:\n\n| User passes | `makeManual` stores | `convertFourslash` looks for | Match? |\n|---|---|---|---|\n| `completion` | `completion` | `Completion` | **No** (case) |\n| `completion_test.go` | `completion_test.go` | `Completion` | **No** (suffix + case) |\n| `Completion_test.go` | `Completion_test.go` | `Completion` | **No** (suffix) |\n| `Completion` | `Completion` | `Completion` | Yes, but file lookup fails (see #2) |\n\nThe test gets moved to `manual/` but then gets **regenerated** into `gen/` because the skip check never matches. The feature is completely broken.\n\n**Fix:** `makeManual` must (a) strip `_test.go` if present, and (b) capitalize the first letter before pushing. Or conversely, `convertFourslash` must normalize the lookup key the same way `makeManual` stores it.\n\n---",
+        "path": "internal/fourslash/_scripts/makeManual.mts",
+        "start_line": 14,
+        "end_line": 14,
+        "observation_id": "ca58ef536c226081",
+        "claimed_path": "makeManual.mts",
+        "path_resolution": "basename",
+        "merged_from": []
+      },
+      {
+        "content": "**2. Real defect \u2014 `makeManual.mts` looks up the wrong filename**\n\n`makeManual.mts` line 17.\n\n```js\nconst genTestFile = path.join(genDir, `${testFileName}`);\n```\n\nGenerated files are named `${test.name}_test.go` (see `convertFourslash.mts` line 76 in the diff), but `genTestFile` is constructed **without** the `_test.go` suffix. Passing a bare test name like `completion` resolves to `gen/completion` which doesn't exist, and the script exits with an error. The only way to avoid the error is to pass the full filename (`completion_test.go`), which then triggers problem #1 above.\n\n**Fix:** The lookup should append `_test.go`:\n```js\nconst genTestFile = path.join(genDir, `${testFileName}_test.go`);\n```\n\n---\n\n**3. Crash \u2014 `getManualTests()` throws if `manualTests.txt` doesn't exist**\n\n`convertFourslash.mts` line 27.\n\n```js\nconst manualTestsList = fs.readFileSync(manualTestsPath, \"utf-8\")...\n```\n\nOn a fresh clone or first run, `manualTests.txt` may not exist. `fs.readFileSync` will throw `ENOENT`. The companion script `makeManual.mts` defensively checks `fs.existsSync(manualTestsPath)` before reading (line 37), but the consumer of the same file does not. Either add an existence guard here or ensure the file is checked into the repo.\n\n---",
+        "path": "internal/fourslash/_scripts/makeManual.mts",
+        "start_line": 17,
+        "end_line": 17,
+        "observation_id": "4adfa28ddc466405",
+        "claimed_path": "makeManual.mts",
+        "path_resolution": "basename",
+        "merged_from": [
+          "b4470237467b739c"
+        ]
+      },
+      {
+        "content": "**4. Dead code \u2014 `manualOutputDir` is created but nothing is ever written to it**\n\n`convertFourslash.mts` line 44.\n\n```js\nfs.mkdirSync(manualOutputDir, { recursive: true });\n```\n\nThe `manual/` directory is created here, but `convertFourslash` never writes into it \u2014 manual tests are only *skipped*. The `makeManual.mts` script independently creates the same directory with `fs.mkdirSync(manualDir, { recursive: true })` (line 27). This line is dead and misleading; it implies conversion writes to `manual/`, which it doesn't.\n\n---",
+        "path": "internal/fourslash/_scripts/convertFourslash.mts",
+        "start_line": 44,
+        "end_line": 44,
+        "observation_id": "654908b7ac95778b",
+        "claimed_path": "convertFourslash.mts",
+        "path_resolution": "basename",
+        "merged_from": []
+      },
+      {
+        "content": "**5. Unclear logic \u2014 silent skip of `generateGoTest` falsy return**\n\n`convertFourslash.mts` lines 74\u201379.\n\n```js\nconst testContent = generateGoTest(failingTests, test);\nif (testContent) {\n    const testPath = path.join(outputDir, `${test.name}_test.go`);\n    fs.writeFileSync(testPath, testContent, \"utf-8\");\n}\n```\n\nPreviously, `generateGoTest`'s return value was always written unconditionally. Now a falsy return silently skips the file. If `generateGoTest` never actually returns a falsy value (and the existing tests all assume it returns a string), this is dead conditional code that obscures the true contract. If it *can* return falsy, the caller should log or warn rather than silently drop the test. Either way, the behavior change is undocumented and could mask regressions.",
+        "path": "internal/fourslash/_scripts/convertFourslash.mts",
+        "start_line": 74,
+        "end_line": 74,
+        "observation_id": "447f168a0258977c",
+        "claimed_path": "convertFourslash.mts",
+        "path_resolution": "basename",
+        "merged_from": []
+      },
+      {
+        "content": "**convertFourslash.mts:66** \u2014 **Defect: Silent skip logic in `forEach` callback**  \nThe `return` at line 66 exits only the `forEach` callback, not `parseTypeScriptFiles`. This is technically correct for \"skip this file,\" but the comment \"Skip generation if test is in manual tests list\" suggests the author may have intended to stop processing entirely. If the intent is to skip only that test file, the code is correct but the comment is misleading. If the intent was to stop the entire walk, it's a bug.",
+        "path": "internal/fourslash/_scripts/convertFourslash.mts",
+        "start_line": 66,
+        "end_line": 66,
+        "observation_id": "1fc944f343a50294",
+        "claimed_path": "convertFourslash.mts",
+        "path_resolution": "basename",
+        "merged_from": []
+      },
+      {
+        "content": "**makeManual.mts:17** \u2014 **Security: Path traversal via `testName` argument**  \n`testName` is user-controlled (CLI arg) and used directly in `path.join(genDir, \\`${testFileName}\\`)`. An argument like `../../../etc/passwd` would resolve outside `genDir`. No validation/sanitization of `testName` (e.g., `path.basename`, check for `..`, or allowlist against existing files in `genDir`).",
+        "path": "internal/fourslash/_scripts/makeManual.mts",
+        "start_line": 17,
+        "end_line": 17,
+        "observation_id": "d920b37e6e45daec",
+        "claimed_path": "makeManual.mts",
+        "path_resolution": "basename",
+        "merged_from": []
+      },
+      {
+        "content": "**makeManual.mts:28** \u2014 **Defect: Destructive move without transaction/rollback**  \n`fs.renameSync(genTestFile, manualTestFile)` moves the file *before* updating `manualTests.txt`. If the process crashes or `writeFileSync` fails after the rename, the test file is lost from `gen/` and not recorded in `manualTests.txt`. Should write the manifest first, then move (or copy+verify+delete).",
+        "path": "internal/fourslash/_scripts/makeManual.mts",
+        "start_line": 28,
+        "end_line": 28,
+        "observation_id": "55f0ed8e7767c676",
+        "claimed_path": "makeManual.mts",
+        "path_resolution": "basename",
+        "merged_from": []
+      },
+      {
+        "content": "**convertFourslash.mts:23\u201326** \u2014 **Defect: `getManualTests()` throws if `manualTests.txt` missing**  \n`fs.readFileSync` throws `ENOENT` if the file doesn't exist. `getFailingTests()` (line 16\u201319) has the same bug but is pre-existing. The new function should handle missing file gracefully (return empty `Set`), matching the defensive pattern used in `makeManual.mts:30\u201336`.",
+        "path": "internal/fourslash/_scripts/convertFourslash.mts",
+        "start_line": 23,
+        "end_line": 23,
+        "observation_id": "8b43cbf133368d98",
+        "claimed_path": "convertFourslash.mts",
+        "path_resolution": "basename",
+        "merged_from": []
+      },
+      {
+        "content": "**makeManual.mts:40** \u2014 **Bug: Extra blank line accumulates on repeated runs**  \n`[...manualTests, \\\"\\\"].join(\\\"\\\\n\\\")` appends an empty string, producing a trailing newline. The reader (line 33) filters empty lines, so each run adds another blank line. Use `manualTests.join(\\\"\\\\n\\\") + \\\"\\\\n\\\"` for a single consistent trailing newline.",
+        "path": "internal/fourslash/_scripts/makeManual.mts",
+        "start_line": 40,
+        "end_line": 40,
+        "observation_id": "174c88199c696f91",
+        "claimed_path": "makeManual.mts",
+        "path_resolution": "basename",
+        "merged_from": []
+      },
+      {
+        "content": "**makeManual.mts:11\u201314** \u2014 **Usability: Missing usage hint on missing argument**  \nExits with code 1 but prints nothing. Should log `Usage: makemanual <TestName>` to stderr.",
+        "path": "internal/fourslash/_scripts/makeManual.mts",
+        "start_line": 11,
+        "end_line": 11,
+        "observation_id": "c90ffea9700017e4",
+        "claimed_path": "makeManual.mts",
+        "path_resolution": "basename",
+        "merged_from": []
+      },
+      {
+        "content": "**convertFourslash.mts:70\u201373** \u2014 **Defensive: Null check for `testContent` added but `generateGoTest` return type unknown**  \nThe new `if (testContent)` guard implies `generateGoTest` can return falsy. If so, the old code wrote empty files. If not, the guard is dead code. Verify `generateGoTest` signature; if it never returns falsy, remove the guard to avoid masking future bugs where it *does* return `null` unexpectedly.",
+        "path": "internal/fourslash/_scripts/convertFourslash.mts",
+        "start_line": 70,
+        "end_line": 70,
+        "observation_id": "e28ee42900e3cc48",
+        "claimed_path": "convertFourslash.mts",
+        "path_resolution": "basename",
+        "merged_from": []
+      },
+      {
+        "content": "**convertFourslash.mts:10, 13** \u2014 **Maintainability: Fragile relative path resolution**  \n`path.resolve(import.meta.dirname, \\\"../\\\", \\\"../\\\", \\\"../\\\"...)` and `path.join(import.meta.dirname, \\\"../\\\", \\\"tests\\\", \\\"gen\\\")` assume fixed directory depth. If the script moves, these break. Consider `path.resolve(import.meta.dirname, \\\"../../..\\\")` or a project-root marker file.",
+        "path": "internal/fourslash/_scripts/convertFourslash.mts",
+        "start_line": 10,
+        "end_line": 10,
+        "observation_id": "7bbfc3b9670576b8",
+        "claimed_path": "convertFourslash.mts",
+        "path_resolution": "basename",
+        "merged_from": []
+      },
+      {
+        "content": "**makeManual.mts:16** \u2014 **Dead code: Redundant assignment**  \n`const testFileName = testName;` is unused; `testName` used directly on line 17. Remove.",
+        "path": "internal/fourslash/_scripts/makeManual.mts",
+        "start_line": 16,
+        "end_line": 16,
+        "observation_id": "2fb3b03cb36b9ae9",
+        "claimed_path": "makeManual.mts",
+        "path_resolution": "basename",
+        "merged_from": []
+      },
+      {
+        "content": "**package.json:32** \u2014 **Nit: Script name inconsistency**  \n`convertfourslash` (lowercase) vs `makemanual` (camelCase-ish). Pick one convention (`kebab-case` is npm standard) for all custom scripts.",
+        "path": "package.json",
+        "start_line": 32,
+        "end_line": 32,
+        "observation_id": "00ff9458900d35f9",
+        "claimed_path": "package.json",
+        "path_resolution": "exact",
+        "merged_from": []
+      }
+    ]
+  },
+  "rundir": "/home/mjarnold/.cache/llm-panel/runs/aacr-up-5j63vh4s-f588273aa531/20260825-191815-2470297",
+  "extractor": "1",
+  "unlocated": []
+}

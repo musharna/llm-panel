@@ -1,0 +1,130 @@
+{
+  "review": {
+    "comments": [
+      {
+        "content": "- **Defect \u2014 flaky test:** `server/src/test/java/org/elasticsearch/search/fetch/subphase/highlight/HighlightBuilderTests.java:580` \u2014 `randomIntBetween(-100, 0)` can produce `-1` or `0`, both now valid. In those runs, `expectThrows` receives no exception and the test fails. Restrict the range to `-100..-2`.\n\n- **Preventive/defensive:** `server/src/main/java/org/elasticsearch/lucene/search/uhighlight/QueryMaxAnalyzedOffset.java:25` \u2014 The factory treats every negative value as the `-1` sentinel, despite the public validation accepting only `-1`. Any future caller that bypasses `AbstractHighlighterBuilder` could pass `-2` and silently get index-default behavior instead of an error. Validate `< -1` here or test explicitly for `== -1`.",
+        "path": "server/src/test/java/org/elasticsearch/search/fetch/subphase/highlight/HighlightBuilderTests.java",
+        "start_line": 580,
+        "end_line": 580,
+        "observation_id": "a1351290fb333c68",
+        "claimed_path": "server/src/test/java/org/elasticsearch/search/fetch/subphase/highlight/HighlightBuilderTests.java",
+        "path_resolution": "exact",
+        "merged_from": [
+          "471f80073424fa53"
+        ]
+      },
+      {
+        "content": "- **Misleading documentation:** `server/src/main/java/org/elasticsearch/search/fetch/subphase/highlight/AbstractHighlighterBuilder.java:564` \u2014 The Javadoc says any negative integer defaults to the index offset, but the method rejects values below `-1`. Document `-1` specifically so callers do not rely on behavior the API rejects.## 1. REAL DEFECT \u2014 Flaky test: `randomIntBetween(-100, 0)` now includes a valid value",
+        "path": "server/src/main/java/org/elasticsearch/search/fetch/subphase/highlight/AbstractHighlighterBuilder.java",
+        "start_line": 564,
+        "end_line": 564,
+        "observation_id": "26fb9ce45fe22381",
+        "claimed_path": "server/src/main/java/org/elasticsearch/search/fetch/subphase/highlight/AbstractHighlighterBuilder.java",
+        "path_resolution": "exact",
+        "merged_from": [
+          "65dcdb005eafcb31"
+        ]
+      },
+      {
+        "content": "**File:** `server/src/test/java/org/elasticsearch/search/fetch/subphase/highlight/HighlightBuilderTests.java`, **line ~583**\n\nThe test parses `randomIntBetween(-100, 0)` and expects a parse failure. The validation in `AbstractHighlighterBuilder` was changed from `maxAnalyzedOffset <= 0` to `maxAnalyzedOffset < -1`, making `-1` a valid input. Since the random range `[-100, 0]` still includes `-1`, when the random pick is exactly `-1`, the parse succeeds instead of throwing, and the subsequent `assertThat(e.getCause().getMessage(), ...)` throws a `NullPointerException` (or `AssertionError` if `e` is null). This is a ~1% flaky failure rate that will eventually hit in CI.\n\n**Fix:** Change the range to `randomIntBetween(-100, -2)`.\n\n---\n\n## 2. BUG \u2014 `QueryMaxAnalyzedOffset.getNotNull()` name misleads callers into skipping null-guard",
+        "path": "server/src/test/java/org/elasticsearch/search/fetch/subphase/highlight/HighlightBuilderTests.java",
+        "start_line": 583,
+        "end_line": 583,
+        "observation_id": "cbbc37bd27bbb582",
+        "claimed_path": "server/src/test/java/org/elasticsearch/search/fetch/subphase/highlight/HighlightBuilderTests.java",
+        "path_resolution": "exact",
+        "merged_from": [
+          "8c3191f7c8438f99"
+        ]
+      },
+      {
+        "content": "**File:** `server/src/main/java/org/elasticsearch/lucene/search/uhighlight/QueryMaxAnalyzedOffset.java`, **line ~29**\n\nEvery call site already null-checks the wrapper object (`queryMaxAnalyzedOffset != null`) and then calls `getNotNull()`. The name `getNotNull()` implies it performs a null check or throws on null, but it just returns an `int` from a guaranteed-non-null wrapper. The name is confusing and doesn't match standard Java conventions (a plain `get()` or `value()` would be idiomatic). This is a **naming defect** that will cause future readers to wonder what null contract exists.\n\n---\n\n## 3. POTENTIAL SECURITY/CORRECTNESS \u2014 Validation and factory accept different sets of negative values\n\n**File:** `server/src/main/java/org/elasticsearch/search/fetch/subphase/highlight/AbstractHighlighterBuilder.java`, **line ~567** (validation)  \n**File:** `server/src/main/java/org/elasticsearch/lucene/search/uhighlight/QueryMaxAnalyzedOffset.java`, **line ~24** (factory)\n\nThe validation in `AbstractHighlighterBuilder` allows exactly `-1` through (rejects `< -1`). But `QueryMaxAnalyzedOffset.create()` treats **any** negative integer identically: `queryMaxAnalyzedOffset < 0 ? indexMaxAnalyzedOffset : queryMaxAnalyzedOffset`. If someone constructs a `QueryMaxAnalyzedOffset` outside the builder path (the class is public, the factory is static), passing `-2` or `-999` would silently resolve to the index default \u2014 a **missing defensive check**. The factory should either assert `>= -1` or mirror the validation, so the class is self-consistent even when used independently.\n\n---\n\n## 4. MISLEADING COMMENT \u2014 Stale comment in constructor",
+        "path": "server/src/main/java/org/elasticsearch/lucene/search/uhighlight/QueryMaxAnalyzedOffset.java",
+        "start_line": 29,
+        "end_line": 29,
+        "observation_id": "938fe810a23c625f",
+        "claimed_path": "server/src/main/java/org/elasticsearch/lucene/search/uhighlight/QueryMaxAnalyzedOffset.java",
+        "path_resolution": "exact",
+        "merged_from": [
+          "5193e9037b62882f",
+          "55c167f772e8915c"
+        ]
+      },
+      {
+        "content": "**File:** `server/src/main/java/org/elasticsearch/lucene/search/uhighlight/QueryMaxAnalyzedOffset.java`, **line ~21**\n\nThe comment reads:\n```java\n// If we have a negative value, grab value for the actual maximum from the index.\n```\nBut the constructor does **not** do this \u2014 it stores the value verbatim. The negative-to-index-default resolution happens in the `create()` factory *before* the constructor is called. By the time the constructor runs, the value is already the resolved, non-negative index maximum. This comment is factually wrong about what the code directly below it does and will mislead anyone reading the class in isolation.",
+        "path": "server/src/main/java/org/elasticsearch/lucene/search/uhighlight/QueryMaxAnalyzedOffset.java",
+        "start_line": 21,
+        "end_line": 21,
+        "observation_id": "4ce20b865c25e104",
+        "claimed_path": "server/src/main/java/org/elasticsearch/lucene/search/uhighlight/QueryMaxAnalyzedOffset.java",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "### 1. CRITICAL: `QueryMaxAnalyzedOffset` is package-private but used across packages\n\n**File:** `server/src/main/java/org/elasticsearch/lucene/search/uhighlight/QueryMaxAnalyzedOffset.java` (line 1, class declaration)\n\nThe class has no `public` modifier, making it package-private to `org.elasticsearch.lucene.search.uhighlight`. However, it's imported and used in:\n- `DefaultHighlighter.java` (package `org.elasticsearch.search.fetch.subphase.highlight`)\n- `PlainHighlighter.java` (package `org.elasticsearch.search.fetch.subphase.highlight`)\n- `AnnotatedTextHighlighter.java` (package `org.elasticsearch.index.mapper.annotatedtext`)\n- Test classes in other packages\n\n**This will not compile.** The class must be declared `public class QueryMaxAnalyzedOffset`.\n\n---",
+        "path": "server/src/main/java/org/elasticsearch/lucene/search/uhighlight/QueryMaxAnalyzedOffset.java",
+        "start_line": 1,
+        "end_line": 1,
+        "observation_id": "df531f4e21b6f02d",
+        "claimed_path": "server/src/main/java/org/elasticsearch/lucene/search/uhighlight/QueryMaxAnalyzedOffset.java",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "### 2. HIGH: `HighlightBuilderTests.testInvalidMaxAnalyzedOffset` will fail intermittently\n\n**File:** `server/src/test/java/org/elasticsearch/search/fetch/subphase/highlight/HighlightBuilderTests.java` (line 583)\n\n```java\nrandomIntBetween(-100, 0)\n```\n\nThe new validation in `AbstractHighlighterBuilder` (line 567) allows `>= -1`, so values `-1` and `0` are now **valid** and won't throw. The test expects *all* values in `[-100, 0]` to fail. When the random generator picks `-1` or `0`, the test will fail because no exception is thrown.\n\nFix: change to `randomIntBetween(-100, -2)` to only test actually-invalid values.\n\n---",
+        "path": "server/src/test/java/org/elasticsearch/search/fetch/subphase/highlight/HighlightBuilderTests.java",
+        "start_line": 583,
+        "end_line": 583,
+        "observation_id": "afb19f0cc8c882cf",
+        "claimed_path": "server/src/test/java/org/elasticsearch/search/fetch/subphase/highlight/HighlightBuilderTests.java",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "### 3. MEDIUM: Validation allows `0` which is likely a footgun\n\n**File:** `server/src/main/java/org/elasticsearch/search/fetch/subphase/highlight/AbstractHighlighterBuilder.java` (line 567)\n\n```java\nif (maxAnalyzedOffset != null && maxAnalyzedOffset < -1) {\n```\n\nThis allows `-1`, `0`, `1`, `2`, ... But `maxAnalyzedOffset = 0` passed to `LimitTokenOffsetAnalyzer` would mean \"analyze zero tokens\" \u2014 effectively disabling highlighting silently. The old validation (`<= 0`) rejected this. Either:\n- Reject `0` explicitly: `maxAnalyzedOffset <= 0 && maxAnalyzedOffset != -1`\n- Or document clearly that `0` is allowed but means \"no analysis\"\n\n---",
+        "path": "server/src/main/java/org/elasticsearch/search/fetch/subphase/highlight/AbstractHighlighterBuilder.java",
+        "start_line": 567,
+        "end_line": 567,
+        "observation_id": "eca349e71a69ee83",
+        "claimed_path": "server/src/main/java/org/elasticsearch/search/fetch/subphase/highlight/AbstractHighlighterBuilder.java",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "### 4. MEDIUM: `QueryMaxAnalyzedOffset.create()` accepts any negative value but validation only allows `-1`\n\n**File:** `server/src/main/java/org/elasticsearch/lucene/search/uhighlight/QueryMaxAnalyzedOffset.java` (line 22)\n\n```java\nreturn new QueryMaxAnalyzedOffset(queryMaxAnalyzedOffset < 0 ? indexMaxAnalyzedOffset : queryMaxAnalyzedOffset);\n```\n\nAny negative value (`-2`, `-5`, etc.) resolves to the index setting. But `AbstractHighlighterBuilder` rejects `< -1`. If internal code bypasses the builder and calls `create(-2, 100)` directly, it silently uses `100` \u2014 inconsistent with the user-facing validation. The factory should either validate or document that only `-1` is the sentinel.\n\n---",
+        "path": "server/src/main/java/org/elasticsearch/lucene/search/uhighlight/QueryMaxAnalyzedOffset.java",
+        "start_line": 22,
+        "end_line": 22,
+        "observation_id": "2b8a18bdc585b208",
+        "claimed_path": "server/src/main/java/org/elasticsearch/lucene/search/uhighlight/QueryMaxAnalyzedOffset.java",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "### 5. LOW: Misleading method name `getNotNull()`\n\n**File:** `server/src/main/java/org/elasticsearch/lucene/search/uhighlight/QueryMaxAnalyzedOffset.java` (line 27)\n\n```java\npublic int getNotNull() { return queryMaxAnalyzedOffset; }\n```\n\nReturns `int` (primitive), so \"NotNull\" is meaningless \u2014 primitives can't be null. The name suggests a null-safety guarantee that doesn't apply. Should be `getValue()`, `resolve()`, or `getResolvedOffset()`.\n\n---",
+        "path": "server/src/main/java/org/elasticsearch/lucene/search/uhighlight/QueryMaxAnalyzedOffset.java",
+        "start_line": 27,
+        "end_line": 27,
+        "observation_id": "11352dd29af13968",
+        "claimed_path": "server/src/main/java/org/elasticsearch/lucene/search/uhighlight/QueryMaxAnalyzedOffset.java",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "### 6. LOW: Parameter shadowing in test\n\n**File:** `plugins/mapper-annotated-text/src/test/java/org/elasticsearch/index/mapper/annotatedtext/AnnotatedTextHighlighterTests.java` (lines 86, 118)\n\nParameter renamed to `queryMaxAnalyzedOffsetIn`, then local variable `queryMaxAnalyzedOffset` shadows the original name. Confusing; use distinct names (e.g., `queryMaxAnalyzedOffsetInput` / `resolvedQueryMaxAnalyzedOffset`).\n\n---\n\n### Summary\n\n| Severity | Issue |\n|----------|-------|\n| Critical | `QueryMaxAnalyzedOffset` not `public` \u2014 cross-package usage fails to compile |\n| High | Test `testInvalidMaxAnalyzedOffset` uses range that now includes valid values (`-1`, `0`) |\n| Medium | Validation allows `0` (likely unintended silent highlighting disable) |\n| Medium | Factory accepts any negative but builder only allows `-1` \u2014 inconsistency |\n| Low | `getNotNull()` misleading name for primitive `int` return |\n| Low | Test parameter shadowing reduces readability |",
+        "path": "plugins/mapper-annotated-text/src/test/java/org/elasticsearch/index/mapper/annotatedtext/AnnotatedTextHighlighterTests.java",
+        "start_line": 86,
+        "end_line": 86,
+        "observation_id": "c735b77d50bf141e",
+        "claimed_path": "plugins/mapper-annotated-text/src/test/java/org/elasticsearch/index/mapper/annotatedtext/AnnotatedTextHighlighterTests.java",
+        "path_resolution": "exact",
+        "merged_from": [
+          "504c822d73195a66"
+        ]
+      }
+    ]
+  },
+  "rundir": "/home/mjarnold/.cache/llm-panel/runs/aacr-up-wca5skdc-41e1cb154753/20260825-190347-2389218",
+  "extractor": "1",
+  "unlocated": []
+}
