@@ -35,6 +35,7 @@ import hashlib
 import json
 import pathlib
 import re
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -155,14 +156,65 @@ def fetch_diff(repo, base, head):
     return r.stdout
 
 
-def panel_findings(diff, judges, effort, timeout, style="defect"):
+# WHERE THE JUDGES STAND. Every published number so far was produced with `--cwd` on an
+# EMPTY temporary directory and the diff in the prompt: diff-in-prompt review. The
+# benchmark's own reviewers had the checkout. Both audits of 2026-08-26 named that as the
+# headline's unstated condition of measurement, so it is now a mode, recorded per run, and
+# the checkout arm is the same panel with exactly one thing changed.
+CHECKOUTS = ROOT / "benchmarks" / "checkouts"
+CHECKOUT_NOTE = ("The repository is checked out at the PR head in your working directory. "
+                 "Read the surrounding code, callers and tests wherever the diff alone is "
+                 "not enough to judge.\n\n")
+
+
+def checkout(repo, head, remote=None):
+    """Shallow checkout of ONE commit, cached. Returns (path, how) or (None, why).
+
+    GitHub serves `fetch --depth 1 origin <sha>` for a PR head (it is reachable through
+    refs/pull/N/head), so no history is downloaded: ollama took 3s and 50MB. The marker
+    file is written only after HEAD is verified to BE the requested commit -- a directory
+    holding the wrong commit would review the wrong code and say nothing.
+    """
+    d = CHECKOUTS / f"{repo.replace('/', '__')}__{head[:7]}"
+    marker = d / ".aacr-checkout-ok"
+    if marker.is_file() and marker.read_text().strip() == head:
+        return d, "cached"
+    if d.exists():
+        shutil.rmtree(d)
+    d.mkdir(parents=True)
+    url = remote or f"https://github.com/{repo}.git"
+    for step in (["git", "init", "-q"],
+                 ["git", "remote", "add", "origin", url],
+                 ["git", "fetch", "-q", "--depth", "1", "origin", head],
+                 ["git", "checkout", "-q", "FETCH_HEAD"]):
+        r = subprocess.run(step, cwd=d, capture_output=True, text=True, timeout=1800)
+        if r.returncode != 0:
+            shutil.rmtree(d, ignore_errors=True)
+            return None, f"{' '.join(step[:2])}: {r.stderr.strip()[-160:]}"
+    got = subprocess.run(["git", "rev-parse", "HEAD"], cwd=d, capture_output=True,
+                         text=True).stdout.strip()
+    if got != head:
+        shutil.rmtree(d, ignore_errors=True)
+        return None, f"HEAD is {got[:7]}, wanted {head[:7]}"
+    marker.write_text(head + "\n")
+    return d, "fetched"
+
+
+def panel_prompt(style, diff, with_checkout):
+    """The prompt as the judges see it. The checkout sentence is the ONLY difference
+    between the two arms, so it is built here where a control can hold both side by side."""
+    return (PROMPTS[style] + (CHECKOUT_NOTE if with_checkout else "")
+            + "```diff\n" + diff + "\n```\n")
+
+
+def panel_findings(diff, judges, effort, timeout, style="defect", cwd=None):
     """Run one panel over one diff and return claimlib observations."""
-    work = pathlib.Path(tempfile.mkdtemp(prefix="aacr-up-"))
+    work = pathlib.Path(cwd) if cwd else pathlib.Path(tempfile.mkdtemp(prefix="aacr-up-"))
     sib = ROOT.parent / "llm-panel"
     binary = str(sib if sib.is_file() else "llm-panel")
     r = subprocess.run([binary, "--cwd", str(work), "--judges", judges, "--effort", effort,
                         "--timeout", str(timeout),
-                        PROMPTS[style] + "```diff\n" + diff + "\n```\n"],
+                        panel_prompt(style, diff, cwd is not None)],
                        capture_output=True, text=True, timeout=timeout * 3)
     m = re.search(r"panel written to (\S+?)\]", r.stdout + r.stderr)
     if not m:
@@ -384,7 +436,7 @@ def to_upstream_result(obs, rundir, paths, tally):
 # `written: 18` after a subset re-run, because reextract rewrote what it could count and
 # left what it could not. What it cannot vouch for moves under `last_run`, where a reader
 # cannot mistake it for a fact about the files. Found by or-grok, 2026-08-26.
-RUN_ONLY = ("attempted", "skipped", "judges", "effort", "prompt_style")
+RUN_ONLY = ("attempted", "skipped", "judges", "effort", "prompt_style", "cwd_mode")
 
 
 def directory_manifest(prev, fresh):
@@ -420,6 +472,12 @@ def main():
                    help="defect = the panel's house style; broad = also invite the "
                         "maintainability/naming/dead-code classes AACR scores as valid")
     r.add_argument("--limit", type=int)
+    r.add_argument("--cwd-mode", choices=("empty", "checkout"), default="empty",
+                   help="empty = judges see only the diff in the prompt (every published "
+                        "number); checkout = a shallow clone of the PR head is their cwd")
+    c = sub.add_parser("checkout", help="pre-warm the checkout cache for an instances file")
+    c.add_argument("--instances", required=True)
+    c.add_argument("--limit", type=int)
     x = sub.add_parser("reextract", help="rebuild result files from recorded run dirs")
     x.add_argument("--out", required=True, help="results dir written by `run`; rebuilt in place")
     x.add_argument("--instances", required=True)
@@ -497,6 +555,21 @@ def main():
         print("  path resolution: " + ", ".join(f"{k}={v}" for k, v in sorted(tally.items())))
         return 0
 
+    if a.cmd == "checkout":
+        insts = instances(a.instances, a.limit)
+        bad = 0
+        for i in insts:
+            d, how = checkout(i["repo"], i["head_commit"])
+            size = ""
+            if d:
+                r = subprocess.run(["du", "-sh", str(d)], capture_output=True, text=True)
+                size = r.stdout.split()[0] if r.returncode == 0 else "?"
+            else:
+                bad += 1
+            print(f"  {'ok  ' if d else 'FAIL'} {i['instance_id']:44} {how} {size}")
+        print(f"\n  {len(insts) - bad}/{len(insts)} checkouts ready under {CHECKOUTS}")
+        return 1 if bad else 0
+
     if a.cmd == "help-eval":
         print("After `run`, score with the UPSTREAM evaluator (its matching, its judge):\n")
         print("  cd ~/aacr-bench/evaluation")
@@ -526,7 +599,17 @@ def main():
                                    "upstream's ensure_commit_present fails on it too",
                             "references_lost": len(i.get("reference_comments") or [])})
             continue
-        obs, info = panel_findings(diff, a.judges, a.effort, a.timeout, a.prompt_style)
+        cwd = None
+        if a.cwd_mode == "checkout":
+            cwd, how = checkout(i["repo"], i["head_commit"])
+            if cwd is None:
+                # A judge that cannot see the tree would be a different arm. Skip and say
+                # so, rather than quietly running this instance in the other mode.
+                print(f"  SKIP {i['instance_id']}: checkout failed ({how})")
+                skipped.append({"instance_id": i["instance_id"], "why": f"checkout: {how}",
+                                "references_lost": len(i.get("reference_comments") or [])})
+                continue
+        obs, info = panel_findings(diff, a.judges, a.effort, a.timeout, a.prompt_style, cwd)
         if obs is None:
             print(f"  SKIP {i['instance_id']}: no run dir ({info})")
             skipped.append({"instance_id": i["instance_id"], "why": "panel produced no run dir"})
@@ -569,7 +652,7 @@ def main():
     print("  path resolution: " + ", ".join(f"{k}={v}" for k, v in sorted(tally.items())))
     (out / "manifest.json").write_text(json.dumps({
         "instances_file": a.instances, "judges": a.judges, "effort": a.effort,
-        "prompt_style": a.prompt_style,
+        "prompt_style": a.prompt_style, "cwd_mode": a.cwd_mode,
         "extractor": claimlib.EXTRACTOR_VERSION, "written": ok, "attempted": len(insts),
         "skipped": skipped, "path_resolution": tally,
         "reviews": nrev, "abstentions": nabs, "judge_slots": ntot,
