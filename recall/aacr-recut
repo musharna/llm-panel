@@ -22,16 +22,33 @@ HERE = pathlib.Path(__file__).resolve().parent / "benchmarks"
 DEFECTY = {"Code Defect", "Security Vulnerability", "Performance"}
 
 
-def bench_index():
-    """(target-commit-prefix, path, from_line) -> bench row.
+def key_of(commit, path, line, note):
+    """The reference's identity: where it is AND what it says.
 
-    instance_id is `org__repo@<short target commit>`; the reference's own identity is its
-    path and start line. pr_SOURCE_commit does NOT key it -- joining on source matched 0
-    of 174 rows, which is how this key was found.
+    (commit, path, line) alone is NOT unique -- 202 of the bench's 1,925 keys carry two or
+    more comments at the same file and line, 110 of them differing in `category`. A dict
+    keyed that way silently kept whichever row was written last, and 26 of the 123
+    positive references in this sample sat on such a key. The first version of this file
+    cut on that join and reported it as ground truth. Found by codex, 2026-08-26.
+
+    The evaluator strips the note's trailing newline; the bench keeps it. That is the whole
+    difference, so both sides are stripped here.
+    """
+    return (commit[:7], path, line, (note or "").strip())
+
+
+def bench_index():
+    """key_of(...) -> bench row. Refuses if the key is not unique in the bench itself.
+
+    instance_id is `org__repo@<short target commit>`. pr_SOURCE_commit does NOT key it --
+    joining on source matched 0 of 174 rows, which is how the commit field was found.
     """
     idx = {}
     for r in json.load(open(HERE / "aacr-bench.json")):
-        idx[((r.get("pr_target_commit") or "")[:7], r.get("path"), r.get("from_line"))] = r
+        k = key_of(r.get("pr_target_commit") or "", r.get("path"), r.get("from_line"), r.get("note"))
+        if k in idx:
+            sys.exit(f"FATAL: bench key is not unique: {k[:3]} -- the join cannot be trusted")
+        idx[k] = r
     return idx
 
 
@@ -39,9 +56,9 @@ def refs(arm):
     """Every scored reference in an arm, joined to its bench row."""
     idx, out, unjoined = bench_index(), [], []
     for inst in json.load(open(HERE / "scores" / f"{arm}.json"))["eval_res"]:
-        c = inst["instance_id"].split("@")[-1][:7]
+        c = inst["instance_id"].split("@")[-1]
         for cm in inst.get("comments", []):
-            b = idx.get((c, cm.get("path"), cm.get("from_line")))
+            b = idx.get(key_of(c, cm.get("path"), cm.get("from_line"), cm.get("note")))
             if b is None:
                 unjoined.append((inst["instance_id"], cm.get("path"), cm.get("from_line")))
                 continue
@@ -49,6 +66,14 @@ def refs(arm):
     if unjoined:
         sys.exit(f"FATAL: {len(unjoined)} references did not join; first {unjoined[:3]}. "
                  "A partial join understates every cut below -- refusing to report.")
+    # DEFECTY is a list of names, and a list of names cannot guard an open set: a category
+    # AACR adds later would fall into MAINTAINABILITY and move a published split without a
+    # sound. Refuse at run time, not only when the control suite happens to be invoked.
+    # Found by nemotron and big-pickle independently, 2026-08-26.
+    unknown = {b.get("category") for _, b in out} - DEFECTY - {"Maintainability and Readability"}
+    if unknown:
+        sys.exit(f"FATAL: unclassified category {sorted(unknown)} -- extend DEFECTY or the "
+                 "maintainability set before cutting on it")
     return out
 
 

@@ -54,14 +54,55 @@ with section("6.1 the join keys on pr_target_commit, not pr_source_commit"):
     bench = json.load(open(BENCH))
     idx = ns["bench_index"]()
     inst = json.load(open(SCORES / "clean-pos.json"))["eval_res"][0]
-    commit = inst["instance_id"].split("@")[-1][:7]
+    commit = inst["instance_id"].split("@")[-1]
     cm = inst["comments"][0]
     check("6.1 a real reference joins on the target key",
-          idx.get((commit, cm["path"], cm["from_line"])) is not None, True)
-    by_source = {((r.get("pr_source_commit") or "")[:7], r.get("path"), r.get("from_line"))
-                 for r in bench}
+          idx.get(ns["key_of"](commit, cm["path"], cm["from_line"], cm["note"])) is not None, True)
+    by_source = {ns["key_of"](r.get("pr_source_commit") or "", r.get("path"), r.get("from_line"),
+                              r.get("note")) for r in bench}
     check("6.1 and does NOT join on the source key",
-          (commit, cm["path"], cm["from_line"]) in by_source, False)
+          ns["key_of"](commit, cm["path"], cm["from_line"], cm["note"]) in by_source, False)
+
+with section("6.5 a reference on a DUPLICATED file:line joins to ITS OWN row"):
+    # lvgl@4a57db3 lv_label_private.h:54 carries two references with different text. The
+    # (commit, path, line) join gave both the same bench row, so one of them was cut under
+    # the other's category and author. Fails pre-fix for the stated reason: one distinct
+    # row for two references. Every joined row must also SAY what its reference says.
+    rows = ns["refs"]("clean-pos")
+    pair = [(cm, b) for cm, b in rows
+            if cm["path"].endswith("lv_label_private.h") and cm["from_line"] == 54]
+    check("6.5 the fixture has two references at one file:line", len(pair), 2)
+    check("6.5 they join to two distinct bench rows", len({id(b) for _, b in pair}), 2)
+    check("6.5 every joined row carries its reference's own text",
+          sum(1 for cm, b in rows if (b.get("note") or "").strip() != cm["note"].strip()), 0)
+
+with section("6.6 the cuts reproduce their published per-group counts, not just totals"):
+    # 6.2 checks totals only, so a misspelled attribute key would group every row under
+    # None and still pass. Pinning the group sizes means a wrong key changes a number.
+    import collections
+    rows = ns["refs"]("clean-pos")
+    by_cat = collections.Counter("D" if b.get("category") in ns["DEFECTY"] else "M" for _, b in rows)
+    by_ai = collections.Counter(bool(b.get("is_ai_comment")) for _, b in rows)
+    # Pinned from the corrected join. The (commit, path, line) join gave 75/48 and 90/33.
+    check("6.6 defect-y / maintainability sizes", (by_cat["D"], by_cat["M"]), (78, 45))
+    check("6.6 AI / human sizes", (by_ai[True], by_ai[False]), (85, 38))
+    check("6.6 no row fell into a None group",
+          any(b.get("category") is None or b.get("is_ai_comment") is None for _, b in rows), False)
+
+with section("6.7 an unknown category REFUSES at run time"):
+    # Drop Performance from DEFECTY: the corpus then holds a category no set claims, and
+    # refs() must exit rather than cut. Positive control: restored, the same call succeeds.
+    real = ns["DEFECTY"]
+    ns["DEFECTY"] = real - {"Performance"}
+    try:
+        ns["refs"]("clean-pos")
+        check("6.7 refused", "returned normally", "SystemExit")
+    except SystemExit as e:
+        check("6.7 refused", "unclassified category" in str(e.code), True)
+        check("6.7 it names the category", "Performance" in str(e.code), True)
+    finally:
+        ns["DEFECTY"] = real
+    check("6.7 and the legitimate cut still runs", len(ns["refs"]("clean-pos")), 123)
 
 
 with section("6.2 every arm joins completely and reproduces its published totals"):

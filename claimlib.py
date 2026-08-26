@@ -44,7 +44,9 @@ Two ids, deliberately separate:
 import hashlib
 import re
 
-EXTRACTOR_VERSION = "1"
+# "2": headings at all six levels are boundaries (were four). Bumped so a result file says
+# which extractor produced it and the span cache does not serve v1 parses as v2.
+EXTRACTOR_VERSION = "2"
 
 # An explicit ABSTENTION, and why it is a sentinel rather than a phrase list.
 #
@@ -64,14 +66,20 @@ EXTRACTOR_VERSION = "1"
 # normal extraction, and `aacr-upstream` REPORTS the compliance rate rather than trusting
 # it -- routing is not compliance.
 ABSTAIN = "NO DEFECTS FOUND"
-_ABSTAIN_LINE = re.compile(r"^[ \t]{0,3}\**[ \t]*" + ABSTAIN + r"[ \t]*\**[ \t]*$", re.M)
+_ABSTAIN_LINE = re.compile(
+    r"^[ \t]{0,3}\**[ \t]*" + ABSTAIN + r"[ \t]*\**[ \t]*$", re.M
+)
 
 
 # The union of every finding-header form this project has been burned by, each earned.
 # Order matters only for readability; the scan takes the leftmost match of any of them.
 #
 #   1.  / 1)            numbered, the common case
-#   ## / ### / ####     a Markdown heading
+#   # .. ######         a Markdown heading, all six levels. This stopped at four while
+#                       panel-report rendered six, so a `##### Finding` was a heading to
+#                       the reader and body text to the extractor -- the same boundary,
+#                       guessed differently in each consumer, which is the defect this
+#                       file's header says it exists to end. Found by nemotron, 2026-08-26.
 #   - ** / * ** / + **  a bolded bullet
 #   **text**            a bold line ALONE at the margin -- the form whose absence scored
 #                       two real reviews as abstentions
@@ -82,7 +90,7 @@ _ABSTAIN_LINE = re.compile(r"^[ \t]{0,3}\**[ \t]*" + ABSTAIN + r"[ \t]*\**[ \t]*
 FINDING_START = re.compile(
     r"""^(?:
           [ \t]{0,3}\d{1,2}[.)][ \t]+            # 1.  /  1)
-        | [ \t]{0,3}\#{1,4}[ \t]+                # ## heading
+        | [ \t]{0,3}\#{1,6}[ \t]+                # ## heading
         | [ \t]{0,3}[-*+][ \t]+\*\*              # - **bold bullet
         | [ \t]{0,3}\*\*[^\n*][^\n]*\*\*[ \t]*$  # **a bold line alone**
       )""",
@@ -116,7 +124,7 @@ FINDING_START = re.compile(
 _STRONG = re.compile(
     r"""^(?:
           [ \t]{0,3}\d{1,2}[.)][ \t]+
-        | [ \t]{0,3}\#{1,4}[ \t]+
+        | [ \t]{0,3}\#{1,6}[ \t]+
         | [ \t]{0,3}\*\*[^\n*][^\n]*\*\*[ \t]*$
       )""",
     re.M | re.X,
@@ -143,8 +151,10 @@ _STRONG = re.compile(
 # `Node.js` and `and/or` DO match, and that is accepted: a spurious path is harmless here
 # because a match additionally requires a line number AND agreement with a real
 # annotation's path, so a stray token has nothing to pair with.
-_PATH = (r"(?:[@\w.-]+/)+[@\w.-]+"                              # any token with a separator
-         r"|[\w-]{2,}(?:[.\-][\w-]+)*\.[A-Za-z][A-Za-z0-9]{0,4}(?![\w-])")  # bare filename.ext
+_PATH = (
+    r"(?:[@\w.-]+/)+[@\w.-]+"  # any token with a separator
+    r"|[\w-]{2,}(?:[.\-][\w-]+)*\.[A-Za-z][A-Za-z0-9]{0,4}(?![\w-])"
+)  # bare filename.ext
 # The trailing `(?![\w-])` is load-bearing. Without it the bounded 1-5 char suffix matches a
 # PREFIX of any longer dotted identifier, so ordinary JavaScript turned into file paths:
 # `assistant.enableWebSearch` -> `assistant.enabl`, `delta.content` -> `delta.conte`,
@@ -237,10 +247,16 @@ def extract(text, judge="?", run="?"):
     # is returned as `unextracted` so an abstention is still visible as material that was
     # read and deliberately not turned into findings, never as an empty parse.
     if any(not _in_spans(m.start(), fences) for m in _ABSTAIN_LINE.finditer(text)):
-        return {"observations": [], "abstained": True,
-                "unextracted": ([{"start": 0, "end": len(text), "verbatim": text}]
-                                if text.strip() else []),
-                "extractor": EXTRACTOR_VERSION}
+        return {
+            "observations": [],
+            "abstained": True,
+            "unextracted": (
+                [{"start": 0, "end": len(text), "verbatim": text}]
+                if text.strip()
+                else []
+            ),
+            "extractor": EXTRACTOR_VERSION,
+        }
     # Bullets are boundaries only when nothing stronger is present -- see _STRONG above.
     strong_present = any(
         not _in_spans(m.start(), fences) for m in _STRONG.finditer(text)

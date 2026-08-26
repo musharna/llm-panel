@@ -3,39 +3,52 @@
 Scored with the UPSTREAM AACR-Bench evaluator (`alibaba/aacr-bench`), real LLM judge
 (`anthropic/claude-opus-4.5` via OpenRouter, outside the panel's own model families).
 `judge failures during scoring: 0` on both arms — asserted by `aacr-score`, not assumed.
+Per-reference verdicts: `../scores/pilot-pos.json`, `../scores/pilot-neg.json`.
 
-|                          | positive (valid refs) | negative (REJECTED refs) |
-|--------------------------|----------------------:|-------------------------:|
-| instances                | 18/20                 | 9/10                     |
-| expected / generated     | 123 / 107             | 36 / 33                  |
-| line matches             | 50 (40.7%)            | 10 (27.8%)               |
-| **semantic matches**     | **11 (8.9%)**         | **2 (5.6%)**             |
-| semantic match rate      | 10.3%                 | 6.1%                     |
+|                      | positive (valid refs) | negative (REJECTED refs) |
+| -------------------- | --------------------: | -----------------------: |
+| instances            |                 18/20 |                     9/10 |
+| expected / generated |              123 / 59 |                  36 / 26 |
+| line matches         |            16 (13.0%) |                4 (11.1%) |
+| **semantic matches** |          **7 (5.7%)** |             **0 (0.0%)** |
+| semantic match rate  |                 11.9% |                     0.0% |
 
-## Read the gap, not the 8.9%
+## Corrected 2026-08-26 — this file carried withdrawn numbers for a day
 
-Of the 50 findings that landed on the correct file AND line, only 11 expressed the same
-concern. A location-based matcher scored 44/53 = 83% "recall" on this same benchmark; the
-semantic judge says 8.9%. That ~4.6x is the overcounting a location matcher is structurally
-incapable of detecting about itself, and it is why scoring moved to upstream's evaluator.
+The first version of this table read 107 generated / 50 line matches (40.7%) / 11 semantic
+(8.9%). Those came from the scoring that handed unlocated findings to upstream with an empty
+path, which upstream treats as a WILDCARD, not a non-match (see `../results-clean-3judge`).
+The re-score with wildcards withheld — the numbers above — was on disk the same afternoon
+and quoted by the clean README, but this file was never updated. Found by codex in the
+2026-08-26 audit as "the pilot README no longer matches its shipped metrics". A ledger that
+stops describing its own directory is the same defect class recorded twice already in this
+project (the 107-vs-65 log, the 18-vs-8 manifest).
+
+## Read the gap, not the 5.7%
+
+Of the 16 findings that landed on the correct file AND line, 7 expressed the same concern.
+Location agreement overstates semantic agreement about 2x here, as it does on the clean run
+(21.1% vs 10.6%). A location-based matcher cannot detect that about itself, which is why
+scoring is delegated upstream.
 
 ## Do NOT report the valid-vs-rejected ratio
 
-8.9% vs 5.6% looks like 1.61x discrimination. Fisher exact two-sided **p = 0.734**; the 95%
-CIs overlap almost entirely (0.051–0.153 vs 0.015–0.181). The line-match arm is also NS
-(p = 0.177). Detecting this effect at 80% power needs ~919 references per arm and the
-benchmark's ENTIRE negative pool is 639 — so more spend cannot settle it.
+5.7% vs 0.0% reads like discrimination. Fisher exact two-sided **p = 0.352**; the line-match
+arm gives p = 1.000. The negative arm has zero events. Power estimates from this run are
+unstable for the same reason — the clean run's estimate (~35 negative PRs) supersedes the
+"~919 per arm" figure that an earlier version of this file derived from the inflated
+numbers.
 
 ## Why this is a floor
 
-* 39/54 judge slots answered; codex quota died mid-batch (12 of 18 positive instances and
+- 39/54 judge slots answered; codex quota died mid-batch (12 of 18 positive instances and
   9 of 9 negative instances ran degraded).
-* 2 instances returned 0 findings purely by hitting the 300s cap, and they carry 20 of the
+- 2 instances returned 0 findings purely by hitting the 300s cap, and they carry 20 of the
   123 positive references.
-* Binaries were edited mid-run, so this batch is mixed-version. The clean run pins md5s.
+- Binaries were edited mid-run, so this batch is mixed-version. The clean run pins md5s.
 
 Regenerate metrics from these result files without re-running any panel:
 
     ~/aacr-bench/.venv/bin/python recall/aacr-score \
       recall/benchmarks/results-pilot-2judge/pos \
-      ~/panel-recall/benchmarks/upstream/pos-seed42-n20.jsonl /tmp/out 1
+      recall/benchmarks/upstream/pos-seed42-n20.jsonl <out-dir> 1

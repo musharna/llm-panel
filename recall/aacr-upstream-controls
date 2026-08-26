@@ -283,6 +283,60 @@ with section("5.5 WITNESS end-to-end: the shipped fragment shape yields ONE comm
     check("5.5 it carries the location", c[0]["path"], "src/app/main.py")
     check("5.5 the scenario text survives into it", "second step" in c[0]["content"], True)
 
+with section("5.6 an AMBIGUOUS basename is a location, not a fragment"):
+    # `main.py` when the diff touches src/app/main.py AND lib/util/main.py. resolve_path
+    # returns (None, "ambiguous"); merging on `not resolved` glued this finding into the
+    # one above it. Fails pre-fix for the stated reason: 1 finding instead of 2.
+    P = ns["diff_paths"](DIFF)
+    obs = [
+        {"verbatim": "1. null deref in `src/app/main.py` line 10\n", "observation_id": "a",
+         "location": {"path": "src/app/main.py", "line": 10}},
+        {"verbatim": "2. off-by-one in `main.py` line 9\n", "observation_id": "b",
+         "location": {"path": "main.py", "line": 9}},
+    ]
+    check("5.6 the fixture is ambiguous", ns["resolve_path"]("main.py", P)[1], "ambiguous")
+    m = ns["merge_fragments"](obs, P)
+    check("5.6 two findings survive", len(m), 2)
+    check("5.6 nothing merged", [x.get("merged_from", []) for x in m], [[], []])
+    r = ns["to_upstream_result"](obs, "/run", P, {})
+    check("5.6 and it is withheld as ambiguous, not handed over as a wildcard",
+          [u["path_resolution"] for u in r["unlocated"]], ["ambiguous"])
+
+with section("5.7 a bare header merges FORWARD into the body it introduces"):
+    # The shipped shape from FreeCAD@ec3da2e: two `**File: ...**` lines, then the body.
+    # The first went upstream as a comment with no claim in it and was scored a semantic
+    # match. Fails pre-fix for the stated reason: 2 comments instead of 1.
+    P = ns["diff_paths"](DIFF)
+    obs = [
+        {"verbatim": "**File: `src/app/main.py` (lines 10-12)**\n", "observation_id": "a",
+         "location": {"path": "src/app/main.py", "line": 10}},
+        {"verbatim": "**File: `lib/util/main.py` (lines 5, 8)**\n\nThe header declares the "
+                     "function static; the implementation does not.\n", "observation_id": "b",
+         "location": {"path": "lib/util/main.py", "line": 5}},
+    ]
+    m = ns["merge_fragments"](obs, P)
+    check("5.7 one finding", len(m), 1)
+    check("5.7 it keeps the DECLARED location, the first header's",
+          m[0]["location"], {"path": "src/app/main.py", "line": 10})
+    check("5.7 the body travels with it", "implementation does not" in m[0]["verbatim"], True)
+    check("5.7 provenance", m[0].get("merged_from"), ["b"])
+    # NEGATIVE CONTROL: a one-line finding that carries its claim is not a header. The bold
+    # is not the whole line, so it is not bare, and it must not be swallowed by its neighbour.
+    claim = [
+        {"verbatim": "- **High — `src/app/main.py:10`**: `x` is dereferenced unchecked\n",
+         "observation_id": "c", "location": {"path": "src/app/main.py", "line": 10}},
+        dict(obs[1]),
+    ]
+    check("5.7 a one-line CLAIM still stands", len(ns["merge_fragments"](claim, P)), 2)
+    # and control 5.2's two bare titles with no body anywhere remain two findings.
+    bare2 = [
+        {"verbatim": "**Defect 1**\n", "observation_id": "d",
+         "location": {"path": "src/app/main.py", "line": 10}},
+        {"verbatim": "**Defect 2**\n", "observation_id": "e",
+         "location": {"path": "lib/util/main.py", "line": 5}},
+    ]
+    check("5.7 two bare titles are two findings", len(ns["merge_fragments"](bare2, P)), 2)
+
 
 print(f"\n{'FAILED' if FAILED else 'all controls green'}"
       f" ({len(FAILED)} failing)" if FAILED else "\nall controls green")
