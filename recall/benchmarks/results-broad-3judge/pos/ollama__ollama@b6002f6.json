@@ -6,12 +6,12 @@
         "path": "ml/backend/ggml/ggml.go",
         "start_line": 1034,
         "end_line": 1034,
-        "observation_id": "7f147bce2f4c8c85",
+        "observation_id": "b3ce5b593846d6dd",
         "claimed_path": "ml/backend/ggml/ggml.go",
         "path_resolution": "exact",
         "merged_from": [
-          "6ac3b491b237a3c6",
-          "575e069898363f28"
+          "df3532c978d8457f",
+          "32e7711961802e03"
         ]
       },
       {
@@ -19,7 +19,7 @@
         "path": "ml/backend/ggml/ggml.go",
         "start_line": 1009,
         "end_line": 1009,
-        "observation_id": "f82418c6539a5176",
+        "observation_id": "0b499cf0877875a0",
         "claimed_path": "ml/backend/ggml/ggml.go",
         "path_resolution": "exact",
         "merged_from": []
@@ -29,7 +29,7 @@
         "path": "model/model.go",
         "start_line": 285,
         "end_line": 285,
-        "observation_id": "0b6b21ebd0a11e3e",
+        "observation_id": "caf81b613e8b2e8d",
         "claimed_path": "model/model.go",
         "path_resolution": "exact",
         "merged_from": []
@@ -39,11 +39,11 @@
         "path": "model/models/gptoss/model.go",
         "start_line": 40,
         "end_line": 40,
-        "observation_id": "1b54cc2dd19e23d1",
+        "observation_id": "2e452c100413d594",
         "claimed_path": "model/models/gptoss/model.go",
         "path_resolution": "exact",
         "merged_from": [
-          "d0acccd6f4432c34"
+          "8b4283d5d93da328"
         ]
       },
       {
@@ -51,11 +51,11 @@
         "path": "ml/backend/ggml/ggml.go",
         "start_line": 1024,
         "end_line": 1024,
-        "observation_id": "afb240a160a0119c",
+        "observation_id": "3bf6b6f06fc8e783",
         "claimed_path": "ml/backend/ggml/ggml.go",
         "path_resolution": "exact",
         "merged_from": [
-          "898709025f779b21"
+          "7c0413c0c3738f4d"
         ]
       },
       {
@@ -63,11 +63,11 @@
         "path": "kvcache/encoder.go",
         "start_line": 94,
         "end_line": 94,
-        "observation_id": "954b1d2b1b1fdc17",
+        "observation_id": "5813c4152c5d84dd",
         "claimed_path": "kvcache/encoder.go",
         "path_resolution": "exact",
         "merged_from": [
-          "a02b497b6b4517f4"
+          "e3f6a47c7efe9bd5"
         ]
       },
       {
@@ -75,7 +75,7 @@
         "path": "ml/backend/ggml/ggml.go",
         "start_line": 1018,
         "end_line": 1018,
-        "observation_id": "ca453d7784cf0b22",
+        "observation_id": "5200c63c0f319e6f",
         "claimed_path": "ggml.go",
         "path_resolution": "basename",
         "merged_from": []
@@ -85,51 +85,47 @@
         "path": "kvcache/causal.go",
         "start_line": 202,
         "end_line": 202,
-        "observation_id": "f4d5fa2365008327",
+        "observation_id": "06453882235e926e",
         "claimed_path": "causal.go",
         "path_resolution": "basename",
         "merged_from": []
       },
       {
-        "content": "#### 3. **WRONG RESULTS: `encoder.go` - Index into `Ints()` assumes 1D tensor matching `Multimodal.Index`**\n**File:** `kvcache/encoder.go` **Line:** 94\n\n```go\nc.curPos = batch.Positions.Ints()[batch.Multimodal[len(batch.Multimodal)-1].Index]\n```\n\n`Multimodal.Index` is documented as \"an index into Inputs\". If `Positions` is 2D `[batch, seq]`, `Ints()` flattens row-major; `Index` would need to be `batch*seq + pos` \u2014 but callers likely pass a per-sequence index. The old `[]int32` was 1D by construction.\n\n**Failure scenario:** Multimodal batch with `Positions` as 2D tensor. Index lookup reads wrong position.\n\n**Fix:** Validate `Positions` is 1D, or use `Positions.At(...)` with proper indices.\n\n---\n\n#### 4. **MISSING VALIDATION: `model.go` - Validation uses `Dim(0)` but doesn't check tensor rank**\n**File:** `model/model.go` **Lines:** 285-290\n\n```go\nif batch.Positions.Dim(0) != len(batch.Sequences) {\n    return nil, fmt.Errorf(\"length of positions (%v) must match length of seqs (%v)\", batch.Positions.Dim(0), len(batch.Sequences))\n}\nif batch.Positions.Dim(0) < 1 {\n    return nil, errors.New(\"batch size cannot be less than 1\")\n}\n```\n\n**Failure scenario:** `batch.Positions` is a scalar (0D tensor) or 2D `[batch, seq]`. `Dim(0)` on 0D may panic or return 0; on 2D it returns batch dimension (which might be correct by accident). No check that `Positions` is 1D.\n\n**Fix:** Add `if batch.Positions.Rank() != 1 { return nil, errors.New(\"positions must be 1D tensor\") }`.\n\n---",
+        "content": "#### 3. **WRONG RESULTS: `encoder.go` - Index into `Ints()` assumes 1D tensor matching `Multimodal.Index`**\n**File:** `kvcache/encoder.go` **Line:** 94\n\n```go\nc.curPos = batch.Positions.Ints()[batch.Multimodal[len(batch.Multimodal)-1].Index]\n```\n\n`Multimodal.Index` is documented as \"an index into Inputs\". If `Positions` is 2D `[batch, seq]`, `Ints()` flattens row-major; `Index` would need to be `batch*seq + pos` \u2014 but callers likely pass a per-sequence index. The old `[]int32` was 1D by construction.\n\n**Failure scenario:** Multimodal batch with `Positions` as 2D tensor. Index lookup reads wrong position.\n\n**Fix:** Validate `Positions` is 1D, or use `Positions.At(...)` with proper indices.\n\n---",
         "path": "kvcache/encoder.go",
         "start_line": 94,
         "end_line": 94,
-        "observation_id": "bfc79f6f25ead7ff",
+        "observation_id": "32bb2177cebf8c59",
         "claimed_path": "encoder.go",
         "path_resolution": "basename",
-        "merged_from": [
-          "aab351d60104271e"
-        ]
+        "merged_from": []
       },
       {
         "content": "#### 5. **POTENTIAL PANIC: `wrapper.go` - `Remove` called with `curPositions[k]` but `Sequences` length unchecked**\n**File:** `kvcache/wrapper.go` **Lines:** 50-54\n\n```go\ncurPositions := batch.Positions.Ints()\nfor k := range curPositions {\n    _ = c.caches[j].Remove(batch.Sequences[k], curPositions[k], math.MaxInt32)\n}\n```\n\nIf `len(batch.Sequences) != len(curPositions)`, this panics on out-of-bounds `batch.Sequences[k]`. The old code iterated `range batch.Positions` (the slice), so lengths were inherently equal. Now they're from different sources.\n\n**Failure scenario:** Caller constructs `Batch` with mismatched `Positions` tensor length vs `Sequences` slice length.\n\n**Fix:** Add validation that `len(batch.Sequences) == len(curPositions)` before the loop, or iterate `min(len(Sequences), len(curPositions))` with error.\n\n---",
         "path": "kvcache/wrapper.go",
         "start_line": 50,
         "end_line": 50,
-        "observation_id": "71b0f7c6e37087b1",
+        "observation_id": "625dddd9bd5fc025",
         "claimed_path": "wrapper.go",
         "path_resolution": "basename",
         "merged_from": []
       },
       {
-        "content": "#### 6. **DEAD CODE / UNUSED FIELD: `input.go` - `Multimodal` field moved but comments not updated**\n**File:** `model/input/input.go` **Lines:** 54-70\n\nThe `Multimodal` field moved below `Outputs` but the comment block above it still says \"Unused for text-only models or for batches without multimodal elements\" \u2014 now it's *after* `Outputs` in the struct, but the comment wasn't moved with it. The comment for `Outputs` (\"Outputs are the set of indicies into Inputs...\") is now on the `Multimodal` field.\n\n**Impact:** Misleading documentation; maintainers will read wrong field descriptions.\n\n**Fix:** Move comments with their fields.\n\n---\n\n#### 7. **INCONSISTENT API: `llama4/model.go` and `mistral3/model.go` - `TextModel.Forward` signature changed but not all callers updated**\n**File:** `model/models/llama4/model.go` **Line:** 178, `model/models/mistral3/model.go` **Line:** 161\n\nBoth now call:\n```go\nreturn m.TextModel.Forward(ctx, batch, m.Cache), nil\n```\n\nBut `TextModel.Forward` in `llama4/model_text.go` (line 208) and `mistral3/model_text.go` (line 97) now takes `(ctx, batch, cache)` \u2014 this matches. However, `qwen25vl/model.go` (line 142) calls `m.TextModel.Forward(ctx, batch, m.Cache)` but its `TextModel.Forward` in `model_text.go` (line 125) returns `(ml.Tensor, error)` \u2014 **signature mismatch**: the caller discards the error.\n\n**File:** `model/models/qwen25vl/model.go` **Line:** 142\n```go\nreturn m.TextModel.Forward(ctx, batch, m.Cache)\n```\nBut `TextModel.Forward` returns `(ml.Tensor, error)`. The error is dropped \u2014 if `Forward` fails, caller returns `nil` tensor silently.\n\n**Fix:** Handle the error return.\n\n---",
+        "content": "#### 6. **DEAD CODE / UNUSED FIELD: `input.go` - `Multimodal` field moved but comments not updated**\n**File:** `model/input/input.go` **Lines:** 54-70\n\nThe `Multimodal` field moved below `Outputs` but the comment block above it still says \"Unused for text-only models or for batches without multimodal elements\" \u2014 now it's *after* `Outputs` in the struct, but the comment wasn't moved with it. The comment for `Outputs` (\"Outputs are the set of indicies into Inputs...\") is now on the `Multimodal` field.\n\n**Impact:** Misleading documentation; maintainers will read wrong field descriptions.\n\n**Fix:** Move comments with their fields.\n\n---",
         "path": "model/input/input.go",
         "start_line": 54,
         "end_line": 54,
-        "observation_id": "c02980116bb69fdd",
+        "observation_id": "d93f9b5775e32b85",
         "claimed_path": "input.go",
         "path_resolution": "basename",
-        "merged_from": [
-          "edafc65c58db1609"
-        ]
+        "merged_from": []
       },
       {
         "content": "#### 8. **WRONG RESULTS: `ollamarunner/runner.go` - `vocabSize` calculation uses `Outputs.Dim(0)` but `outputs` slice is flat**\n**File:** `runner/ollamarunner/runner.go` **Line:** 711\n\n```go\nvocabSize := len(outputs) / activeBatch.batch.Outputs.Dim(0)\n```\n\n`outputs` is a flat `[]float32` from model output (length = `batchSize * vocabSize`). `Outputs.Dim(0)` is the number of output positions (batch size). This is correct *if* `Outputs` is 1D with `Dim(0) == batch size`. But `Outputs` is now a tensor \u2014 if it's 2D `[batch, num_outputs_per_seq]`, `Dim(0)` is still batch size, so this works. However, the old code used `len(activeBatch.batch.Outputs)` which was the slice length (also batch size). **No defect here, but fragile** \u2014 relies on `Outputs` tensor shape convention.\n\n---",
         "path": "runner/ollamarunner/runner.go",
         "start_line": 711,
         "end_line": 711,
-        "observation_id": "873822bc2b056fb7",
+        "observation_id": "79abcac55f2256fb",
         "claimed_path": "ollamarunner/runner.go",
         "path_resolution": "basename",
         "merged_from": []
@@ -139,11 +135,11 @@
         "path": "runner/ollamarunner/runner.go",
         "start_line": 1065,
         "end_line": 1065,
-        "observation_id": "153e03c24eaf1067",
+        "observation_id": "b2d90a67dba33224",
         "claimed_path": "ollamarunner/runner.go",
         "path_resolution": "basename",
         "merged_from": [
-          "135754df9f4325e5"
+          "70accf758ea7b73b"
         ]
       },
       {
@@ -151,29 +147,27 @@
         "path": "kvcache/causal_test.go",
         "start_line": 394,
         "end_line": 394,
-        "observation_id": "98e23af5858c1236",
+        "observation_id": "20c2ab02d6e456b9",
         "claimed_path": "causal_test.go",
         "path_resolution": "basename",
         "merged_from": []
       },
       {
-        "content": "#### 12. **UNUSED VARIABLE: `ollamarunner/runner.go` - `batchInputs` declared but `batch.Sequences` not populated in `reserveWorstCaseGraph`**\n**File:** `runner/ollamarunner/runner.go` **Lines:** 1050-1067\n\n```go\nbatchInputs := make([]int32, len(inputs))\nbatchPositions := make([]int32, len(inputs))\nfor i, inp := range inputs {\n    batchInputs[i] = inp.Token\n    ...\n    batchPositions[i] = int32(i)\n}\nbatch.Sequences = make([]int, len(batchInputs))  // All zeros!\n```\n\n`batch.Sequences` is allocated but never filled with actual sequence IDs \u2014 all zeros. This may be intentional for \"worst case\" graph reservation, but it's suspicious. The old code did the same (implicit zero), so not a regression, but worth noting as a potential latent bug if sequence IDs matter for cache reservation.\n\n---\n\n#### 13. **INCONSISTENT ERROR HANDLING: `qwen25vl/model_text.go` - `Forward` returns error but `model.go` caller ignores it**\n**File:** `model/models/qwen25vl/model_text.go` **Line:** 125 (signature), `model/models/qwen25vl/model.go` **Line:** 142 (caller)\n\nSee defect #7.\n\n---",
+        "content": "#### 12. **UNUSED VARIABLE: `ollamarunner/runner.go` - `batchInputs` declared but `batch.Sequences` not populated in `reserveWorstCaseGraph`**\n**File:** `runner/ollamarunner/runner.go` **Lines:** 1050-1067\n\n```go\nbatchInputs := make([]int32, len(inputs))\nbatchPositions := make([]int32, len(inputs))\nfor i, inp := range inputs {\n    batchInputs[i] = inp.Token\n    ...\n    batchPositions[i] = int32(i)\n}\nbatch.Sequences = make([]int, len(batchInputs))  // All zeros!\n```\n\n`batch.Sequences` is allocated but never filled with actual sequence IDs \u2014 all zeros. This may be intentional for \"worst case\" graph reservation, but it's suspicious. The old code did the same (implicit zero), so not a regression, but worth noting as a potential latent bug if sequence IDs matter for cache reservation.\n\n---",
         "path": "runner/ollamarunner/runner.go",
         "start_line": 1050,
         "end_line": 1050,
-        "observation_id": "1f4fc0684c63a0d7",
+        "observation_id": "00f826b78fea9f93",
         "claimed_path": "ollamarunner/runner.go",
         "path_resolution": "basename",
-        "merged_from": [
-          "35a4521e5f496c41"
-        ]
+        "merged_from": []
       },
       {
         "content": "#### 14. **POTENTIAL NIL POINTER: `causal.go` - `batch.Positions.Ints()` called without nil check**\n**File:** `kvcache/causal.go` **Line:** 202\n\n```go\nc.curPositions = batch.Positions.Ints()\n```\n\nIf `batch.Positions` is a nil `ml.Tensor` interface, this panics. The old `[]int32` could be nil safely (`len(nil) == 0`). New code assumes non-nil tensor.\n\n**Failure scenario:** Caller passes `Batch{Positions: nil}`.\n\n**Fix:** Add nil check or document that `Positions` must be non-nil.\n\n---",
         "path": "kvcache/causal.go",
         "start_line": 202,
         "end_line": 202,
-        "observation_id": "f822e2dd8cb297d5",
+        "observation_id": "77516a7ca80ce28b",
         "claimed_path": "causal.go",
         "path_resolution": "basename",
         "merged_from": []
@@ -183,11 +177,11 @@
         "path": "kvcache/causal.go",
         "start_line": 202,
         "end_line": 202,
-        "observation_id": "7f8a90d17979120a",
+        "observation_id": "57ddb97bdc993207",
         "claimed_path": "causal.go",
         "path_resolution": "basename",
         "merged_from": [
-          "bdf4818ba3758c75"
+          "ff4edc60ec37f4aa"
         ]
       },
       {
@@ -195,7 +189,7 @@
         "path": "ml/backend/ggml/ggml.go",
         "start_line": 1018,
         "end_line": 1018,
-        "observation_id": "60447b4f3ce33411",
+        "observation_id": "1d478a1e1354f8ce",
         "claimed_path": "ml/backend/ggml/ggml.go",
         "path_resolution": "exact",
         "merged_from": []
@@ -205,7 +199,7 @@
         "path": "kvcache/causal.go",
         "start_line": 202,
         "end_line": 202,
-        "observation_id": "5e004e90f2f68ed4",
+        "observation_id": "2cde1f057d767bd8",
         "claimed_path": "kvcache/causal.go",
         "path_resolution": "exact",
         "merged_from": []
@@ -215,7 +209,7 @@
         "path": "model/models/qwen25vl/model.go",
         "start_line": 142,
         "end_line": 142,
-        "observation_id": "c419875c0032aa41",
+        "observation_id": "d1659a8b1a1ddc6a",
         "claimed_path": "model/models/qwen25vl/model.go",
         "path_resolution": "exact",
         "merged_from": []
@@ -223,6 +217,25 @@
     ]
   },
   "rundir": "/home/mjarnold/.cache/llm-panel/runs/aacr-up-z6ekpdkw-e78c1182e3c4/20260825-202506-2661719",
-  "extractor": "1",
-  "unlocated": []
+  "extractor": "2",
+  "unlocated": [
+    {
+      "content": "#### 4. **MISSING VALIDATION: `model.go` - Validation uses `Dim(0)` but doesn't check tensor rank**\n**File:** `model/model.go` **Lines:** 285-290\n\n```go\nif batch.Positions.Dim(0) != len(batch.Sequences) {\n    return nil, fmt.Errorf(\"length of positions (%v) must match length of seqs (%v)\", batch.Positions.Dim(0), len(batch.Sequences))\n}\nif batch.Positions.Dim(0) < 1 {\n    return nil, errors.New(\"b",
+      "observation_id": "d465f447695ec53a",
+      "claimed_path": "model.go",
+      "path_resolution": "ambiguous"
+    },
+    {
+      "content": "#### 7. **INCONSISTENT API: `llama4/model.go` and `mistral3/model.go` - `TextModel.Forward` signature changed but not all callers updated**\n**File:** `model/models/llama4/model.go` **Line:** 178, `model/models/mistral3/model.go` **Line:** 161\n\nBoth now call:\n```go\nreturn m.TextModel.Forward(ctx, batch, m.Cache), nil\n```\n\nBut `TextModel.Forward` in `llama4/model_text.go` (line 208) and `mistral3/mo",
+      "observation_id": "56d7f01a27a71dbe",
+      "claimed_path": "llama4/model.go",
+      "path_resolution": "ambiguous"
+    },
+    {
+      "content": "#### 13. **INCONSISTENT ERROR HANDLING: `qwen25vl/model_text.go` - `Forward` returns error but `model.go` caller ignores it**\n**File:** `model/models/qwen25vl/model_text.go` **Line:** 125 (signature), `model/models/qwen25vl/model.go` **Line:** 142 (caller)\n\nSee defect #7.\n\n---",
+      "observation_id": "d5990e7740ee44f2",
+      "claimed_path": "qwen25vl/model_text.go",
+      "path_resolution": "ambiguous"
+    }
+  ]
 }

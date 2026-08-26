@@ -1,7 +1,7 @@
 {
   "ex_info": {
-    "start_time": "2026-08-26T10:38:58.477539",
-    "results_dir": "/home/mjarnold/llm-panel/recall/benchmarks/results-clean-3judge/neg",
+    "start_time": "2026-08-25T21:41:38.941245",
+    "results_dir": "/home/mjarnold/llm-panel/recall/benchmarks/results-broad-3judge/neg",
     "reviewer": "llm-panel",
     "line_k": 1,
     "limit": null,
@@ -13,15 +13,15 @@
     "evaluated_instances": 9,
     "missing_instances": 0,
     "expected_notes": 36,
-    "generated_notes": 29,
-    "matched_line_notes": 4,
-    "matched_semantic_notes": 1,
-    "semantic_match_rate": 0.034,
-    "line_match_rate": 0.138,
-    "semantic_recall_rate": 0.028,
-    "line_recall_rate": 0.111,
-    "semantic_f1": 0.031,
-    "line_f1": 0.123,
+    "generated_notes": 155,
+    "matched_line_notes": 16,
+    "matched_semantic_notes": 6,
+    "semantic_match_rate": 0.039,
+    "line_match_rate": 0.103,
+    "semantic_recall_rate": 0.167,
+    "line_recall_rate": 0.444,
+    "semantic_f1": 0.063,
+    "line_f1": 0.167,
     "total_duration_seconds": 0.0,
     "avg_duration_seconds": 0.0,
     "total_input_tokens": 0,
@@ -97,7 +97,7 @@
           "side": "right",
           "from_line": 36,
           "to_line": 36,
-          "line_match": false,
+          "line_match": true,
           "semantic_match": false,
           "matched_note": ""
         },
@@ -133,9 +133,9 @@
           "side": "right",
           "from_line": 1511,
           "to_line": 1515,
-          "line_match": false,
-          "semantic_match": false,
-          "matched_note": ""
+          "line_match": true,
+          "semantic_match": true,
+          "matched_note": "**6. `BUFFER_STUCK` timer fires on legitimate slow user responses — misleading name (Name misleads)**\n\n`src/core/task/index.ts`, lines ~1510–1514 (diff hunk `@@ -1503,9 +1507,18 @@`):\n\n```ts\nbufferStuckTimer = setTimeout(() => {\n    telemetryService.captureTerminalHang(TerminalHangStage.BUFFER_STUCK)\n    bufferStuckTimer = null\n}, BUFFER_STUCK_TIMEOUT_MS)\n```\n\nThis timer starts when a command output chunk is sent to the user for approval (`this.ask`). A 30-second delay before the user clicks \"Process while Running\" is normal, not \"stuck.\" The telemetry name will generate false-positive hang signals. Rename to `AWAITING_USER_INPUT` or similar to match what it actually measures.\n\n---"
         },
         {
           "note": "The `catch { ... }` swallows the error, making debugging harder and losing context in telemetry. Prefer `catch (err)` and log/include error details (sanitized) or at least differentiate cancellation vs real failures if applicable. Also, `STREAM_TIMEOUT` is captured for any exception here, which may misclassify non-timeout errors.\n\n```suggestion\n\t\t\t} catch (err) {\n\t\t\t\tLogger.error(\"Error while asking for command output\", err)\n\t\t\t\t// Consider mapping to more specific stages based on error type/cause.\n\t\t\t\ttelemetryService.captureTerminalHang(TerminalHangStage.STREAM_TIMEOUT)\n\t\t\t} finally {\n```",
@@ -143,9 +143,9 @@
           "side": "right",
           "from_line": 1531,
           "to_line": 1534,
-          "line_match": false,
-          "semantic_match": false,
-          "matched_note": ""
+          "line_match": true,
+          "semantic_match": true,
+          "matched_note": "**1. `src/core/task/index.ts:1530` — Misleading telemetry label for all errors**\nThe `catch` block captures `TerminalHangStage.STREAM_TIMEOUT` for *any* error from `this.ask()`, not just timeouts. User cancellation, network errors, or other exceptions will all be recorded as \"stream timeout\", polluting telemetry.\n```typescript\n} catch {\n    Logger.error(\"Error while asking for command output\")\n    telemetryService.captureTerminalHang(TerminalHangStage.STREAM_TIMEOUT)  // ← wrong for non-timeout errors\n}\n```"
         },
         {
           "note": "The completion timer might not be cleaned up in all error scenarios. Consider adding cleanup in a catch block or using a finally block to ensure the timer is always cleared.",
@@ -154,8 +154,8 @@
           "from_line": 1574,
           "to_line": 1583,
           "line_match": true,
-          "semantic_match": true,
-          "matched_note": "1. **`src/core/task/index.ts`, line ~1578–1596:** `completionTimer` is not cleared if `await process` rejects — produces false `WAITING_FOR_COMPLETION` hang telemetry for failed processes."
+          "semantic_match": false,
+          "matched_note": ""
         },
         {
           "note": "Redundant timer cleanup: The completionTimer is already cleared in the 'completed' event handler above. This second cleanup is unnecessary but harmless.",
@@ -163,9 +163,9 @@
           "side": "right",
           "from_line": 1608,
           "to_line": 1612,
-          "line_match": false,
-          "semantic_match": false,
-          "matched_note": ""
+          "line_match": true,
+          "semantic_match": true,
+          "matched_note": "**7. `completionTimer` cleared redundantly — minor dead code (Dead code)**\n\n`src/core/task/index.ts`, lines ~1608–1612 (diff hunk `@@ -1570,6 +1605,12 @@`):\n\n```ts\nif (completionTimer) {\n    clearTimeout(completionTimer)\n    completionTimer = null\n}\n```\n\nThe `process.once(\"completed\")` handler (lines ~1578–1581) already clears `completionTimer` before the `await process` resolves. This second clear is unreachable under normal flow. It's harmless as a safety net but worth noting it exists only because the event handler and the post-await code cover the same resource — a small cleanup candidate.### Defects"
         },
         {
           "note": "The function `getLatestTerminalOutput` is called but not defined, causing a runtime error in the terminal output fallback path.",
@@ -173,7 +173,7 @@
           "side": "right",
           "from_line": 198,
           "to_line": 198,
-          "line_match": false,
+          "line_match": true,
           "semantic_match": false,
           "matched_note": ""
         },
@@ -183,7 +183,7 @@
           "side": "right",
           "from_line": 198,
           "to_line": 203,
-          "line_match": false,
+          "line_match": true,
           "semantic_match": false,
           "matched_note": ""
         },
@@ -295,7 +295,7 @@
           "side": "right",
           "from_line": 50,
           "to_line": 52,
-          "line_match": false,
+          "line_match": true,
           "semantic_match": false,
           "matched_note": ""
         },
@@ -305,9 +305,9 @@
           "side": "right",
           "from_line": 80,
           "to_line": 80,
-          "line_match": false,
-          "semantic_match": false,
-          "matched_note": ""
+          "line_match": true,
+          "semantic_match": true,
+          "matched_note": "- **Low — Localization defect:** `web/src/components/api-service/embed-modal/index.tsx:80` — `\"Option\"` is hard-coded even though the modal uses translated strings. In a non-English session, this heading remains English. It should use a translation key."
         }
       ]
     },
@@ -321,7 +321,7 @@
           "side": "right",
           "from_line": 137,
           "to_line": 137,
-          "line_match": false,
+          "line_match": true,
           "semantic_match": false,
           "matched_note": ""
         },
@@ -367,7 +367,7 @@
           "side": "right",
           "from_line": 10,
           "to_line": 12,
-          "line_match": false,
+          "line_match": true,
           "semantic_match": false,
           "matched_note": ""
         }
@@ -393,9 +393,9 @@
           "side": "right",
           "from_line": 265,
           "to_line": 265,
-          "line_match": false,
-          "semantic_match": false,
-          "matched_note": ""
+          "line_match": true,
+          "semantic_match": true,
+          "matched_note": "### 6. **Inconsistent default between code and documentation** (envconfig/config.go:265)\n```go\n\"OLLAMA_CONTEXT_LENGTH\":    {\"OLLAMA_CONTEXT_LENGTH\", ContextLength(), \"Maximum context length\"},\n```\nThe `AsMap` description says \"Maximum context length\" but doesn't mention the default (2048) or the 0/negative handling. Other entries like `OLLAMA_SCHED_SPREAD` include behavioral notes.\n\n---"
         }
       ]
     },
@@ -409,7 +409,7 @@
           "side": "right",
           "from_line": 40,
           "to_line": 40,
-          "line_match": false,
+          "line_match": true,
           "semantic_match": false,
           "matched_note": ""
         },
@@ -419,7 +419,7 @@
           "side": "right",
           "from_line": 88,
           "to_line": 90,
-          "line_match": false,
+          "line_match": true,
           "semantic_match": false,
           "matched_note": ""
         },
@@ -430,8 +430,8 @@
           "from_line": 89,
           "to_line": 89,
           "line_match": false,
-          "semantic_match": false,
-          "matched_note": ""
+          "semantic_match": true,
+          "matched_note": "1. **Defect / abstraction leak — `core/src/main/java/io/kestra/plugin/core/execution/Assert.java:89` and `core/src/main/java/io/kestra/core/models/property/Property.java:40`:** Parsing `conditions.getExpression()` as JSON bypasses the normal `Property` rendering API. A valid dynamic property such as `conditions: \"{{ inputs.assertions }}\"` is not JSON, so `readValue` throws before evaluating conditions or emitting metrics. Making the raw serializer representation public compounds the problem; render the property through `RunContext` instead."
         },
         {
           "note": "Logic error: The assertion logic is inverted. Currently checking `isFalsy(renderer)` and treating that as a failure, but this means truthy values (which should pass assertions) would be counted as success in the else block.\n\n**Issue:** The code checks if the rendered value is falsy and logs it as failed, but the semantics are unclear. For assertion conditions like `{{ 42 == 42 }}`, the renderer would produce \"true\" or \"false\" strings.\n\n**Expected behavior:** \n- If condition evaluates to a truthy value → assertion passes\n- If condition evaluates to a falsy value → assertion fails\n\n**Suggested fix:** Use `isTruthy` instead to check if the condition passed:\n\n```suggestion\n                    if (!TruthUtils.isTruthy(renderer)) {\n```",
@@ -439,7 +439,7 @@
           "side": "right",
           "from_line": 93,
           "to_line": 93,
-          "line_match": true,
+          "line_match": false,
           "semantic_match": false,
           "matched_note": ""
         }

@@ -13,10 +13,14 @@ during scoring: 0` on every arm — asserted by `aacr-score`, not assumed.
 | instances    |                 18/20 |                     9/10 |
 | judge slots  | **54/54**, 0 degraded |        26/27, 1 degraded |
 | references   |                   123 |                       36 |
-| findings     |                    79 |                       30 |
-| line matches |            26 (21.1%) |                4 (11.1%) |
+| findings     |                    78 |                       29 |
+| line matches |            25 (20.3%) |                4 (11.1%) |
 | **semantic** |        **13 (10.6%)** |                 1 (2.8%) |
-| precision    |                 16.5% |                     3.3% |
+| precision    |                 16.7% |                     3.4% |
+
+_Extractor v2, re-judged 2026-08-26 with the same judge (`../scores/`; v1 in
+`../scores/v1/`). v1 read 79 / 26 (21.1%) / 13 / 16.5% and 30 / 4 / 1 / 3.3%: the
+extractor fixes below removed one comment per arm and moved no semantic figure._
 
 ## Roster and timeout are worth ~2x
 
@@ -26,15 +30,15 @@ with the SAME extractor so only roster and timeout differ:
 |                 | pilot | clean     |
 | --------------- | ----- | --------- |
 | semantic recall | 5.7%  | **10.6%** |
-| line recall     | 13.0% | 21.1%     |
-| precision       | 11.9% | 16.5%     |
+| line recall     | 13.0% | 20.3%     |
+| precision       | 11.9% | 16.7%     |
 
 Two positive instances returned zero findings in the pilot purely by hitting the 300s cap,
 and they carry 20 of the 123 references. At 900s they yield 8 and 4 located findings.
 
 ## Location agreement overstates semantic agreement ~2x
 
-21.1% of references had a finding at the right file and line; 10.6% had one that a judge
+20.3% of references had a finding at the right file and line; 10.6% had one that a judge
 called the same concern. Half of the location hits are the panel talking about the same
 line for a different reason. A location-based matcher cannot detect that about itself,
 which is why scoring is delegated upstream.
@@ -62,14 +66,20 @@ came from the degraded pilot and should be ignored. Both estimates rest on very 
   resolves by basename, and survives as findings.
 - Sentinel compliance varies ~10x by judge (big-pickle 52.6%, codex 26.3%, nemotron 5.3%),
   so abstention is a property of the judge, not the panel.
-- **One of the 13 semantic matches is a bare header.** The finding scored against
-  FreeCAD@ec3da2e `DrawViewPart.h:242` is, in full, `**File: DrawViewPart.h (lines
-242-244)**` -- the judge wrote two `**File:**` lines and the body went to the second, so
-  the first reached upstream with no claim in it, and the semantic judge called that
-  "similar" to a reference about const-ref parameters. Extractor v2 merges a bare header
-  forward into the body it introduces (`aacr-upstream` control 5.7). Re-extracting these
-  runs with v2 changes 79 -> 77 positive and 30 -> 29 negative comments (broad: 236 -> 235,
-  155 unchanged); the semantic verdicts above are from v1 and **have not been re-scored** --
-  the re-score needs judge credit that was exhausted on 2026-08-26. Until then the honest
-  positive figure is 12-13 of 123. Found by codex in the 2026-08-26 audit, from
-  `scores/clean-pos.json`.
+- **The judges read the diff, not the repository.** `aacr-upstream` runs each panel with
+  `--cwd` on an empty temporary directory and the diff in the prompt. These are
+  diff-in-prompt numbers; a reviewer with the checkout can see callers, tests and history
+  that these judges cannot, and the benchmark's own reviewers had that. Found by or-grok,
+  2026-08-26.
+- **One semantic match was scored against a bare header, and survived re-scoring with its
+  body attached.** Under extractor v1 the finding scored against FreeCAD@ec3da2e
+  `DrawViewPart.h:242` was, in full, `**File: DrawViewPart.h (lines 242-244)**` -- the
+  judge wrote two `**File:**` lines and the body went to the second -- and the semantic
+  judge called that empty header "similar" to a reference about const-ref parameters.
+  Extractor v2 merges a bare header forward into the body it introduces (`aacr-upstream`
+  control 5.7), and the bridge now relocates a finding whose first path-shaped token is
+  not a file to the first one that is (control 5.8). Re-judged, the same reference matched
+  again: the body quotes the exact signature whose parameter the reference wants changed,
+  and the judge calls a static/signature mismatch on those lines the same concern. That is
+  the judge's call on real content now, not on an empty line; it is also a measure of how
+  lenient the judge is. Found by codex in the 2026-08-26 audit, from `scores/v1/clean-pos.json`.

@@ -150,6 +150,22 @@ with section("3.4 WITNESS: reviews come from run.json status, not from globbing 
     check("3.4 no unconditional glob of every .md",
           'for f in d.glob("*.md"):' in _src, False)
 
+with section("3.5 reextract does not launder a run's self-description as directory facts"):
+    # results-broad-3judge/pos/manifest.json read `written: 18, attempted: 8` after an
+    # 8-instance subset re-run: reextract rewrote what it counted and left the rest.
+    prev = {"attempted": 8, "skipped": ["x"], "judges": "codex", "written": 8, "reviews": 20}
+    m = ns["directory_manifest"](prev, {"written": 18, "reviews": 54})
+    check("3.5 directory facts are the fresh ones", (m["written"], m["reviews"]), (18, 54))
+    check("3.5 run-only keys are not top-level", [k for k in ("attempted", "skipped", "judges") if k in m], [])
+    check("3.5 but are kept, under last_run", m["last_run"], {"attempted": 8, "skipped": ["x"], "judges": "codex"})
+    check("3.5 a manifest with nothing run-only gains no last_run",
+          "last_run" in ns["directory_manifest"]({"written": 1}, {"written": 2}), False)
+    # REAL ARTIFACT: the manifest that exposed this. Version-independent -- on the pre-fix
+    # tree it fails because `attempted: 8` is there, not because a function is missing.
+    real = json.loads((ROOT / "benchmarks/results-broad-3judge/pos/manifest.json").read_text())
+    check("3.5 the shipped broad-pos manifest carries no top-level `attempted`", "attempted" in real, False)
+    check("3.5 and it still records how many were written", real.get("written"), 18)
+
 
 # --- 4. the upstream result shape --------------------------------------------------------
 with section("4.1 to_upstream_result emits what build_target_comments_from_ocr reads"):
@@ -336,6 +352,28 @@ with section("5.7 a bare header merges FORWARD into the body it introduces"):
          "location": {"path": "lib/util/main.py", "line": 5}},
     ]
     check("5.7 two bare titles are two findings", len(ns["merge_fragments"](bare2, P)), 2)
+
+with section("5.8 a finding whose FIRST path-shaped token is not a file is relocated to one that is"):
+    # libsdl-org/SDL@96dfef3: "- **High -- Defect (resource leak/exhaustion):**
+    # `src/gpu/vulkan/SDL_gpu_vulkan.c:10424`" -- claimlib took "leak/exhaustion" as the
+    # path and the finding was withheld as not-in-diff. Fails pre-fix for the stated
+    # reason: withheld instead of handed over.
+    P = ns["diff_paths"](DIFF)
+    obs = [{"verbatim": "- **High -- Defect (resource leak/exhaustion):** `src/app/main.py:10` "
+                        "leaks the handle\n",
+            "observation_id": "a", "location": {"path": "leak/exhaustion", "line": 10}}]
+    r = ns["to_upstream_result"]([dict(o) for o in obs], "/run", P, {})
+    c = r["review"]["comments"]
+    check("5.8 handed over", len(c), 1)
+    c0 = c[0] if c else {}      # so a pre-fix run fails on the count, not on an IndexError
+    check("5.8 at the real file and line", (c0.get("path"), c0.get("start_line")), ("src/app/main.py", 10))
+    check("5.8 what the judge wrote first is kept as provenance", c0.get("claimed_path"), "leak/exhaustion")
+    check("5.8 marked as relocated, not exact", c0.get("path_resolution"), "relocated")
+    # NEGATIVE CONTROL: a later token that is NOT in the diff does not rescue anything.
+    obs2 = [{"verbatim": "- **High -- leak/exhaustion:** see `docs/other.py:3`\n",
+             "observation_id": "b", "location": {"path": "leak/exhaustion", "line": 3}}]
+    r2 = ns["to_upstream_result"](obs2, "/run", P, {})
+    check("5.8 an unresolvable later path is still withheld", len(r2["review"]["comments"]), 0)
 
 
 print(f"\n{'FAILED' if FAILED else 'all controls green'}"

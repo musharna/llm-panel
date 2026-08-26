@@ -31,6 +31,7 @@ WHAT UPSTREAM GIVES THAT MINE COULD NOT
     then: cd ~/aacr-bench/evaluation && python -m evaluate ...  (see --help-eval)
 """
 import argparse
+import hashlib
 import json
 import pathlib
 import re
@@ -47,18 +48,15 @@ DIFFS = ROOT / "benchmarks" / "diffs-upstream"
 # TWO PROMPTS, because the first one was measuring itself.
 #
 # `defect` is the panel's own house style: a defect with a concrete failure scenario, and
-# explicitly NO refactors. Scored against AACR-Bench it returns 10.6% semantic recall --
-# but that pooled number is a blend of two very different things. Classifying all 135
-# reference comments by what they ASK FOR (same judge family used for scoring, because a
-# keyword list cannot answer a semantic question) splits them 74 DEFECT / 61 IMPROVEMENT,
-# and recall splits with them:
+# explicitly NO refactors. Scored against AACR-Bench it returns 10.6% semantic recall.
 #
-#     DEFECT       12/65 = 18.5%
-#     IMPROVEMENT   1/58 =  1.7%      Fisher exact p = 0.0025
-#
-# So 47% of the benchmark's valid comments are maintainability, naming, dead-code and
-# design suggestions that this prompt TELLS THE JUDGES NOT TO MAKE. The pooled figure was
-# measuring my own instruction, not the panel.
+# RETRACTED 2026-08-26: the paragraph that stood here claimed that number hid an 18.5% vs
+# 1.7% split between defect and improvement references, measured by `aacr-classify-refs`.
+# That classifier shares the phrase "concrete failure scenario" with this very prompt, so
+# it labelled DEFECT exactly what the prompt was hunting -- circular. On the benchmark's
+# own `category` field the split is 10.3% vs 11.1%, p = 1.0: the prompt is not blind to
+# the class it forbids. See results-broad-3judge/README.md. The `broad` prompt still
+# exists and still more than doubles recall, but the reason is volume, not scope.
 #
 # `broad` removes that exclusion and invites the improvement classes, keeping the location
 # requirement because upstream cannot match a finding it cannot place. Both are kept so the
@@ -340,15 +338,30 @@ def to_upstream_result(obs, rundir, paths, tally):
     obs = merge_fragments(obs, paths)
     comments, unlocated = [], []
     for o in obs:
-        loc = o.get("location") or {}
-        resolved, why = resolve_path(loc.get("path"), paths)
+        loc = dict(o.get("location") or {})
+        claimed = loc.get("path")                  # what the judge said, before checking
+        resolved, why = resolve_path(claimed, paths)
+        if not resolved and why in ("not-in-diff", "absent"):
+            # claimlib takes the FIRST path-shaped token, structurally: "leak/exhaustion"
+            # two words before `src/gpu/vulkan/SDL_gpu_vulkan.c:10424` was the path, and
+            # a real finding at a real line was withheld. claimlib cannot know which token
+            # is a file; the bridge holds the diff, so it looks past the first token to
+            # the first one that IS. 1 of 8 withheld findings in the published runs; the
+            # class is "first hit wins" and it is fixed where the referent is observable.
+            # Found by or-grok, 2026-08-26.
+            for m in claimlib._PATH_LINE.finditer(o["verbatim"]):
+                r2, _ = resolve_path(m.group(1), paths)
+                if r2:
+                    loc = {"path": m.group(1), "line": int(m.group(2)) if m.group(2) else loc.get("line")}
+                    resolved, why = r2, "relocated"
+                    break
         tally[why] = tally.get(why, 0) + 1
         keep = bool(resolved) and (loc.get("line") is not None
                                    or PATH_ONLY_POLICY == "file")
         if not keep:
             unlocated.append({"content": o["verbatim"].strip()[:400],
                               "observation_id": o["observation_id"],
-                              "claimed_path": loc.get("path"), "path_resolution": why})
+                              "claimed_path": claimed, "path_resolution": why})
             continue
         comments.append({
             "content": o["verbatim"].strip(),
@@ -356,7 +369,7 @@ def to_upstream_result(obs, rundir, paths, tally):
             "start_line": loc.get("line"),
             "end_line": loc.get("line"),
             "observation_id": o["observation_id"],      # provenance, ignored by upstream
-            "claimed_path": loc.get("path"),            # what the judge said, before checking
+            "claimed_path": claimed,                    # what the judge said, before checking
             "path_resolution": why,
             "merged_from": o.get("merged_from", []),    # fragments reassembled into this one
         })
@@ -365,6 +378,24 @@ def to_upstream_result(obs, rundir, paths, tally):
             # Withheld from upstream because an empty path is a WILDCARD there, not a
             # non-match. Recorded so the panel's unlocated output stays visible.
             "unlocated": unlocated}
+
+
+# Keys `run` writes about ITSELF, not about the directory. `attempted: 8` sat beside
+# `written: 18` after a subset re-run, because reextract rewrote what it could count and
+# left what it could not. What it cannot vouch for moves under `last_run`, where a reader
+# cannot mistake it for a fact about the files. Found by or-grok, 2026-08-26.
+RUN_ONLY = ("attempted", "skipped", "judges", "effort", "prompt_style")
+
+
+def directory_manifest(prev, fresh):
+    """Merge reextract's directory facts into an existing manifest without laundering the
+    previous run's self-description as directory facts."""
+    out = dict(prev)
+    last = {k: out.pop(k) for k in RUN_ONLY if k in out}
+    if last:
+        out["last_run"] = {**out.get("last_run", {}), **last}
+    out.update(fresh)
+    return out
 
 
 def main():
@@ -449,12 +480,17 @@ def main():
             prev = json.loads(man.read_text())
         except (OSError, json.JSONDecodeError):
             pass
-        prev.update({"instances_file": a.instances, "extractor": claimlib.EXTRACTOR_VERSION,
-                     "written": rebuilt, "reviews": nrev, "judge_slots": ntot,
-                     "degraded_instances": degi, "path_resolution": tally,
-                     "path_only_policy": a.path_only,
-                     "rebuilt_by": "reextract -- describes every result file in this "
-                                   "directory, not just the last subset run"})
+        # The bridge's behaviour (merging, relocation) shapes every result file as much as
+        # claimlib's version does, and `git rev-parse HEAD` does not identify what ran.
+        bridge_md5 = hashlib.md5(pathlib.Path(__file__).read_bytes()).hexdigest()
+        prev = directory_manifest(prev, {
+            "instances_file": a.instances, "extractor": claimlib.EXTRACTOR_VERSION,
+            "bridge_md5": bridge_md5,
+            "written": rebuilt, "reviews": nrev, "judge_slots": ntot,
+            "degraded_instances": degi, "path_resolution": tally,
+            "path_only_policy": a.path_only,
+            "rebuilt_by": "reextract -- describes every result file in this "
+                          "directory, not just the last subset run"})
         man.write_text(json.dumps(prev, indent=2) + "\n", encoding="utf-8")
         print(f"\n  rebuilt {rebuilt} result files from recorded run dirs")
         print(f"  judge slots answered: {nrev}/{ntot}; degraded instances: {len(degi)}/{rebuilt}")
