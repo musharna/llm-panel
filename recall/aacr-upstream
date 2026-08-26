@@ -402,6 +402,27 @@ def main():
                   + (f"  DEGRADED[{','.join(deg)}]" if deg else ""))
         nrev = sum(r[1] for r in rev); ntot = sum(r[3] for r in rev)
         degi = [r[0] for r in rev if r[4]]
+        # REWRITE THE MANIFEST TO DESCRIBE THE DIRECTORY.
+        #
+        # `run` writes a manifest for the instances IT ran. Re-running a degraded subset
+        # into the same directory therefore overwrote an 18-instance manifest with one
+        # describing 8, while 18 result files sat beside it -- a ledger that no longer
+        # described its own contents, which is the defect class this project keeps finding.
+        # reextract walks every result file, so it is the one place that can say what is
+        # actually here.
+        man = out / "manifest.json"
+        prev = {}
+        try:
+            prev = json.loads(man.read_text())
+        except (OSError, json.JSONDecodeError):
+            pass
+        prev.update({"instances_file": a.instances, "extractor": claimlib.EXTRACTOR_VERSION,
+                     "written": rebuilt, "reviews": nrev, "judge_slots": ntot,
+                     "degraded_instances": degi, "path_resolution": tally,
+                     "path_only_policy": a.path_only,
+                     "rebuilt_by": "reextract -- describes every result file in this "
+                                   "directory, not just the last subset run"})
+        man.write_text(json.dumps(prev, indent=2) + "\n", encoding="utf-8")
         print(f"\n  rebuilt {rebuilt} result files from recorded run dirs")
         print(f"  judge slots answered: {nrev}/{ntot}; degraded instances: {len(degi)}/{rebuilt}")
         print("  path resolution: " + ", ".join(f"{k}={v}" for k, v in sorted(tally.items())))
