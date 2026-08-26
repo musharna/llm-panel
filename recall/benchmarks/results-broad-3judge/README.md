@@ -12,10 +12,14 @@ refactors.
 
 |                  | refs | findings | line recall | **semantic recall** | precision |
 | ---------------- | ---: | -------: | ----------: | ------------------: | --------: |
-| positive, defect |  123 |       79 |       21.1% |           **10.6%** |     16.5% |
-| positive, broad  |  123 |      236 |       48.0% |           **26.0%** |     13.6% |
-| negative, defect |   36 |       30 |       11.1% |                2.8% |      3.3% |
-| negative, broad  |   36 |      155 |       44.4% |               16.7% |      3.9% |
+| positive, defect |  123 |       78 |       20.3% |           **10.6%** |     16.7% |
+| positive, broad  |  123 |      235 |       48.0% |           **26.0%** |     13.6% |
+| negative, defect |   36 |       29 |       11.1% |                2.8% |      3.4% |
+| negative, broad  |   36 |      156 |       44.4% |               16.7% |      3.8% |
+
+_Extractor v2, re-judged 2026-08-26 with the same judge._ The v1 table read 79 / 236 / 30 /
+155 findings and 21.1% line recall on the positive defect arm; no semantic figure moved.
+v1 verdicts are archived in `../scores/v1/`.
 
 ## Recall by what the reference asks for — RETRACTED, see below
 
@@ -27,11 +31,17 @@ forbade. **That split does not survive AACR's own labels and is withdrawn.**
 AACR ships a `category` field on every reference comment. Re-cutting the identical scored
 runs on it (`recall/aacr-recut`, no re-run, no new judge calls):
 
-|                                                 | refs | defect | broad | Fisher p |
-| ----------------------------------------------- | ---: | -----: | ----: | -------: |
-| defect-y (Code Defect + Security + Performance) |   78 |  10.3% | 29.5% |   0.0044 |
-| Maintainability and Readability                 |   45 |  11.1% | 20.0% |    0.384 |
-| POOLED                                          |  123 |  10.6% | 26.0% |   0.0027 |
+|                                                 | refs | defect | broad | McNemar p |
+| ----------------------------------------------- | ---: | -----: | ----: | --------: |
+| defect-y (Code Defect + Security + Performance) |   78 |  10.3% | 29.5% |    0.0001 |
+| Maintainability and Readability                 |   45 |  11.1% | 20.0% |     0.289 |
+| POOLED                                          |  123 |  10.6% | 26.0% |    0.0001 |
+
+The two prompts were scored on the SAME 123 references, so the arms are paired and the
+right test is McNemar's exact test on the discordant pairs, not Fisher's on two independent
+proportions (which an earlier version of this table used: 0.0044 / 0.384 / 0.0027 -- the
+wrong test, and a conservative one here). Pooled: 11 references matched under both prompts,
+21 under broad only, 2 under defect only. Found by or-grok, 2026-08-26.
 
 Under the shipped labels the defect prompt recalls maintainability references at **11.1%**
 and defect references at **10.3%** -- `p = 1.0000`, no difference whatsoever. It was never
@@ -69,12 +79,12 @@ Pooled is unaffected: it never used any categorization.
 With references fixed, recall = findings x precision, so the recall ratio must decompose
 exactly -- and it does:
 
-    findings   79 -> 236          x2.99
-    precision  16.5% -> 13.6%     x0.82
+    findings   78 -> 235          x3.01
+    precision  16.7% -> 13.6%     x0.82
     product                       x2.46
     recall     10.6% -> 26.0%     x2.46   (exact)
 
-Per finding, `broad` is slightly **worse** (0.165 matches/finding -> 0.136). The entire
+Per finding, `broad` is slightly **worse** (0.167 matches/finding -> 0.136). The entire
 recall gain is accounted for by emitting three times as much. That is a weaker claim than
 "broadening unlocked a class the prompt had excluded", and it is the one the data supports:
 nothing here shows the prompt's _content_ mattered rather than its _volume_. Distinguishing
@@ -87,10 +97,10 @@ bench-wide, 85 of 123 in this sample), from GPT-5.2, Claude-4.5-Sonnet, Qwen-Cod
 GLM-4.7, Deepseek-V3.2 and Gemini-3-Pro. So "semantic recall against references" is mostly
 agreement with other models. That was a live risk to the headline, and it measures null:
 
-|                | refs | defect | broad | Fisher p |
-| -------------- | ---: | -----: | ----: | -------: |
-| AI-authored    |   85 |   9.4% | 25.9% |   0.0081 |
-| human-authored |   38 |  13.2% | 26.3% |    0.249 |
+|                | refs | defect | broad | McNemar p |
+| -------------- | ---: | -----: | ----: | --------: |
+| AI-authored    |   85 |   9.4% | 25.9% |    0.0013 |
+| human-authored |   38 |  13.2% | 26.3% |    0.0625 |
 
 The panel agrees with human reviewers at about the same rate as with AI ones, so the
 benchmark's AI-heavy composition is not inflating the number. The human arm is small
@@ -101,13 +111,13 @@ benchmark's AI-heavy composition is not inflating the number. The human arm is s
 
 Signal-to-noise falls from **13:1** to **5.3:1** (valid matches against rejected-comment
 matches). But that is a VOLUME effect, not a quality one: per finding, broad is no more
-likely to repeat a comment human reviewers rejected -- negative-arm precision is 3.3% for
-defect and 3.9% for broad, and the difference on the negative arm is not significant
-(p = 0.107).
+likely to repeat a comment human reviewers rejected -- negative-arm precision is 3.4% for
+defect and 3.8% for broad (Fisher p = 1.0; the negative arms are matched one-to-one
+against 156 vs 29 findings, so this one is not a paired comparison of references).
 
 Upstream matches one-to-one, so 3x the findings mechanically permits more references to
 claim a matcher. The volume-independent measure is precision, and it falls only slightly
-(16.5% -> 13.6%). So the real statement is: **broad surfaces 2.45x more of what reviewers
+(16.7% -> 13.6%). So the real statement is: **broad surfaces 2.45x more of what reviewers
 actually flagged, at a slightly lower hit rate, and asks a human to triage 3x the output.**
 
 ## Which to use
@@ -123,7 +133,7 @@ nitpicks is a deliberate choice with real value and this is one benchmark on 18 
 The retraction above strengthens rather than weakens that default. The original case for
 switching was that `defect` had a specific blind spot -- a whole class of valid comments it
 was instructed not to see. AACR's own labels say that blind spot does not exist: the two
-classes are recalled at 10.7% and 10.4%. What `broad` buys is three times the output at a
+classes are recalled at 10.3% and 11.1%. What `broad` buys is three times the output at a
 slightly lower hit rate, which is a throughput/noise trade a user should make deliberately,
 not a defect being repaired.
 

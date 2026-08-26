@@ -24,16 +24,16 @@ panel-triage --bad           # which runs went wrong, across every run root
 
 ## What's here
 
-|                       |                                                                               |
-| --------------------- | ----------------------------------------------------------------------------- |
-| `llm-panel`           | asks the judges, in parallel, and writes the run to disk                      |
-| `panel-report`        | renders a run as one self-contained HTML page, grouped by claim               |
-| `panel-triage`        | finds the runs that _failed_, which a listing shows as ordinary rows          |
-| `recall/panel-recall` | measures what the panel **misses**, against a corpus of planted defects       |
-| `recall/aacr-upstream`| runs the panel over AACR-Bench PRs and hands the findings to **upstream's** evaluator |
-| `recall/aacr-score`   | invokes that evaluator, and refuses to report a number from a judge that isn't running |
-| `claimlib.py`         | the one measurement boundary: reviews → span-grounded observations           |
-| `*-controls`          | the regression suites — 715 controls, every one tied to a defect that shipped |
+|                        |                                                                                        |
+| ---------------------- | -------------------------------------------------------------------------------------- |
+| `llm-panel`            | asks the judges, in parallel, and writes the run to disk                               |
+| `panel-report`         | renders a run as one self-contained HTML page, grouped by claim                        |
+| `panel-triage`         | finds the runs that _failed_, which a listing shows as ordinary rows                   |
+| `recall/panel-recall`  | measures what the panel **misses**, against a corpus of planted defects                |
+| `recall/aacr-upstream` | runs the panel over AACR-Bench PRs and hands the findings to **upstream's** evaluator  |
+| `recall/aacr-score`    | invokes that evaluator, and refuses to report a number from a judge that isn't running |
+| `claimlib.py`          | the one measurement boundary: reviews → span-grounded observations                     |
+| `*-controls`           | the regression suites — 715 controls, every one tied to a defect that shipped          |
 
 ## Install
 
@@ -214,12 +214,20 @@ nothing.
 - **On real PRs, what you ask for determines what you get.** Scored by
   [AACR-Bench](https://github.com/alibaba/aacr-bench)'s **own** evaluator with a real LLM
   judge, on 18 PRs at full roster: the shipped `defect` prompt scores **10.6% semantic
-  recall / 16.5% precision**, and a `broad` prompt asking for what a careful maintainer
-  would actually raise scores **26.0% / 13.6%** — 2.45x the recall for a slightly lower hit
-  rate and 3x the output. Recall splits on what the reference asks for: DEFECT 18.5% ->
-  35.4%, IMPROVEMENT 1.7% -> 15.5% (pooled p = 0.0027). The default stays `defect`; both
-  ship behind `--prompt-style`. See `recall/benchmarks/results-broad-3judge/README.md`.
-- **Location agreement overstates semantic agreement ~2x.** 21.1% of references had a
+  recall / 16.7% precision**, and a `broad` prompt asking for what a careful maintainer
+  would actually raise scores **26.0% / 13.6%** — 2.46x the recall for a slightly lower hit
+  rate and 3x the output. That gain is exactly volume: findings x3.01, precision x0.82
+  (McNemar on the paired references, p = 0.0001).
+  An earlier version of this bullet split recall by a DEFECT/IMPROVEMENT classifier I
+  wrote; that split was circular and is withdrawn — on the benchmark's own `category`
+  field the `defect` prompt recalls both classes at the same rate. The default stays
+  `defect`; both ship behind `--prompt-style`. See
+  `recall/benchmarks/results-broad-3judge/README.md`.
+- **The benchmark judges read the diff, not the repository.** `aacr-upstream` runs each
+  panel in an empty temporary directory with the diff in the prompt, so the numbers above
+  are diff-in-prompt review. A reviewer with the checkout — as the benchmark's own
+  reviewers have — can see callers, tests and history that these judges cannot.
+- **Location agreement overstates semantic agreement ~2x.** 20.3% of references had a
   finding at the right file and line; 10.6% had one a judge called the same concern. A
   location-based matcher cannot detect that gap about itself, which is why scoring is
   delegated upstream.
@@ -228,12 +236,12 @@ nothing.
   only roster and timeout differ. Two instances returned nothing at 300s purely by hitting
   the cap while holding 20 of the 123 references.
 - **Do not read the valid-vs-rejected gap as discrimination.** The panel matched 10.6% of
-  accepted review comments and 2.8% of *rejected* ones — 3.80x, but Fisher exact
+  accepted review comments and 2.8% of _rejected_ ones — 3.80x, but Fisher exact
   **p = 0.194**. It is answerable with a larger negative sample (~138 references per arm
   against the benchmark's 639 available); it is not answered by this one.
 - **Unlocated findings are withheld from upstream, not handed over empty.** Upstream skips
   its path filter when the generated path is falsy and its line filter when the line is
-  None, so a location-less comment matches *every* reference. Passing them through inflated
+  None, so a location-less comment matches _every_ reference. Passing them through inflated
   line matches from 20 to 50 on the first scoring run.
 - **Every other fixture has verified _scope_, not proven absence.** Their known unplanted
   defects are recorded in each `truth.json` and re-checked by execution in
