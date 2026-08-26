@@ -1,0 +1,115 @@
+#!/usr/bin/env python3
+"""Controls for aacr-recut, which re-cuts scored recall on attributes AACR ships.
+
+The re-cut exists because a split I derived myself inverted against ground truth. Its own
+correctness therefore rests entirely on the join, and a join that silently drops rows would
+read as a real effect rather than as a bug. Each control below is a way that has already
+gone wrong or would go wrong undetected.
+
+    aacr-recut-controls        # run them
+    aacr-recut-controls -v     # show each
+"""
+import contextlib
+import json
+import pathlib
+import sys
+
+ROOT = pathlib.Path(__file__).resolve().parent
+SRC = ROOT / "aacr-recut"
+ns = {"__name__": "aacr_recut_controls", "__file__": str(SRC)}
+exec(compile(SRC.read_text(), str(SRC), "exec"), ns)           # noqa: S102
+
+VERBOSE = "-v" in sys.argv
+FAILED = []
+BENCH = ROOT / "benchmarks" / "aacr-bench.json"
+SCORES = ROOT / "benchmarks" / "scores"
+
+
+@contextlib.contextmanager
+def section(name):
+    try:
+        yield
+    except Exception as e:                                     # noqa: BLE001
+        FAILED.append(f"{name}: raised {type(e).__name__}: {e}")
+
+
+def check(name, got, want):
+    if got == want:
+        if VERBOSE:
+            print(f"  ok   {name}")
+    else:
+        FAILED.append(f"{name}: got {got!r}, want {want!r}")
+        print(f"  FAIL {name}: got {got!r}, want {want!r}")
+
+
+if not BENCH.is_file() or not SCORES.is_dir():
+    sys.exit(f"REFUSING: need {BENCH} and {SCORES}. These are the evidence the numbers "
+             f"rest on; without them these controls would pass vacuously.")
+
+
+with section("6.1 the join keys on pr_target_commit, not pr_source_commit"):
+    # Joining on pr_source_commit matched 0 of 174 references and returned a clean, quiet
+    # zero -- no error, just an empty cross-tab that read as 'no data'. The instance_id is
+    # org__repo@<short TARGET commit>. This control pins the key that actually joins.
+    bench = json.load(open(BENCH))
+    idx = ns["bench_index"]()
+    inst = json.load(open(SCORES / "clean-pos.json"))["eval_res"][0]
+    commit = inst["instance_id"].split("@")[-1][:7]
+    cm = inst["comments"][0]
+    check("6.1 a real reference joins on the target key",
+          idx.get((commit, cm["path"], cm["from_line"])) is not None, True)
+    by_source = {((r.get("pr_source_commit") or "")[:7], r.get("path"), r.get("from_line"))
+                 for r in bench}
+    check("6.1 and does NOT join on the source key",
+          (commit, cm["path"], cm["from_line"]) in by_source, False)
+
+
+with section("6.2 every arm joins completely and reproduces its published totals"):
+    # The positive control. If a cut ever disagrees with the README, one of these fires
+    # first and says which arm -- rather than the cut quietly describing a subset.
+    published = {"clean-pos": (123, 13), "broad-pos": (123, 32),
+                 "clean-neg": (36, 1), "broad-neg": (36, 6)}
+    for arm, (n_refs, n_sem) in published.items():
+        rows = ns["refs"](arm)
+        sem = sum(bool(cm.get("semantic_match")) for cm, _ in rows)
+        summary = json.load(open(SCORES / f"{arm}.json"))["summary"]
+        check(f"6.2 {arm} reference count", len(rows), n_refs)
+        check(f"6.2 {arm} semantic matches", sem, n_sem)
+        check(f"6.2 {arm} agrees with the evaluator's own summary",
+              (summary.get("expected_notes"), summary.get("matched_semantic_notes")),
+              (n_refs, n_sem))
+
+
+with section("6.3 a partial join REFUSES rather than reporting a subset"):
+    # The failure this guards is silent, not loud: an unjoined reference is simply absent
+    # from every denominator below it, so recall goes UP and nothing looks wrong. Confirmed
+    # to fire by swapping the join key in the real script: 'FATAL: 123 references did not
+    # join', exit 1.
+    real = ns["bench_index"]
+    ns["bench_index"] = lambda: {}
+    try:
+        ns["refs"]("clean-pos")
+        check("6.3 refused", "returned normally", "SystemExit")
+    except SystemExit as e:
+        check("6.3 refused", isinstance(e.code, str) and "did not join" in e.code, True)
+        check("6.3 the message names the count", "123 references" in str(e.code), True)
+    finally:
+        ns["bench_index"] = real
+    # positive control: with the real index restored the same call must SUCCEED, else this
+    # section would pass on a broken harness that can no longer join anything at all.
+    check("6.3 and the legitimate join still works", len(ns["refs"]("clean-pos")), 123)
+
+
+with section("6.4 the category collapse covers every value the bench actually uses"):
+    # DEFECTY is a literal set, and a list of names cannot guard an open set: a category
+    # added upstream would silently fall into MAINTAINABILITY and shift a published split.
+    seen = {r.get("category") for r in json.load(open(BENCH))}
+    known = ns["DEFECTY"] | {"Maintainability and Readability"}
+    check("6.4 no unclassified category in the corpus", sorted(seen - known), [])
+
+
+print(f"\n{'FAILED' if FAILED else 'all controls green'}"
+      f" ({len(FAILED)} failing)" if FAILED else "\nall controls green")
+for f in FAILED:
+    print("  -", f)
+sys.exit(1 if FAILED else 0)
