@@ -801,6 +801,12 @@ try:
     _ROWS = pr.attention_view(pr.load_run(_REAL))[0] if _REAL.is_dir() else []
 except Exception:                                          # noqa: BLE001
     _ROWS = []
+# Without the run directory, sections 31.x and 33.real used to pass VACUOUSLY -- empty rows,
+# and a literal 45 standing in for the count -- so on any other machine the suite went green
+# by not running its real-execution controls. A control that did not run is a failure, not
+# a pass. Found by big-pickle, 2026-08-26.
+if not _REAL.is_dir():
+    FAILED.append(f"31/33.real: {_REAL} is missing -- the real-execution controls did not run")
 
 with section("31.1 defined_symbols reads def, class and assignment"):
     check("defined_symbols reads def, class and assignment", sorted(pr.defined_symbols(_CORPUS)), ["MARKUP", "Widget", "tag_of"])
@@ -1014,8 +1020,9 @@ with section("33.A2b a synthesis-only accounting still flags the missing rebutta
 
 # REAL EXECUTION -- the whole batch, on the real audit-3 reviews.
 with section("33.real the real run keeps every finding title"):
-    check("33.real all 45 findings are titled",
-          len(pr.finding_titles(pr.load_run(_REAL))) if _REAL.is_dir() else 45, 45)
+    if _REAL.is_dir():
+        check("33.real all 45 findings are titled",
+              len(pr.finding_titles(pr.load_run(_REAL))), 45)
 
 # --- 34. audit-3 triage: D1, E1, B1 ----------------------------------------
 # D1 and E1 were each raised INDEPENDENTLY by all four judges, and are one mistake wearing

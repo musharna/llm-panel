@@ -29,14 +29,23 @@ runs on it (`recall/aacr-recut`, no re-run, no new judge calls):
 
 |                                                 | refs | defect | broad | Fisher p |
 | ----------------------------------------------- | ---: | -----: | ----: | -------: |
-| defect-y (Code Defect + Security + Performance) |   75 |  10.7% | 30.7% |   0.0042 |
-| Maintainability and Readability                 |   48 |  10.4% | 18.8% |    0.386 |
+| defect-y (Code Defect + Security + Performance) |   78 |  10.3% | 29.5% |   0.0044 |
+| Maintainability and Readability                 |   45 |  11.1% | 20.0% |    0.384 |
 | POOLED                                          |  123 |  10.6% | 26.0% |   0.0027 |
 
-Under the shipped labels the defect prompt recalls maintainability references at **10.4%**
-and defect references at **10.7%** -- `p = 1.0000`, no difference whatsoever. It was never
+Under the shipped labels the defect prompt recalls maintainability references at **11.1%**
+and defect references at **10.3%** -- `p = 1.0000`, no difference whatsoever. It was never
 selectively blind to the forbidden class. My classifier put those same two classes at 18.5%
 and 1.7% (p = 0.0025).
+
+_Corrected 2026-08-26 (audit)._ The first version of this table read 75/48 and 10.7%/10.4%.
+It joined scored references to bench rows on (commit, path, line), and that key is not
+unique: 202 of the bench's 1,925 keys carry two or more comments at the same file and line,
+110 of them differing in `category`, and 26 of these 123 references sat on such a key. The
+dict kept whichever row was written last. The join now includes the comment text
+(`aacr-recut`, control 6.5); the conclusion is unchanged and the numbers above are the
+corrected ones. Found by codex from `scores/clean-pos.json`, in a review that timed out
+before it could finish -- the two judges that completed did not see it.
 
 **Why the two disagree: the classifier and the panel prompt share a definition.** Both were
 written by me, and the phrase "concrete failure scenario" appears verbatim in each --
@@ -46,10 +55,10 @@ scenario". Both put refactors on the other side. So a reference the panel matche
 it was hunting exactly that, is also a reference my classifier calls DEFECT. The split
 measured the shared definition, not the panel.
 
-The agreement rate hides it: my labels match AACR's on 95/123 = **77%** of references. But
-the 28 disagreements are not random with respect to the outcome. Of the 13 references the
-defect prompt actually matched, my classifier called **12 of 13** DEFECT; AACR's field calls
-**8 of 13** defect-y. A classifier can be 77% accurate and still invert a split, when its
+The agreement rate hides it: my labels match AACR's on 99/123 = **80%** of references. But
+the 24 disagreements are not random with respect to the outcome. Of the 13 references the
+defect prompt actually matched, my classifier called **11 of 13** DEFECT; AACR's field calls
+**8 of 13** defect-y. A classifier can be 80% accurate and still invert a split, when its
 errors correlate with the measured quantity. This is the circular-calibration failure --
 a scale derived from the artifact under test.
 
@@ -74,18 +83,19 @@ those needs an arm that raises volume without widening scope -- not run.
 ## Who wrote the references
 
 74% of AACR's reference comments are AI-authored (`is_ai_comment`; 1,597 of 2,145
-bench-wide, 90 of 123 in this sample), from GPT-5.2, Claude-4.5-Sonnet, Qwen-Coder-480B,
+bench-wide, 85 of 123 in this sample), from GPT-5.2, Claude-4.5-Sonnet, Qwen-Coder-480B,
 GLM-4.7, Deepseek-V3.2 and Gemini-3-Pro. So "semantic recall against references" is mostly
 agreement with other models. That was a live risk to the headline, and it measures null:
 
-|                | refs | defect | broad |
-| -------------- | ---: | -----: | ----: |
-| AI-authored    |   90 |  10.0% | 26.7% |
-| human-authored |   33 |  12.1% | 24.2% |
+|                | refs | defect | broad | Fisher p |
+| -------------- | ---: | -----: | ----: | -------: |
+| AI-authored    |   85 |   9.4% | 25.9% |   0.0081 |
+| human-authored |   38 |  13.2% | 26.3% |    0.249 |
 
 The panel agrees with human reviewers at about the same rate as with AI ones, so the
 benchmark's AI-heavy composition is not inflating the number. The human arm is small
-(n=33, 95% CI [12.8, 41.0] for broad) -- consistent with no difference, not evidence of none.
+(n=38, 95% CI [15.0, 42.0] for broad) -- consistent with no difference, not evidence of none.
+(Corrected 2026-08-26 with the unique join; the first version read 90/33.)
 
 ## The cost, stated honestly
 

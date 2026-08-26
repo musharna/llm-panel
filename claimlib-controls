@@ -321,6 +321,28 @@ with section("11.5 a near-miss phrasing does NOT abstain (it is not a name list)
         r = claimlib.extract(f"**{near}**\n\n1. **Thing** in `a/b.py:2`\n")
         check(f"11.5 {near!r} falls through", r["abstained"], False)
 
+with section("11.6 MEASURED, NOT CHANGED: a trailing sentinel after analysis prose abstains"):
+    # An audit proposed that a sentinel quoted mid-review (as an example or instruction)
+    # wrongly silences real findings. Measured against every judge review in the published
+    # AACR runs first: 41 contain the sentinel; 0 have findings plus a quoted sentinel; 15
+    # are a per-file walkthrough that concludes NO DEFECTS FOUND on the last line. Both
+    # proposed rules -- "first line only" and "only when nothing located remains" -- would
+    # have turned that walkthrough into findings. This pins the shape that actually occurs.
+    txt = ("**Analysis of `src/app/main.py`:**\n\nThe indexing at line 10 stays consistent "
+           "with the filter. No stale references remain.\n\n- **`lib/util/main.py`**: style "
+           "only, no defect.\n\nNO DEFECTS FOUND\n")
+    r = claimlib.extract(txt, judge="j", run="r")
+    check("11.6 abstained", r["abstained"], True)
+    check("11.6 the walkthrough is not findings", len(r["observations"]), 0)
+
+with section("12.1 headings at every Markdown level start a finding"):
+    # The extractor stopped at #### while the renderer went to ######. Fails pre-fix on
+    # the STATED reason: 1 observation instead of 2 at level five.
+    for level in (1, 4, 5, 6):
+        h = "#" * level
+        r = claimlib.extract(f"{h} First in `a/b.py:2`\nbody\n{h} Second in `a/b.py:9`\nbody\n")
+        check(f"12.1 level {level} splits into two", len(r["observations"]), 2)
+
 
 print(f"\n{'FAILED' if FAILED else 'all controls green'}"
       f" ({len(FAILED)} failing)" if FAILED else "\nall controls green")

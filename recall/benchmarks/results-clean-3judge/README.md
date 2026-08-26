@@ -8,26 +8,26 @@ Scored by the **upstream** evaluator (`alibaba/aacr-bench`) with a real LLM judg
 (`anthropic/claude-opus-4.5`, outside the panel's own model families). `judge failures
 during scoring: 0` on every arm — asserted by `aacr-score`, not assumed.
 
-|                    | positive (valid refs) | negative (REJECTED refs) |
-|--------------------|----------------------:|-------------------------:|
-| instances          | 18/20                 | 9/10                     |
-| judge slots        | **54/54**, 0 degraded | 26/27, 1 degraded        |
-| references         | 123                   | 36                       |
-| findings           | 79                    | 30                       |
-| line matches       | 26 (21.1%)            | 4 (11.1%)                |
-| **semantic**       | **13 (10.6%)**        | 1 (2.8%)                 |
-| precision          | 16.5%                 | 3.3%                     |
+|              | positive (valid refs) | negative (REJECTED refs) |
+| ------------ | --------------------: | -----------------------: |
+| instances    |                 18/20 |                     9/10 |
+| judge slots  | **54/54**, 0 degraded |        26/27, 1 degraded |
+| references   |                   123 |                       36 |
+| findings     |                    79 |                       30 |
+| line matches |            26 (21.1%) |                4 (11.1%) |
+| **semantic** |        **13 (10.6%)** |                 1 (2.8%) |
+| precision    |                 16.5% |                     3.3% |
 
 ## Roster and timeout are worth ~2x
 
 Against the degraded 2-judge pilot (`../results-pilot-2judge`, 300s, 39/54 slots), scored
 with the SAME extractor so only roster and timeout differ:
 
-| | pilot | clean |
-|---|---|---|
-| semantic recall | 5.7% | **10.6%** |
-| line recall | 13.0% | 21.1% |
-| precision | 11.9% | 16.5% |
+|                 | pilot | clean     |
+| --------------- | ----- | --------- |
+| semantic recall | 5.7%  | **10.6%** |
+| line recall     | 13.0% | 21.1%     |
+| precision       | 11.9% | 16.5%     |
 
 Two positive instances returned zero findings in the pilot purely by hitting the 300s cap,
 and they carry 20 of the 123 references. At 900s they yield 8 and 4 located findings.
@@ -52,13 +52,24 @@ came from the degraded pilot and should be ignored. Both estimates rest on very 
 
 ## Known limits of these numbers
 
-* Unlocated findings are withheld from upstream and counted in each result's `unlocated`
+- Unlocated findings are withheld from upstream and counted in each result's `unlocated`
   field. They are NOT non-matches there: an empty path is falsy, so upstream's path filter
   is skipped, and a None line skips its line filter — a location-less comment matches every
   reference. Handing them over inflated line matches from 20 to 50 on the first pilot
   scoring.
-* Precision partly measures verbosity. One instance's judges wrote a reasoning transcript
+- Precision partly measures verbosity. One instance's judges wrote a reasoning transcript
   ("Let me look at...", "But actually, I need to..."); such prose mentions real filenames,
   resolves by basename, and survives as findings.
-* Sentinel compliance varies ~10x by judge (big-pickle 52.6%, codex 26.3%, nemotron 5.3%),
+- Sentinel compliance varies ~10x by judge (big-pickle 52.6%, codex 26.3%, nemotron 5.3%),
   so abstention is a property of the judge, not the panel.
+- **One of the 13 semantic matches is a bare header.** The finding scored against
+  FreeCAD@ec3da2e `DrawViewPart.h:242` is, in full, `**File: DrawViewPart.h (lines
+242-244)**` -- the judge wrote two `**File:**` lines and the body went to the second, so
+  the first reached upstream with no claim in it, and the semantic judge called that
+  "similar" to a reference about const-ref parameters. Extractor v2 merges a bare header
+  forward into the body it introduces (`aacr-upstream` control 5.7). Re-extracting these
+  runs with v2 changes 79 -> 77 positive and 30 -> 29 negative comments (broad: 236 -> 235,
+  155 unchanged); the semantic verdicts above are from v1 and **have not been re-scored** --
+  the re-score needs judge credit that was exhausted on 2026-08-26. Until then the honest
+  positive figure is 12-13 of 123. Found by codex in the 2026-08-26 audit, from
+  `scores/clean-pos.json`.

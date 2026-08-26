@@ -243,17 +243,50 @@ def merge_fragments(obs, paths):
 
     Measured on both pilot arms before being written: 140 findings -> 93 (-34%), with
     LOCATED findings 90 -> 90. It removes only fragments that could never have matched.
+
+    TWO EXCEPTIONS, both found by the 2026-08-26 audit:
+
+    * A basename that matches MORE THAN ONE diff file (`main.py` when the diff touches
+      src/app/main.py and lib/util/main.py) is a real location the bridge cannot place,
+      not a fragment. Merging it glued two distinct findings into one. It stands, and
+      to_upstream_result withholds it as `ambiguous`. (nemotron)
+    * A boundary line with nothing under it is a HEADER, not a finding. In the clean run,
+      `**File: DrawViewPart.h (lines 242-244)**` was followed directly by `**File:
+      DrawViewPart.cpp (lines 1501, 1514, 1527)**` and the body; the first went upstream as
+      a comment containing no claim at all, and the judge called that bare header
+      "similar" to a reference about const-ref parameters. One of the 13 published
+      semantic matches was that. A header belongs to what FOLLOWS it, and takes the
+      finding's declared location with it. (codex, from scores/clean-pos.json)
     """
     out = []
     for o in obs:
-        resolved, _ = resolve_path((o.get("location") or {}).get("path"), paths)
-        if out and not resolved:
+        resolved, why = resolve_path((o.get("location") or {}).get("path"), paths)
+        if out and not resolved and why != "ambiguous":
             prev = out[-1]
             prev["verbatim"] = prev["verbatim"] + o["verbatim"]
             prev.setdefault("merged_from", []).append(o["observation_id"])
         else:
             out.append(dict(o))
+    # Walk backwards so a chain of headers collapses into the body it introduces. A header
+    # merges only into something that HAS a body: two bare titles in a row are two findings
+    # (control 5.2), and the last observation has nothing to follow, so it stands.
+    i = len(out) - 2
+    while i >= 0:
+        head, nxt = out[i], out[i + 1]
+        if _BARE.match(head["verbatim"].strip()) and not _BARE.match(nxt["verbatim"].strip()):
+            merged = dict(head)
+            merged["verbatim"] = head["verbatim"] + nxt["verbatim"]
+            merged["merged_from"] = (head.get("merged_from", []) + [nxt["observation_id"]]
+                                     + nxt.get("merged_from", []))
+            out[i + 1] = merged
+            del out[i]
+        i -= 1
     return out
+
+
+# A single line that is entirely a heading or entirely bold: a boundary with no body.
+# `$` without re.M, so anything spanning a second line is not bare.
+_BARE = re.compile(r"^(?:\#{1,6}[ \t]+[^\n]*|\*\*[^\n*][^\n]*\*\*)[ \t]*$")
 
 
 # How to treat a finding that names a real FILE but no line.
