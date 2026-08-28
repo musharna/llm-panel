@@ -1,0 +1,83 @@
+{
+  "review": {
+    "comments": [
+      {
+        "content": "- **Critical \u2014 `src/Storages/ObjectStorageQueue/ObjectStorageQueueSource.cpp:240`**: Partial filtering compacts `new_batch` but leaves `file_metadatas` at its original indexes. For a batch `[a, b]` where `a` is already locally `Processing` and `b` successfully acquires its Keeper lock, the batch becomes `[b]` while metadata remains `[metadata(a), metadata(b)]`. `next()` then pairs `b` with `metadata(a)`: debug builds abort on the path assertion; release builds read `b` but commit `a` as processed, potentially marking `a` prematurely and later reprocessing `b`, causing missing or duplicate data.",
+        "path": "src/Storages/ObjectStorageQueue/ObjectStorageQueueSource.cpp",
+        "start_line": 240,
+        "end_line": 240,
+        "observation_id": "3a6b32a489afb799",
+        "claimed_path": "src/Storages/ObjectStorageQueue/ObjectStorageQueueSource.cpp",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "**Defect 1 (primary): misalignment between compacted `object_infos` and non-compacted `file_metadatas`.**\n\nConcrete scenario: unordered mode, batch = objects A, B, C. `prepareSetProcessingRequests` returns nullopt for B (e.g., another table on the same keeper path holds B's `processing_lock`), success for A and C. Then `new_batch[1] = nullptr`, `num_successful_objects = 2`. At the new compaction block (lines 240-252), `new_batch` becomes [A, C] (size 2) and becomes `object_infos` at line 257. But `file_metadatas` was resized to 3 at line 186 and filled as [metaA, metaB, metaC] \u2014 it is never compacted alongside `new_batch`.\n\nFirst `next()`: index 0 \u2192 returns (A, metaA) \u2014 correct. Second `next()`: index 1 \u2192 returns (object_infos[1] = C, `file_metadatas[1]` = **metaB**). B's metadata is handed back paired with object C. In a debug build the `chassert` at line 273 (`result.first->getPath() == result.second->getPath()`) fires \u2192 LOGICAL_ERROR crash; in a release build C is processed and later committed using B's keeper metadata (wrong path \u2192 C incorrectly marked processed / wrong file committed). The value chain `result.second` feeds `processed_files` and `prepareCommitRequests`, so the wrong file's keeper node is committed. Defect lives on `ObjectStorageQueueSource.cpp`, line 240 (`if (num_successful_objects != new_batch.size())`, the newly added compaction) \u2014 the `file_metadatas` should be compacted in lockstep.\n\n**Defect 2 (secondary): all-nullopt batch \u2192 LOGICAL_ERROR throw.**\n\nSame line region. If every object in a non-empty batch returns nullopt (plausible with the change to 10 concurrent tables sharing one keeper path in the modified test), `num_successful_objects = 0`, compaction yields `new_batch` empty \u2192 `object_infos` empty, `index = 0`. Then `if (index >= object_infos.size())` \u2192 `0 >= 0` \u2192 true, throwing `LOGICAL_ERROR` \"Index out of bound for blob metadata. Index: 0, size: 0\" (line 260-266). This path is newly reachable only because of this diff (previously `prepareSetProcessingRequests` couldn't drop objects). The source/query aborts instead of skipping to the next batch. Lives on `ObjectStorageQueueSource.cpp` lines 240-252 (compaction) interacting with line 260.\n\nBoth stems: the diff compacts `new_batch` but neither realigns `file_metadatas` nor handles a fully-empty result by re-fetching.\n\nI verified: `file_metadatas` is a persistent member (ObjectStorageQueueSource.h:90), cleared only at line 140 on a new batch, resized to `new_batch.size()` at line 186, and indexed at line 270 with the post-compaction `index` \u2014 confirming the misalignment is real and not corrected elsewhere.",
+        "path": "src/Storages/ObjectStorageQueue/ObjectStorageQueueSource.cpp",
+        "start_line": 240,
+        "end_line": 240,
+        "observation_id": "0ec997d3182b32af",
+        "claimed_path": "ObjectStorageQueueSource.cpp",
+        "path_resolution": "basename",
+        "merged_from": [
+          "c3126b356dfa0460"
+        ]
+      },
+      {
+        "content": "# DEFECT 1 (most severe) \u2014 `src/Storages/ObjectStorageQueue/ObjectStorageQueueSource.cpp` line 240 (the new `if (num_successful_objects != new_batch.size())` compaction, diff hunk `@@ -220,6 +236,20 @@`)\n\nThe diff compacts `new_batch` down to the successful objects only, but **does not compact `file_metadatas` in lockstep**, so the two vectors desynchronize.\n\nConcrete failure: unordered mode, batch = [A, B, C]. `prepareSetProcessingRequests` returns `nullopt` for B (another table on the same keeper path holds B's `processing_lock`) and success for A and C. `new_batch[1] = nullptr`, `num_successful_objects = 2`. The new block compacts `new_batch` \u2192 [A, C] (size 2), which becomes `object_infos` (line 257). But `file_metadatas` was resized to 3 and filled as [metaA, metaB, metaC] and left untouched.\n\n- `next()` call 1, index 0: returns (A, `file_metadatas[0]`=metaA) \u2014 OK.\n- `next()` call 2, index 1: returns (`object_infos[1]` = C, `file_metadatas[1]` = **metaB**). B's metadata is paired with object C.\n\nDownstream, `result.second` feeds `processed_files` and `prepareCommitRequests`, so C gets committed against B's keeper node (wrong path). In a debug build the `chassert` at line 273 (`result.first->getPath() == result.second->getPath()`) fires first \u2192 LOGICAL_ERROR crash. In release, C is silently processed/committed using the wrong file's metadata. `file_metadatas` must be compacted symmetrically with `new_batch`.",
+        "path": "src/Storages/ObjectStorageQueue/ObjectStorageQueueSource.cpp",
+        "start_line": 240,
+        "end_line": 240,
+        "observation_id": "bc2f3613fe2814dc",
+        "claimed_path": "src/Storages/ObjectStorageQueue/ObjectStorageQueueSource.cpp",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "# DEFECT 2 (secondary) \u2014 `src/Storages/ObjectStorageQueue/ObjectStorageQueueSource.cpp` lines 240-252 interacting with line 260\n\nIf **every** object in a non-empty batch returns `nullopt` (directly plausible when several tables share one keeper path and hold the `processing_lock` \u2014 the exact multi-table scenario this PR targets and expands to 10 tables in the test), then `num_successful_objects = 0`, compaction yields an empty `new_batch` \u2192 empty `object_infos` at line 257 with `index = 0`. Line 260 `if (index >= object_infos.size())` \u2192 `0 >= 0` \u2192 true, throwing `LOGICAL_ERROR` \"Index out of bound for blob metadata. Index: 0, size: 0\". This aborts the whole source/query instead of fetching a fresh batch. This path is newly reachable only because this diff lets `prepareSetProcessingRequests` drop objects (previously it could not). There is no re-loop/fetch to recover from an all-dropped batch.\n\n(I traced `file_metadatas`: member at ObjectStorageQueueSource.h:90, cleared only at line 140 per new batch, resized to `new_batch.size()` at line 186, and indexed at line 270 with the post-compaction `index` \u2014 confirming the misalignment is real and not corrected anywhere else.)**DEFECTS FOUND:**\n\n---",
+        "path": "src/Storages/ObjectStorageQueue/ObjectStorageQueueSource.cpp",
+        "start_line": 240,
+        "end_line": 240,
+        "observation_id": "186aea43efe4043e",
+        "claimed_path": "src/Storages/ObjectStorageQueue/ObjectStorageQueueSource.cpp",
+        "path_resolution": "exact",
+        "merged_from": [
+          "c0ad2a4c95d3739c"
+        ]
+      },
+      {
+        "content": "### 1. `src/Storages/ObjectStorageQueue/ObjectStorageQueueIFileMetadata.cpp:286` \u2014 Misleading log message for non-Processing states\n\nWhen `prepareSetProcessingRequests` finds the file in `Processed` state or `Failed` with retries exhausted, it logs:\n```\n\"File {} is being processed on this server by another table on this server\"\n```\nBut the file is **not** being processed \u2014 it's already processed or permanently failed. The log message is only accurate for `State::Processing`.\n\n**Failure scenario:** File was already processed by another replica. This table reads the state as `Processed`, skips the file, but logs a confusing message claiming another table is \"currently processing\" it.\n\n---",
+        "path": "src/Storages/ObjectStorageQueue/ObjectStorageQueueIFileMetadata.cpp",
+        "start_line": 286,
+        "end_line": 286,
+        "observation_id": "c798d0941d9136df",
+        "claimed_path": "src/Storages/ObjectStorageQueue/ObjectStorageQueueIFileMetadata.cpp",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "### 2. `src/Storages/ObjectStorageQueue/ObjectStorageQueueSource.cpp:217` \u2014 Incorrect success count in log\n\n```cpp\nLOG_TEST(log, \"Successfully set {} files as processing\", new_batch.size());\n```\n`new_batch.size()` includes `nullptr` entries for files where `prepareSetProcessingRequests` returned `std::nullopt`. Should log `num_successful_objects`.\n\n**Failure scenario:** Batch of 10 files, 3 fail to acquire lock \u2192 log claims \"Successfully set 10 files as processing\" but only 7 were actually set.\n\n---",
+        "path": "src/Storages/ObjectStorageQueue/ObjectStorageQueueSource.cpp",
+        "start_line": 217,
+        "end_line": 217,
+        "observation_id": "888bf76a7de6ae3f",
+        "claimed_path": "src/Storages/ObjectStorageQueue/ObjectStorageQueueSource.cpp",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "### 3. `src/Storages/ObjectStorageQueue/ObjectStorageQueueSource.cpp:240-252` \u2014 `file_metadatas` not filtered alongside `new_batch`, causing metadata/file mismatch\n\nThe code filters `new_batch` to remove `nullptr` entries (files that couldn't be prepared), but **does not filter `file_metadatas`**. Later at lines 268-275, `file_metadatas[index]` is paired with `object_infos[index]`, causing:\n- Wrong metadata returned for each file (shifted by number of filtered entries)\n- `chassert` at line 273-275 fails in debug builds: `result.first->getPath() == result.second->getPath()`\n- In release builds: silent corruption \u2014 file B processed with file A's metadata (wrong `processing_id_version`, wrong path tracking)\n\n**Failure scenario:** Batch `[fileA, fileB, fileC]`. `fileA` fails preparation (another thread holds lock). `new_batch` becomes `[fileB, fileC]` after filtering. `file_metadatas` remains `[metaA, metaB, metaC]`. First `next()` call returns `(fileB, metaA)` \u2014 path mismatch assertion fails or wrong metadata used.",
+        "path": "src/Storages/ObjectStorageQueue/ObjectStorageQueueSource.cpp",
+        "start_line": 240,
+        "end_line": 240,
+        "observation_id": "979037857ec4c2b8",
+        "claimed_path": "src/Storages/ObjectStorageQueue/ObjectStorageQueueSource.cpp",
+        "path_resolution": "exact",
+        "merged_from": []
+      }
+    ]
+  },
+  "rundir": "/home/mjarnold/.cache/llm-panel/runs/ClickHouse__ClickHouse__79224f2-37ba61bb1758/20260827-232640-78460",
+  "extractor": "2",
+  "unlocated": []
+}

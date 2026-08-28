@@ -1,0 +1,72 @@
+{
+  "review": {
+    "comments": [
+      {
+        "content": "## Defect 1 \u2014 Async search tests assert before the background search logs anything (race / effectively always-failing)\n\n**File:** `x-pack/plugin/async-search/src/internalClusterTest/java/org/elasticsearch/xpack/search/AsyncSearchErrorTraceIT.java`\n**Lines:** 180-181 (Default), 214-215 (True), 248-249 (False)\n\nEach of the three new async-search logging tests submits the search with `wait_for_completion_timeout=0ms` (line 168 / 201 / 235), so `getRestClient().performRequest(searchRequest)` (line 180 / 214 / 248) returns immediately while the shard query is still running asynchronously on the data nodes. The very next statement is `mockLog.assertAllExpectationsMatched()` (line 181 / 215 / 249), which is **non\u2011waiting** \u2014 for `SeenEventExpectation` (and the new `PatternAndExceptionSeenEventExpectation`, which inherits `SeenEventExpectation.assertMatched`) it does `assertThat(seenLatch.getCount(), equalTo(0L))` (MockLog.java:215-217).\n\nSo the `debug` logging introduced by this PR in `SearchService.maybeWrapListenerForStackTrace` (SearchService.java:557-560) happens on the data node only *after* the async search is dispatched in the background \u2014 i.e. after `performRequest` returns.\n\nFailure scenario: run `testLoggingInAsyncSearchFailingQueryErrorTraceDefault` \u2192 submit async search with 0 ms wait \u2192 `performRequest` returns before the data-node shard failures reach `SearchService`'s debug logger \u2192 `assertAllExpectationsMatched()` checks the `SeenEventExpectation` latch counts (\"expected to see ... but did not\") before any `match()` fired \u2192 the test throws `AssertionError` even though the production logging is correct. The helper `MockLog.awaitAllExpectationsMatched()` (MockLog.java:119-121, which waits up to `SAFE_AWAIT_TIMEOUT`) is the intended API for async work and is not used here. Note additionally that the search's *first* run (lines 169-174, polled to completion) produces the same logging *before* the `MockLog.capture` block opens at line 177, so those events are not captured either; the only events that could satisfy the expectations come from a second, non-awaited async submission.",
+        "path": "x-pack/plugin/async-search/src/internalClusterTest/java/org/elasticsearch/xpack/search/AsyncSearchErrorTraceIT.java",
+        "start_line": 180,
+        "end_line": 180,
+        "observation_id": "843ebefbb9fff72f",
+        "claimed_path": "x-pack/plugin/async-search/src/internalClusterTest/java/org/elasticsearch/xpack/search/AsyncSearchErrorTraceIT.java",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "## Defect 2 \u2014 Scroll-continuation stack-trace stripping now keys off a stale, creation-time channel version\n\n**File:** `server/src/main/java/org/elasticsearch/search/SearchService.java`\n**Lines:** 865-866 (and the gate at 552)\n\nFor the scroll path, `executeQueryPhase(InternalScrollSearchRequest, \u2026)` previously wrapped the listener using the explicit `channel.getVersion()` of the scroll *continuation* connection (the `version` argument that was removed from the `SearchTransportService.java` handler at lines 456-457 / 469-470 and from this method). The diff now replaces it with `readerContext.getShardSearchRequest(null).getChannelVersion()` (line 865-866), i.e. the `channelVersion` captured on the `ShardSearchRequest` when the scroll was *created* (`LegacyReaderContext.getShardSearchRequest` returns the stored original request).\n\nThe decision in `maybeWrapListenerForStackTrace` (line 552) only consults the `error_trace` header when `request.getChannelVersion().onOrAfter(ERROR_TRACE_IN_TRANSPORT_HEADER)`; otherwise `header` stays `true` and the listener is not wrapped, so stack traces are sent with the response.\n\nFailure scenario (mixed-version / connection-change): a scroll is opened while the coordinator\u2194data-node connection version is below `ERROR_TRACE_IN_TRANSPORT_HEADER` (creation-time `channelVersion` stored as `V_old`), then the scroll is continued over a connection now at/above the gate with the `error_trace=false` header. Old code used the continuation channel's version \u2192 `error_trace=false` \u2192 stack trace stripped. New code uses the stored `V_old` \u2192 gate fails \u2192 `header` stays `true` \u2192 the listener is not wrapped and the full stack trace is returned to the client despite `error_trace=false`, the exact information-leak this code exists to prevent.\n\n(Note: in a homogeneous single-version cluster the two version sources coincide, so this only manifests during a rolling upgrade or when a scroll/PIT span a node-reconnect with differing connection versions.)",
+        "path": "server/src/main/java/org/elasticsearch/search/SearchService.java",
+        "start_line": 865,
+        "end_line": 865,
+        "observation_id": "159fb0dbae863bd0",
+        "claimed_path": "server/src/main/java/org/elasticsearch/search/SearchService.java",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "### 1. **AsyncSearchErrorTraceIT.java:153-260** \u2014 Async search logging tests don't wait for background execution\n\n**Files/Lines:** `x-pack/plugin/async-search/src/internalClusterTest/java/org/elasticsearch/xpack/search/AsyncSearchErrorTraceIT.java` (methods at lines 153, 185, 219)\n\n**Failure scenario:** \n- Test submits an async search via `/_async_search` (returns immediately, search runs in background)\n- Test creates `MockLog.capture()` and submits the **same** search request again\n- Test immediately calls `mockLog.assertAllExpectationsMatched()`\n- **Defect:** The async search executes on a background thread pool. The HTTP request returns before the search phase runs, so the \"Clearing stack trace before transport\" log hasn't been emitted yet. The assertion fails intermittently because expectations aren't met in time.\n\n**Concrete input \u2192 wrong behavior:** Any run where the background search thread hasn't started by the time `assertAllExpectationsMatched()` executes (which is almost always, since the test doesn't poll for completion like it does for the first search submission).\n\n---",
+        "path": "x-pack/plugin/async-search/src/internalClusterTest/java/org/elasticsearch/xpack/search/AsyncSearchErrorTraceIT.java",
+        "start_line": 153,
+        "end_line": 153,
+        "observation_id": "50047ff8ef2b93eb",
+        "claimed_path": "AsyncSearchErrorTraceIT.java",
+        "path_resolution": "basename",
+        "merged_from": [
+          "5c8234d44454f8b7"
+        ]
+      },
+      {
+        "content": "### 2. **ErrorTraceHelper.java:102-115** \u2014 `addUnseenLoggingExpectations` uses substring matching causing false positives\n\n**Files/Lines:** `test/framework/src/main/java/org/elasticsearch/search/ErrorTraceHelper.java` (lines 102-115)\n\n**Failure scenario:**\n- Method creates `UnseenEventExpectation` with pattern like `[node1][test2][1] Clearing stack trace before transport:`\n- `UnseenEventExpectation` inherits `AbstractEventExpectation.match()` which uses `String.contains()` for patterns without `*`\n- **Defect:** Shard number `1` is a substring of shard `10`, `11`, `12`, etc. A log for shard 10 (`[node1][test2][10]...`) contains the shard-1 pattern, causing the \"unseen\" expectation to incorrectly trigger.\n\n**Concrete input \u2192 wrong behavior:** Cluster with \u226510 shards on `test2` index, `error_trace=true` (so no logs expected). When shard 10 fails, its log `[nodeX][test2][10]...` matches the unseen expectation for shard 1, causing test failure: \"expected not to see shard 1 log but did\".\n\n---",
+        "path": "test/framework/src/main/java/org/elasticsearch/search/ErrorTraceHelper.java",
+        "start_line": 102,
+        "end_line": 102,
+        "observation_id": "2bdf0ca7da7078e6",
+        "claimed_path": "ErrorTraceHelper.java",
+        "path_resolution": "basename",
+        "merged_from": [
+          "bd664c9b68def3e6"
+        ]
+      },
+      {
+        "content": "### 3. **ErrorTraceHelper.java:65-92** \u2014 `addSeenLoggingExpectations` builds regex from unescaped node IDs\n\n**Files/Lines:** `test/framework/src/main/java/org/elasticsearch/search/ErrorTraceHelper.java` (lines 65-92)\n\n**Failure scenario:**\n- `nodesDisjunction` joins raw node IDs into regex alternation: `(node-id-1|node.id.2|node*3)`\n- **Defect:** Node IDs containing regex metacharacters (`.`, `*`, `+`, `?`, `(`, `)`, `[`, `]`, `{`, `}`, `|`, `^`, `$`, `\\`) break the pattern or cause incorrect matches. Elasticsearch node IDs can contain `.` and `-` (e.g., UUIDs like `a1b2-c3d4-...`), and `-` inside character classes is special, but here it's in a group \u2014 however `.` matches any char, `*` is quantifier, etc.\n\n**Concrete input \u2192 wrong behavior:** Node named `node.1` produces pattern `(node.1|node.2)` which matches `nodeX1` (`.` = any char). Pattern compilation may also fail for chars like `*` or unbalanced `(`/`[`.",
+        "path": "test/framework/src/main/java/org/elasticsearch/search/ErrorTraceHelper.java",
+        "start_line": 65,
+        "end_line": 65,
+        "observation_id": "c1bf7e8e830fd295",
+        "claimed_path": "ErrorTraceHelper.java",
+        "path_resolution": "basename",
+        "merged_from": [
+          "e4aaa903f65901c4"
+        ]
+      }
+    ]
+  },
+  "rundir": "/home/mjarnold/.cache/llm-panel/runs/elastic__elasticsearch__e38d20c-adf4de77c9bb/20260828-005623-782156",
+  "extractor": "2",
+  "unlocated": [
+    {
+      "content": "1. `maybeWrapListenerForStackTrace` now takes the `ShardSearchRequest` instead of `TransportVersion`, and uses `request.getChannelVersion()` instead of the passed version.\n\n2. Importantly, there's now a `logger.debug(...)` call inside the `delegateResponse` block with a **lazy parameter formatting** (`() -> format(...)`) and passing the exception `e` as a parameter.\n\nThe critical issue here: the d",
+      "observation_id": "ac89bac31e57e2c3",
+      "claimed_path": null,
+      "path_resolution": "relocated"
+    }
+  ]
+}

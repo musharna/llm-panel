@@ -1,0 +1,59 @@
+{
+  "review": {
+    "comments": [
+      {
+        "content": "**1. `AbstractHighlighterBuilder.java:568` (hunk `@@ -561,13 +561,12 @@`) \u2014 `max_analyzed_offset: 0` is now silently accepted and disables the field-length guard.**\n\nThe validation was relaxed from `<= 0` (reject) to `< -1` (reject), so `0` now passes, even though the intended new value is only `-1` (the Javadoc added in the same hunk says \"negative int (defaulting to index analyzed offset)\" \u2014 `0` is neither that nor a positive limit). Concrete failure: a request with `\"highlight\": {\"type\": \"plain\", \"fields\": {\"body\": {}}, \"max_analyzed_offset\": 0}` on any field, e.g. a 2,000,000-char text with default index limit 1,000,000:\n- Previously: HTTP 400 `[max_analyzed_offset] must be a positive integer`.\n- Now: 200 OK. In `PlainHighlighter.java:126` the guard `queryMaxAnalyzedOffset.getNotNull() > maxAnalyzedOffset` is `0 > 1000000` \u2192 false, so the \"length exceeds limit\" exception can never fire for any field length; and `wrapAnalyzer` (`PlainHighlighter.java:251`, `DefaultHighlighter.java:195`) builds `LimitTokenOffsetAnalyzer(analyzer, 0)`, whose `LimitTokenOffsetFilter` only passes tokens with `startOffset <= 0`, so no match beyond character 0 is ever found. Result: silent empty/broken highlights instead of a loud error \u2014 same for the unified path (`CustomUnifiedHighlighter.java:128`, `CustomFieldHighlighter.java:116`).",
+        "path": "server/src/main/java/org/elasticsearch/search/fetch/subphase/highlight/AbstractHighlighterBuilder.java",
+        "start_line": 568,
+        "end_line": 568,
+        "observation_id": "18ec2096d589714a",
+        "claimed_path": "AbstractHighlighterBuilder.java",
+        "path_resolution": "basename",
+        "merged_from": []
+      },
+      {
+        "content": "**2. `HighlightBuilderTests.java:580` (hunk `@@ -580,7 +580,7 @@`) \u2014 `testInvalidMaxAnalyzedOffset` is now flaky (~2% of runs fail).**\n\nThe test still draws `randomIntBetween(-100, 0)`, but with the new validation only `[-100, -2]` raise; when the random value is `-1` or `0` (2 of 101 values), `HighlightBuilder.fromXContent` succeeds instead of throwing, so `expectParseThrows` (line 180-183) fails the test with \"expected exception but none thrown\" before the message assertions at lines 582-583 even run. The PR updated the expected message but not the random range; it needs to be `randomIntBetween(-100, -2)` (or equivalent) to match the new `>= -1` rule.",
+        "path": "server/src/test/java/org/elasticsearch/search/fetch/subphase/highlight/HighlightBuilderTests.java",
+        "start_line": 580,
+        "end_line": 580,
+        "observation_id": "aa960e56fc497199",
+        "claimed_path": "HighlightBuilderTests.java",
+        "path_resolution": "basename",
+        "merged_from": []
+      },
+      {
+        "content": "### 1. Flaky test \u2014 `HighlightBuilderTests.testInvalidMaxAnalyzedOffset`\n**File:** `server/src/test/java/org/elasticsearch/search/fetch/subphase/highlight/HighlightBuilderTests.java:580`\n\nThe test uses `randomIntBetween(-100, 0)` to generate invalid values, but the new validation at `AbstractHighlighterBuilder.java:568` only rejects values `< -1`. Values `-1` and `0` are now **valid**, so the test fails intermittently (~2% of runs) when those values are generated \u2014 no exception is thrown, but the test asserts one must be.\n\n**Failure scenario:** Test runs, `randomIntBetween(-100, 0)` returns `-1` \u2192 validation passes \u2192 no `XContentParseException` \u2192 `expectParseThrows` fails.\n\n---",
+        "path": "server/src/test/java/org/elasticsearch/search/fetch/subphase/highlight/HighlightBuilderTests.java",
+        "start_line": 580,
+        "end_line": 580,
+        "observation_id": "38d79e1b168b92c8",
+        "claimed_path": "server/src/test/java/org/elasticsearch/search/fetch/subphase/highlight/HighlightBuilderTests.java",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "### 2. Silent highlighting degradation when `max_analyzed_offset=0`\n**File:** `server/src/main/java/org/elasticsearch/search/fetch/subphase/highlight/AbstractHighlighterBuilder.java:568`\n\nThe validation now accepts `0` (and `-1`), whereas before it required a positive integer. When a user sets `\"max_analyzed_offset\": 0`, the code creates `LimitTokenOffsetAnalyzer(maxOffset=0)` which only passes tokens with `startOffset <= 0` \u2014 typically just the first token. This effectively disables highlighting for all but the first token, with no error or warning.\n\n**Failure scenario:** User sets `\"highlight\": { \"max_analyzed_offset\": 0, \"fields\": { \"body\": {} } }` expecting \"no limit\" or a reasonable default \u2192 highlighting returns only fragments matching the very first token \u2192 user sees broken/empty highlights with no indication why.\n\n---",
+        "path": "server/src/main/java/org/elasticsearch/search/fetch/subphase/highlight/AbstractHighlighterBuilder.java",
+        "start_line": 568,
+        "end_line": 568,
+        "observation_id": "7263005e37d72371",
+        "claimed_path": "server/src/main/java/org/elasticsearch/search/fetch/subphase/highlight/AbstractHighlighterBuilder.java",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "### 3. Misleading comment in `QueryMaxAnalyzedOffset` constructor\n**File:** `server/src/main/java/org/elasticsearch/lucene/search/uhighlight/QueryMaxAnalyzedOffset.java:16`\n\n```java\n// If we have a negative value, grab value for the actual maximum from the index.\nthis.queryMaxAnalyzedOffset = queryMaxAnalyzedOffset;\n```\n\nThe comment describes the behavior of the `create()` factory method (line 24), not the constructor. The constructor merely stores the already-resolved value. This misleads maintainers about where the index-defaulting logic lives.\n\n---\n\n**Summary order:** Test flakiness (CI impact) \u2192 Silent user-facing behavior change \u2192 Documentation bug.",
+        "path": "server/src/main/java/org/elasticsearch/lucene/search/uhighlight/QueryMaxAnalyzedOffset.java",
+        "start_line": 16,
+        "end_line": 16,
+        "observation_id": "23f88211ef755e3d",
+        "claimed_path": "server/src/main/java/org/elasticsearch/lucene/search/uhighlight/QueryMaxAnalyzedOffset.java",
+        "path_resolution": "exact",
+        "merged_from": []
+      }
+    ]
+  },
+  "rundir": "/home/mjarnold/.cache/llm-panel/runs/elastic__elasticsearch__a6a4623-29f6c6364310/20260828-002756-613066",
+  "extractor": "2",
+  "unlocated": []
+}

@@ -1,0 +1,105 @@
+{
+  "review": {
+    "comments": [
+      {
+        "content": "**1. `cmd:nowsh` local blocks silently lose all user-defined env (and configured shell path)**\n- File: `pkg/shellexec/shellexec.go` (diff hunk `@@ -557,7 +550,6 @@`) and `pkg/blockcontroller/blockcontroller.go` (hunks `@@ -314,14 +351,120 @@`, `@@ -461,25 +579,15 @@`; new-file lines 354-360, 572-582, 400-415).\n- The env file + `cmd:env` are now carried *only* in `swapToken.Env` (`makeSwapToken`, blockcontroller.go:354-360), and the sole application path is the rcfile calling `wsh token \"$WAVETERM_SWAPTOKEN\"`. That command requires `SockName` + `RpcContext` in the token (`wshcmd-root.go:144-149`), which are set only when `connUnion.WshEnabled` is true. For a local block with `cmd:nowsh: true`, WshEnabled is false, the token has no sockname, `wsh token` fails with stderr suppressed (`2>/dev/null` in BashStartup_Bashrc), and the env is never applied. The old code applied it directly (`shellutil.UpdateCmdEnv(ecmd, cmdOpts.Env)` \u2014 removed in this diff). Same mechanism drops the configured `TermLocalShellPath`: `getRemoteInfoAndShellType` returns early at line 401 when `!WshEnabled`, so `connUnion.ShellPath` stays `\"\"` and the nowsh local shell silently launches the default detected shell instead of the user's configured one.\n- Failure scenario: local cmd block with meta `{\"cmd\": \"deploy.sh\", \"cmd:nowsh\": true, \"cmd:env\": {\"FOO\": \"bar\"}}` (or env-file contents) \u2192 shell starts, `FOO` is unset, script misbehaves, and nothing in the terminal indicates env was dropped.",
+        "path": "pkg/shellexec/shellexec.go",
+        "start_line": 354,
+        "end_line": 354,
+        "observation_id": "d59d06fd3db8f9cc",
+        "claimed_path": "pkg/shellexec/shellexec.go",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "**2. SSH branch ignores the block-level `cmd:nowsh` flag**\n- File: `pkg/blockcontroller/blockcontroller.go:544` (diff hunk `@@ -406,20 +539,14 @@`).\n- The WSL and local branches route on `connUnion.WshEnabled` (which ANDs in `!cmd:nowsh`), but the SSH branch tests `!conn.WshEnabled.Load()` \u2014 the connection's own flag only. With `cmd:nowsh: true` on an ssh block whose connection has wsh installed, the code still generates a JWT, sets `swapToken.SockName`/`RpcContext` (lines 550-558) and starts a fully wsh-integrated shell \u2014 the explicit per-block opt-out is a no-op.\n- Failure scenario: user sets `cmd:nowsh` on an ssh cmd block to avoid wsh install/overhead \u2192 connection still gets wsh rcfile overrides + JWT; behavior contradicts the meta and diverges from the wsl/local paths.",
+        "path": "pkg/blockcontroller/blockcontroller.go",
+        "start_line": 544,
+        "end_line": 544,
+        "observation_id": "0854759d2d2b485b",
+        "claimed_path": "pkg/blockcontroller/blockcontroller.go",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "**3. A transient `RemoteGetInfoCommand` failure now hard-aborts shell start instead of falling back to no-wsh**\n- File: `pkg/blockcontroller/blockcontroller.go:406-409, 456-459, 481-484` (diff hunks `@@ -314,14 +351,120 @@`, `@@ -335,11 +478,14 @@`).\n- `getConnUnion` now calls `RemoteGetInfoCommand` (2s timeout) *before* starting, and any error propagates out of `setupAndStartShellProcess`. Previously this call happened inside `StartRemoteShellProc`/`StartWslShellProc`, and its failure hit the existing `if err != nil \u2192 SetWshError \u2192 Start\u2026NoWsh` fallback, so a shell still opened. Now the same failure (connserver restarting/reinstalling) yields a hard error and no shell at all, and it fails on every retry until the connserver recovers.",
+        "path": "pkg/blockcontroller/blockcontroller.go",
+        "start_line": 406,
+        "end_line": 406,
+        "observation_id": "8d00cc904d0f507b",
+        "claimed_path": "pkg/blockcontroller/blockcontroller.go",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "**4. Per-connection `cmd:env`/`cmd:cwd` overrides are declared but never consulted**\n- File: `pkg/waveobj/wtypemeta.go:53-57` (diff hunk `@@ -36,21 +36,30 @@`) vs `pkg/blockcontroller/blockcontroller.go:269, 293` (diff hunk `@@ -209,67 +209,104 @@`).\n- The new type comment says `CmdEnv`, `CmdCwd`, and `CmdInitScript*` \"can be nested under `[conn]`\", and `GetConnectionOverride` exists \u2014 but only `getCustomInitScript` (blockcontroller.go:236) uses it. `resolveEnvMap` (line 269) and `createCmdStrAndOpts` (line 293) accept `connName` yet read only top-level meta.\n- Failure scenario: block meta `{\"[myserver]\": {\"cmd:env\": {\"DB\": \"prod\"}, \"cmd:cwd\": \"/srv/app\", \"cmd:initscript.bash\": \"\u2026\"}}` \u2192 the initscript override is honored, but the env and cwd from the same override are silently ignored, so the script runs in the wrong directory without the intended env.",
+        "path": "pkg/waveobj/wtypemeta.go",
+        "start_line": 53,
+        "end_line": 53,
+        "observation_id": "f998cc15c8d0fd58",
+        "claimed_path": "pkg/waveobj/wtypemeta.go",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "**5. (Minor) Env-file read errors no longer abort the command**\n- File: `pkg/blockcontroller/blockcontroller.go:354-357` (diff hunk `@@ -314,14 +351,120 @@`).\n- `resolveEnvMap` failures are only logged in `makeSwapToken` and the command proceeds without any env; previously `createCmdStrAndOpts` returned the error and the command did not start. A corrupt/unreadable `env` block file now silently produces a shell with no user env instead of a visible failure.\n\nI verified items 1-2 against the actual wiring (token redemption requires sockname+rpccontext; the ssh branch's flag use) and the old behaviors directly from the removed lines in the diff; items 3-5 are behavior deltas from the diff itself.## REAL DEFECTS FOUND",
+        "path": "pkg/blockcontroller/blockcontroller.go",
+        "start_line": 354,
+        "end_line": 354,
+        "observation_id": "d2d82c626178ed09",
+        "claimed_path": "pkg/blockcontroller/blockcontroller.go",
+        "path_resolution": "exact",
+        "merged_from": [
+          "cb2359c29c26f035"
+        ]
+      },
+      {
+        "content": "### 1. CRITICAL: Silent swap token packing failure in all three shell start paths\n**Files:** `pkg/shellexec/shellexec.go` (three locations)\n- **StartWslShellProc** (diff hunk `@@ -256,13 +255,13 @@`): Lines 258-264\n- **StartRemoteShellProc** (diff hunk `@@ -425,12 +424,6 @@`): Lines 432-438  \n- **StartLocalShellProc** (diff hunk `@@ -557,7 +550,6 @@`): Lines 512-518\n\n**Failure scenario:** If `cmdOpts.SwapToken.PackForClient()` returns an error (e.g., JSON marshal failure, nil pointer), the code logs but **continues without setting the swap token** in the command environment. The shell process starts without `WAVETERM_SWAPTOKEN`, breaking authentication for WSH connections. Old code would fail fast if JWT token was missing.\n\n```go\n// Current code (all three locations):\npackedToken, err := cmdOpts.SwapToken.PackForClient()\nif err != nil {\n    conn.Infof(ctx, \"error packing swap token: %v\", err)  // logs but continues\n} else {\n    cmdCombined = fmt.Sprintf(`%s=%s %s`, wavebase.WaveSwapTokenVarName, packedToken, cmdCombined)\n}\n```\n\n---",
+        "path": "pkg/shellexec/shellexec.go",
+        "start_line": 258,
+        "end_line": 258,
+        "observation_id": "2eb3dbd20a8fb615",
+        "claimed_path": "pkg/shellexec/shellexec.go",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "### 2. HIGH: SSH session environment variables no longer set\n**File:** `pkg/shellexec/shellexec.go` (diff hunk `@@ -425,12 +424,6 @@`)\n\n**Failure scenario:** The entire loop that called `session.Setenv(envKey, envVal)` for each environment variable was removed (lines 427-431 in old code). Environment variables from `cmdOpts.Env` are no longer passed to remote SSH sessions. Since `CommandOptsType.Env` field was also removed, there is now **no path** to set custom env vars on SSH connections except via the swap token \u2014 which can silently fail (Defect #1).\n\n---\n\n### 3. HIGH: Local shell environment variables from cmdOpts.Env dropped\n**File:** `pkg/shellexec/shellexec.go` (diff hunk `@@ -557,7 +550,6 @@`)\n\n**Failure scenario:** The line `shellutil.UpdateCmdEnv(ecmd, cmdOpts.Env)` was removed. The `CommandOptsType.Env` field was deleted. Local shells now only receive `envToAdd` (TERM, LANG, TERM_PROGRAM, WAVETERM, WAVETERM_VERSION) plus the swap token. Any block-level `cmd:env` configuration is ignored for local shells unless it goes through the swap token (which can silently fail per Defect #1).\n\n---",
+        "path": "pkg/shellexec/shellexec.go",
+        "start_line": 427,
+        "end_line": 427,
+        "observation_id": "da9d36315f66f72c",
+        "claimed_path": "pkg/shellexec/shellexec.go",
+        "path_resolution": "exact",
+        "merged_from": [
+          "23bd19eb4ec6f38e"
+        ]
+      },
+      {
+        "content": "### 4. MEDIUM: `resolveEnvMap` error silently swallowed in `makeSwapToken`\n**File:** `pkg/blockcontroller/blockcontroller.go` (diff hunk `@@ -314,14 +351,120 @@`): Lines 354-360\n\n**Failure scenario:** If reading the `env` blockfile fails (permission denied, corruption, I/O error), `resolveEnvMap` returns an error, but `makeSwapToken` only logs it and continues with an empty `envMap`. All environment variables from the `env` file and `cmd:env` metadata are lost for that session.\n\n```go\nenvMap, err := resolveEnvMap(bc.BlockId, blockMeta, remoteName)\nif err != nil {\n    log.Printf(\"error resolving env map: %v\\n\", err)  // error ignored\n}\nfor k, v := range envMap {  // envMap is nil/empty on error\n    token.Env[k] = v\n}\n```\n\nOld `createCmdStrAndOpts` would propagate the error up and abort shell start.\n\n---\n\n### 5. MEDIUM: Inconsistent init script cascade for pwsh/fish\n**File:** `pkg/blockcontroller/blockcontroller.go` (diff hunk `@@ -209,67 +209,104 @@`): Lines 218-231\n\n**Failure scenario:** For `bash` and `zsh`, the cascade falls back through `.sh` \u2192 generic:\n```go\n// bash: [cmd:initscript.bash, cmd:initscript.sh, cmd:initscript]\n// zsh:  [cmd:initscript.zsh,  cmd:initscript.sh,  cmd:initscript]\n```\nBut for `pwsh` and `fish`, the `.sh` fallback is **missing**:\n```go\n// pwsh: [cmd:initscript.pwsh, cmd:initscript]  -- no .sh fallback\n// fish: [cmd:initscript.fish, cmd:initscript]  -- no .sh fallback\n```\nA user setting `cmd:initscript.sh` as a common fallback for POSIX shells will find it ignored for pwsh/fish.\n\n---",
+        "path": "pkg/blockcontroller/blockcontroller.go",
+        "start_line": 354,
+        "end_line": 354,
+        "observation_id": "4921f8f90fe6a5d3",
+        "claimed_path": "pkg/blockcontroller/blockcontroller.go",
+        "path_resolution": "exact",
+        "merged_from": [
+          "0804c2b32cbfbc5f"
+        ]
+      },
+      {
+        "content": "### 6. LOW: Unused `connName` parameter in `createCmdStrAndOpts`\n**File:** `pkg/blockcontroller/blockcontroller.go` (diff hunk `@@ -283,7 +320,7 @@` and `@@ -209,67 +209,104 @@`)\n\n**Failure scenario:** The function signature added `connName string` parameter (line 286 in new code) but the function body never uses it. Dead code; no runtime impact but indicates incomplete refactor.\n\n---\n\n**Summary:** The most severe defects are #1 (silent auth token failure across all connection types) and #2/#3 (environment variable regression for SSH and local shells). These would cause authentication failures and missing environment variables in production use.",
+        "path": "pkg/blockcontroller/blockcontroller.go",
+        "start_line": 286,
+        "end_line": 286,
+        "observation_id": "5e709005fd00ecdb",
+        "claimed_path": "pkg/blockcontroller/blockcontroller.go",
+        "path_resolution": "exact",
+        "merged_from": []
+      }
+    ]
+  },
+  "rundir": "/home/mjarnold/.cache/llm-panel/runs/wavetermdev__waveterm__90a57d5-b94594d0730e/20260827-124519-2221946",
+  "extractor": "2",
+  "unlocated": []
+}

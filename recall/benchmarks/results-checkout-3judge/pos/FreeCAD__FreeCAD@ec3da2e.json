@@ -1,0 +1,54 @@
+{
+  "review": {
+    "comments": [
+      {
+        "content": "- **[Blocking] `src/Mod/TechDraw/App/DrawViewPart.cpp:1502`** \u2014 The three definitions take only `std::string` and access instance members, but the declarations added in `DrawViewPart.h` are `static` and take `(App::DocumentObject*, std::string)`. Building `TechDraw` \u2192 compilation fails with \u201cno declaration matches\u201d for all three methods.",
+        "path": "src/Mod/TechDraw/App/DrawViewPart.cpp",
+        "start_line": 1502,
+        "end_line": 1502,
+        "observation_id": "1ddfdb88236e7383",
+        "claimed_path": "src/Mod/TechDraw/App/DrawViewPart.cpp",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "- **[Blocking] `src/Mod/TechDraw/App/DrawUtil.h:251`** \u2014 Removing these members leaves existing calls in `CosmeticExtension.cpp` to `DU::isCosmeticVertex`, `DU::isCosmeticEdge`, and `DU::isCenterLine`. Compiling that translation unit \u2192 errors that these functions are not members of `DrawUtil`.",
+        "path": "src/Mod/TechDraw/App/DrawUtil.h",
+        "start_line": 251,
+        "end_line": 251,
+        "observation_id": "f7b2b92fdd657adc",
+        "claimed_path": "src/Mod/TechDraw/App/DrawUtil.h",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "**1. Deleted functions still called \u2014 build break.**\nThe diff removes `DrawUtil::isCosmeticVertex` / `isCosmeticEdge` / `isCenterLine` (DrawUtil.cpp hunk at line 1852, DrawUtil.h hunk at line 249), but `CosmeticExtension.cpp` still calls all three at lines 71, 77\u201378 (`DU` is `DrawUtil` via `using DU = DrawUtil;` at line 37):\n- `CosmeticExtension.cpp:71` \u2192 `DU::isCosmeticVertex(getOwner(), name)` \u2014 no such member anymore, compile error\n- `CosmeticExtension.cpp:77-78` \u2192 `DU::isCosmeticEdge(getOwner(), name)` / `DU::isCenterLine(getOwner(), name)` \u2014 same\n\nI grepped the entire repo: these are the only remaining callers of the removed API, and the diff touches only 4 files, none of which is CosmeticExtension.cpp (`src/Mod/TechDraw/App/DrawUtil.*` now contain zero matches for these names). Failure scenario: any build of the TechDraw App module \u2192 `'isCosmeticVertex' is not a member of 'TechDraw::DrawUtil'` (and two more), build fails.\n\n**2. Declaration/definition signature mismatch \u2014 build break.**\n`DrawViewPart.h:242-244` declares:\n```cpp\nstatic bool isCosmeticVertex(App::DocumentObject* owner, std::string element);\nstatic bool isCosmeticEdge(App::DocumentObject* owner, std::string element);\nstatic bool isCenterLine(App::DocumentObject* owner, std::string element);\n```\nbut `DrawViewPart.cpp:1502, 1513, 1523` define them as non-static single-argument members (`bool DrawViewPart::isCosmeticVertex(std::string element)` etc.). A member function definition with a signature not declared in the class is ill-formed \u2014 C++ requires the declaration to match, so the compiler rejects `no declaration matches 'bool DrawViewPart::isCosmeticVertex(std::string)'`. Even if it compiled, the definitions never use the `owner` parameter the declared API (and the surviving CosmeticExtension.cpp callers, which pass `getOwner()` as first argument) require \u2014 the two halves of the move simply don't connect, so `deleteCosmeticElements()` would have no working predicate in any repaired version.",
+        "path": "src/Mod/TechDraw/App/DrawUtil.cpp",
+        "start_line": 1852,
+        "end_line": 1852,
+        "observation_id": "1cd287405b98dbc8",
+        "claimed_path": "DrawUtil.cpp",
+        "path_resolution": "basename",
+        "merged_from": [
+          "a26b94fdb8942cde"
+        ]
+      }
+    ]
+  },
+  "rundir": "/home/mjarnold/.cache/llm-panel/runs/FreeCAD__FreeCAD__ec3da2e-348b21354904/20260827-125855-2329682",
+  "extractor": "2",
+  "unlocated": [
+    {
+      "content": "**DEFECT 1: Signature mismatch between DrawViewPart.h declaration and DrawViewPart.cpp definition**  \n**File: `src/Mod/TechDraw/App/DrawViewPart.h` lines 242-244**  \n**File: `src/Mod/TechDraw/App/DrawViewPart.cpp` lines 1502, 1513, 1523**  \n\nThe header declares three **static** methods taking `(App::DocumentObject* owner, std::string element)`, but the .cpp defines them as **non-static** member fu",
+      "observation_id": "d798f65a6363815d",
+      "claimed_path": "DrawViewPart.h",
+      "path_resolution": "basename"
+    },
+    {
+      "content": "**DEFECT 3: DrawViewPart.cpp implementations don't match the intended static signature**  \n**File: `src/Mod/TechDraw/App/DrawViewPart.cpp` lines 1502-1530**  \n\nThe implementations use `getProjVertexByIndex()` and `getEdge()` \u2014 non-static member functions \u2014 meaning they *must* be instance methods on `DrawViewPart`. But the header (Defect 1) declares them `static`. The correct fix is either:\n- Make ",
+      "observation_id": "84d5804a8b090540",
+      "claimed_path": "DrawViewPart.cpp",
+      "path_resolution": "basename"
+    }
+  ]
+}

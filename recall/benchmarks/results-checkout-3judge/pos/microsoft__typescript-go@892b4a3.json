@@ -1,0 +1,88 @@
+{
+  "review": {
+    "comments": [
+      {
+        "content": "**1. `internal/fourslash/_scripts/convertFourslash.mts:27` (hunk `@@ -21,6 +23,11 @@`) \u2014 unguarded read of a file that does not exist, breaking the existing generator and CI.**\n`getManualTests()` calls `fs.readFileSync(manualTestsPath, \"utf-8\")` with no existence check, but `manualTests.txt` is not added by this PR and doesn't exist anywhere in the checkout (verified: no file in the tree, no writer other than `makeManual.mts:41`, which only runs when a developer invokes it). `main()` calls `getManualTests()` unconditionally at line 47, and `updateFailing.mts:11` calls `convertFourslash()`.\nFailure scenario: fresh checkout (or CI, which never runs `makemanual`) \u2192 `npm run updatefailing` (the \"Regenerate fourslash tests\" CI job at `.github/workflows/ci.yml:253-254`) \u2192 `readFileSync` throws `ENOENT: no such file or directory` before any test is generated \u2192 the whole regeneration job hard-fails. `makeManual.mts:33` guards the same path with `existsSync`; `getManualTests` does not.",
+        "path": "internal/fourslash/_scripts/convertFourslash.mts",
+        "start_line": 27,
+        "end_line": 27,
+        "observation_id": "1a69996e4f97a678",
+        "claimed_path": "internal/fourslash/_scripts/convertFourslash.mts",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "**2. `internal/fourslash/_scripts/makeManual.mts:38-41` vs `internal/fourslash/_scripts/convertFourslash.mts:72` (new file, and hunk `@@ -53,15 +61,22 @@`) \u2014 the manual-test skip can never match, so the workflow silently does the opposite of its purpose.**\n`makeManual` records `args[0]` verbatim into `manualTests.txt`. For the script to reach line 30 at all, that argument must be an existing file in `genDir` (line 19), i.e. a generated filename like `basicEdit_test.go`. The converter, however, tests `manualTests.has(testName)` where `testName = test.name[0].toUpperCase() + test.name.substring(1)` (line 70) \u2014 the bare capitalized name, e.g. `BasicEdit`. `basicEdit_test.go` \u2260 `BasicEdit`, and passing `BasicEdit` on the command line exits at `makeManual.mts:19-23` with \"Test file not found\". The two strings can never be equal.\nFailure scenario: `npm run convertfourslash && npm run makemanual basicEdit_test.go` \u2192 file moves to `tests/manual/`, entry `basicEdit_test.go` lands in `manualTests.txt`, skip never fires. Next `convertfourslash` run wipes `gen/` (line 42) and regenerates `gen/basicEdit_test.go` from the TS source, so the hand-fixed manual test is not preserved as canonical \u2014 the generated copy reappears and both variants run (`go test ./internal/fourslash/...` covers both dirs), so any hand-edits (e.g. removing the `t.Skip()` a failing test was generated with) are effectively undone/resurrected by the regenerated copy.## Defects Found",
+        "path": "internal/fourslash/_scripts/makeManual.mts",
+        "start_line": 38,
+        "end_line": 38,
+        "observation_id": "e30ca2413738f52c",
+        "claimed_path": "internal/fourslash/_scripts/makeManual.mts",
+        "path_resolution": "exact",
+        "merged_from": [
+          "3fd94211b7e8c258"
+        ]
+      },
+      {
+        "content": "### 1. `convertFourslash.mts:27` \u2014 `getManualTests()` doesn't strip \"Test\" prefix like `getFailingTests()` does at line 22\n\n**Failure scenario:** `failingTests.txt` contains `TestAugmentedTypesClass1`. `getFailingTests()` stores `AugmentedTypesClass1` (line 22: `.substring(4)`). `generateGoTest()` computes `testName = \"AugmentedTypesClass1\"` (line 946). Check at line 968 `failingTests.has(\"AugmentedTypesClass1\")` \u2713 works.\n\nBut `manualTests.txt` would contain `TestAugmentedTypesClass1` (as written by `makeManual.mts:39`). `getManualTests()` stores `TestAugmentedTypesClass1` (no `.substring(4)`). Check at line 72 `manualTests.has(\"AugmentedTypesClass1\")` \u2717 fails \u2014 manual test not skipped, gets generated to `gen/` anyway.",
+        "path": "internal/fourslash/_scripts/convertFourslash.mts",
+        "start_line": 27,
+        "end_line": 27,
+        "observation_id": "6e82a48adb596904",
+        "claimed_path": "convertFourslash.mts",
+        "path_resolution": "basename",
+        "merged_from": []
+      },
+      {
+        "content": "### 2. `convertFourslash.mts:50` \u2014 `gofumpt` only formats `outputDir` (gen), not `manualOutputDir` (manual)\n\n**Failure scenario:** Manual test files in `tests/manual/` are never formatted by gofumpt, causing lint/test failures or inconsistent style.",
+        "path": "internal/fourslash/_scripts/convertFourslash.mts",
+        "start_line": 50,
+        "end_line": 50,
+        "observation_id": "5db2e29fe868a39c",
+        "claimed_path": "convertFourslash.mts",
+        "path_resolution": "basename",
+        "merged_from": []
+      },
+      {
+        "content": "### 3. `makeManual.mts:18` \u2014 Looks for wrong filename in gen directory\n\n**Failure scenario:** Generated test files are named `${test.name}_test.go` (e.g., `augmentedTypesClass1_test.go`, line 77). `makeManual` expects argument `testName` to match the file directly (line 18: `path.join(genDir, \\`${testFileName}\\`)`). User runs `npm run makemanual TestAugmentedTypesClass1` \u2192 looks for `gen/TestAugmentedTypesClass1` \u2192 \"Test file not found\" error.",
+        "path": "internal/fourslash/_scripts/makeManual.mts",
+        "start_line": 18,
+        "end_line": 18,
+        "observation_id": "cfc6af0a7707973a",
+        "claimed_path": "makeManual.mts",
+        "path_resolution": "basename",
+        "merged_from": []
+      },
+      {
+        "content": "### 4. `makeManual.mts:39` \u2014 Stores raw argument in `manualTests.txt` without stripping \"Test\" prefix\n\n**Failure scenario:** User runs `npm run makemanual TestAugmentedTypesClass1`. Line 39 stores `TestAugmentedTypesClass1`. But `convertFourslash` line 72 checks for `AugmentedTypesClass1` (capitalized filename, no \"Test\" prefix). Mismatch \u2192 manual test not recognized \u2192 gets generated to `gen/` instead of being skipped.",
+        "path": "internal/fourslash/_scripts/makeManual.mts",
+        "start_line": 39,
+        "end_line": 39,
+        "observation_id": "f05b046f891e5fc7",
+        "claimed_path": "makeManual.mts",
+        "path_resolution": "basename",
+        "merged_from": []
+      },
+      {
+        "content": "### 5. `makeManual.mts:30` \u2014 `fs.renameSync` fails on re-run\n\n**Failure scenario:** First run moves `gen/foo_test.go` \u2192 `manual/foo_test.go`. Second run with same test name: line 18 looks for `gen/foo_test.go` (not found) \u2192 exits with \"Test file not found\" error. No idempotency.\n\n---",
+        "path": "internal/fourslash/_scripts/makeManual.mts",
+        "start_line": 30,
+        "end_line": 30,
+        "observation_id": "868f110ddbb8d618",
+        "claimed_path": "makeManual.mts",
+        "path_resolution": "basename",
+        "merged_from": []
+      }
+    ]
+  },
+  "rundir": "/home/mjarnold/.cache/llm-panel/runs/microsoft__typescript-go__892b4a3-17916a5aba1e/20260827-123951-2188640",
+  "extractor": "2",
+  "unlocated": [
+    {
+      "content": "**Summary by severity:**\n| File | Line | Defect |\n|------|------|--------|\n| `convertFourslash.mts` | 27 | Manual tests parsing inconsistent with failing tests \u2014 manual tests never skipped |\n| `convertFourslash.mts` | 50 | Manual test output not formatted by gofumpt |\n| `makeManual.mts` | 18 | Wrong filename lookup \u2014 tool unusable as-is |\n| `makeManual.mts` | 39 | Wrong format stored in manualTest",
+      "observation_id": "7c292de296bb8171",
+      "claimed_path": "convertFourslash.mts",
+      "path_resolution": "basename"
+    }
+  ]
+}

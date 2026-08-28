@@ -1,0 +1,1373 @@
+{
+  "ex_info": {
+    "start_time": "2026-08-28T04:56:11.953712",
+    "results_dir": "/home/mjarnold/llm-panel/recall/benchmarks/results-checkout-3judge/pos",
+    "reviewer": "llm-panel",
+    "line_k": 1,
+    "limit": null,
+    "missing_instance_ids": []
+  },
+  "summary": {
+    "total_instances": 18,
+    "candidate_instances": 18,
+    "evaluated_instances": 18,
+    "missing_instances": 0,
+    "expected_notes": 123,
+    "generated_notes": 126,
+    "matched_line_notes": 37,
+    "matched_semantic_notes": 19,
+    "semantic_match_rate": 0.151,
+    "line_match_rate": 0.294,
+    "semantic_recall_rate": 0.154,
+    "line_recall_rate": 0.301,
+    "semantic_f1": 0.152,
+    "line_f1": 0.297,
+    "total_duration_seconds": 0.0,
+    "avg_duration_seconds": 0.0,
+    "total_input_tokens": 0,
+    "total_output_tokens": 0,
+    "total_tokens": 0,
+    "avg_input_tokens": 0,
+    "avg_output_tokens": 0
+  },
+  "eval_res": [
+    {
+      "instance_id": "vllm-project__vllm@6217b0c",
+      "repo": "vllm-project/vllm",
+      "comments": [
+        {
+          "note": "Redundant exception message in logger.exception call: the current implementation includes the exception string in the format specifier, but logger.exception automatically appends full exception details, causing duplication. Remove the `: %s` format specifier and `str(e)` argument.",
+          "path": "vllm/distributed/kv_transfer/kv_connector/v1/multi_connector.py",
+          "side": "right",
+          "from_line": 96,
+          "to_line": 97,
+          "line_match": false,
+          "semantic_match": false,
+          "matched_note": ""
+        }
+      ]
+    },
+    {
+      "instance_id": "lvgl__lvgl@4a57db3",
+      "repo": "lvgl/lvgl",
+      "comments": [
+        {
+          "note": "The change replaces dynamic text width calculation with a cached value (`dsc->text_size.x`), risking incorrect rendering if text updates occur without refreshing the cache. Ensure the cached dimensions remain consistent with the current text state.",
+          "path": "src/draw/lv_draw_label.c",
+          "side": "right",
+          "from_line": 220,
+          "to_line": 221,
+          "line_match": true,
+          "semantic_match": true,
+          "matched_note": "**For the EXPAND path in `lv_draw_label.c:221`:**\n\nWhen `LV_TEXT_FLAG_EXPAND` is set (label->expand), in `lv_text_get_size`, the width is forced to `LV_COORD_MAX` regardless of `max_w`. So `label->text_size.x` (computed in `lv_label_refr_text` with EXPAND flag set) is the **unwrapped** full text width. So the value stored is the same as what the old code computed with `LV_COORD_MAX`. So in the EXPAND case, the cached value is correct/equal.\n\nWait, but there is a subtlety. In `lv_label_refr_text`, the flag passed is `get_label_flags(label)`, which includes EXPAND if `label->expand`. So when expand is set, `lv_text_get_size` uses LV_COORD_MAX, and text_size.x is the unbounded text width. The old `lv_draw_label.c` code used LV_COORD_MAX explicitly. So in `lv_draw_label_iterate_characters` EXPAND path, `w = dsc->text_size.x` matches the old value. OK.\n\n**Now the critical issue: SCROLL/SCROLL_CIRCULAR modes.**\n\nLook at `lv_label_refr_text` line 967: `lv_text_get_size(&size, label->text, font, letter_space, line_space, max_w, flag)`. Here `max_w` is the content width. For a scrolling label, the text is NOT expanded by default (expand is false). So `text_size.x` is the **wrapped** width (capped at object width `max_w`).\n\nBut in `draw_main`, SCROLL and SCROLL_CIRCULAR modes previously called `lv_text_get_size(...LV_COORD_MAX...)` — the **unwrapped** full width of the text.\n\nNow the diff replaces those with `lv_point_t size = label->text_size;` where `text_size.x` is now the wrapped width (capped).\n\n**Consequence for SCROLL mode (line 856):** Previously, `size.x` was the full unwrapped text width. Now it's capped at `max_w`. The check `if(size.x > lv_area_get_width(&txt_coords))` decides whether to neutralize CENTER/RIGHT alignment. With the wrapped (capped) width, if the text's natural width exceeds the object width, the wrapped width equals object width, so `size.x > area_width` is false — meaning the CENTER/RIGHT alignment would NOT be neutralized, causing misalignment. This is a real regression.\n\nActually wait — more importantly, consider a long text in SCROLL mode. The text is longer than the widget. With LV_COORD_MAX, size.x = full text width > widget width, so the condition is true → align forced to LEFT. With the new cached wrapped width, since the widget width in scroll mode... hmm, actually what's max_w for a scroll label? The content width. If the text wraps to fit, size.x could equal max_w exactly (not strictly greater), so the condition is false → alignment stays CENTER/RIGHT → misalignment.\n\n**Consequence for SCROLL_CIRCULAR (line 894):** `if(size.x > lv_area_get_width(&txt_coords))` decides whether to draw the repeated text. Previously with LV_COORD_MAX, size.x was the full unwrapped text width, so the repeat would be drawn whenever text is wider than the widget. Now with the cached wrapped width, size.x is capped at max_w = widget width, so `size.x > widget width` is false → the repeated text is **never drawn**, breaking the circular scroll effect entirely.\n\n**Also `lv_draw_label.c:221` EXPAND case — but wait, for SCROLL mode is expand set?** Let me check. In scroll mode, `label->expand` — let me look at how expand is set.\n\nLet me check line 556 and 324-330, 434 area and where expand gets set for scroll.\n\n\nNow let me confirm the key: in SCROLL/SCROLL_CIRCULAR mode, is `label->expand` set? Let me check `lv_label_set_long_mode` and the scroll setup.\n\n\nSo in SCROLL/SCROLL_CIRCULAR/CLIP modes, `label->expand = 1`, so `get_label_flags` includes `LV_TEXT_FLAG_EXPAND`. In `lv_text_get_size`, when EXPAND is set, `max_width = LV_COORD_MAX`.\n\nSo in `lv_label_refr_text`, when the label is in SCROLL/SCROLL_CIRCULAR mode, the computed `label->text_size` uses `LV_COORD_MAX` width (unbounded). So `text_size.x` is the full unwrapped text width.\n\nWait — this changes my analysis. For SCROLL/SCROLL_CIRCULAR, `text_size` IS computed with unbounded width because EXPAND forces LV_COORD_MAX inside `lv_text_get_size`. So the SCROLL/SCROLL_CIRCULAR cases at lines 856 and 894 should get the same value as the old LV_COORD_MAX code.\n\nHmm wait, let me double check. In `lv_label_refr_text`:\n```\nlv_text_flag_t flag = get_label_flags(label);  // includes EXPAND in scroll mode\nlv_text_get_size(&size, label->text, font, letter_space, line_space, max_w, flag);\n```\nAnd `lv_text_get_size` with EXPAND flag: line 101 / 210 `if(flag & LV_TEXT_FLAG_EXPAND) max_width = LV_COORD_MAX;`. Let me verify `lv_text_get_size` body around line 200-215.\n\nLet me look at lv_text_get_size function.\n\n\nNow let me look at the `lv_text_get_size` function fully (lines ~90-137) to understand the wrap logic. Line 101 is `if(flag & LV_TEXT_FLAG_EXPAND) max_width = LV_COORD_MAX;`.\n\n\nNow I've confirmed the crucial point: **`lv_text_get_size` honors `LV_TEXT_FLAG_EXPAND` by forcing `max_width = LV_COORD_MAX` (line 101).**\n\nSo for SCROLL/SCROLL_CIRCULAR modes where `label->expand == 1`, `lv_label_refr_text` computes `label->text_size` with EXPAND flag, meaning `lv_text_get_size` uses LV_COORD_MAX internally → `text_size.x` is the full unwrapped text width. So the SCROLL/SCROLL_CIRCULAR usages at lines 856 and 894 get the correct (unbounded) value. **No regression there.**\n\nNow let me carefully examine the **one concrete regression**: `lv_draw_label.c:221` (the `w = dsc->text_size.x` EXPAND path).\n\nThe old code at `lv_draw_label.c` line 218-221:\n```c\nelse {\n    lv_point_t p;\n    lv_text_get_size(&p, dsc->text, dsc->font, dsc->letter_space, dsc->line_space, LV_COORD_MAX, dsc->flag);\n    w = p.x;\n}\n```\n\nThis computed the text width with LV_COORD_MAX unconditionally. Now `w = dsc->text_size.x`.\n\n**Problem:** The `lv_draw_label_dsc_t` is a general-purpose descriptor used not only by `lv_label` but by other widgets too (textarea, table, roller, etc.) via `lv_draw_label`. These other callers pass their own `lv_draw_label_dsc_t` that they **do not populate `text_size` for**. Let me check: `lv_draw_label_dsc_init` — does it zero the struct? If a caller doesn't set `text_size`, then `dsc->text_size.x` is whatever is in the uninitialized/zeroed descriptor.\n\nLet me check `lv_draw_label_dsc_init` and how textarea/table use it.\n\n\nThe textarea placeholder is a clear case: `lv_draw_label_dsc_t ph_dsc; lv_draw_label_dsc_init(&ph_dsc); ... ph_dsc.flag |= LV_TEXT_FLAG_EXPAND;` — it sets EXPAND flag, but **does not set `ph_dsc.text_size`**. \n\nLet me check `lv_draw_label_dsc_init` to see whether it zeroes `text_size`.\n\n\n`lv_draw_label_dsc_init` does `lv_memzero`, so `text_size` is zeroed. So for the textarea placeholder, `ph_dsc.text_size.x == 0`.\n\nNow, the textarea placeholder with EXPAND flag. With EXPAND set, `lv_draw_label_iterate_characters` takes the `else` branch: `w = dsc->text_size.x` = **0**! \n\nPreviously, the code computed `w = p.x` from `lv_text_get_size(...LV_COORD_MAX...)`, giving the actual full text width. Now it's 0.\n\nLet me trace what happens when EXPAND is set and the label wraps to the placeholder. Let me re-read `lv_draw_label_iterate_characters` from the start to see how `w` is used with EXPAND.\n\nActually, when EXPAND is set, `lv_text_get_next_line` (line 336-344) with the EXPAND/FIT flag returns without word-wrapping (just finds newline), the whole text is on one line. Then `w` is passed to `lv_text_get_next_line` at line 258. But since EXPAND is set, the flag short-circuits the max_width logic anyway. So `w = 0` may not actually affect line breaking when EXPAND is set. Let me check the nema_gfx label code at line 433 (sibling impl) to compare.\n\nLet me look at nema_gfx_label.c around 430-450 and check how it uses w.\n\n\nInteresting. The nema_gfx implementation still uses the original `lv_text_get_size(...LV_COORD_MAX...)` in the EXPAND path (line 440). But the main `lv_draw_label.c` (this diff) switched to `w = dsc->text_size.x`. This is an inconsistency — but more importantly, the main implementation now **depends on `dsc->text_size` being set**, which only the `lv_label` widget populates (via `label_draw_dsc.text_size = label->text_size`).\n\nNow I need to determine whether `w = 0` (for non-label callers or before first refresh) actually causes wrong behavior. Let me trace where `w` is used in `lv_draw_label_iterate_characters`. It's used in `lv_text_get_next_line` (line 258, 265). But as noted, when EXPAND is set, `lv_text_get_next_line` bypasses width logic (returns whole line). So `w` value may not matter for EXPAND.\n\nWait, but there's a subtle issue. Let me reconsider. When EXPAND is set but the flag at `lv_text_get_next_line` — hmm, actually the flag passed to `lv_text_get_next_line` at line 258 is `dsc->flag` which includes EXPAND. So with EXPAND, line breaking is short-circuited in `lv_text_get_next_line` (line 336). So `w` doesn't affect the iteration. So `w` set to 0 vs the full width doesn't matter for correctness of iteration when EXPAND is set.\n\nHmm, so the impact of `w = dsc->text_size.x = 0` for EXPAND case might be nil in practice because line-breaking bypasses it. Let me double check whether `w` is used elsewhere in the function (after these lines) for e.g. ALIGN calculations. Let me look at how the nearby code uses `w`.\n\nActually, let me reconsider. So for the EXPAND case, the `w` value flows only into `lv_text_get_next_line`, which ignores it when EXPAND is in the flag. So the change from computing real width to using cached `text_size.x` (even if 0 or stale) may not matter functionally. Hmm.\n\nBut wait — there IS a real subtlety with the **`label` widget itself** and `lv_draw_label_iterate_characters`: it always sets `label_draw_dsc.text_size` (line 826). So the label always supplies it. And when not in EXPAND mode, `w` is computed from coords. So for the label, no issue.\n\nSo the more significant issue in the main implementation is **stale data / other callers**. But functionally the EXPAND path's `w` seems irrelevant.\n\nLet me reconsider the more important issue: **staleness of `text_size` during animation/offset**. Actually, let me reconsider the SCROLL_CIRCULAR and SCROLL cases where `text_size` is used in `draw_main` at lines 856 and 894.\n\nThese are in `draw_main`, which is called on every draw while the label is being animated (scrolled). `label->text_size` is updated in `lv_label_refr_text`, which runs on style/size changes. During scroll animation, `label_draw_dsc.ofs_x` changes via animation, and `label->offset.x` changes. But `text_size` stays constant, which matches the old behavior (old code recomputed with LV_COORD_MAX each draw, but the value was constant). So no staleness issue there for the scroll case.\n\nNow the real question: is there a scenario where the old recomputed-sized value differs from the cached `text_size`?\n\n**Scenario A: label at the moment before the first `lv_label_refr_text` has populated `text_size`.** When is `text_size` first set? `lv_label_constructor` calls `lv_label_set_text` → `lv_label_refr_text` → sets `text_size`. So it's set during construction. And `draw_main` runs after event processing. So `text_size` should be populated before any `draw_main`. But what about the case where the label's text is set but `text_size` is computed with the *current* widget width — that's the correct value for draw. Hmm.\n\nLet me reconsider **Scenario B: the `invalid_size_cache` path and self-size**. `text_size` in `lv_label_refr_text` is computed fresh each time with `max_w`. That's fine.\n\n**Now, let me reconsider the fundamental mismatch more carefully.** In `lv_draw_label.c` `lv_draw_label_iterate_characters`, the EXPAND branch: old = real text width; new = `dsc->text_size.x`. For the `lv_label` widget in scroll mode, `text_size.x` is the real text width (since EXPAND forces LV_COORD_MAX). So they match. \n\n**The real defect candidates:**\n\n1. **Stale/zero `text_size` for external callers of `lv_draw_label` with EXPAND flag** (textarea placeholder, table, etc.). These set EXPAND but don't set `text_size`, so `w = 0`. Whether this is a *visible* defect depends on whether `w` with EXPAND affects anything. Let me trace to be certain. The `lv_draw_label_iterate_characters` is also used by the GPU/other backend drawing. Given EXPAND short-circuits `lv_text_get_next_line`, `w` doesn't matter. \n\nWait — but actually let me reconsider. There's another subtle behavior change for the **label widget when NOT in expand mode but the draw path**. Actually no.\n\nLet me step back and think about what's the clearest, most concrete defect.\n\n**Scenario C — DOTS / other long modes combined with draw.** Not applicable; draw uses text_size only in scroll/scroll_circular.\n\nLet me reconsider the **LV_LABEL_LONG_MODE_SCROLL_CIRCULAR vertical** check at line 906: `if(size.y > lv_area_get_height(&txt_coords))`. Old: `size.y` from LV_COORD_MAX. In scroll_circular, EXPAND set, so `text_size.y` = computed with LV_COORD_MAX. In EXPAND mode, `lv_text_get_size` doesn't wrap lines → combined with line 336 flag. So `size.y` = single-line height (or multiple if newlines). Same as old. Fine.\n\n**Now, the most important issue I keep circling: `text_size` is computed in `lv_label_refr_text` which is only called on style/size/text change. But `draw_main` uses it — is there a window where the value is stale relative to what the old per-draw computation would return?**\n\nActually here's a real one. Consider a **size-content label (FIT flag)**. `get_label_flags` sets `LV_TEXT_FLAG_FIT` when width is `LV_SIZE_CONTENT` and no max width and not w_layout. With FIT, `lv_text_get_next_line` also short-circuits (line 336 checks FIT too). So `text_size` computed with... well with LV_SIZE_CONTENT, `max_w` = content width. Hmm, but in `lv_label_refr_text`, `max_w = lv_area_get_width(&txt_coords)`. For a size-content label, the content width is determined by the size cache (self size), which is set separately. This is getting deep.\n\nLet me focus on the concrete, defensible defects. The clearest one is:\n\n**Defect: Other draw paths / callers of `lv_draw_label` that set `LV_TEXT_FLAG_EXPAND` but never populate `dsc->text_size` now read a zeroed/garbage value.**\n\nThe textarea placeholder (`lv_textarea.c:1405`) sets `ph_dsc.flag |= LV_TEXT_FLAG_EXPAND` and never sets `ph_dsc.text_size`. With the change, `w = dsc->text_size.x = 0` in `lv_draw_label_iterate_characters` line 221. But as established, EXPAND short-circuits line wrapping, so `w=0` is harmless there.\n\nHmm, but is that fully true? Let me reconsider whether `w` affects anything else besides `lv_text_get_next_line`. Looking at lines 258, 265 only usage of `w`. And the alignment at 278-289 uses `coords` width and `line_width`, not `w`. So `w` is only for line breaking. Since EXPAND bypasses it, `w=0` is functionally harmless for the main path.\n\nSo the textarea/table defect is not actually visible. Unless... let me reconsider. Actually wait, is there a subtle: with EXPAND, `lv_text_get_next_line` returns the whole line, but `align == LV_TEXT_ALIGN_CENTER/RIGHT` at line 279/287 uses `line_width` computed from that whole-line. That's pre-existing. Fine.\n\nOK, so the text_size change in `lv_draw_label.c` might be a no-op functionally. Let me not overclaim.\n\nLet me now scrutinize the **staleness** issue more concretely for the label in a specific scenario that creates wrong behavior.\n\n**Scenario D — content-size (FIT) label with CENTER/RIGHT?** In FIT mode, `align` at line 283/287 centers within `coords` width. Not using text_size. Not relevant.\n\nLet me reconsider **lines 856 & 894 again** but actually check whether `max_w` in `lv_label_refr_text` can ever be LESS than the unbounded width even with EXPAND. When EXPAND is set, `lv_text_get_size` forces LV_COORD_MAX, so `text_size.x` is unbounded. Good, matches.\n\nBUT — critical: **`label->text_size` is computed with the flag from `get_label_flags`, i.e., current `label->expand`.** If the label is in SCROLL mode, expand=1, correct. All consistent.\n\nSo for the label widget's own scroll paths, the caching is equivalent to the old recomputation. No defect there.\n\n**Now, the big one I should examine: the `text` at draw time vs the `text` at refresh time.**\n\nIn `draw_main`, `label_draw_dsc.text = label->text` and `text_size` reflects that same text. But between refresh and draw, the text doesn't change without a refresh. So consistent.\n\nHmm. Let me reconsider whether there's a genuine defect at **`lv_draw_label.c:221` for the LABEL widget in SCROLL mode** where `text_size` might be stale relative to `offset` changes... Actually offset doesn't change text_size.\n\nLet me reconsider — maybe the real defect is different. Let me re-examine: `lv_label_refr_text` computes `text_size` with `max_w` = content width. But **draw_main line 856/894 use it to determine if the (unwrapped, EXPAND) text is wider than the widget.** In SCROLL mode expand=1 → text_size.x is unwrapped. ✓.\n\nBUT what about **`lv_draw_label.c` line 221** in the LABEL when the label is NOT in scroll mode but the draw path reaches EXPAND? `label_draw_dsc.flag` = `get_label_flags(label)` which includes EXPAND only if label->expand. So only scroll/clip modes. ✓.\n\nOK here's another angle — **initialization before first refresh with the widget width being wrong**. Not a defect.\n\nLet me reconsider whether the issue is that `lv_draw_label_iterate_characters` is a **public API** also called by third-party code / other backends that never set text_size and may use EXPAND. Even if functional impact is currently masked by EXPAND's line-wrapping bypass, an API contract changed silently. But that's borderline.\n\nLet me look more carefully at whether `w = dsc->text_size.x` truly is safe. Actually, wait. Let me reconsider the scenario where **label is in CLIP mode**. `label->expand=1` for CLIP too (line 232-234). So in CLIP mode, `label_draw_dsc.flag` includes EXPAND, so `lv_draw_label_iterate_characters` uses `w = text_size.x`. With EXPAND, `text_size` is unbounded. Fine.\n\nHmm, let me reconsider the case where **the widget width changes during scroll** — `text_size` is recomputed on size change. OK.\n\nLet me look again: is there any place where `label->text_size` is read but the cached value was computed for a **different width context**, e.g., where `draw_main`'s `txt_coords` differs from the `max_w` at refresh time? For instance, when the object is **scrolled/translated** (scroll offset) such that `lv_obj_get_content_coords` returns different coordinates? `text_size` is width-based, and width doesn't change with scroll. Height `text_size.y` used in scroll_circular vertical repeat (line 906). Width also same. OK.\n\nLet me consider the genuinely suspicious one I found earlier but haven't fully resolved: **the `w = dsc->text_size.x` at line 221 relies on text_size being populated, and there are multiple in-tree EXPAND users that don't set it.** Even if masked today by the EXPAND wrap bypass in the SW path, the *GPU/vglite/nema* paths call `lv_draw_label_iterate_characters` too? Actually the SW backend's `lv_draw_sw_label` calls `lv_draw_label_iterate_characters`. Let me check the SW label draw to confirm it's the same code path used by textarea placeholder.\n\nLet me check `lv_draw_sw_label` / draw label per glyph.\n\nActually, `lv_draw_label_iterate_characters` is called by the SW draw unit to draw each glyph. So textarea placeholder → `lv_draw_label` → SW draw → iterate → EXPAND branch → `w = text_size.x = 0`. Since EXPAND bypasses line-wrap, w=0 is harmless. Confirmed the textarea placeholder is not visibly broken.\n\nLet me reconsider the whole picture and see if maybe the intended-and-now-correct path is actually the label scroll, and the actual defect is something else entirely.\n\nActually, wait. Let me reconsider **`lv_draw_label.c` line 221 vs the nema_gfx version and the `LV_TEXT_FLAG_FIT` case**. When label is size-content (FIT), and NOT scroll mode (expand=0), then `lv_draw_label_iterate_characters` takes the non-EXPAND branch → `w = lv_area_get_width(coords)`. FIT is not EXPAND, so `w = coords width`. Old code did the same (EXPAND check, not FIT). No change. So the FIT label's wrapping is unaffected by this diff; it uses coords width, not text_size. Good.\n\nSo for **the label widget**, the change appears behavior-preserving. For **other EXPAND callers**, text_size is 0, but masked by EXPAND bypass.\n\nGiven the difficulty, let me reconsider whether `w` being 0 in the EXPAND path for non-label callers truly never matters. Let me look very carefully at `lv_text_get_next_line` line 336 condition: `if((flag & LV_TEXT_FLAG_EXPAND) || (flag & LV_TEXT_FLAG_FIT))`. Yes, returns before using max_width. So `w` unused. Confirmed.\n\nOK so functionally, the `lv_draw_label.c` change seems to be a deliberate optimization (the nema_gfx one wasn't updated, but that's an inconsistency, not a defect in behavior of the main path).\n\nHold on — let me reconsider whether there IS a real behavioral regression in the label scroll paths, because that's where the diff intentionally *changes* behavior (it's the whole point). Let me reconsider **the timing of when `text_size` is valid relative to draw**.\n\n`lv_label_refr_text` is triggered by:\n- `lv_label_set_text` (via lv_label_set_text → refr)\n- STYLE_CHANGED / SIZE_CHANGED events (line 762-764)\n- long mode set\n\nBut consider: **the label text is set, then the label object's SIZE changes due to the self-size** (size-content). When the size changes, another SIZE_CHANGED fires → refr again → text_size recomputed. Fine.\n\nNow consider the **`LV_EVENT_GET_SELF_SIZE` path** (size cache) at line 774-803: it uses `label->size_cache` (a *different* field), and only for self-size. Not related to text_size.\n\nHmm. I think I need to determine whether there is actually a genuine, observable defect. Let me reconsider the **scroll animation offset** interplay with `lv_draw_label_iterate_characters` `w`.\n\nIn SCROLL mode, during animation, the label is drawn with `label_draw_dsc.ofs_x` set from the animation. The iterate function uses EXPAND branch → `w = text_size.x` (unwrapped width). Since EXPAND set, line 336 short-circuits → whole text is one \"line\" → then it's drawn with offset. Correct.\n\nActually, here's a genuinely relevant subtlety I should check: **The old `lv_draw_label.c` code computed `w` with `dsc->flag` which at draw time = `label_draw_dsc.flag` = get_label_flags (includes EXPAND). So the old computed size in the EXPAND branch ALSO forced LV_COORD_MAX internally.** So old `p.x` = unwrapped width. New `text_size.x` = same. So identical for the label. ✓.\n\nOK so the caching is behaviorally equivalent **for the label**. The remaining genuine concern is the **other callers** (textarea, table, roller, and public API) that set EXPAND but don't set text_size. Let me verify these actually reach the EXPAND branch and would differ.\n\n- **Table (lv_table.c:836-837):** sets `txt_flags = LV_TEXT_FLAG_EXPAND` and `label_dsc_act.flag |= LV_TEXT_FLAG_EXPAND`. It creates `label_dsc_act` presumably via `lv_draw_label_dsc_init` → text_size zeroed. So `w = 0`. Masked by EXPAND bypass. Not visible.\n\nLet me check whether EXPAND in these cases actually reaches lv_draw_label_iterate via a draw. Regardless, masked.\n\nSo functionally, I cannot demonstrate a *visible* defect from the `text_size` reuse *if* the EXPAND bypass holds for all paths. But wait — is there any path where EXPAND is set yet `lv_text_get_next_line` does NOT bypass? No — the bypass is unconditional when EXPAND or FIT in flag.\n\nHmm, but hold on. Let me reconsider `w`'s use once more, EXHAUSTIVELY, in `lv_draw_label_iterate_characters` beyond line 258/265 — maybe it's used in the per-glyph loop or in `lv_draw_unit_draw_letter`. Let me read the rest of the function (lines 289-400).\n\n\nConfirmed: `w` is used only in `lv_text_get_next_line` calls (lines 258, 265). So the EXPAND path's `w` value is functionally inert due to the EXPAND/FIT bypass in `lv_text_get_next_line`.\n\nSo the `lv_draw_label.c` change has no visible bug (masked by EXPAND bypass), though it's an inconsistent/unset field for non-label callers — but I shouldn't overclaim a defect there.\n\nNow, let me reconsider whether there's a **real, visible** bug in the scroll paths. Let me reconsider the scenario where `label->text_size` is used at line 856/894 but was computed with a **different `flag`** than what's used at draw time.\n\nLine 856/894 in `draw_main` are reached for SCROLL/SCROLL_CIRCULAR. The `text_size` was computed in `lv_label_refr_text` with `get_label_flags(label)`. At draw, `label_draw_dsc.flag = get_label_flags(label)` too (line 834). Same flags, same expand state. So consistent.\n\nHold on. Let me reconsider a critical point about **`lv_label_refr_text` being the ONLY place that sets text_size and it uses `lv_obj_get_content_coords`**. At construction, the width uses whatever default. Fine.\n\nLet me step back and think about whether the whole premise (that text_size is cached with EXPAND meaning LV_COORD_MAX) renders lines 856/894 correct, and re-examine the **most likely real defect**: the `lv_draw_label.c:221` change combined with **other widgets that pass EXPAND and DO NOT set text_size** — specifically whether the `w` value being 0 vs a real value actually matters when EXPAND **is combined with a draw that is NOT line-wrapped but the GPU/vglite path** uses its own logic. But we only care about real defects I can point at with a concrete failure.\n\nGiven the analysis, the strongest concrete defect I can defend is actually different. Let me re-examine **lines 856 and 894 more carefully in the context of the diff's actual behavior** — specifically whether `label->text_size` is EVER computed with the `flag` at the time the draw happens, vs the possibility that `draw_main` runs when `lv_label_refr_text` has NOT yet run for the current object state.\n\nActually — here's a REAL timing defect. `draw_main` (LV_EVENT_DRAW_MAIN) reads `label->text_size` which is set **only** in `lv_label_refr_text`. But `lv_label_refr_text` is called on STYLE_CHANGED, SIZE_CHANGED, or text set. Consider: the label's **font/letter_space changes** trigger STYLE_CHANGED → refr → text_size updated. Fine.\n\nBut here's the genuinely problematic combination: **`lv_label_refr_text` checks `if(label->text == NULL) return;` at line 949** — early return before setting text_size. So if a label has no text yet, text_size stays at whatever (zero from constructor init? Actually constructor always sets default text). Not an issue.\n\nLet me approach from the angle of: **what concretely breaks that a regression test would catch?**\n\nThe strongest candidate remains: the **`lv_draw_label.c:221`** `w = dsc->text_size.x` change is behaviorally divergent from `lv_draw_nema_gfx_label.c:440` (which still recomputes). For the label widget itself they're equal, so not a real divergence in behavior.\n\nGiven all this, let me reconsider whether the actual defect is the **stale text_size when text changes without a refresh cycle**.\n\nActually, wait. Let me reconsider the **most important real-world case**: a label whose **size is larger than needed, with long_mode DOTS or WRAP**, is NOT affected (those don't use text_size in draw_main). Only SCROLL/SCROLL_CIRCULAR and the EXPAND iterate path touch it.\n\nI'm now fairly convinced there IS a subtle but real defect I should nail down: **`lv_draw_label.c:221` with EXPAND and a label that is in SCROLL mode but whose draw happens via a path where `dsc->text_size` reflects a STALE width because the cached value is per-label-text but was computed at a refresh, whereas the old code computed per-draw.** But for recorded offsets these don't diverge.\n\nLet me instead verify my claim about the **other in-tree EXPAND user `lv_table.c`** reaching a real break, OR drop that and consider the strongest one: **the non-label EXPAND callers get `w=0`, and while line-wrapping is bypassed, ALIGNMENT for those callers is computed from `coords` width — unaffected.** So truly not visible.\n\nGiven the difficulty, let me reconsider whether there's a much more direct defect: **`text_size` is used by SCROLL_CIRCULAR to decide when to render the repeat, but the check `size.x > lv_area_get_width(&txt_coords)` at line 857 in SCROLL mode (non-circular) uses the cached text_size — which, for a SCROLL label, is computed via EXPAND → unbounded. Fine.**\n\nI keep concluding the scroll paths are fine because EXPAND forces LV_COORD_MAX.\n\nSo let me now very carefully double-check that **`lv_label_refr_text` is actually invoked with EXPAND for scroll labels before draw**, i.e. that `label->expand` is 1. Yes, line 232-234.\n\nHmm, then maybe the real defect is subtle and about **`text_size` becoming STALE when the width constraint changes but no style/size event fires**. E.g., text_size cached width is bounded by `max_w`. But in EXPAND modes max_w is forced to LV_COORD_MAX internally, so `text_size.x` independent of widget width. And non-EXPAND modes don't use text_size in draw. So staleness of the width bound is irrelevant.\n\nAt this point, let me reconsider — maybe there IS a visible bug for the **non-scroll label that reaches EXPAND**? No, non-scroll → expand=0 → EXPAND branch not taken.\n\nLet me consider the possibility the actual defect is in a DIFFERENT combination I've overlooked: **`lv_draw_label_iterate_characters` is also the path for `lv_draw_image` labels and the `lv_obj` text?** Not relevant.\n\nGiven my thorough analysis, the clearest *defensible* real defect is the **silent API contract change**: `lv_draw_label_iterate_characters`'s EXPAND branch now depends on `dsc->text_size` being populated, but that field is only ever set by `lv_label`. Every other in-tree caller that sets `LV_TEXT_FLAG_EXPAND` (textarea placeholder at `lv_textarea.c:1405`, table at `lv_table.c:836`, roller at `lv_roller.c:583`) leaves `text_size` as zeroed-by-init, so `w = 0`. While the SW line-wrap bypass currently masks the effect for `w`, the value is now wrong/meaningless — and the same is NOT true in the nema_gfx backend which was left computing the real width, so the two backends now diverge. But \"currently masked\" is weak for a real-defect claim.\n\nLet me reconsider if there is a concrete visible failure with `w=0`. Actually — I realize I should double check: does `LV_TEXT_FLAG_EXPAND` always co-occur with the bypass? In `lv_text_get_next_line`, the bypass is `EXPAND || FIT`. Yes. So `w` unused. So no visible failure. I'll be honest about that.\n\nGiven all this, let me reconsider whether the scroll paths genuinely can break. Let me think about **`get_label_flags` being re-evaluated at draw vs at refresh with respect to `obj->w_layout`**. The FIT flag depends on `lv_obj_get_style_width == LV_SIZE_CONTENT && !obj->w_layout`. \n\nActually — here's a real divergence I might've missed. Consider a **SCROLL label that becomes size-content?** No.\n\nLet me reconsider the timing defect ONE more time, focusing on **a scroll (expand) label whose draw uses text_size, computed at the LAST refresh; if the label text is set via `lv_label_set_text` while an old animation/offset is active**, refr updates text_size. Fine.\n\nI think I should now also check: is there an issue that **`label->text_size` is never invalidated/reset** when the label's text becomes NULL or the label is reused? Not really.\n\nLet me take yet another careful look at the diff for the **`lv_draw_label.h` struct field placement** — adding `lv_point_t text_size` in the middle of the struct changes layout and, critically, `lv_draw_label_dsc_t` is copied with `lv_memcpy` and `base.dsc_size = sizeof(...)`. Adding a field is fine for size. But other backends (vglite, nema) that build their own copies? They use `lv_draw_label_dsc_t` directly, so fine.\n\nI'll now settle. Given my analysis, the defensible concrete defects are:\n\n**Defect 1 (strongest, concrete): `lv_draw_label.c:221`** — the EXPAND branch now trusts `dsc->text_size.x`, but `text_size` is only initialized by the `lv_label` widget. All other `LV_TEXT_FLAG_EXPAND` callers (`lv_textarea.c:1405` placeholder, `lv_table.c:836`, `lv_roller.c:583`) never set `text_size`, so after `lv_draw_label_dsc_init`'s memzero it's 0. So `w = 0` instead of the actual text width. The SW path currently masks this because EXPAND short-circuits line segmentation, but this is fragile and diverges from the nema_gfx backend (line 440) that still computes the real width. Hmm, this is exactly the \"behavioral divergence\" that's real: **the two backends now render differently for the same descriptor.** Actually do they? In nema_gfx, `w` = real width; in SW, `w`=0. Both feed `lv_text_get_next_line`, which bypasses for EXPAND in BOTH. So both produce the same output. So no divergence either. Ugh.\n\nOK so genuinely, the EXPAND `w` is inert in both. So `text_size` in `lv_draw_label.c` is effectively a no-op given the dispatch. Not a real defect.\n\n**So is there NO real defect?** Let me reconsider very carefully the actual behavioral impact of switching `draw_main` lines 856/894 from `lv_text_get_size(LV_COORD_MAX)` to cached `label->text_size`.\n\nThe cache is updated ONLY when `lv_label_refr_text` runs. `draw_main` runs on every redraw (including every scroll animation frame — at 60fps). During scroll animation, OFFSET changes but text_size stays. Old code recomputed size each draw — but yielded identical value. So no divergence.\n\nBUT — and this is the key — consider a label in **SCROLL mode triggered from the very first frame before `lv_label_refr_text` populated text_size with the correct contents**. Since constructor sets text → refr, it's populated.\n\nLet me reconsider a genuinely plausible bug: **`lv_label_refr_text` computes `text_size` using `lv_obj_get_content_coords` — but at the time `lv_label_set_text` is called during construction, the object's geometry may not be the final geometry. Later, when the widget is sized/layed out, SIZE_CHANGED → refr → recompute. So text_size stays correct.**\n\nGiven my inability to find a *visible* behavioral break in the label paths, and the EXPAND path being inert, maybe the search for a real defect needs to focus on the **`label->text_size` staleness vs the draw-time `txt_coords` that can differ in WIDTH** in a specific config. \n\nActually — WAIT. I found it. Let me reconsider **SCROLL_CIRCULAR vertical** and **`text_size.y`**.\n\nFor a SCROLL_CIRCULAR label with multiline text (embedded '\\n'), EXPAND is set. In `lv_text_get_size` EXPAND mode, what's `size.y`? It processes each line (split on '\\n'), so y = line_height * number_of_lines. That matches old behavior (LV_COORD_MAX, EXPAND). Conistent.\n\nHmm. Let me look again at whether `text_size` could be **STALE in a visible way** for the scroll animation **start/offset**...\n\nActually, you know what, let me reconsider the problem from the perspective of: the diff author intended `text_size` to hold the *unbounded* text size (they replaced LV_COORD_MAX calls with it). But in `lv_label_refr_text`, the cache is computed with `max_w` WITHOUT any guarantee it's unbounded **unless the EXPAND flag is set**. And critically, **`lv_label_refr_text` is called for ALL long modes**, computing `text_size` with `max_w` = content width for non-expand modes (WRAP etc.).\n\nNow `text_size` is copied into `label_draw_dsc.text_size` unconditionally (line 826) and used by `lv_draw_label_iterate_characters` ONLY when EXPAND is set (line 215). For a WRAP label, expand=0, so the EXPAND branch isn't taken. So even though text_size is wrong (bounded) for WRAP, it's not used. Fine.\n\nSo the only consumers of text_size (=EXPAND consumers) are scroll/clip labels, where text_size IS unbounded. Consistent and correct.\n\nAlright. Given the exhaustive analysis, I cannot demonstrate a concrete *visible* behavioral defect in the label's own paths; the change is a faithful caching of an equivalent computation for the label, and for the other EXPAND callers the value is inert.\n\nBut wait — I should sanity-check the **`w = dsc->text_size.x` for the LABEL in SCROLL mode once more but considering the actual `w` semantic in the OLD code.** Old code: `w = p.x` where p from `lv_text_get_size(LV_COORD_MAX)` with EXPAND flag → unbounded width. New: text_size.x unbounded. Equal.\n\nLet me now seriously consider that the intended defect is the **`w = dsc->text_size.x` when text_size is stale relative to the drawing**, OR that the reviewer's expected answer is the **other-callers-don't-set-text_size** issue, which — even if currently masked — is the real regression the diff introduces in the public `lv_draw_label_iterate_characters` contract and its interaction with `lv_draw_label_dsc_init` (memzero). \n\nHmm, but the instruction says \"Report only defects you can point at, each with a concrete failure scenario (inputs -> wrong behaviour). Do not restate...\". A masked issue isn't a demonstrated wrong behavior.\n\nLet me reconsider whether there's a clearer visible failure with **`text_size` being 0 for non-label EXPAND + center/right alignment**. For table cells that are EXPAND with align CENTER/RIGHT... the alignment in iterate is computed from `coords` width and `line_width` (which comes from `lv_text_get_width_with_flags` of the full line). `w` not involved. So no.\n\nOK, let me broaden: is `dsc->text_size` used ANYWHERE else in the draw path (e.g., in the vglite/pxp GPU label implementations) where EXPAND is NOT bypassed? Let me grep for `text_size` usage in draw.\n\nLet me search the whole tree for `text_size` usage.\n\n\nSo the ONLY consumer of `dsc->text_size` in the whole draw layer is `lv_draw_label.c:221`. And the only producer is `lv_label.c:826`. \n\nNow let me examine the GPU backends (vglite, pxp) — do they use `lv_draw_label_iterate_characters`, or a separate GPU path that does its own text measurement? If the GPU path uses a different function, the diff's intent (caching to speed up) might not even be exercised. But that's not a defect.\n\nLet me reconsider the KEY question one final time: **Is there a real regression in `lv_draw_label.c:221`?**\n\nThe most defensible concrete issue: For any caller that sets `LV_TEXT_FLAG_EXPAND` but doesn't set `text_size` (textarea placeholder `lv_textarea.c:1405`, table `lv_table.c:836`, roller `lv_roller.c:583`), `w` becomes `0` rather than the actual text width. Old code computed the real width. Even though the SW line-wrap bypass masks the effect *when EXPAND is the only flag*, there is a concrete difference: `lv_text_get_next_line` bypass happens for the whole-line case, but `lv_draw_label_iterate_characters` is a **public API** and `w` semantics are part of its contract. This is shaky for \"wrong behaviour.\"\n\nBut hold on — let me reconsider the case where EXPAND is set but there's also a case where the bypass does NOT happen. Re-reading `lv_text_get_next_line` line 336: `if((flag & LV_TEXT_FLAG_EXPAND) || (flag & LV_TEXT_FLAG_FIT))` → returns early (whole line). This early-return path is taken for EXPAND. So `w` never reaches `lv_text_get_next_word`. Confirmed inert.\n\nSo within SW, `w=0` has zero effect. I'll therefore not claim a visible defect there.\n\nGiven the extensive analysis, let me now reconsider whether the diff **actually re-introduces a bug for the label's own scroll path** that I might be dismissing too quickly. Specifically: **the cached `text_size` for a SCROLL label can be stale with respect to the draw-time `text` when the text is changed via `lv_label_set_text` and the SIZE/style-refresh ordering.**\n\nActually, here's the concrete timing scenario that's real:\n\nConsider `lv_label_set_text(obj, newtext)` on a label currently in **SCROLL** mode with an active scroll animation. Look at `lv_label_set_text` flow. It sets label->text then calls... let me check. Let me find lv_label_set_text.\n\n\n`lv_label_set_text` calls `lv_label_refr_text` → recomputes `text_size`. So text_size is updated when text changes. Consistent.\n\nAt this point I've done an exhaustive analysis. Let me reconsider whether the expected \"real defect\" is actually the **`lv_draw_label_iterate_characters` EXPAND path now returning `text_size.x` that is stale/different from what the actual drawn text needs when the `lv_draw_label_dsc_t` is reused across frames with different `flag`s**.\n\nActually, wait. Let me reconsider the LABEL's own path at `lv_draw_label.c:221` in **CLIP mode**. In CLIP mode, expand=1, so `w = text_size.x` (unbounded). Old code = same unbounded. Equal. Fine.\n\nHmm, let me reconsider — could there be a case where `label_draw_dsc.flag` includes EXPAND (so the iterate EXPAND branch is taken) but `label->text_size` was computed when EXPAND was NOT set? That would require `label->expand` to flip between refresh and draw without a refresh in between. `label->expand` is set only in `lv_label_set_long_mode`, which calls `lv_label_refr_text` and sets expand BEFORE the refresh. So always consistent.\n\nOK. Let me now consider that maybe the actual intended real defect is the **place where `text_size` is computed in `lv_label_refr_text` uses `max_w` which equals the current object content width — but for scroll labels the whole POINT of the old `LV_COORD_MAX` in `draw_main` was to get the UNBOUNDED width, and the caching is correct ONLY because EXPAND happens to be set. But there's an inconsistency: what if a label is in SCROLL mode but `get_label_flags` returns EXPAND... yes it does.\n\nActually — let me reconsider **`LV_LABEL_LONG_MODE_CLIP`** at line 856. The condition gate at line 854 is `SCROLL || SCROLL_CIRCULAR`, so CLIP is excluded from line 856-865. Fine.\n\nAlright. Let me now also double-check the **`lv_label_refr_text` sets `text_size` BEFORE `lv_obj_refresh_self_size`**, but that's just ordering inside refresh — fine.\n\nGiven I've been unable to find a clear visible defect in the label's own scroll paths, and the EXPAND-iterate `w` is functionally masked, let me reconsider the **most compelling defensible defect once more with fresh eyes**, specifically the `w = dsc->text_size.x` for **non-label callers**, and whether it really is masked in ALL cases the diff cares about.\n\nThe diff author's optimization intent: avoid recomputing `lv_text_get_size` per draw. In `lv_draw_label_iterate_characters` EXPAND branch, they replaced a per-call real computation with the cached field. The cached field ONLY works if `dsc->text_size` is correctly populated. For `lv_label`, it is. For every other producer of `lv_draw_label_dsc_t` that sets EXPAND, it is **not** (remains 0 from `lv_draw_label_dsc_init`'s memzero). This is a genuine **latent/contract defect**: the field is undocumented as \"must set for EXPAND\", and all non-label EXPAND users silently pass 0. Even though line-wrapping is bypassed under EXPAND today, the value handed to `lv_text_get_next_line` is now `0` instead of the real width — that's a wrong value flowing into that call.\n\nI'll present this as the primary defect but be honest that it's currently masked by the EXPAND short-circuit — no, actually the instructions demand a concrete failure scenario with wrong behavior. If it's masked, I can't supply a failure scenario that yields *visible* wrong output. So I must not overclaim.\n\nLet me reconsider whether there's a scenario where EXPAND is set AND the max_width matters. Line 258 calls `lv_text_get_next_line(..., w, NULL, dsc->flag)`. If `dsc->flag` has EXPAND, short-circuit. If somehow flag passed at line 258 differs... it's `dsc->flag`. Same EXPAND. Always short-circuits.\n\nSo truly no visible failure in EXPAND.\n\nLet me pivot and reconsider the label scroll paths for a VISIBLE failure via a totally different mechanism: **`label->text_size` is computed once per refresh, but `draw_main` is also called when the label is drawn into a LAYER that's transformed/scaled, or for partial redraws**. No width effect.\n\nI'm now going to reconsider whether there is actually a bug that the diff introduces for the **`lv_label_refr_text` computing `text_size` with the CURRENT `max_w`, but then `draw_main`'s scroll/scroll_circular checks use `lv_area_get_width(&txt_coords)` which is the SAME content width** — so the comparison `size.x > lv_area_get_width(&txt_coords)` where `size.x` is unbounded (EXPAND) works. ✓.\n\nGiven everything, I lean towards: **the one genuinely concretely-defensible defect is the `w = dsc->text_size.x` change being incorrect/wrong for EXPAND callers other than `lv_label`, and unreliable in general** — but since I can't show visible wrong output, and the task demands concrete failure scenarios, I should be careful.\n\nActually, let me reconsider ONE more time the very specific and real problem: **`lv_draw_label_iterate_characters` EXPAND path for `lv_label` — but only when the draw happens while `dsc->text_size` is valid.** Since `label_draw_dsc.text_size` is populated from `label->text_size` and that's always current, fine.\n\nLet me reconsider the diff's **first hunk** once more, but think about `dsc->text_size` being **uninitialized for the FIRST draw of a freshly created `lv_draw_label_dsc_t` created via memzero** ... for label it's copied in. Fine.\n\nI think the honest conclusion is that the most defensible real defect is the **`text_size` field not being populated by non-label EXPAND users**, causing `w=0`. Let me verify the table and roller actually set EXPAND in a draw path that reaches `lv_draw_label_iterate_characters` with center/right alignment where `w` could matter — no, `w` doesn't affect alignment.\n\nLet me look at whether maybe table/roller uses `text_size`-dependent things... no, only line 221 consumes it.\n\nGiven constraints, I'll report the strongest defensible item with appropriate honesty about the mechanism, focusing on the concrete wrong-value flow. Let me also reconsider whether the **`lv_text_get_size` in `lv_label_refr_text` was ALREADY computing with `max_w` for non-expand and now `text_size` caching PULLS that WRONG (bounded) width into the EXPAND iterate branch** when the label mode changes.\n\nScenario: A label is in **WRAP** (expand=0) mode. `lv_label_refr_text` computes `text_size` with `max_w` (bounded; corrupted `text_size.x` = widget width, not full text width). Now the user calls `lv_label_set_long_mode(obj, LV_LABEL_LONG_MODE_SCROLL)`. In `lv_label_set_long_mode`, `label->expand = 1` is set at line 234, THEN `lv_label_refr_text(obj)` at line 239 recomputes text_size with EXPAND → unbounded. So it's corrected. Fine.\n\nBut what about the reverse timing in `lv_label_set_long_mode`? expand set before refr. Correct.\n\nNow the crucial one: what if **`lv_label_set_long_mode` is NOT called, but instead `label->expand` is toggled and text_size is stale?** expand only set in set_long_mode. Fine.\n\nOK, I'm confident now about the technical facts. Let me also reconsider the scenario the reviewer most likely intends: **The cached `text_size` is computed in `lv_label_refr_text` only on specific events. `draw_main` (and the iterate EXPAND path) now depend on it being correct. For a SCROLL label, consider text is updated via `lv_obj_set_style_text_font` — this fires STYLE_CHANGED → refr → text_size recomputed.** ✓. \n\nGiven the exhaustive review, I'll now decide on the final answer. Let me reconsider whether I should reconsider the **most likely intended defect** by considering what a regression would actually catch.\n\nLet me re-examine `draw_main` lines 856 and 894 once more, and specifically consider a **multi-frame scenario where text_size is stale during SCROLL-CIRCULAR because the label redraws every frame with animation but text_size is only refreshed on events — and the events that change the effective text width (e.g., a font swap during animation) happen... no.\n\nI'll now reconsider the strongest *visible* case: **`lv_draw_label.c:221` with a `dsc` that does NOT have EXPAND in flag but ALSO has FIT? No — the branch is EXPAND-only.\n\nFinal decision: The clearest concrete defect I can defend with a failure scenario tied to a line number is:\n\n**`lv_draw_label.c:221`** — `w = dsc->text_size.x` reading an unpopulated field. The EXPAND branch previously computed the real text width via `lv_text_get_size`. Now it reads `dsc->text_size`, which **only the `lv_label` widget sets (lv_label.c:826)**. Other in-tree callers that set `LV_TEXT_FLAG_EXPAND` (textarea placeholder `lv_textarea.c:1405`, table `lv_table.c:836-837`, roller `lv_roller.c:583`) leave `text_size` as `{0,0}` after `lv_draw_label_dsc_init`'s memzero. In `lv_draw_label_iterate_characters` this yields `w=0` for the EXPAND branch, so `lv_text_get_next_line` is called with max_width 0 instead of the real text width. The fact that `lv_text_get_next_line` currently short-circuits when EXPAND is set masks the outward symptom in the SW path, but the value handed in is now wrong and the behavior is fragile/divergent from `lv_draw_nema_gfx_label.c:440` which still computes the real width.\n\nHmm, but this is exactly the kind of \"masked, so no visible wrong behavior\" claim the instructions discourage. Let me reconsider whether there is actually a genuinely visible bug I've missed. \n\nLet me reconsider the **label SCROLL_CIRCULAR vertical repeat** (line 906-911) once more. It uses `size.y`. With EXPAND, `text_size.y` from `lv_text_get_size` = (number of lines)×line_height. This is for scroll_circular where the label may have multiple lines. Old code: same (EXPAND). Equal.\n\nLet me reconsider — actually, is `get_label_flags` in `lv_label_refr_text` guaranteed identical to the flag used in `draw_main`'s `label_draw_dsc.flag`? Yes, both call `get_label_flags(label)`. \n\nHmm, wait. Let me reconsider `lv_draw_label.c:221` for the case where **`dsc->flag` has EXPAND but the caller is `lv_label` and `label->text_size` is the WRONG bounded value because the label is NOT in a mode that sets expand, yet somehow the expand flag got into the draw dsc**. Can `label_draw_dsc.flag` have EXPAND while `label->expand==0`? `label_draw_dsc.flag = get_label_flags(label)` → EXPAND only if `label->expand`. And `label->text_size` computed with `get_label_flags` too. So both have the same EXPAND state. In the non-expand case, text_size is bounded and the EXPAND branch is NOT taken (flag has no EXPAND). Consistent — text_size wrong-but-unused. Fine.\n\nGiven everything, I regretfully find that the diff's changes, for the label's own paths, are behaviorally equivalent, and the only genuine wrong-value case (non-label EXPAND callers getting w=0) is currently masked. \n\nLet me reconsider whether maybe I'm wrong that `lv_text_get_next_line` short-circuits — what if I mis-read and the EXPAND branch feeds `w` into something that matters. Let me re-read lines 256-276 to be 100% sure of the flag passed:\n\nLine 258-259: `uint32_t line_end = line_start + lv_text_get_next_line(&dsc->text[line_start], remaining_len, font, dsc->letter_space, w, NULL, dsc->flag);`\n\n`dsc->flag` passed. With EXPAND → short circuit. Confirmed both branches (main and nema) pass the expand flag, so w is inert in both.\n\nSo I genuinely cannot point to a *visible* defect. However — I should step back. The task is to find REAL defects. Given the depth, let me reconsider whether the change at **`lv_label.c:856` and `:894`** might have a subtle but real issue with **`label->text_size` being `LV_COORD_MAX`-based while `draw_main` needs it, but the label's text_size is only valid AFTER a refresh, and during the FIRST frames of a scroll animation started at construction, the refresh has run. OK.\n\nLet me reconsider the possibility that **`text_size` is not reset when text becomes empty** — not a visible issue.\n\nHmm, let me reconsider the actual scenario of **`lv_label_refr_text` using `max_w` but for a size-content SCROLL label**. Is that a real config? A SCROLL label usually has a fixed width. If size-content + scroll... edge case.\n\nActually, let me reconsider — maybe there IS a visible bug: for a **SCROLL label, `label->text_size` is computed with EXPAND → unbounded. But the iterate EXPAND branch at line 221 uses `w = text_size.x` (unbounded). This is used as max_width for `lv_text_get_next_line`, which for EXPAND short-circuits. But WAIT — in SCROLL mode, the label ITERATE goes through the EXPAND branch (lines 215-222), giving `w` = unbounded. In old code, same unbounded. Fine.\n\nI keep concluding: no visible label defect.\n\nGiven this, I need to make a judgment call. The most honest and defensible real-defect report is about the **`text_size` field being consumed by `lv_draw_label_iterate_characters` without being populated by the majority of its callers**. Even if today's SW line-splitting happens to bypass it, the change replaced a self-contained computation with a field that is only populated in ONE caller across the entire codebase — all other EXPAND users now feed `w=0`. That IS a wrong value flowing into a documented function parameter (`max_width` for `lv_text_get_next_line`), and it diverges from the nema_gfx backend. I can frame the failure scenario around `w` being 0.\n\nActually, let me reconsider whether there's a visible consequence if some future/alternative config has EXPAND path where `w` matters. Not now.\n\nLet me reconsider from scratch whether maybe the defect is in **`lv_label.c:826` where `text_size` is taken from `label->text_size` which for a **WRAP label** (expand=0) is the BOUNDED width — and then when that label's draw dsc is used in `lv_draw_label_iterate_characters`, if the LABEL's flag somehow is EXPAND... no.\n\nOK let me make a decision. I'll report the strongest concrete item. But before finalizing, let me reconsider whether the reviewer expects the *obvious* defect: **`lv_draw_label.c`'s EXPAND path now depends on `dsc->text_size` being EPSILON-correct AND there are call sites (`lv_draw_rect.c:284`, `lv_draw_sw_img.c:184`, the GPU code, etc.) that create label dscs and never set text_size.** For those, EXPAND isn't necessarily set though.\n\nLet me verify which callers set EXPAND that reach line 221 with visible effect. Let me grep EXPAND callers in the draw and widgets again: textarea:1405 (placeholder), table:836, roller:583. And label:783/1281.\n\nFor roller:583 — let me quickly check its context to see if it sets EXPAND in a label draw dsc that would hit line 221.\n\nActually, I recall roller sets EXPAND on a label dsc for the selected value. If `text_size` is 0 there, w=0, masked. \n\nI'll finalize with the `w=0` issue as the primary defect, being precise that the field is unpopulated for non-label EXPAND callers. Additionally, I'll flag the **staleness/inconsistency between backends** only if defensible.\n\nActually, let me reconsider the possibility that the REAL intended defect is more pedestrian: **`text_size` computed in `lv_label_refr_text` is used by `draw_main`'s scroll checks, but if the label's text is set BEFORE it's assigned a size, or if the size changes WITHOUT a style/size change, `text_size` is stale.** But width changes trigger SIZE_CHANGED.\n\nLet me make my final determination and be honest. Given I cannot demonstrate a visible wrong-output regression in the label paths and the EXPAND-w issue is masked, the single concrete defensible defect is the unpopulated `text_size` for non-label EXPAND callers producing `w=0`. I'll write it up precisely with the failure scenario being the wrong value handed into `lv_text_get_next_line`, and note the mechanism by which the SW path currently masks the outward symptom, while the nema_gfx path still computes the real width — making the two backends inconsistent for the identical descriptor. I'll be precise about what I verified.\n\nWait — actually, I realize I should double check the nema_gfx path also gets the same `dsc` with text_size 0 but uses its own computation, so for non-label EXPAND users, nema renders with real width and SW renders with w=0 → but BOTH produce same chars because of the bypass. So still no visible divergence.\n\nI need to be honest: I could not find a visible behavioral defect in the SW path. But the strongest item remains the unpopulated-field contract issue. Given the strict instructions (\"Report only defects you can point at, each with a concrete failure scenario (inputs -> wrong behaviour)\"), I should report only if I can give a concrete wrong-behaviour. \n\nLet me hunt once more for a VISIBLE case. Consider **`lv_text_get_next_line` with `w` used and a NON-EXPAND flag but reached from the EXPAND branch** — impossible, branch requires EXPAND.\n\nConsider **GPU backend (vglite/pxp) that implements label drawing separately and computes line layout using `dsc->text_size`?** Only line 221 uses text_size; GPU backends don't check .text_size. So no.\n\nHmm, what about the `lv_draw_sw.c:462` (text layout in sw) and `lv_draw_vglite.c:484` — these create label dscs. Do they use text_size? Only line 221 (main iterate). \n\nLet me reconsider one more angle: **is `lv_draw_label_iterate_characters` used for `lv_draw_image`/`lv_obj` where text_expand is set via style?** No.\n\nAlright. I've been extremely thorough. Let me reconsider whether the true answer the panel wants is actually simpler: the change is a reasonable performance optimization and the genuinely reportable defect is the **`w = dsc->text_size.x`** reading a field that most callers never set, resulting in `w=0` for all non-label EXPAND draw paths. That's the concrete, line-anchored defect. I'll report it and be transparent about the masking detail so I'm not overclaiming a visible artifact, but the wrong-input-to-function is still a real defect.\n\nActually, re-reading the instructions: \"Report only defects you can point at, most severe first, each with a concrete failure scenario (inputs -> wrong behaviour).\" The `w=0` IS a concrete wrong input flowing into `lv_text_get_next_line` (max_width=0 instead of real width). Even if the immediate consumer ignores it, it's a genuine regression from a real computed value to 0. And there IS a legitimate concern it breaks when the flag combination changes. I'll report it as the primary defect.\n\nLet me also reconsider whether to report the backend inconsistency. I'll fold it into the same item.\n\nLet me also reconsider whether `text_size` staleness could cause a VISIBLE issue in a realistic case I may have hand-waved: **SCROLL label with text containing '\\n' (multiline) and long_mode SCROLL (non-circular)**. `text_size.y` used? Only circular line 906. `text_size.x` is max line width. Same as old. Fine.\n\nI'll also reconsider the possibility that the intended defect is that **`text_size` is never updated when only the object WIDTH changes in a way that... no.\n\nLet me finalize the report focusing on the `lv_draw_label.c:221` unpopulated-field defect. I'll name file+line precisely.\n\nLet me get exact line numbers from the diff hunks:\n- `lv_draw_label.c` hunk header `@@ -218,10 +218,7 @@`, and new `w = dsc->text_size.x;` is at new line 221 (confirmed in file read: line 221).\n- `lv_draw_label.h`: `lv_point_t text_size;` at new line 39.\n- `lv_label.c` line 826, 856, 894, 968.\n- `lv_label_private.h` line 54.\n\nI'll report the primary defect at `lv_draw_label.c:221`.\n\nLet me reconsider severity and whether there's truly a visible breaking scenario to strengthen it. One reinforcing fact: **`lv_draw_label_iterate_characters` is a public, documented API** and second-guessing future callers isn't a \"current wrong behaviour.\" So honestly, the only current wrong behaviour I can demonstrate is the wrong `max_width=0` value passed to `lv_text_get_next_line` — which currently yields no glyph difference due to the EXPAND short-circuit. This is weak.\n\nGiven the strict standard, maybe I should reconsider whether the diff actually has NO visible defect and the answer should be more nuanced. But the panel expects me to identify real defects. Let me reconsider the ONE thing I may have gotten wrong: **does `lv_text_get_next_line`'s short-circuit really apply to the `w` (max_width) passed, given that in the EXPAND branch the flag passed to it at line 258 is `dsc->flag`, which for the LABEL in scroll = includes EXPAND → short-circuit. For NON-label EXPAND callers, also EXPAND → short-circuit.** Yes.\n\nHmm, but wait — what about `LV_TEXT_FLAG_FIT` labels in the iterate EXPAND branch? FIT is not EXPAND, so FIT-only labels use the non-EXPAND branch `w = coords width`. That's the old behavior too. No change. But FIT labels in the label widget have expand=0, use non-expand branch. Fine.\n\nOK. Let me also verify: is `dsc->text_size` perhaps ALSO meant to be consumed by the GPU backends that do their own layout and DO read it? I already grepped: only lv_draw_label.c:221. So no.\n\nGiven all this, I'll present the single most defensible defect (the unpopulated text_size for non-label EXPAND callers → w=0), clearly, with the concrete line anchors, and be honest that the outward glyph output is currently masked by the EXPAND short-circuit but the value handed to the line-break routine is now wrong (0) and inconsistent with the nema_gfx backend that still computes the real width. This is the honest, verifiable finding.\n\nActually, let me reconsider whether to also mention the stronger concern: that the whole premise of using `label->text_size` in `draw_main` (lines 856/894) is only equivalent to the old code *because* EXPAND happens to be set for scroll labels — a coupling that isn't obvious and could break, but I can't tie it to a current wrong behavior. I'll keep the report tight.\n\nLet me reconsider whether the answer should be NO DEFECTS FOUND. Given the strict requirement for a concrete wrong-behaviour and my finding that the label paths are behaviorally equivalent and the EXPAND-w is masked, the *technically honest* visible-behavior answer is close to no visible defect. However, the passing of `max_width=0` instead of the real text width to `lv_text_get_next_line` is a genuine, concrete, line-anchored defect (wrong input to a core text-layout function) that the diff introduces — and the fact that it's currently masked is precisely the kind of fragile regression worth reporting. I'll report it as the primary (and likely only) defect, clearly.\n\nI'll write the final answer.\n\n\nI've now confirmed three in-tree EXPAND callers (table `lv_table.c:836-837`, roller `lv_roller.c:583`, and the textarea placeholder `lv_textarea.c:1405`) that create label draw dscs, set `LV_TEXT_FLAG_EXPAND`, and never populate `text_size`. After `lv_draw_label_dsc_init`'s `lv_memzero`, `dsc->text_size` is `{0,0}`, so the EXPAND branch at `lv_draw_label.c:221` computes `w = 0`.\n\nI've verified that `ltv_text_get_next_line` short-circuits on EXPAND so `w` currently doesn't change glyph placement in the SW path — but the diff replacing a real measured width with an unpopulated field is the concrete defect, and it hands `0` as the max_width argument to the line-break routine for every non-label EXPAND draw. I'll report it precisely.\n\nLet me write the final verdict. I'll report the primary defect honestly, noting the masking detail and the backend divergence with `lv_draw_nema_gfx_label.c:440`.\n\n\nRoller (line 583-587) draws the selected text with EXPAND flag via `lv_draw_label`, never setting `text_size`. Confirmed.\n\nNow I'll write the final report. The primary — and only clearly defensible — defect is at `lv_draw_label.c:221`.\n\nLet me write it concisely.\n\n\nThis is a test/demo helper, not an EXPAND caller. Not relevant.\n\nI've verified everything I need. Let me finalize."
+        },
+        {
+          "note": "`label->text_size` is reused later for scroll alignment/scroll-circular logic, but it’s only updated in `lv_label_refr_text()`. If font/letter_space/line_space/flags/max_w or `label->text` change and `lv_label_refr_text()` is not called before `draw_main()`, `text_size` can become stale and cause wrong alignment/scroll behavior. Consider either recomputing size in the specific draw paths when needed, or ensure all setters that impact text metrics update `label->text_size` (or invalidate and trigger `lv_label_refr_text()`) before draw.",
+          "path": "src/widgets/label/lv_label.c",
+          "side": "right",
+          "from_line": 856,
+          "to_line": 856,
+          "line_match": false,
+          "semantic_match": false,
+          "matched_note": ""
+        },
+        {
+          "note": "`label->text_size` is updated here based on current `max_w` and flags. If other code paths compute size with a different `max_w` (e.g., `LV_COORD_MAX` used in scroll checks previously), reusing this cached value can change behavior. Verify that `label->text_size` is intended to represent the unbounded width (`LV_COORD_MAX`) size for scrolling decisions; otherwise consider caching both constrained and unconstrained sizes or keep the local `lv_text_get_size(... LV_COORD_MAX ...)` for scroll logic.",
+          "path": "src/widgets/label/lv_label.c",
+          "side": "right",
+          "from_line": 968,
+          "to_line": 968,
+          "line_match": false,
+          "semantic_match": false,
+          "matched_note": ""
+        },
+        {
+          "note": "The newly added `text_size` struct member is uninitialized, risking undefined behavior if accessed before `lv_label_refr_text` sets it; initialize to `{0, 0}` during label creation.",
+          "path": "src/widgets/label/lv_label_private.h",
+          "side": "right",
+          "from_line": 54,
+          "to_line": 56,
+          "line_match": false,
+          "semantic_match": false,
+          "matched_note": ""
+        },
+        {
+          "note": "The new text_size field is not consistently updated when the cache is invalidated. In LV_EVENT_GET_SELF_SIZE handler, when invalid_size_cache is true, only size_cache gets updated but text_size remains stale. This creates inconsistency between the two cached size fields.",
+          "path": "src/widgets/label/lv_label_private.h",
+          "side": "right",
+          "from_line": 54,
+          "to_line": 54,
+          "line_match": false,
+          "semantic_match": false,
+          "matched_note": ""
+        }
+      ]
+    },
+    {
+      "instance_id": "FreeCAD__FreeCAD@82fef4a",
+      "repo": "FreeCAD/FreeCAD",
+      "comments": [
+        {
+          "note": "Unnamed parameters in `NoOpEntityResolver::resolveEntity` trigger a linter warning; name the parameters and mark them as unused (e.g., with `[[maybe_unused]]` or a `(void)` cast) to resolve both the unnamed-parameter and unused-variable warnings.",
+          "path": "src/Base/Parameter.cpp",
+          "side": "right",
+          "from_line": 1866,
+          "to_line": 1866,
+          "line_match": false,
+          "semantic_match": false,
+          "matched_note": ""
+        },
+        {
+          "note": "Double newline detected. The string \"\\n\" followed by \"\\n\" produces two consecutive newlines. Consider using a single \"\\n\" or std::endl for consistency with other error messages.\n\n```suggestion\n        std::cerr << \"An error occurred during parsing\\n\";\n```",
+          "path": "src/Base/Parameter.cpp",
+          "side": "right",
+          "from_line": 1911,
+          "to_line": 1911,
+          "line_match": false,
+          "semantic_match": false,
+          "matched_note": ""
+        },
+        {
+          "note": "Replacing `std::endl` with `\\n` in error messages may delay critical error visibility due to lack of explicit flushing; revert to `std::endl` to guarantee immediate terminal output for error reporting.",
+          "path": "src/Base/Parameter.cpp",
+          "side": "right",
+          "from_line": 1913,
+          "to_line": 1913,
+          "line_match": false,
+          "semantic_match": false,
+          "matched_note": ""
+        }
+      ]
+    },
+    {
+      "instance_id": "elastic__elasticsearch@a6a4623",
+      "repo": "elastic/elasticsearch",
+      "comments": [
+        {
+          "note": "Minor clarity: `getNotNull()` is called after a null-check, but it returns a primitive `int` and can never be null. The name reads like it might perform a nullability check/throw. Consider renaming to something like `get()`/`value()`/`asInt()` (or at least aligning naming across usages) to reduce confusion for future readers.\n\n```suggestion\n            off = new LimitedOffsetsEnum(off, queryMaxAnalyzedOffset.value());\n```",
+          "path": "server/src/main/java/org/elasticsearch/lucene/search/uhighlight/CustomFieldHighlighter.java",
+          "side": "right",
+          "from_line": 116,
+          "to_line": 116,
+          "line_match": false,
+          "semantic_match": false,
+          "matched_note": ""
+        },
+        {
+          "note": "There appears to be a mismatch between the comment indicating special handling for negative values and the actual constructor implementation which directly assigns the value. Either the comment should be updated or the constructor should implement the described behavior.",
+          "path": "server/src/main/java/org/elasticsearch/lucene/search/uhighlight/QueryMaxAnalyzedOffset.java",
+          "side": "right",
+          "from_line": 15,
+          "to_line": 18,
+          "line_match": true,
+          "semantic_match": true,
+          "matched_note": "### 3. Misleading comment in `QueryMaxAnalyzedOffset` constructor\n**File:** `server/src/main/java/org/elasticsearch/lucene/search/uhighlight/QueryMaxAnalyzedOffset.java:16`\n\n```java\n// If we have a negative value, grab value for the actual maximum from the index.\nthis.queryMaxAnalyzedOffset = queryMaxAnalyzedOffset;\n```\n\nThe comment describes the behavior of the `create()` factory method (line 24), not the constructor. The constructor merely stores the already-resolved value. This misleads maintainers about where the index-defaulting logic lives.\n\n---\n\n**Summary order:** Test flakiness (CI impact) → Silent user-facing behavior change → Documentation bug."
+        },
+        {
+          "note": "Confusing method name: The name `getNotNull()` is misleading because: 1) It returns a primitive int which cannot be null anyway, 2) The QueryMaxAnalyzedOffset instance itself could be null (when `create` returns null), potentially causing NPE when calling this method, 3) The name doesn't clearly convey what value is being returned. Consider renaming to something more descriptive like `getValue()` or `getMaxAnalyzedOffset()`.",
+          "path": "server/src/main/java/org/elasticsearch/lucene/search/uhighlight/QueryMaxAnalyzedOffset.java",
+          "side": "right",
+          "from_line": 27,
+          "to_line": 29,
+          "line_match": false,
+          "semantic_match": false,
+          "matched_note": ""
+        },
+        {
+          "note": "The current validation condition for `maxAnalyzedOffset` incorrectly allows 0, which is invalid as highlighting zero characters is nonsensical and may cause undefined behavior. The condition should reject 0 while permitting -1 (special default) and positive integers.",
+          "path": "server/src/main/java/org/elasticsearch/search/fetch/subphase/highlight/AbstractHighlighterBuilder.java",
+          "side": "right",
+          "from_line": 568,
+          "to_line": 568,
+          "line_match": true,
+          "semantic_match": true,
+          "matched_note": "**1. `AbstractHighlighterBuilder.java:568` (hunk `@@ -561,13 +561,12 @@`) — `max_analyzed_offset: 0` is now silently accepted and disables the field-length guard.**\n\nThe validation was relaxed from `<= 0` (reject) to `< -1` (reject), so `0` now passes, even though the intended new value is only `-1` (the Javadoc added in the same hunk says \"negative int (defaulting to index analyzed offset)\" — `0` is neither that nor a positive limit). Concrete failure: a request with `\"highlight\": {\"type\": \"plain\", \"fields\": {\"body\": {}}, \"max_analyzed_offset\": 0}` on any field, e.g. a 2,000,000-char text with default index limit 1,000,000:\n- Previously: HTTP 400 `[max_analyzed_offset] must be a positive integer`.\n- Now: 200 OK. In `PlainHighlighter.java:126` the guard `queryMaxAnalyzedOffset.getNotNull() > maxAnalyzedOffset` is `0 > 1000000` → false, so the \"length exceeds limit\" exception can never fire for any field length; and `wrapAnalyzer` (`PlainHighlighter.java:251`, `DefaultHighlighter.java:195`) builds `LimitTokenOffsetAnalyzer(analyzer, 0)`, whose `LimitTokenOffsetFilter` only passes tokens with `startOffset <= 0`, so no match beyond character 0 is ever found. Result: silent empty/broken highlights instead of a loud error — same for the unified path (`CustomUnifiedHighlighter.java:128`, `CustomFieldHighlighter.java:116`)."
+        },
+        {
+          "note": "`QueryMaxAnalyzedOffset.create(...)` returns `null` when the query param is unset. That part is fine, but the current code mixes wrapper-vs-null semantics in a confusing way:\n\n- In the `if` guard, `queryMaxAnalyzedOffset == null || queryMaxAnalyzedOffset.getNotNull() > maxAnalyzedOffset` is logically equivalent to the previous Integer-based check, but it obscures intent and invites mistakes.\n- `wrapAnalyzer(...)` takes a `QueryMaxAnalyzedOffset` yet still checks for null; this is OK functionally, but the naming (`maxAnalyzedOffset`) suggests a primitive/int, and makes it easy to accidentally call `getNotNull()` without guarding in future edits.\n\nSuggestion: keep an `Integer` variable for the query param and only construct the wrapper when non-null (or rename the wrapper variable to `queryMaxAnalyzedOffsetWrapper` / `queryMaxOffset`), so nullability is obvious and `getNotNull()` is only used on a clearly non-null reference.\n\n```suggestion\n        final Integer queryMaxAnalyzedOffset = fieldContext.field.fieldOptions().maxAnalyzedOffset();\n        final QueryMaxAnalyzedOffset queryMaxAnalyzedOffsetWrapper = QueryMaxAnalyzedOffset.create(queryMaxAnalyzedOffset, maxAnalyzedOffset);\n        Analyzer analyzer = wrapAnalyzer(\n            context.getSearchExecutionContext().getIndexAnalyzer(f -> Lucene.KEYWORD_ANALYZER),\n            queryMaxAnalyzedOffsetWrapper\n        );\n```",
+          "path": "server/src/main/java/org/elasticsearch/search/fetch/subphase/highlight/PlainHighlighter.java",
+          "side": "right",
+          "from_line": 111,
+          "to_line": 118,
+          "line_match": false,
+          "semantic_match": false,
+          "matched_note": ""
+        }
+      ]
+    },
+    {
+      "instance_id": "microsoft__typescript-go@b970689",
+      "repo": "microsoft/typescript-go",
+      "comments": [
+        {
+          "note": "Removing KindJSDocImportTag from this switch statement may cause runtime panics when calling ModuleSpecifier() on JSDocImportTag nodes. Since JSDocImportTag has a ModuleSpecifier property (as evidenced by other methods including it and the NewJSDocImportTag function setting it), it should likely be handled here similar to other import declaration types.",
+          "path": "internal/ast/ast.go",
+          "side": "right",
+          "from_line": 754,
+          "to_line": 757,
+          "line_match": false,
+          "semantic_match": false,
+          "matched_note": ""
+        },
+        {
+          "note": "`IsDefaultImport` now accepts `KindJSImportDeclaration` but still calls `node.AsImportDeclaration()`. This is safe only if `JSImportDeclaration` is represented by the same struct/accessor as `ImportDeclaration`. If `KindJSImportDeclaration` has its own node type (e.g., `AsJSImportDeclaration()`), this will panic or misread fields at runtime. Please confirm the accessor mapping for `KindJSImportDeclaration`, and if needed switch to the correct `As*` method (or add a shared helper that extracts `ImportClause` for both kinds).",
+          "path": "internal/ast/utilities.go",
+          "side": "right",
+          "from_line": 2367,
+          "to_line": 2369,
+          "line_match": false,
+          "semantic_match": false,
+          "matched_note": ""
+        },
+        {
+          "note": "Calling `AsImportDeclaration()` on a node of kind `KindExportDeclaration` will cause a panic because `ExportDeclaration` uses a different struct than `ImportDeclaration`. Consider using `getModuleSpecifierFromNode(parent)` which handles both kinds correctly, or split the check.",
+          "path": "internal/checker/checker.go",
+          "side": "right",
+          "from_line": 29386,
+          "to_line": 29386,
+          "line_match": false,
+          "semantic_match": false,
+          "matched_note": ""
+        },
+        {
+          "note": "Potential panic: `importTag.ImportClause` might be nil (e.g., for side-effect imports like `/** @import \"mod\" */`). If so, `Clone` might return nil (or panic if not nil-safe), and subsequent access to `importClause.Flags` or `AsImportClause()` will cause a panic. \n\nSuggestion: Add a nil check for `importTag.ImportClause`.",
+          "path": "internal/parser/reparser.go",
+          "side": "right",
+          "from_line": 120,
+          "to_line": 122,
+          "line_match": true,
+          "semantic_match": true,
+          "matched_note": "- **High — `internal/parser/reparser.go:120`**: `ImportClause` is optional, but it is dereferenced unconditionally. Parsing a JavaScript file containing `/** @import \"./dep\" */` immediately before a function produces a `JSDocImportTag` with `ImportClause == nil`; reparsing then panics in `Clone()` instead of reporting invalid JSDoc syntax."
+        },
+        {
+          "note": "Directly mutating IsTypeOnly after cloning may violate immutability assumptions present in other parts of the codebase. Consider using a factory method or reconstruction pattern consistent with how similar mutations are performed elsewhere.",
+          "path": "internal/parser/reparser.go",
+          "side": "right",
+          "from_line": 122,
+          "to_line": 122,
+          "line_match": true,
+          "semantic_match": false,
+          "matched_note": ""
+        },
+        {
+          "note": "Unhandled `KindJSImportDeclaration` case in `emitStatement` switch lacks implementation; must either add dedicated emit logic or explicitly panic if transformation is expected.",
+          "path": "internal/printer/printer.go",
+          "side": "left",
+          "from_line": 3956,
+          "to_line": 3956,
+          "line_match": false,
+          "semantic_match": false,
+          "matched_note": ""
+        },
+        {
+          "note": "CommonJSModuleTransformer should not handle `JSImportDeclaration` directly; this node kind should be normalized by earlier passes (e.g., type eraser or import ellision) to maintain transformer separation of concerns and ensure module transformers only process edition-appropriate syntax.",
+          "path": "internal/transformers/commonjsmodule.go",
+          "side": "right",
+          "from_line": 66,
+          "to_line": 66,
+          "line_match": false,
+          "semantic_match": false,
+          "matched_note": ""
+        },
+        {
+          "note": "The `JSImportDeclaration` node should not be set to nil in this transformer; it must be processed during an earlier transformation phase instead.",
+          "path": "internal/transformers/esmodule.go",
+          "side": "right",
+          "from_line": 43,
+          "to_line": 43,
+          "line_match": false,
+          "semantic_match": false,
+          "matched_note": ""
+        },
+        {
+          "note": "The addition of `KindJSImportDeclaration` to the `transformUsingDeclarations` switch case is misplaced; this node type should be processed in an earlier transformation stage before reaching this function.",
+          "path": "internal/transformers/esnext.go",
+          "side": "right",
+          "from_line": 371,
+          "to_line": 371,
+          "line_match": false,
+          "semantic_match": false,
+          "matched_note": ""
+        },
+        {
+          "note": "The change to include `ast.KindJSImportDeclaration` in the import handling switch case is invalid because type-only imports are elided during compilation and should not affect runtime module dependency collection.",
+          "path": "internal/transformers/externalmoduleinfo.go",
+          "side": "right",
+          "from_line": 50,
+          "to_line": 50,
+          "line_match": false,
+          "semantic_match": false,
+          "matched_note": ""
+        },
+        {
+          "note": "Grouping ast.KindImportDeclaration and ast.KindJSImportDeclaration assumes interchangeable use of .AsImportDeclaration(). Please verify that both node kinds structurally support this conversion uniformly.",
+          "path": "internal/transformers/externalmoduleinfo.go",
+          "side": "right",
+          "from_line": 50,
+          "to_line": 50,
+          "line_match": false,
+          "semantic_match": false,
+          "matched_note": ""
+        },
+        {
+          "note": "The addition of `ast.KindJSImportDeclaration` to the import case statement is incorrect because `JSImportDeclaration` nodes should have been processed by `typeeraser.go` and thus never reach the `ImportElisionTransformer`.",
+          "path": "internal/transformers/importelision.go",
+          "side": "right",
+          "from_line": 31,
+          "to_line": 31,
+          "line_match": false,
+          "semantic_match": false,
+          "matched_note": ""
+        },
+        {
+          "note": "Adding ast.KindJSImportDeclaration to the switch case is redundant because typeeraser.go is designed to handle JSImportDeclaration nodes.",
+          "path": "internal/transformers/importelision.go",
+          "side": "right",
+          "from_line": 169,
+          "to_line": 169,
+          "line_match": false,
+          "semantic_match": false,
+          "matched_note": ""
+        },
+        {
+          "note": "ast.KindJSImportDeclaration should be handled in a separate case to elide the node, not grouped with ast.KindImportDeclaration which requires different processing.",
+          "path": "internal/transformers/typeeraser.go",
+          "side": "right",
+          "from_line": 258,
+          "to_line": 258,
+          "line_match": false,
+          "semantic_match": false,
+          "matched_note": ""
+        },
+        {
+          "note": "The type display has regressed from 'Foo' to 'default'. This reduces clarity as 'Foo' is the local name of the imported interface. This change likely results from the new handling of JSDoc `@import` tags (via `JSImportDeclaration`) where the default import symbol is not being correctly aliased or printed with its local name.",
+          "path": "testdata/baselines/reference/submodule/conformance/importTag3.types",
+          "side": "right",
+          "from_line": 18,
+          "to_line": 19,
+          "line_match": false,
+          "semantic_match": false,
+          "matched_note": ""
+        }
+      ]
+    },
+    {
+      "instance_id": "valkey-io__valkey@866fa4a",
+      "repo": "valkey-io/valkey",
+      "comments": [
+        {
+          "note": "Memory-safety (per checklist): after freeServerConfig(), consider setting the pointer to NULL. This reduces risk of accidental reuse/double-free if future code adds additional cleanup paths or early returns.\n\n```suggestion\n        if (config.server_config != NULL) {\n            freeServerConfig(config.server_config);\n            config.server_config = NULL;\n        }\n```",
+          "path": "src/valkey-benchmark.c",
+          "side": "right",
+          "from_line": 1998,
+          "to_line": 1998,
+          "line_match": false,
+          "semantic_match": false,
+          "matched_note": ""
+        }
+      ]
+    },
+    {
+      "instance_id": "microsoft__typescript-go@892b4a3",
+      "repo": "microsoft/typescript-go",
+      "comments": [
+        {
+          "note": "The getManualTests function crashes when manualTests.txt is missing due to lack of file existence check; it should return an empty set in this scenario.",
+          "path": "internal/fourslash/_scripts/convertFourslash.mts",
+          "side": "right",
+          "from_line": 26,
+          "to_line": 29,
+          "line_match": true,
+          "semantic_match": true,
+          "matched_note": "**1. `internal/fourslash/_scripts/convertFourslash.mts:27` (hunk `@@ -21,6 +23,11 @@`) — unguarded read of a file that does not exist, breaking the existing generator and CI.**\n`getManualTests()` calls `fs.readFileSync(manualTestsPath, \"utf-8\")` with no existence check, but `manualTests.txt` is not added by this PR and doesn't exist anywhere in the checkout (verified: no file in the tree, no writer other than `makeManual.mts:41`, which only runs when a developer invokes it). `main()` calls `getManualTests()` unconditionally at line 47, and `updateFailing.mts:11` calls `convertFourslash()`.\nFailure scenario: fresh checkout (or CI, which never runs `makemanual`) → `npm run updatefailing` (the \"Regenerate fourslash tests\" CI job at `.github/workflows/ci.yml:253-254`) → `readFileSync` throws `ENOENT: no such file or directory` before any test is generated → the whole regeneration job hard-fails. `makeManual.mts:33` guards the same path with `existsSync`; `getManualTests` does not."
+        },
+        {
+          "note": "Inconsistent test name processing: getFailingTests() uses substring(4) to remove prefix, but getManualTests() doesn't. This could cause manual test filtering to fail if the manual tests file uses the same format as failing tests.",
+          "path": "internal/fourslash/_scripts/convertFourslash.mts",
+          "side": "right",
+          "from_line": 26,
+          "to_line": 29,
+          "line_match": true,
+          "semantic_match": true,
+          "matched_note": "### 1. `convertFourslash.mts:27` — `getManualTests()` doesn't strip \"Test\" prefix like `getFailingTests()` does at line 22\n\n**Failure scenario:** `failingTests.txt` contains `TestAugmentedTypesClass1`. `getFailingTests()` stores `AugmentedTypesClass1` (line 22: `.substring(4)`). `generateGoTest()` computes `testName = \"AugmentedTypesClass1\"` (line 946). Check at line 968 `failingTests.has(\"AugmentedTypesClass1\")` ✓ works.\n\nBut `manualTests.txt` would contain `TestAugmentedTypesClass1` (as written by `makeManual.mts:39`). `getManualTests()` stores `TestAugmentedTypesClass1` (no `.substring(4)`). Check at line 72 `manualTests.has(\"AugmentedTypesClass1\")` ✗ fails — manual test not skipped, gets generated to `gen/` anyway."
+        },
+        {
+          "note": "manualOutputDir is created but never used. Either remove this directory creation or implement the logic to use it for manual tests.",
+          "path": "internal/fourslash/_scripts/convertFourslash.mts",
+          "side": "right",
+          "from_line": 44,
+          "to_line": 44,
+          "line_match": false,
+          "semantic_match": false,
+          "matched_note": ""
+        },
+        {
+          "note": "There is a potential naming mismatch between how test names are stored in `manualTests.txt` and how they are checked. In `makeManual.mts`, the test name is stored as the full filename (e.g., 'testFile_test.go'), but here the code checks against the capitalized base name (e.g., 'TestFile'). This inconsistency means the skip logic may not work correctly. Consider ensuring consistent naming between the two scripts, or check against both formats.",
+          "path": "internal/fourslash/_scripts/convertFourslash.mts",
+          "side": "right",
+          "from_line": 70,
+          "to_line": 74,
+          "line_match": false,
+          "semantic_match": false,
+          "matched_note": ""
+        },
+        {
+          "note": "This logic assumes `test.name` is not empty. If a filename results in an empty name (e.g. `.ts`), accessing index 0 will cause a runtime error. Consider adding a check for `test.name.length > 0`.",
+          "path": "internal/fourslash/_scripts/convertFourslash.mts",
+          "side": "right",
+          "from_line": 70,
+          "to_line": 70,
+          "line_match": false,
+          "semantic_match": false,
+          "matched_note": ""
+        },
+        {
+          "note": "The condition `if (testContent)` fails to prevent writing files containing only whitespace, as non-empty whitespace strings evaluate as truthy in JavaScript. It should instead verify meaningful content exists by checking `testContent.trim().length > 0` before writing the file.",
+          "path": "internal/fourslash/_scripts/convertFourslash.mts",
+          "side": "right",
+          "from_line": 75,
+          "to_line": 79,
+          "line_match": false,
+          "semantic_match": false,
+          "matched_note": ""
+        },
+        {
+          "note": "This conditional check is unnecessary. The `generateGoTest` function has a return type of `string` and always returns a non-empty template string. This check adds unnecessary complexity and might confuse future maintainers into thinking that `generateGoTest` can return falsy values. Consider removing this check and directly writing the file as in the original code.",
+          "path": "internal/fourslash/_scripts/convertFourslash.mts",
+          "side": "right",
+          "from_line": 75,
+          "to_line": 79,
+          "line_match": false,
+          "semantic_match": false,
+          "matched_note": ""
+        },
+        {
+          "note": "The script exits silently with status 1 when no arguments are provided, failing to inform users of the required usage. Add descriptive error messages explaining the expected argument format and purpose.",
+          "path": "internal/fourslash/_scripts/makeManual.mts",
+          "side": "right",
+          "from_line": 12,
+          "to_line": 14,
+          "line_match": false,
+          "semantic_match": false,
+          "matched_note": ""
+        },
+        {
+          "note": "`testName` comes directly from CLI and is used to build a path under `genDir`. If a user passes something like `../foo`, `path.join` will resolve outside `genDir`, and `renameSync` could move arbitrary files. Consider restricting input to a filename (no path separators) via `path.basename` + equality check and/or validating allowed characters.\n\n```suggestion\n    const testName = args[0];\n    const testFileName = path.basename(testName);\n    if (testFileName !== testName) {\n        console.error(\"Invalid test name: must be a file name, not a path.\");\n        process.exit(1);\n    }\n    const genTestFile = path.join(genDir, testFileName);\n```",
+          "path": "internal/fourslash/_scripts/makeManual.mts",
+          "side": "right",
+          "from_line": 16,
+          "to_line": 18,
+          "line_match": true,
+          "semantic_match": false,
+          "matched_note": ""
+        },
+        {
+          "note": "Missing validation: The script doesn't verify that genTestFile is actually a Go test file (should end with _test.go). This could accidentally move non-test files or directories if they exist with the matching name. Consider adding a file extension check.\n\n```suggestion\n    const genTestFile = path.join(genDir, `${testFileName}_test.go`);\n    if (!fs.existsSync(genTestFile)) {\n        console.error(`Test file not found: ${genTestFile}`);\n        console.error(\"Make sure the test exists in the gen directory first.\");\n        process.exit(1);\n    }\n```",
+          "path": "internal/fourslash/_scripts/makeManual.mts",
+          "side": "right",
+          "from_line": 18,
+          "to_line": 23,
+          "line_match": false,
+          "semantic_match": false,
+          "matched_note": ""
+        },
+        {
+          "note": "Missing error handling: The `renameSync` operation can fail (e.g., permission issues, disk full, file locked). If it fails after the existence check, the script will crash. Consider wrapping file operations in try-catch blocks to handle errors gracefully and provide meaningful error messages.",
+          "path": "internal/fourslash/_scripts/makeManual.mts",
+          "side": "right",
+          "from_line": 29,
+          "to_line": 30,
+          "line_match": true,
+          "semantic_match": false,
+          "matched_note": ""
+        },
+        {
+          "note": "Consider adding error handling for the manualTests.txt file operations. If the file is corrupted or has invalid content, the split operation might fail. Also, consider using a try-catch block for file operations.",
+          "path": "internal/fourslash/_scripts/makeManual.mts",
+          "side": "right",
+          "from_line": 32,
+          "to_line": 36,
+          "line_match": false,
+          "semantic_match": false,
+          "matched_note": ""
+        },
+        {
+          "note": "Appending an empty string to `manualTests` ensures a trailing newline upon join(), but consider controlling EOL explicitly instead of relying on array manipulation which can lead to inconsistent formatting especially if readers don't trim inputs uniformly.",
+          "path": "internal/fourslash/_scripts/makeManual.mts",
+          "side": "right",
+          "from_line": 41,
+          "to_line": 41,
+          "line_match": false,
+          "semantic_match": false,
+          "matched_note": ""
+        }
+      ]
+    },
+    {
+      "instance_id": "wavetermdev__waveterm@90a57d5",
+      "repo": "wavetermdev/waveterm",
+      "comments": [
+        {
+          "note": "Improper error comparison may miss wrapped `fs.ErrNotExist` errors. Replace direct `err == fs.ErrNotExist` comparison with `errors.Is(err, fs.ErrNotExist)` to properly handle potentially wrapped filesystem errors when checking for non-existent files.",
+          "path": "pkg/blockcontroller/blockcontroller.go",
+          "side": "right",
+          "from_line": 149,
+          "to_line": 156,
+          "line_match": false,
+          "semantic_match": false,
+          "matched_note": ""
+        },
+        {
+          "note": "Insufficient command string validation when shell execution is disabled; the current space check doesn't prevent command injection via other special characters. Implement more robust validation to ensure only valid executable paths are accepted when cmd:shell is false.",
+          "path": "pkg/blockcontroller/blockcontroller.go",
+          "side": "right",
+          "from_line": 285,
+          "to_line": 310,
+          "line_match": true,
+          "semantic_match": false,
+          "matched_note": ""
+        },
+        {
+          "note": "Debug log outputs sensitive swap token value. Remove the token value from the log message to prevent credential exposure.",
+          "path": "pkg/shellexec/shellexec.go",
+          "side": "right",
+          "from_line": 258,
+          "to_line": 263,
+          "line_match": true,
+          "semantic_match": false,
+          "matched_note": ""
+        },
+        {
+          "note": "These new fields introduce dotted JSON tags like `cmd:initscript.sh`. Plain `encoding/json` treats the tag as a literal key (fine), but if any layer later interprets dots as path separators for nesting, this could break compatibility or create ambiguity with `[conn]` nesting. Suggest verifying the meta parsing/flattening logic expects literal keys and documenting/enforcing one convention. Also consider whether `CmdEnv`/`CmdCwd` being described as nestable under `[conn]` requires special merge behavior; nil vs empty map differences can affect overrides (e.g., clearing env).",
+          "path": "pkg/waveobj/wtypemeta.go",
+          "side": "right",
+          "from_line": 52,
+          "to_line": 62,
+          "line_match": true,
+          "semantic_match": false,
+          "matched_note": ""
+        },
+        {
+          "note": "This Debugf method is calling blocklogger.Infof instead of blocklogger.Debugf. This is likely a copy-paste error and should probably use Debugf to match the function's intent.",
+          "path": "pkg/wslconn/wslconn.go",
+          "side": "right",
+          "from_line": 121,
+          "to_line": 121,
+          "line_match": false,
+          "semantic_match": false,
+          "matched_note": ""
+        }
+      ]
+    },
+    {
+      "instance_id": "google-gemini__gemini-cli@c6e6248",
+      "repo": "google-gemini/gemini-cli",
+      "comments": [
+        {
+          "note": "* The new `runCommand` method lacks validation that `setup()` has been called, risking runtime errors when `testDir` is uninitialized.  \n* The existing `run` method has the same vulnerability and requires identical setup validation.",
+          "path": "integration-tests/test-helper.ts",
+          "side": "right",
+          "from_line": 309,
+          "to_line": 312,
+          "line_match": true,
+          "semantic_match": false,
+          "matched_note": ""
+        },
+        {
+          "note": "The `runCommand` method duplicates process execution and stream handling logic already present in the `run` method, violating DRY principles and increasing maintenance burden. Extract the common child process spawning, stream collection, and promise resolution into a private helper method shared by both functions.",
+          "path": "integration-tests/test-helper.ts",
+          "side": "right",
+          "from_line": 309,
+          "to_line": 358,
+          "line_match": true,
+          "semantic_match": false,
+          "matched_note": ""
+        },
+        {
+          "note": "Using non-null assertion operators (!) on child process streams could lead to runtime errors if the streams are unexpectedly null. Consider adding proper null checks for better safety.",
+          "path": "integration-tests/test-helper.ts",
+          "side": "right",
+          "from_line": 323,
+          "to_line": 326,
+          "line_match": true,
+          "semantic_match": false,
+          "matched_note": ""
+        },
+        {
+          "note": "If `options.stdin` is an empty string, this branch won’t run, and stdin won’t be closed. Prefer checking `options.stdin !== undefined` so callers can intentionally send empty input and still close stdin to avoid child waiting for EOF.\n\n```suggestion\n    if (options.stdin !== undefined) {\n      child.stdin!.write(options.stdin);\n      child.stdin!.end();\n    }\n```",
+          "path": "integration-tests/test-helper.ts",
+          "side": "right",
+          "from_line": 323,
+          "to_line": 326,
+          "line_match": false,
+          "semantic_match": true,
+          "matched_note": "1. **`runCommand` (test-helper.ts:323-326) never closes child stdin when no `options.stdin` is supplied.** Deviation from `run()` (lines 219-228). Latent hang: if any command (now or later) reads stdin without being given input, child blocks on read, `close` never fires, promise never settles → test hangs until global timeout. Also note: even the commands that DO need input (install) require the caller to remember to pass stdin; the API silently keeps the pipe open.\n\nActually, let me reconsider whether there's an even more concrete current issue: **`extensions list` with `.strict()`** — listCommand handles fine.\n\n2. **The test's update assertion depends on `checkForExtensionUpdate` reading the SOURCE directory (`installMetadata.source`) rather than the installed copy.** This is actually correct behavior per the code. Not a defect.\n\n3. **Cleanup not in `finally`** — if any earlier step fails, `rig.cleanup()` (line 51) and `rmSync` (52) never run; but `cleanup()` only runs when `!env.KEEP_OUTPUT`. Also, since testDir is a per-test-sanitized dir, leakage is tolerable. Minor. Also `rmSync` is redundant with `cleanup()` (which already does `rm -rf`). Not a real defect.\n\nLet me reconsider whether there's a **deterministic failure in the `list` step**: `toOutputString(extension)` — I should verify it includes the name 'test-extension'. Let me check.\n\nActually, let me step back and reconsider the **most severe truly-deadly defect**: given `runCommand` rejects with ONLY `stderr` on failure, and on success includes stderr appended. Fine.\n\nLet me reconsider **exit-code reliability**: `process.exit(1)` in handleInstall/handleUninstall/handleList error paths → non-zero → reject. Fine.\n\nLet me reconsider an important one: **The `install` command requires the extension be copied; but the test's source dir is `testDir` which contains `gemini-extension.json` AND the `.gemini/` settings dir AND (during the run) gets the installed copy?** No, install copies from testDir to the USER extensions dir, not into testDir. So testDir stays as source. Fine.\n\nHmm, wait. There's a genuinely important defect I should check: **`installExtension` copies the WHOLE source directory** (`copyExtension(localSourcePath, destinationPath)`). The source is `testDir`, which contains `.gemini/` (settings) etc. But that's not a correctness issue for the test.\n\nLet me now check `toOutputString` to make sure list includes name, and finalize my defects. Let me also verify there's no issue that `update`'s `arg.name` positional requires the extension name; test passes 'test-extension'. Fine.\n\nLet me read toOutputString and also verify `loadUserExtensions` returns installed (enabled) extensions.\n\nGiven time, I'll finalize with the defects I can concretely defend. The strongest single defect that is unambiguous and in-diff is the stdin-not-closed asymmetry in `runCommand`. Let me also reconsider whether leaving stdin open causes the **install** to work vs. any interactive read by the CLI at startup.\n\nActually, wait — there IS a concrete current-risk: the **`extensions update` and `extensions uninstall` and `extensions list` commands run WITHOUT closing stdin.** If the gemini CLI at startup (before yargs dispatch) does any `process.stdin` reads (e.g., the `--prompt`-appended-to-stdin feature reads stdin to build the prompt even for subcommands)? Looking at config.ts, `$0` handles prompt. For a subcommand invocation, yargs should dispatch directly to the subcommand without the `$0` handler. But it's plausible the CLI reads stdin in some startup path. However, I can't confirm a current hang.\n\nI'll report the stdin defect as the primary helper defect (latent hang + inconsistent contract), and note the more clearly current-scoped secondary items.\n\nLet me reconsider: is there anything that makes the **test deterministically fail/hang EVEN in the happy path**? Let me think about the **`extensions update test-extension` stdin** again. The update's `updateExtension` calls `installExtension(installMetadata, false, cwd)`. Even with askConsent=false, does `installExtension` read stdin anywhere? `requestConsent` is only called `if (askConsent)`. So no. Good.\n\nBut hold on — the **`uninstall` step at line 49** and the first `uninstall` (line 28): `uninstallExtension(args.name)` — no prompt. Good.\n\nSo no current hang. The stdin defect is latent. \n\nGiven all this, I want to make sure I report the strongest *actually current* defect. Let me reconsider whether the test can leave the extension installed and poison itself across the `rmSync`. After test, uninstall at line 49 removes it. Fine.\n\nLet me reconsider **a real current failure: the test writes `extensionUpdate` to the SOURCE file, then runs update; but `checkForExtensionUpdate`'s local branch loads `installMetadata.source`, which is the testDir — HOWEVER, `handleUpdate` calls `loadExtensions()` to get installed extensions; for a local-typed extension, `annotateActiveExtensions` + `loadExtensions` — does the returned extension carry `installMetadata`?** `handleUpdate` line 48 checks `if (!extension.installMetadata)`. Yes `loadExtensions` includes installMetadata. Good.\n\nAlright. I'm fairly confident the happy path works. The reportable defects are therefore:"
+        },
+        {
+          "note": "`stdout += data` / `stderr += data` is concatenating a Buffer to a string, which relies on implicit coercion and can produce unexpected output (e.g., \"[object Object]\") depending on runtime/TS settings. Convert explicitly via `data.toString('utf8')` (or set encoding on the streams) before appending.\n\n```suggestion\n    child.stdout!.setEncoding('utf8');\n    child.stdout!.on('data', (data: string) => {\n      stdout += data;\n      if (env.KEEP_OUTPUT === 'true' || env.VERBOSE === 'true') {\n        process.stdout.write(data);\n      }\n    });\n```",
+          "path": "integration-tests/test-helper.ts",
+          "side": "right",
+          "from_line": 328,
+          "to_line": 333,
+          "line_match": false,
+          "semantic_match": false,
+          "matched_note": ""
+        },
+        {
+          "note": "Missing `child.on('error', ...)` handling. If spawning `node` fails (ENOENT, permission, etc.), the promise will never settle. Add an `error` listener that rejects.\n\n```suggestion\n    const promise = new Promise<string>((resolve, reject) => {\n      child.on('error', reject);\n      child.on('close', (code: number | null, signal: NodeJS.Signals | null) => {\n        if (code === 0) {\n          this._lastRunStdout = stdout;\n          let result = stdout;\n          if (stderr) result += `\\n\\nStdErr:\\n${stderr}`;\n          resolve(result);\n        } else {\n          const extra = signal ? ` (signal: ${signal})` : '';\n          reject(new Error(`Process exited with code ${code}${extra}:\\n${stderr}`));\n        }\n      });\n    });\n```",
+          "path": "integration-tests/test-helper.ts",
+          "side": "right",
+          "from_line": 342,
+          "to_line": 355,
+          "line_match": true,
+          "semantic_match": true,
+          "matched_note": "### 1. `integration-tests/test-helper.ts:342-355` — `runCommand` promise never rejects on spawn failure\nThe `Promise` only handles the `'close'` event. If `spawn()` fails (e.g., `ENOENT` because `bundlePath` doesn't exist, or `node` not in PATH), the `'error'` event fires on the child process but the promise has no handler for it → **test hangs indefinitely**.\n```typescript\n// Lines 342-355: only 'close' handler\nconst promise = new Promise<string>((resolve, reject) => {\n  child.on('close', (code: number) => { ... });\n});\n// Missing: child.on('error', reject);\n```\n\n---"
+        },
+        {
+          "note": "The error handling only includes stderr in the rejection. For better debugging, consider including both stdout and stderr in the error message.",
+          "path": "integration-tests/test-helper.ts",
+          "side": "right",
+          "from_line": 352,
+          "to_line": 352,
+          "line_match": true,
+          "semantic_match": false,
+          "matched_note": ""
+        }
+      ]
+    },
+    {
+      "instance_id": "FreeCAD__FreeCAD@ec3da2e",
+      "repo": "FreeCAD/FreeCAD",
+      "comments": [
+        {
+          "note": "The function `isCosmeticVertex` should accept the string parameter by `const std::string&` instead of by value to prevent unnecessary string copying and enforce immutability of the input.",
+          "path": "src/Mod/TechDraw/App/DrawViewPart.cpp",
+          "side": "right",
+          "from_line": 1502,
+          "to_line": 1502,
+          "line_match": true,
+          "semantic_match": false,
+          "matched_note": ""
+        },
+        {
+          "note": "The string parameter in `isCosmeticVertex` should be passed by const reference instead of by value to avoid unnecessary copying. Change `std::string element` to `const std::string& element` for better performance.",
+          "path": "src/Mod/TechDraw/App/DrawViewPart.h",
+          "side": "right",
+          "from_line": 242,
+          "to_line": 242,
+          "line_match": false,
+          "semantic_match": false,
+          "matched_note": ""
+        },
+        {
+          "note": "The newly added member functions `isCosmeticVertex`, `isCosmeticEdge`, and `isCenterLine` are incorrectly declared as `static` with an unnecessary `owner` parameter; remove `static` and the `App::DocumentObject* owner` argument to correctly implement them as non-static member functions operating on the current instance.",
+          "path": "src/Mod/TechDraw/App/DrawViewPart.h",
+          "side": "right",
+          "from_line": 242,
+          "to_line": 245,
+          "line_match": false,
+          "semantic_match": false,
+          "matched_note": ""
+        }
+      ]
+    },
+    {
+      "instance_id": "linera-io__linera-protocol@024925d",
+      "repo": "linera-io/linera-protocol",
+      "comments": [
+        {
+          "note": "The typo 'Reponse' was correctly fixed to 'Response', but there is another typo 'ceritifcates' that should also be corrected to 'certificates'.\n\n```suggestion\n    #[error(\"Response doesn't contain requested certificates: {0:?}\")]\n```",
+          "path": "linera-core/src/node.rs",
+          "side": "right",
+          "from_line": 205,
+          "to_line": 205,
+          "line_match": true,
+          "semantic_match": true,
+          "matched_note": "### 1. `linera-core/src/node.rs:205` — Incomplete typo fix in error message\nThe error message still reads `\"ceritifcates\"` (misspelled) after the fix only corrected `\"Reponse\"` → `\"Response\"`.\n```rust\n#[error(\"Response doesn't contain requested ceritifcates: {0:?}\")]\n```\n**Failure scenario:** When `MissingCertificates` error is displayed to operators/logs, it shows the misspelled word \"ceritifcates\" instead of \"certificates\", reducing readability and searchability in logs.\n\n---"
+        },
+        {
+          "note": "The `grace_period` parameter should use `Option<f64>` instead of `impl Into<Option<f64>>` to maintain strong type checking and code normalization standards.",
+          "path": "linera-core/src/updater.rs",
+          "side": "right",
+          "from_line": 109,
+          "to_line": 109,
+          "line_match": false,
+          "semantic_match": false,
+          "matched_note": ""
+        },
+        {
+          "note": "Robustness: `grace_period` comes from callers and is used in `mul_f64`. If it’s negative/NaN/inf, `Duration::mul_f64` can panic or behave unexpectedly. Recommend validating/clamping before use (e.g., ensure finite and >= 0.0; optionally cap to a max like 1.0).\n\n```suggestion\n    let grace_period = grace_period.into().unwrap_or(DEFAULT_GRACE_PERIOD);\n    let grace_period = if grace_period.is_finite() && grace_period >= 0.0 {\n        grace_period\n    } else {\n        0.0\n    };\n```",
+          "path": "linera-core/src/updater.rs",
+          "side": "right",
+          "from_line": 139,
+          "to_line": 139,
+          "line_match": false,
+          "semantic_match": false,
+          "matched_note": ""
+        },
+        {
+          "note": "The loop label 'vote_wait is added but doesn't appear to be referenced by any break or continue statements. Consider removing the label if it's not actually used for control flow.",
+          "path": "linera-core/src/updater.rs",
+          "side": "right",
+          "from_line": 141,
+          "to_line": 141,
+          "line_match": false,
+          "semantic_match": false,
+          "matched_note": ""
+        }
+      ]
+    },
+    {
+      "instance_id": "ollama__ollama@b6002f6",
+      "repo": "ollama/ollama",
+      "comments": [
+        {
+          "note": "The call to `batch.Positions.Ints()` to convert the tensor back to a slice is necessary here for iteration. However, this creates a performance concern: we're converting from slice to tensor when building the batch, then back to slice for cache operations. Consider whether the cache layer could work directly with tensors to avoid this round-trip conversion, though that may be out of scope for this PR.",
+          "path": "kvcache/causal.go",
+          "side": "right",
+          "from_line": 202,
+          "to_line": 202,
+          "line_match": false,
+          "semantic_match": false,
+          "matched_note": ""
+        },
+        {
+          "note": "Potential panic/semantic change: switching to `batch.Positions.Ints()[...]` assumes `Ints()` returns a non-nil slice with at least the required length and that it stays consistent with `batch.Multimodal[*].Index`. If `Ints()` can return nil/empty (or a newly allocated slice with different length), this will panic at runtime. Consider guarding (e.g., check `idx < len(batch.Positions.Ints())`) or caching the slice once and validating its length before indexing to preserve previous behavior.",
+          "path": "kvcache/encoder.go",
+          "side": "right",
+          "from_line": 94,
+          "to_line": 94,
+          "line_match": false,
+          "semantic_match": false,
+          "matched_note": ""
+        },
+        {
+          "note": "Potential issue: `batch.Positions.Ints()` is called inside the unwind loop. If `Ints()` materializes/copies tensor data, this can be unnecessarily expensive (and potentially unsafe if it depends on ctx/lifetime). Also you iterate `range curPositions` but index `batch.Sequences[k]`; this assumes `len(batch.Sequences)==len(curPositions)`—consider validating once or using a shared length variable.\n\nSuggestion: hoist `curPositions := batch.Positions.Ints()` outside the `for j := ...` loop and iterate up to `min(len(batch.Sequences), len(curPositions))` (or assert equality).\n\n```suggestion\n\t\t\tcurPositions := batch.Positions.Ints()\n\t\t\tfor j := i - 1; j >= 0; j-- {\n\t\t\t\t// assuming sequences and positions align\n\t\t\t\tfor k := 0; k < len(curPositions) && k < len(batch.Sequences); k++ {\n\t\t\t\t\t_ = c.caches[j].Remove(batch.Sequences[k], curPositions[k], math.MaxInt32)\n\t\t\t\t}\n\t\t\t}\n```",
+          "path": "kvcache/wrapper.go",
+          "side": "right",
+          "from_line": 49,
+          "to_line": 54,
+          "line_match": false,
+          "semantic_match": false,
+          "matched_note": ""
+        },
+        {
+          "note": "Adding `Ints() []int32` to the `Tensor` interface is an API-breaking change: all concrete tensor implementations and any test fakes/mocks must implement it or compilation will fail. Please ensure every backend/wrapper that implements `Tensor` is updated, and define expected behavior when the underlying tensor dtype is not int32 (e.g., return nil, convert, or panic) to keep implementations consistent.",
+          "path": "ml/backend.go",
+          "side": "right",
+          "from_line": 402,
+          "to_line": 404,
+          "line_match": false,
+          "semantic_match": false,
+          "matched_note": ""
+        },
+        {
+          "note": "The use of `C.GoBytes` with `C.int` cast for the length creates a risk of data truncation. `C.int` is typically 32-bit, so if the tensor size exceeds ~2GB, the data will be truncated. It is recommended to manually allocate the slice and copy the data to support larger tensors, ensuring consistency with the `t.sync != nil` branch.",
+          "path": "ml/backend/ggml/ggml.go",
+          "side": "right",
+          "from_line": 1007,
+          "to_line": 1010,
+          "line_match": false,
+          "semantic_match": false,
+          "matched_note": ""
+        },
+        {
+          "note": "The `Bytes()` method now handles CPU tensors by using `C.GoBytes()` which creates a copy of the data. However, there's a potential issue: if the tensor is neither on a backend (sync == nil) nor in CPU memory (bts == nil), the function will return a nil slice without any error or warning. Consider adding an error return or at least logging this edge case to prevent silent failures.",
+          "path": "ml/backend/ggml/ggml.go",
+          "side": "right",
+          "from_line": 1007,
+          "to_line": 1007,
+          "line_match": false,
+          "semantic_match": false,
+          "matched_note": ""
+        },
+        {
+          "note": "Good addition of the `Ints()` method to complement `Floats()` and `Bytes()`. However, the same concern applies here: when both `sync` is nil and `C.ggml_get_data(t.t)` returns nil, the function silently returns a nil slice. This could lead to nil pointer dereferences in calling code. Consider adding error handling or defensive checks.",
+          "path": "ml/backend/ggml/ggml.go",
+          "side": "right",
+          "from_line": 1029,
+          "to_line": 1029,
+          "line_match": false,
+          "semantic_match": false,
+          "matched_note": ""
+        },
+        {
+          "note": "The word 'indicies' is misspelled. It should be 'indices'.\n\n```suggestion\n\t// Outputs are the set of indices into Inputs for which output data should\n\t// be returned.\n\tOutputs ml.Tensor\n```",
+          "path": "model/input/input.go",
+          "side": "right",
+          "from_line": 61,
+          "to_line": 63,
+          "line_match": false,
+          "semantic_match": false,
+          "matched_note": ""
+        },
+        {
+          "note": "The change from `len(batch.Positions)` to `batch.Positions.Dim(0)` is correct for the new tensor-based API. However, there's a potential nil pointer dereference risk if `batch.Positions` is nil. Consider adding a nil check before calling `Dim(0)`, or ensure that batch validation happens earlier in the call chain to guarantee `Positions` is always initialized.",
+          "path": "model/model.go",
+          "side": "right",
+          "from_line": 285,
+          "to_line": 285,
+          "line_match": true,
+          "semantic_match": false,
+          "matched_note": ""
+        },
+        {
+          "note": "Behavior change: lastLayerOutputs now comes from `batch.Outputs` instead of an explicit `outputs` argument. If `batch.Outputs` can be nil/zero (or not sized for the current forward), the last layer may silently skip writing requested outputs or panic later. Consider validating `batch.Outputs` when `i==len(m.Layers)-1` (or keep the explicit parameter) to preserve previous contract.",
+          "path": "model/models/llama4/model_text.go",
+          "side": "right",
+          "from_line": 238,
+          "to_line": 241,
+          "line_match": false,
+          "semantic_match": false,
+          "matched_note": ""
+        },
+        {
+          "note": "Good refactoring - moving tensor creation closer to where it's used. The code now creates `batchPositions` and `batchOutputs` as slices first, then converts them to tensors just before the Forward call. This is cleaner and more efficient. However, ensure that the `ctx.Input()` calls for creating tensors don't fail silently if the context is invalid.",
+          "path": "runner/ollamarunner/runner.go",
+          "side": "right",
+          "from_line": 581,
+          "to_line": 581,
+          "line_match": false,
+          "semantic_match": false,
+          "matched_note": ""
+        },
+        {
+          "note": "Potential runtime panic: vocabSize := len(outputs) / activeBatch.batch.Outputs.Dim(0) will divide by zero if Outputs is empty (Dim(0)==0). Even if normally non-empty, add a defensive guard (and ideally validate Outputs is 1-D) to avoid panics and hard-to-debug slice bound errors when sampling.\n\n```suggestion\n\t\toutN := activeBatch.batch.Outputs.Dim(0)\n\t\tif outN <= 0 {\n\t\t\ts.hardErrCh <- fmt.Errorf(\"invalid Outputs dimension: %d\", outN)\n\t\t\treturn\n\t\t}\n\t\tvocabSize := len(outputs) / outN\n\t\tlogutil.Trace(\"computeBatch: vocab details\", \"batchID\", activeBatch.id, \"seqIdx\", i, \"len(logits)\", len(outputs), \"len(activeBatch.batch.Outputs)\", outN, \"vocabSize\", vocabSize, \"iBatches\", iBatches)\n```",
+          "path": "runner/ollamarunner/runner.go",
+          "side": "right",
+          "from_line": 711,
+          "to_line": 712,
+          "line_match": false,
+          "semantic_match": false,
+          "matched_note": ""
+        }
+      ]
+    },
+    {
+      "instance_id": "mpv-player__mpv@dbd327d",
+      "repo": "mpv-player/mpv",
+      "comments": [
+        {
+          "note": "Potential signed/unsigned narrowing: `pl->num_entries` is likely `int`, but `mp_rand_in_range32` takes `uint32_t`. If `num_entries` can exceed `UINT32_MAX` or be negative (corrupted state), implicit conversion can wrap and lead to OOB access. Consider casting with validation (and early-return if `num_entries <= 1`) to keep bounds safe.\n\n```suggestion\n        if (pl->num_entries <= 1)\n            return;\n        \n        uint32_t nn = (uint32_t)pl->num_entries; // consider asserting pl->num_entries > 0\n        uint32_t i = (uint32_t)n;\n        size_t j = mp_rand_in_range32(&s, i, nn);\n        MPSWAP(struct playlist_entry *, pl->entries[n], pl->entries[j]);\n```",
+          "path": "common/playlist.c",
+          "side": "right",
+          "from_line": 175,
+          "to_line": 176,
+          "line_match": false,
+          "semantic_match": false,
+          "matched_note": ""
+        },
+        {
+          "note": "The new per-function RNG state (`struct mp_rand_state s = mp_rand_seed(0);`) changes behavior from using a global RNG (`mp_rand_next()` without state) to a locally-seeded stream. Seeding with a constant `0` makes the sequence deterministic for every call, which can increase collision risk across concurrent calls/processes. If the goal is merely to avoid global state, consider seeding from a higher-entropy source (time/PID/urandom) or document why determinism is acceptable here. Also consider moving the seed outside the loop is fine (as done), but ensure `mp_rand_seed(0)` is not an expensive call in this hot path.",
+          "path": "misc/io_utils.c",
+          "side": "right",
+          "from_line": 43,
+          "to_line": 47,
+          "line_match": false,
+          "semantic_match": false,
+          "matched_note": ""
+        },
+        {
+          "note": "The variable names 'fuckshit' and 'fuckmess' contain inappropriate profanity and violate the naming conventions requirement. Variable names should be meaningful and use snake_case. Please rename these to descriptive names like 'attempt' or 'iteration' for the loop counter, and 'random_value' or 'rand_val' for the random value.\n\n```suggestion\n    for (size_t attempt = 0; attempt < UINT32_MAX; attempt++) {\n        // Using a random value may make it require fewer iterations (even if\n        // not truly random; just a counter would be sufficient).\n        size_t rand_val = mp_rand_next(&s);\n```",
+          "path": "misc/io_utils.c",
+          "side": "right",
+          "from_line": 44,
+          "to_line": 47,
+          "line_match": false,
+          "semantic_match": false,
+          "matched_note": ""
+        },
+        {
+          "note": "Remove unused function `mp_rand_next_double` as it is not referenced in the current codebase and adds unnecessary dead code.",
+          "path": "misc/random.c",
+          "side": "right",
+          "from_line": 84,
+          "to_line": 84,
+          "line_match": false,
+          "semantic_match": false,
+          "matched_note": ""
+        },
+        {
+          "note": "The reference link in the algorithm documentation should be updated to include a Wayback Machine snapshot on a separate line, matching the project's convention for preventing dead links and enabling easier URL copying.",
+          "path": "misc/random.c",
+          "side": "right",
+          "from_line": 89,
+          "to_line": 89,
+          "line_match": false,
+          "semantic_match": false,
+          "matched_note": ""
+        },
+        {
+          "note": "mp_rand_in_range32(): `mp_round_next_power_of_2()` explicitly returns 0 on overflow (e.g. for values needing 2^32). If `range > 0x80000000`, `mp_round_next_power_of_2(range)` becomes 0, so `mask` underflows to `UINT32_MAX`. The rejection loop still terminates but can become extremely slow (acceptance probability ~= range/2^32), and this behavior is surprising. Suggest: explicitly handle large ranges, e.g.:\n- if `range` is a power of two: just `min + (mp_rand_next(s) & (range - 1))`\n- else if `mp_round_next_power_of_2(range)==0`: use a 64-bit mask/rejection (or Lemire method) based on `uint64_t r = mp_rand_next(s)` and `ret = (uint32_t)(r % range)` with bias-free technique.\nAt minimum, add a guard/fast-path to avoid the underflow case.",
+          "path": "misc/random.c",
+          "side": "right",
+          "from_line": 93,
+          "to_line": 99,
+          "line_match": false,
+          "semantic_match": false,
+          "matched_note": ""
+        },
+        {
+          "note": "The project convention prohibits typedef'ing internal structs; retain `mp_rand_state` as `struct mp_rand_state` without typedef to maintain consistency.",
+          "path": "misc/random.h",
+          "side": "right",
+          "from_line": 28,
+          "to_line": 28,
+          "line_match": false,
+          "semantic_match": false,
+          "matched_note": ""
+        }
+      ]
+    },
+    {
+      "instance_id": "microsoft__typescript-go@45c0de9",
+      "repo": "microsoft/typescript-go",
+      "comments": [
+        {
+          "note": "Passing `nil` for converters to `toLSPDiagnostic` in the new `toLSPDiagnostics` helper will cause a panic since the function requires non-nil converters; propagate `l.converters` from the receiver instead.",
+          "path": "internal/ls/diagnostics.go",
+          "side": "right",
+          "from_line": 44,
+          "to_line": 44,
+          "line_match": true,
+          "semantic_match": true,
+          "matched_note": "- **[P1] `internal/ls/diagnostics.go:44` — Nil converter crashes every non-empty diagnostic response.** For example, opening `const x: string = 1;` and requesting document diagnostics produces a semantic diagnostic, passes `nil` to `toLSPDiagnostic`, and panics when `converters.ToLSPRange` dereferences the receiver instead of returning the diagnostic report.## Defect"
+        }
+      ]
+    },
+    {
+      "instance_id": "elastic__elasticsearch@e38d20c",
+      "repo": "elastic/elasticsearch",
+      "comments": [
+        {
+          "note": "The method `maybeWrapListenerForStackTrace` introduces unnecessary heavy dependencies by requiring `ClusterService` and the full `ShardSearchRequest` when only the local node ID and shard ID are needed.",
+          "path": "server/src/main/java/org/elasticsearch/search/SearchService.java",
+          "side": "right",
+          "from_line": 549,
+          "to_line": 549,
+          "line_match": false,
+          "semantic_match": false,
+          "matched_note": ""
+        },
+        {
+          "note": "The current implementation logs server errors (5xx) at debug level when stripping stack traces (`header == false`), which obscures critical failures in production. Change logging to WARN level for 5xx errors and replace trace-removal messaging with clear exception details.",
+          "path": "server/src/main/java/org/elasticsearch/search/SearchService.java",
+          "side": "right",
+          "from_line": 555,
+          "to_line": 555,
+          "line_match": false,
+          "semantic_match": false,
+          "matched_note": ""
+        },
+        {
+          "note": "**Inefficiency concern**: Using a lambda with `logger.debug()` is good for avoiding string formatting when debug is disabled. However, the lambda still captures the `clusterService.localNode()` call and `request.shardId()` which happens before checking if debug is enabled. Consider if this adds unnecessary overhead in production when debug logging is disabled (which is the common case).\n\nThe current implementation is acceptable, but if performance is critical, you might want to check the log level first before any computation.",
+          "path": "server/src/main/java/org/elasticsearch/search/SearchService.java",
+          "side": "right",
+          "from_line": 556,
+          "to_line": 556,
+          "line_match": false,
+          "semantic_match": false,
+          "matched_note": ""
+        },
+        {
+          "note": "Failure-path robustness: this debug log dereferences `clusterService.localNode().getId()` and `request.shardId()` while already handling an exception. If `localNode()` is null during startup/shutdown, logging will throw and could mask the original failure or change behavior. Consider null-safe node id / shard id extraction (or log `clusterService.state().nodes().getLocalNodeId()` if guaranteed) and avoid any additional failure points here.\n\n```suggestion\n                final String nodeId = clusterService != null && clusterService.localNode() != null ? clusterService.localNode().getId() : \"_unknown\";\n                final Object shardId = request != null ? request.shardId() : \"_unknown\";\n                logger.debug(() -> format(\"[%s]%s Clearing stack trace before transport:\", nodeId, shardId), e);\n```",
+          "path": "server/src/main/java/org/elasticsearch/search/SearchService.java",
+          "side": "right",
+          "from_line": 557,
+          "to_line": 560,
+          "line_match": false,
+          "semantic_match": false,
+          "matched_note": ""
+        },
+        {
+          "note": "The log message format includes the closing bracket in the wrong position. The format string shows `[%s]%s Clearing stack trace` but should be `[%s][%s] Clearing stack trace` to properly match the pattern `[nodeId][indexName][shard]` mentioned in the PR description. \n\nCurrently: `[nodeId][indexName][shard] Clearing stack trace`\nExpected: `[nodeId][indexName][shard] Clearing stack trace`\n\nThe issue is that `request.shardId()` returns a ShardId object which already includes the index name and shard number in its toString() format like `[indexName][shard]`, so the format should be `[%s]%s` (which is correct as written). However, this makes the log format inconsistent with the description that claims it will be prefixed with `[nodeId][indexName][shard]`.",
+          "path": "server/src/main/java/org/elasticsearch/search/SearchService.java",
+          "side": "right",
+          "from_line": 558,
+          "to_line": 558,
+          "line_match": false,
+          "semantic_match": false,
+          "matched_note": ""
+        }
+      ]
+    },
+    {
+      "instance_id": "CherryHQ__cherry-studio@5644b00",
+      "repo": "CherryHQ/cherry-studio",
+      "comments": [
+        {
+          "note": "Avoid using 'any' type. Consider using a more specific type for the rest object or provide proper type definitions.",
+          "path": "src/renderer/src/middleware/convertLinksMiddleware.ts",
+          "side": "right",
+          "from_line": 9,
+          "to_line": 9,
+          "line_match": false,
+          "semantic_match": false,
+          "matched_note": ""
+        },
+        {
+          "note": "The `@ts-expect-error` comment suppresses a legitimate TypeScript type error. When the generic type `T` is provided without a `textDelta` property (e.g., `convertLinksMiddleware<MyCustomType>()`), accessing `chunk.textDelta` will cause a runtime error. Consider either: 1) Using a type guard to check if `textDelta` exists before accessing it, or 2) Defining a proper constraint that ensures `T` has `textDelta` when `type === 'text-delta'`.\n\n```suggestion\n              if (chunk.type === 'text-delta') {\n                const textDelta = (chunk as any).textDelta\n                if (textDelta !== undefined) {\n                  controller.enqueue({\n                    ...chunk,\n                    textDelta: convertLinks(textDelta as string)\n                  })\n                } else {\n                  controller.enqueue(chunk)\n                }\n```",
+          "path": "src/renderer/src/middleware/convertLinksMiddleware.ts",
+          "side": "right",
+          "from_line": 16,
+          "to_line": 21,
+          "line_match": true,
+          "semantic_match": true,
+          "matched_note": "### 10. **`convertLinksMiddleware` type assertion suppresses real type error** (Low)\n**File**: `src/renderer/src/middleware/convertLinksMiddleware.ts:21-23`\n**Failure scenario**: If a `'text-delta'` chunk somehow lacks `textDelta` (e.g., malformed upstream), the `@ts-expect-error` silences TypeScript but runtime accesses `chunk.textDelta` → `undefined`. `convertLinks(undefined)` crashes or produces garbage."
+        },
+        {
+          "note": "**Type Safety Improvement**\n\nUsing `@ts-expect-error` suppresses the type check but doesn't guarantee runtime safety. If a chunk has `type: 'text-delta'` but is missing `textDelta`, this will throw.\n\n**Suggestion**:\nUse a type guard or a safe cast to ensure `textDelta` exists.\n\n```typescript\nif (chunk.type === 'text-delta' && 'textDelta' in chunk && typeof chunk.textDelta === 'string') {\n  controller.enqueue({\n    ...chunk,\n    textDelta: convertLinks(chunk.textDelta)\n  })\n}\n```",
+          "path": "src/renderer/src/middleware/convertLinksMiddleware.ts",
+          "side": "right",
+          "from_line": 16,
+          "to_line": 22,
+          "line_match": true,
+          "semantic_match": false,
+          "matched_note": ""
+        },
+        {
+          "note": "Hard-coded string: `'text-delta'` is a protocol constant. If this value is used elsewhere, consider centralizing it (enum/const) to avoid drift and improve discoverability. Also consider guarding `chunk.textDelta` with a runtime type check if chunks can be malformed (e.g., `typeof (chunk as any).textDelta === 'string'`) to prevent `convertLinks` from throwing.",
+          "path": "src/renderer/src/middleware/convertLinksMiddleware.ts",
+          "side": "right",
+          "from_line": 16,
+          "to_line": 21,
+          "line_match": true,
+          "semantic_match": false,
+          "matched_note": ""
+        },
+        {
+          "note": "The tag extraction logic in `extractReasoningMiddleware` lacks validation for nested or malformed tags, risking incorrect content extraction; implement structural validation and explicit error handling for tag integrity.",
+          "path": "src/renderer/src/middleware/extractReasoningMiddleware.ts",
+          "side": "right",
+          "from_line": 12,
+          "to_line": 12,
+          "line_match": false,
+          "semantic_match": false,
+          "matched_note": ""
+        },
+        {
+          "note": "Missing error handling in async function. Consider adding try-catch blocks to handle potential errors from doGenerate() call.",
+          "path": "src/renderer/src/middleware/extractReasoningMiddleware.ts",
+          "side": "right",
+          "from_line": 20,
+          "to_line": 22,
+          "line_match": false,
+          "semantic_match": false,
+          "matched_note": ""
+        },
+        {
+          "note": "Type safety: `Record<string, any>` weakens typing and spreads `any` through callers. Prefer a generic return type that preserves provider-specific fields (e.g., `<R extends {text:string}>(...) => Promise<R>`), or at least use `Record<string, unknown>`.\n\nAlso consider typing `doGenerate/doStream` params via a shared interface to avoid repeating/loosening types.",
+          "path": "src/renderer/src/middleware/extractReasoningMiddleware.ts",
+          "side": "right",
+          "from_line": 21,
+          "to_line": 22,
+          "line_match": false,
+          "semantic_match": false,
+          "matched_note": ""
+        },
+        {
+          "note": "Use strict equality `===` instead of loose equality `==`. Loose equality can lead to unexpected type coercion behavior.",
+          "path": "src/renderer/src/middleware/extractReasoningMiddleware.ts",
+          "side": "right",
+          "from_line": 23,
+          "to_line": 23,
+          "line_match": false,
+          "semantic_match": false,
+          "matched_note": ""
+        },
+        {
+          "note": "Potential null pointer issue: `RegExpMatchArray.index` can return `number | undefined` in TypeScript. Using type assertion `as number` without null checking could cause runtime errors if `match.index` is undefined. Please add a null check before using `match.index`.\n\n```suggestion\n      for (let i = matches.length - 1; i >= 0; i--) {\n        const match = matches[i] as RegExpMatchArray\n        if (match.index == null) continue\n        const beforeMatch = textWithoutReasoning.slice(0, match.index)\n        const afterMatch = textWithoutReasoning.slice(match.index + match[0].length)\n```",
+          "path": "src/renderer/src/middleware/extractReasoningMiddleware.ts",
+          "side": "right",
+          "from_line": 34,
+          "to_line": 37,
+          "line_match": false,
+          "semantic_match": false,
+          "matched_note": ""
+        },
+        {
+          "note": "Potential data loss: the transform has no `flush()` implementation. If the stream ends with remaining `buffer` content (e.g., partial tag or trailing text), it will never be emitted. Add a `flush(controller)` to `publish(buffer)` at end (taking `isReasoning/afterSwitch` into account).\n\n```suggestion\n          new TransformStream<T, T>({\n                      transform: (chunk, controller) => {\n                        // ...existing logic...\n                      },\n                      flush: (controller) => {\n                        if (buffer.length > 0) {\n                          // publish remaining buffer as-is\n                          const prefix = afterSwitch && (isReasoning ? !isFirstReasoning : !isFirstText) ? separator : ''\n                          controller.enqueue({\n                            ...(lastChunk as any),\n                            type: isReasoning ? 'reasoning' : 'text-delta',\n                            textDelta: prefix + buffer\n                          })\n                          buffer = ''\n                        }\n                      }\n                    })\n```",
+          "path": "src/renderer/src/middleware/extractReasoningMiddleware.ts",
+          "side": "right",
+          "from_line": 56,
+          "to_line": 57,
+          "line_match": true,
+          "semantic_match": true,
+          "matched_note": "2. **No `flush` on the reasoning extract TransformStream → buffered trailing content dropped on stream end** (unclosed `<think>` or trailing partial tag → remaining text lost, truncated output). File: `extractReasoningMiddleware.ts` lines 55-100.\n\n3. **Global link counter/buffer never reset; `convertLinks` is now called with resetCounter always false.** Counter monotonically grows. Combined with #1. File `convertLinksMiddleware.ts` line 20.\n\nWait, let me reconsider whether #1 is really a regression given the code intent. Actually, let me re-examine — maybe `convertLinks` is now intended universally. But the old code's conditional was: only convert when `assistant.enableWebSearch` OR specific provider annotations. Now unconditionally. For a non-web-search local model, markdown links `[text](url)` would be rewritten to numbered `[<sup>n</sup>](url)`. That's clearly a visible output change in a path (no web search) where the authors previously didn't convert. This is a defensible regression. But maybe considered \"intended behavior change.\" I'll present it as a defect with the concrete scenario but note severity.\n\nLet me look for something more clearly wrong. Let me re-examine the reasoning consumer: `case 'reasoning'` sets `time_thinking_start` only once (when ===0). But **the middleware emits reasoning chunks that derive from `<think>` tags in the middle/end of an answer**, and ALSO native reasoning. time_thinking_start set on FIRST reasoning chunk. Fine.\n\nLet me check the **`extractReasoningMiddleware` re-tagging when `startWithReasoning: false` and tag `<reasoning>` vs `<think>`**: The provider hardcodes `reasoningTags` but `getAppropriateTag` always returns `reasoningTags[0]` = `<think>` for everything (both branches identical). So `<reasoning>` tags are never extracted, only `<think>`. And for Claude it uses `<think>` — Claude uses `<thinking>` and `reasoning_content`... but that's a design choice, not a hard defect.\n\nNow let me verify the most severe dedicated defect by tracing the flush issue concretely to show content-LOSS.\n\nLet me now also reconsider **defect: the middleware publishes reasoning content back as reasoning but ALSO the model's content with `<think>` tag — the visible text loses the tag content, but the reasoning portion is not accompanied by its own THINKING_COMPLETE handling if it never switches to text.** Actually reasoning → THINKING_DELTA but THINKING_COMPLETE only emitted when a text-delta follows (the boundary). If reasoning is the FIRST thing and there is never a text chunk (e.g., model emits only `<think>...</think>` and stops, or the answer is all reasoning), then THINKING_COMPLETE never fires and text is empty — but that's an edge.\n\nLet me finalize. Let me also double-check that `convertLinks` on a chunk-by-chunk basis vs old behavior. The old code called `delta.content = convertLinks(delta.content || '', isFirstChunk)` per-chunk with buffer accumulation across chunks — same accumulation via module buffer. So per-chunk is consistent.\n\nNow, is there a definitive, obviously-wrong defect in the reasoning middleware that I can state unambiguously? Let me re-trace the `while(true)` with the partial-close-tag case that could DROP text at a switch boundary.\n\nTrace a bug where a trailing text after a complete `</think>` but the buffer also has a partial opening tag. E.g., mode reasoning, buffer after processing = \"\" and afterSwitch. New text-delta: \"rest of answer</thi\" — we're in TEXT mode now (after `</think>` switch, isReasoning=false). nextTag = openingTag `<think>`. getPotentialStartIndex(\"rest of answer</thi\", \"<think>\"): direct no. suffix: \"</thi\" — \"<think>\".startsWith(\"</thi\")? no (\"<t\" vs \"</\"). So null. publish(\"rest of answer</thi\") as text-delta, prefix: afterSwitch && (isReasoning? no, so !isFirstText). isFirstText: was it ever published? If this is the second text publish, afterSwitch=true and !isFirstText=false → prefix = separator! So \"rest of answer</thi\" gets prefixed with \"\\n\". Duplicate newline inserted. Minor.\n\nHmm, the `afterSwitch` only resets to false after a publish. If after `</think>` the next portion is `</thi` which is NOT a prefix of `<think>`, then it's published with a separator prefix even though it's not actually a \"switch separator needed\" — the content between tags had newline already possibly. Minor cosmetic.\n\nLet me settle. The clearest real defects to report:\n\n**Most severe: buffered reasoning/text after an unclosed tag is silently dropped on stream close (no flush).** Concrete: model emits \"...<think>let me verify that the sum is\" then hits max_tokens/stop before closing → the entire reasoning string (and worse, if it's text-mode trailing content after a stray `<think`) is lost; consume never sees it. Wrong behavior: missing output with no flush.\n\nActually, hold on — let me reconsider. Is it actually content LOSS for the user, or just for reasoning? For normal replies without tags, buffer never accumulates (getPotentialStartIndex returns null for each chunk → publish immediately, buffer=''). So normal replies are fine. Loss only occurs when a `<think>`/`</think>` tag is present and unbalanced. That's the realistic regression for reasoning models. Report it.\n\n**Second: convertLinks applied unconditionally + never reset** — visible output change for non-web-search / providers that previously didn't convert, and link counter grows unbounded across messages/streams. Describe.\n\nLet me also double check: is `convertLinks` even the right converter for e.g. openrouter/zhipu now? The old code applied `convertLinksToOpenRouter`/`convertLinksToZhipu`/`convertLinksToHunyuan` per provider with web search. The new code replaces ALL with plain `convertLinks` for ALL providers. For Zhipu `[ref_N]` formats and Hunyuan `[N](@ref)` formats, plain `convertLinks` won't match them (its regex requires `[text](http...)`). So Zhipu/Hunyuan citations that previously got converted to `[<sup>N</sup>](url)` now remain as raw `[ref_1]` / `[1](@ref)` — broken citation rendering for those providers. That's a concrete regression. Good, include.\n\nLet me now also verify there's a genuinely critical always-triggering bug I might be missing. Let me check the `convertLinksMiddleware` passing `'reasoning'` chunks through but the consumer... fine.\n\nLet me check the consumer `case 'text-delta'` THINKING_COMPLETE. Because the middleware emits reasoning via 'reasoning' then text via 'text-delta'. When the model provides NATIVE reasoning_content (no tags), the extract middleware passes reasoning chunks through as 'reasoning' and text-delta as 'text-delta'. The consumer `case 'text-delta'` fires THINKING_COMPLETE on the FIRST text-delta. Good — matches old behavior. When model provides TAG-based reasoning mixed in content: reasoning emitted as 'reasoning', then text after closing as 'text-delta' → boundary fires → THINKING_COMPLETE. Good.\n\nNow, a **subtle duplicate**: If a model sends BOTH native `reasoning_content` AND `<think>` tags in content — unlikely.\n\nLet me finalize my three defects, ordered by severity. I'll point at exact line numbers from the diff hunks.\n\nLines (from the new files, which are the diff head):\n- `convertLinksMiddleware.ts`: line 20 is `textDelta: convertLinks(chunk.textDelta)`; the file is new, hunks `@@ -0,0 +1,32 @@`, so line 20 in file.\n- `extractReasoningMiddleware.ts`: the transform object lines 56-99; flush missing. hunk `@@ -0,0 +1,106 @@`.\n- `OpenAIProvider.ts`: line 544 `convertLinksMiddleware` instantiation / usage.\n\nLet me present these clearly. Let me also reconsider severity ordering: the reasoning content-loss (no flush) affects any reasoning-model reply that's truncated mid-tag, which is realistic and produces silently wrong/truncated output — most severe. The unconditional ConvertLinks regression affects displayed text broadly for all providers — also severe but visible.\n\nLet me also verify the reset issue isn't handled elsewhere. `convertLinks` module-level vars — the middleware never resets, and there's no reset in the new pipeline. Confirmed.\n\nI'll write the report.\n\n\nI've traced the logic through the middleware, the consumer loop, and `convertLinks`/`linkConverter`. Here are the real defects, most severe first."
+        },
+        {
+          "note": "This conditional assignment relies heavily on previous state flags (afterSwitch, isFirst*, etc.). Its complexity makes it harder to follow. Refactoring into helper functions or clearer conditionals could improve readability.",
+          "path": "src/renderer/src/middleware/extractReasoningMiddleware.ts",
+          "side": "right",
+          "from_line": 66,
+          "to_line": 66,
+          "line_match": true,
+          "semantic_match": false,
+          "matched_note": ""
+        },
+        {
+          "note": "The 'finish' variant of `OpenAIStreamChunk` uses `any` for `finishReason`, `usage`, `delta`, and `chunk`, undermining TypeScript's type safety; replace with structured interfaces defining explicit properties and types.",
+          "path": "src/renderer/src/providers/AiProvider/OpenAIProvider.ts",
+          "side": "right",
+          "from_line": 63,
+          "to_line": 66,
+          "line_match": false,
+          "semantic_match": false,
+          "matched_note": ""
+        },
+        {
+          "note": "`time_first_token_millsec` is set on first reasoning OR first text delta; but `time_first_content_millsec_delta` metric is never assigned (always 0), which can break analytics/UX relying on it. Either compute it when first text token arrives or remove it from metrics.\n\n```suggestion\n      let time_first_token_millsec = 0\n      let time_first_token_millsec_delta = 0\n      let time_first_content_millsec = 0\n      let time_first_content_millsec_delta = 0 // set when first text-delta arrives after start\n      // ...\n      if (time_first_content_millsec === 0 && chunk.type === 'text-delta') {\n        time_first_content_millsec = currentTime\n        time_first_content_millsec_delta = currentTime - start_time_millsec\n      }\n```",
+          "path": "src/renderer/src/providers/AiProvider/OpenAIProvider.ts",
+          "side": "right",
+          "from_line": 496,
+          "to_line": 498,
+          "line_match": false,
+          "semantic_match": false,
+          "matched_note": ""
+        },
+        {
+          "note": "These tag names are still effectively hardcoded. Define them as named constants (e.g., `TAG_THINK = 'think'; TAG_REASONING = 'reasoning';`) and use those constants here for improved readability and easier maintenance.",
+          "path": "src/renderer/src/providers/AiProvider/OpenAIProvider.ts",
+          "side": "right",
+          "from_line": 502,
+          "to_line": 505,
+          "line_match": true,
+          "semantic_match": false,
+          "matched_note": ""
+        },
+        {
+          "note": "`openAIChunkToTextDelta` assumes `chunk.choices[0]` always exists. In partial/edge cases this can be undefined, causing runtime errors. Add guards (and consider emitting finish on stream end).\n\n```suggestion\n          const choice0 = chunk?.choices?.[0]\n          const delta = choice0?.delta\n          if (delta?.reasoning_content || delta?.reasoning) {\n            yield { type: 'reasoning', textDelta: delta.reasoning_content ?? delta.reasoning }\n          }\n          if (delta?.content) {\n            yield { type: 'text-delta', textDelta: delta.content }\n          }\n          const finishReason = choice0?.finish_reason\n```",
+          "path": "src/renderer/src/providers/AiProvider/OpenAIProvider.ts",
+          "side": "right",
+          "from_line": 518,
+          "to_line": 525,
+          "line_match": false,
+          "semantic_match": false,
+          "matched_note": ""
+        },
+        {
+          "note": "There is a risk of missing the `usage` data here.\n\n1. OpenAI often sends the `usage` field in a separate final chunk *after* the chunk containing `finish_reason`. Breaking the loop immediately when `finishReason` is found prevents processing that subsequent usage chunk.\n2. The usage-only chunk typically has empty `choices`, so `finishReason` will be undefined, causing the loop to skip yielding the usage data.\n\nSuggestion: Remove the `break` and update the condition to yield if either `finishReason` exists OR `chunk.usage` is present.",
+          "path": "src/renderer/src/providers/AiProvider/OpenAIProvider.ts",
+          "side": "right",
+          "from_line": 525,
+          "to_line": 529,
+          "line_match": false,
+          "semantic_match": false,
+          "matched_note": ""
+        },
+        {
+          "note": "Missing error handling: The middleware calls and stream iteration lack try-catch blocks. If the middleware or stream processing fails, errors could crash the stream without proper user feedback. Consider wrapping this section in try-catch to handle potential errors gracefully.",
+          "path": "src/renderer/src/providers/AiProvider/OpenAIProvider.ts",
+          "side": "right",
+          "from_line": 533,
+          "to_line": 549,
+          "line_match": true,
+          "semantic_match": false,
+          "matched_note": ""
+        },
+        {
+          "note": "`time_first_token_millsec` is reused as both \"first token\" and \"thinking start\" in reasoning path. This makes `time_first_token_millsec_delta` ambiguous when there is reasoning first. Consider keeping separate timestamps for \"first token overall\" and \"thinking start\" (you already have `time_thinking_start`).",
+          "path": "src/renderer/src/providers/AiProvider/OpenAIProvider.ts",
+          "side": "right",
+          "from_line": 553,
+          "to_line": 557,
+          "line_match": false,
+          "semantic_match": false,
+          "matched_note": ""
+        },
+        {
+          "note": "Minor: `const currentTime` is declared at loop top and re-declared inside `finish` case, which is redundant and can confuse readers. Reuse the outer variable.",
+          "path": "src/renderer/src/providers/AiProvider/OpenAIProvider.ts",
+          "side": "right",
+          "from_line": 585,
+          "to_line": 591,
+          "line_match": false,
+          "semantic_match": false,
+          "matched_note": ""
+        },
+        {
+          "note": "Naming inconsistency: The filename is `getPotentialIndex.ts` but the exported function is named `getPotentialStartIndex`. Consider renaming the file to `getPotentialStartIndex.ts` to match the function name, which will make imports more intuitive and consistent.",
+          "path": "src/renderer/src/utils/getPotentialIndex.ts",
+          "side": "right",
+          "from_line": 7,
+          "to_line": 7,
+          "line_match": false,
+          "semantic_match": false,
+          "matched_note": ""
+        },
+        {
+          "note": "Potential performance issue: this suffix scan is O(n^2) and allocates a new substring on each iteration (`text.substring(i)`). If `text` can be large (streaming buffers), consider avoiding allocations by comparing via indices (e.g., loop k over possible suffix length and check `searchedText.startsWith(text.slice(-k))` with bounded k, or compare characters directly). At minimum, prefer `text.slice(i)` only if necessary and consider early-bounding the scan to `Math.min(text.length, searchedText.length)`.",
+          "path": "src/renderer/src/utils/getPotentialIndex.ts",
+          "side": "right",
+          "from_line": 21,
+          "to_line": 26,
+          "line_match": false,
+          "semantic_match": false,
+          "matched_note": ""
+        },
+        {
+          "note": "The `reader` created from `stream.getReader()` is never closed. According to the Streams API specification, when a reader is created, the stream becomes locked to that reader. If `reader.read()` throws an error or the iteration is interrupted, the reader should be properly closed via `reader.releaseLock()` to allow the stream to be used again and prevent memory leaks. Consider wrapping the async iterator with proper cleanup logic.\n\n```suggestion\nexport function readableStreamAsyncIterable<T>(stream: ReadableStream<T>): AsyncIterable<T> {\n  const reader = stream.getReader()\n  return {\n    [Symbol.asyncIterator](): AsyncIterator<T> {\n      return {\n        async next(): Promise<IteratorResult<T>> {\n          try {\n            return await reader.read()\n          } catch (error) {\n            reader.releaseLock()\n            throw error\n          }\n        },\n        async return(): Promise<IteratorResult<T>> {\n          reader.releaseLock()\n          return { done: true, value: undefined as any }\n        }\n      }\n    }\n  }\n}\n```",
+          "path": "src/renderer/src/utils/stream.ts",
+          "side": "right",
+          "from_line": 1,
+          "to_line": 12,
+          "line_match": true,
+          "semantic_match": true,
+          "matched_note": "### 5. **`readableStreamAsyncIterable` leaks reader on early loop exit** (High)\n**File**: `src/renderer/src/utils/stream.ts:1-15`\n**Failure scenario**: Consumer uses `for await (const chunk of readableStreamAsyncIterable(stream)) { if (shouldStop) break; }`. The `reader` from `stream.getReader()` is never released (`reader.releaseLock()` not called). The stream remains locked; any retry or subsequent read on the same stream throws `TypeError: ReadableStream is locked`.\n\n---"
+        },
+        {
+          "note": "The `asyncGeneratorToReadableStream` function lacks error handling. If `gen.next()` throws an error or the generator encounters an error, the `controller.error(error)` should be called to propagate the error to the stream consumer. Without this, errors may be silently swallowed or cause unhandled promise rejections.\n\n```suggestion\nexport function asyncGeneratorToReadableStream<T>(gen: AsyncGenerator<T>): ReadableStream<T> {\n  return new ReadableStream<T>({\n    async pull(controller) {\n      try {\n        const { value, done } = await gen.next()\n        if (done) {\n          controller.close()\n        } else {\n          controller.enqueue(value)\n        }\n      } catch (error) {\n        controller.error(error)\n      }\n    },\n    cancel() {\n      gen.return?.()\n    }\n  })\n}\n```",
+          "path": "src/renderer/src/utils/stream.ts",
+          "side": "right",
+          "from_line": 14,
+          "to_line": 25,
+          "line_match": true,
+          "semantic_match": true,
+          "matched_note": "### 10. **`asyncGeneratorToReadableStream` doesn't handle generator errors** (Low)\n**File**: `src/renderer/src/utils/stream.ts` (lines 17-25)\n**Issue**: If the async generator throws, the `pull` function will propagate the error, but the stream won't be properly closed/aborted. The `controller.error()` should be called."
+        }
+      ]
+    },
+    {
+      "instance_id": "ClickHouse__ClickHouse@5fb6ee3",
+      "repo": "ClickHouse/ClickHouse",
+      "comments": [
+        {
+          "note": "The lambda examples for `arrayMin`/`arrayMax` appear to use a function-argument order inconsistent with the documented syntax (`arrayMin([func], source, ...)`). The example `SELECT arrayMin(x, y -> x/y, ...)` reads like `func` is the second argument, which may not parse / may confuse users.\n\nSuggestion: align examples with the declared syntax, e.g. `arrayMin((x, y) -> x / y, [..], [..])` (or whatever the engine expects). Please verify the correct lambda signature/order and update accordingly.\n\n```suggestion\n    FunctionDocumentation::Examples examples_min = {\n        {\"Basic example\", \"SELECT arrayMin([5, 3, 2, 7]);\", \"2\"},\n        {\"Usage with lambda function\", \"SELECT arrayMin((x, y) -> x / y, [4, 8, 12, 16], [1, 2, 1, 2]);\", \"4\"},\n    };\n```",
+          "path": "src/Functions/array/arrayAggregation.cpp",
+          "side": "right",
+          "from_line": 461,
+          "to_line": 464,
+          "line_match": false,
+          "semantic_match": false,
+          "matched_note": ""
+        },
+        {
+          "note": "The returned_value description incorrectly states 'minimum element' when this is the arrayMax function. It should say 'maximum element' to match the function's behavior.\n\n```suggestion\n    FunctionDocumentation::ReturnedValue returned_value_max = \"Returns the maximum element in the source array, or the maximum element of the lambda results if provided.\";\n```",
+          "path": "src/Functions/array/arrayAggregation.cpp",
+          "side": "right",
+          "from_line": 482,
+          "to_line": 482,
+          "line_match": true,
+          "semantic_match": true,
+          "matched_note": "1. arrayAggregation.cpp line 482 — returned_value_max says \"minimum\""
+        },
+        {
+          "note": "Inconsistent syntax notation: `arrayFirst` uses `λ(x[, y1, ..., yN])` while `arrayFirstOrNull` uses `func(x[, y1, ..., yN])`. For consistency, all four functions should use the same notation style (either λ or func).",
+          "path": "src/Functions/array/arrayFirstLast.cpp",
+          "side": "right",
+          "from_line": 231,
+          "to_line": 231,
+          "line_match": false,
+          "semantic_match": false,
+          "matched_note": ""
+        },
+        {
+          "note": "The 'No match' example for arrayLast incorrectly uses `arrayFirst` instead of `arrayLast`. This example should demonstrate the arrayLast function's behavior when there is no match, not the arrayFirst function.",
+          "path": "src/Functions/array/arrayFirstLast.cpp",
+          "side": "right",
+          "from_line": 262,
+          "to_line": 266,
+          "line_match": true,
+          "semantic_match": true,
+          "matched_note": "3. **arrayFirstLast.cpp lines 262-266 (examples_last arrayLast \"No match\")**: The example for `arrayLast` is labeled \"No match\" and uses a query but the SQL `SELECT arrayFirst(...)` (line 264) — this is an example for `arrayLast` but the query literally calls `arrayFirst` not `arrayLast`. Moreover the diff within the \"No match\" block at line 264-265. This is a copy-paste error — the query text uses the wrong function name. Also regardless of function name, the example uses `[0, 1, 2]` and `[3, 3, 3]` — for arrayLast, no element matches, so it returns default 0. But the SQL shown says `arrayFirst`, which is inconsistent with the documented function being `arrayLast`. Clear defect.\n\nLet me verify each example computation to check for wrong expected outputs.\n\n**arrayMax lambda example** (line 485): `arrayMax(x, y -> x/y, [4, 8, 12, 16], [1, 2, 1, 2])`. Computes x/y for each: 4/1=4, 8/2=4, 12/1=12, 16/2=8. Max = 12. ✓ Correct.\n\n**arrayMin lambda example** (line 463): `arrayMin(x, y -> x/y, [4, 8, 12, 16], [1, 2, 1, 2])`. 4/1=4, 8/2=4, 12/1=12, 16/2=8. Min = 4. ✓ Correct.\n\n**arraySum lambda example** (line 507): `arraySum(x, y -> x+y, [1, 1, 1, 1], [1, 1, 1, 1])`. x+y per element: 2,2,2,2; sum = 8. ✓ Correct (assuming scalar semantics).\n\n**arrayAvg lambda** (line 529): `arrayAvg(x, y -> x*y, [2, 3], [2, 3])`. x*y: 2*2=4, 3*3=9; average = 6.5. ✓ Correct.\n\n**arrayProduct lambda** (line 551): `arrayProduct(x, y -> x+y, [2, 2], [2, 2])`. x+y: 4,4; product = 16. ✓ Correct.\n\n**arrayFirst examples** (lines 217-218): `arrayFirst(x, y -> x=y, ['a','b','c'], ['c','b','a'])`. First match: 'b' (index 1: a!=c, b==b). Result \"b\". ✓. No match example: `arrayFirst(x, y -> x=y, [0,1,2], [3,3,3])` returns default 0 → \"0 UInt8\". ✓.\n\n**arrayLast example** (line 261): `arrayLast(x, y -> x=y, ['a','b','c'], ['a','b','c'])` → last match 'c'. ✓.\n\n**No match example for arrayLast** (line 264): `SELECT arrayFirst(x, y -> x=y, ...)` — the function name is wrong (should be arrayLast). Defect.\n\nNow for arrayFirstIndex/arrayLastIndex examples. Let me check the file.\n\nLet me check the arrayFirstLastIndex.cpp and the arraySplit and arrayAll/arrayExists examples.\n\n**arrayAll examples**: For arrayAll, does it require the lambda? Yes arrayAll requires a lambda. Examples look fine. The \"All elements match\" example returns 1. Correct.\n\nActually wait — there's a subtle issue. Let me reconsider the `arrayAll` example: `arrayAll(x, y -> x=y, [1, 2, 3], [1, 2, 3])`. Note that arrayAll with cond arrays — correctness of result 1. Fine.\n\nLet me check the arrayFirstFirstLastIndex file, which is a key defect candidate.\n\n\nNow let me verify the arraySplit example semantics critically. In ClickHouse:\n- `arraySplit(func, arr)` splits where func returns non-zero, and the split is placed so the element where func returns true starts a new group (split on the left side of the element). Wait, let me recall the actual semantics.\n\nFor `arraySplit((x, y) -> y, [1, 2, 3, 4, 5], [1, 0, 0, 1, 0])`:\nThe ClickHouse docs say: `arraySplit(func, arr1, ...)`. The func returns a value, and the array is split so that when func returns non-zero for element at index i, a split is created before element i (i.e., element i starts a new group). Let me verify with the actual documented result.\n\nActually, per ClickHouse documentation: \"Split array into multiple arrays. When func returns something other than 0 for an element, the array will be split before that element.\" Wait, but there's nuance with the first element.\n\nLet me check the actual implementation to be sure about the arraySplit example result.\n\nThe example: `arraySplit((x, y) -> y, [1, 2, 3, 4, 5], [1, 0, 0, 1, 0])` → expected `[[1, 2, 3], [4, 5]]`.\n\ny values: [1, 0, 0, 1, 0]. Non-zero at indices 0 and 3 (1-based: elements 1 and 4). The doc description says \"The array will not be split before the first element\" (line 118). So a split is skipped before the first element. At index 3 (element 4), split before it → groups: [1,2,3] and [4,5]. That gives `[[1,2,3],[4,5]]`. ✓ Correct.\n\nBut wait — the description says \"the array will be split on the left hand side of the element\". Yes that matches.\n\nNow arrayReverseSplit example: `arrayReverseSplit((x, y) -> y, [1, 2, 3, 4, 5], [1, 0, 0, 1, 0])` → `[[1], [2, 3, 4], [5]]`. Reverse split splits on the right side of the element. y non-zero at elements 1 and 4. Split after element 1 → [1]; then split after... wait the doc says \"The array will not be split after the last element.\" Non-zero at elements 1 and 4 (and 5? y[5]=0). So split after element 1 → [1]; split after element 4 → [2,3,4]; remainder [5]. Result [[1],[2,3,4],[5]]. ✓ Correct.\n\nNow let me evaluate the arrayAll/arrayExists — these require lambdas, and examples use the simple x->x form not shown. Let me check the files.\n\nLet me check arrayAll.cpp and arrayExists examples.\n\nThe arrayAll example at line in diff: `arrayAll(x, y -> x=y, [1, 2, 3], [1, 2, 3])` → \"1\". Correct (all match). The not-all example → \"0\". Correct.\n\narrayExists example: `arrayExists(x, y -> x=y, [1, 2, 3], [0, 0, 0])` → \"0\". Correct.\n\nNow let me reconsider the actual semantics of arrayFirst/arrayLast examples. \n\nFor the arrayFirst \"No match\" at lines 218: It says `arrayFirst(x, y -> x=y, [0, 1, 2], [3, 3, 3])` returns \"0 UInt8\" — no element matches (0!=3 etc.), so default value of T (T=UInt8 since source is [0,1,2]) → 0. Result type UInt8. ✓ Correct.\n\nNow the key confirmed defects:\n\n**DEFECT 1 (arrayAggregation.cpp line 482)**: returned_value_max text says \"Returns the maximum element in the source array, or the **minimum** element of the lambda results if provided.\" Contradiction — should say maximum. This documentation contradicts the function's actual behavior (arrayMax returns max) and internally is self-contradictory (first clause says maximum, second says minimum). Real documentation defect.\n\n**DEFECT 2 (arrayAggregation.cpp line 498)**: syntax_sum string says `\"arrayMax(...)\"` for the `arraySum` function. Copy-paste — the syntax documents the wrong function name.\n\n**DEFECT 3 (arrayFirstLast.cpp lines 262-266)**: The \"No match\" example for `arrayLast` uses SQL text `SELECT arrayFirst(x, y -> x=y, ...)`. The example is attached to arrayLast's documentation but shows a query invoking a different function (arrayFirst), so a user copying this example from the arrayLast docs runs arrayFirst, not arrayLast — misleading documentation.\n\nAre there other defects? Let me double check the arrayMin/arrayMax description of the `introduced_in = {21, 1}`. These functions arrayMin etc. were introduced long before 21.1, but that's a minor inaccuracy not clearly a \"defect\" with failure scenario. The `introduced_in` for arrayAll/arrayExists/arrayFirst etc. is `{1, 1}` which is also not accurate, but again it's a metadata inaccuracy. I'll focus on clear defects.\n\nActually, let me reconsider whether these examples with lambda for arraySum/arrayAvg/arrayProduct are correct given the modern behavior. Actually, I should check — is there documentation validation in the tests? The removed lines from test references `02415_all_new_functions_must_have_version_information` and `02415_all_new_functions_must_be_documented` — removing the function names from those lists is expected since they now have version info and docs. That's consistent.\n\nLet me now also double-check the arrayMax lambda example at line 485 more carefully. `arrayMax(x, y -> x/y, [4, 8, 12, 16], [1, 2, 1, 2])` → 4/1=4, 8/2=4, 12/1=12, 16/2=8 → max 12. Result \"12\". Correct. And the arrayMin example \"4\" correct.\n\nWait, but there's a subtlety: in this old ClickHouse version, does arrayMax with a lambda return a scalar (numeric) or does it return an array? Historically, before ClickHouse 24.x, `arrayMin/max/sum/avg/product` with a lambda returned a **scalar** (the aggregation of the lambda results). This is consistent with the docs here. Fine.\n\nActually wait — there's a subtle issue with the arrayProduct usage example line 551. Let me not over-analyze.\n\nLet me also check the arrayFirstLast.cpp \"No match\" example for arrayLast - result \"0 UInt8\". For arrayLast with [0,1,2] and [3,3,3], using strategy default, the result would be default of T = 0 UInt8. The SQL text uses `arrayFirst` though. The inconsistency is the defect.\n\nLet me also reconsider the arrayLastOrNull \"No match\" example at lines 287-291. Uses `arrayLastOrNull(x, y -> x=y, [0, 1, 2], [3, 3, 3])` → returns NULL since no match. Result \"NULL Nullable(UInt8)\". That is correct and uses the right function name. Good contrast: the arrayLast \"No match\" one uses arrayFirst (wrong), while arrayLastOrNull uses arrayLastOrNull (right). This confirms the arrayLast one is a copy-paste defect.\n\nNow, is there any concern about the `syntax` for arrayFirst at line 209 using `λ` — a non-ASCII lambda symbol in the syntax string? That's cosmetic, and returned_value also uses λ. Not a functional defect. I'll skip.\n\nLet me reconsider whether these documentation defects qualify as \"REAL DEFECTS\" given they're doc strings. The prompt asks for defects with concrete failure scenarios (inputs -> wrong behavior). Documentation defects are the substance here since the change is purely documentation. The failure scenario: a user reads the docs and gets wrong information/uses wrong function name. For line 482 (max described as min), a user relying on the docs for arrayMax with a lambda would be misled about the result. For line 498, the syntax for arraySum shows arrayMax, confusing. For the arrayLast example, a user copying the example runs arrayFirst instead of arrayLast.\n\nLet me note the most severe. I'll present these three, ordered. Line 482 is the most severe (direct contradiction of the function's core behavior). Line 498 next. Line 262-266 last.\n\nLet me get accurate line numbers from the file to cite. \n\n- arrayAggregation.cpp line 482: returned_value_max. Confirmed from read.\n- arrayAggregation.cpp line 498: syntax_sum. Confirmed.\n- arrayFirstLast.cpp: the \"No match\" block for arrayLast spans lines 262-266; the actual wrong SQL is line 264. Confirmed.\n\nThese line numbers match the diff hunk (the REGISTER_FUNCTION block starting around line 449 in the diff). Let me confirm the diff hunk header for arrayAggregation.cpp was `@@ -446,11 +446,115 @@` — the added content starts at line 449. Yes, matches.\n\nFor arrayFirstLast.cpp, hunk `@@ -201,10 +201,100 @@`. The added block starts around line 204. My read shows description at line 206. The \"No match\" SQL at line 264. Confirmed within the hunk.\n\nLet me write the final report.\n\n\nThese arrayAll/arrayExists examples are correct. Now let me verify the arraySum with lambda semantics. Historically in ClickHouse, `arraySum(func, arr)` returns a scalar sum of the lambda results. But let me verify against the actual implementation to confirm. Actually, since the change is only documentation and I can't execute, and these are consistent with the historical scalar semantics, I'll leave those.\n\nWait — I should double check one thing about `arraySum` with a lambda. In ClickHouse, there's actually a well-known behavior distinction. For `arraySum` with lambda, historically it returns a scalar (before the array-returning change in v24.x). Given `introduced_in = {21, 1}`, the scalar interpretation is consistent with that era. The example gives 8. This is fine given the era.\n\nNow, let me finalize. Let me also verify the `arrayAvg` returned_value links `Float64` — arrayAvg returns Float64, fine.\n\nLet me confirm the arrayMax description at 474 says \"maximum element of the lambda results\" — yes, so line 482's \"minimum\" is a definite contradiction of both the description and reality.\n\nI'm confident in my three defects. Let me write the final report.\n\nLine numbers:"
+        },
+        {
+          "note": "Inconsistent quotation mark usage detected. The word '0' is sometimes enclosed in backticks (\\`0\\`) and sometimes in single quotes ('0'). Consistent formatting improves readability.",
+          "path": "src/Functions/array/arrayFirstLastIndex.cpp",
+          "side": "right",
+          "from_line": 128,
+          "to_line": 130,
+          "line_match": false,
+          "semantic_match": false,
+          "matched_note": ""
+        },
+        {
+          "note": "The arrayFirstIndex documentation examples use invalid lambda syntax by omitting parentheses for multiple parameters; they should use `(x, y) -> x=y` instead of `x, y -> x=y`.",
+          "path": "src/Functions/array/arrayFirstLastIndex.cpp",
+          "side": "right",
+          "from_line": 157,
+          "to_line": 157,
+          "line_match": true,
+          "semantic_match": false,
+          "matched_note": ""
+        },
+        {
+          "note": "Semicolons inside SQL statements in examples are inconsistent with documentation pattern in other array functions. Semicolons should be outside the SQL statements.",
+          "path": "src/Functions/array/arrayFirstLastIndex.cpp",
+          "side": "right",
+          "from_line": 159,
+          "to_line": 159,
+          "line_match": false,
+          "semantic_match": false,
+          "matched_note": ""
+        },
+        {
+          "note": "The `documentation_last` object was created but not passed to `factory.registerFunction<FunctionArrayLastIndex>()`. This is inconsistent with `FunctionArrayFirstIndex` which properly passes its documentation. Please pass `documentation_last` to the register function.\n\n```suggestion\n    factory.registerFunction<FunctionArrayLastIndex>(documentation_last);\n```",
+          "path": "src/Functions/array/arrayFirstLastIndex.cpp",
+          "side": "right",
+          "from_line": 166,
+          "to_line": 166,
+          "line_match": true,
+          "semantic_match": true,
+          "matched_note": "### 1. **src/Functions/array/arrayFirstLastIndex.cpp:166** — Missing documentation registration for `arrayLastIndex`\n```cpp\nfactory.registerFunction<FunctionArrayLastIndex>();  // Missing documentation_last argument\n```\n**Failure scenario:** The `arrayLastIndex` function will be registered without any documentation (description, syntax, arguments, examples, version info). Users querying `SELECT * FROM system.functions WHERE name='arrayLastIndex'` will see empty documentation fields. The `02415_all_new_functions_must_be_documented` test would fail for this function.\n\n---"
+        },
+        {
+          "note": "The documentation string for `ArraySplit` requires two clarifications:  \n- Replace \"returns something other than zero\" with \"returns true\" for boolean accuracy.  \n- Change \"on the left hand side of the element\" to \"to the left of the element\" for concise phrasing.",
+          "path": "src/Functions/array/arraySplit.cpp",
+          "side": "right",
+          "from_line": 118,
+          "to_line": 118,
+          "line_match": false,
+          "semantic_match": false,
+          "matched_note": ""
+        },
+        {
+          "note": "Doc string formatting: missing space before the markdown link. `(...)(`y`).[Lambda function]` renders poorly; add a space before `[Lambda function]` for readability.\n\n```suggestion\n        {\"func(x[, y1, ..., yN])\", \"A lambda function which operates on elements of the source array (`x`) and condition arrays (`y`). [Lambda function](/sql-reference/functions/overview#arrow-operator-and-lambda).\"},\n```",
+          "path": "src/Functions/array/arraySplit.cpp",
+          "side": "right",
+          "from_line": 121,
+          "to_line": 121,
+          "line_match": true,
+          "semantic_match": true,
+          "matched_note": "### 9. **src/Functions/array/arraySplit.cpp:121** — Missing space before markdown link\n```cpp\n{\"func(x[, y1, ..., yN])\", \"A lambda function which operates on elements of the source array (`x`) and condition arrays (`y`).[Lambda function](/sql-reference/functions/overview#arrow-operator-and-lambda).\"},\n```\n**Failure scenario:** Rendered documentation shows \"`y`).[Lambda function`\" without space, breaking the link formatting.\n\n---"
+        },
+        {
+          "note": "Documentation variable names are ambiguous between split functions. Rename `FunctionArraySplit`'s documentation variables to `*_split` style (e.g., `description_split`) and `FunctionArrayReverseSplit`'s to `*_reverse_split` style (e.g., `description_reverse_split`) for clear distinction.",
+          "path": "src/Functions/array/arraySplit.cpp",
+          "side": "right",
+          "from_line": 133,
+          "to_line": 133,
+          "line_match": false,
+          "semantic_match": false,
+          "matched_note": ""
+        }
+      ]
+    },
+    {
+      "instance_id": "lvgl__lvgl@a0067e3",
+      "repo": "lvgl/lvgl",
+      "comments": [
+        {
+          "note": "The added null check for `txt` parameter omits the required logging; include LOG_ERR or LOG_WRN specifically when `txt` is NULL.",
+          "path": "src/misc/lv_text.c",
+          "side": "right",
+          "from_line": 653,
+          "to_line": 653,
+          "line_match": true,
+          "semantic_match": false,
+          "matched_note": ""
+        },
+        {
+          "note": "**Potential logic issue**: Checking `txt[*i] == '\\0'` before processing might change the expected behavior of this function. \n\nIf `*i` points to the null terminator, this returns early without incrementing `*i`. Callers might expect `*i` to be incremented even when reaching the end of the string.\n\nConsider whether this early return is the intended behavior, or if the null check should only prevent accessing beyond valid memory while still allowing normal processing of the null terminator case.",
+          "path": "src/misc/lv_text.c",
+          "side": "right",
+          "from_line": 653,
+          "to_line": 653,
+          "line_match": true,
+          "semantic_match": true,
+          "matched_note": "1. lv_text.c:653 — the `txt[*i] == '\\0'` early-return drops the offset advance for the terminal NUL, breaking the documented advance invariant used by every `while(i < bound)` loop that calls `lv_text_encoded_next` / `_2`. This converts previously-terminating loops into potential infinite loops whenever a NUL byte is reached at an index below the loop bound (most concretely via the public `lv_text_get_width`/`lv_txt_get_width` and `lv_text_get_width_with_flags`, which accept an arbitrary `length`). Also — with `ofs`-sharing — this can leave callers stuck."
+        }
+      ]
+    }
+  ]
+}
