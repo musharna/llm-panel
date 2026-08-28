@@ -2,11 +2,21 @@
   "review": {
     "comments": [
       {
+        "content": "- `src/misc/lv_text.c:653` \u2014 The NULL guard applies only to the UTF-8 decoder. With `LV_TXT_ENC == LV_TXT_ENC_ASCII`, calling `lv_text_encoded_letter_next_2(NULL, &letter, &letter_next, &ofs)` dispatches to `lv_text_iso8859_1_next`, which dereferences `txt` and crashes instead of returning zeroed letters with an unchanged offset.",
+        "path": "src/misc/lv_text.c",
+        "start_line": 653,
+        "end_line": 653,
+        "observation_id": "5dae3c49ff403cf9",
+        "claimed_path": "src/misc/lv_text.c",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
         "content": "**DEFECT 1: `src/misc/lv_text.c:653` \u2014 Uninitialized `result` returned on NULL/empty input**\n\nThe added early-return `if(txt == NULL || txt[*i] == '\\0') return result;` returns `result` before it is ever assigned. In the original code, `result` is only assigned inside the `if(LV_IS_ASCII(...))` branch and subsequent UTF-8 branches (not shown in diff). Calling `lv_text_utf8_next(NULL, ...)` or `lv_text_utf8_next(\"\", ...)` now returns an indeterminate `uint32_t` value instead of a defined sentinel (e.g., 0).\n\n**Failure scenario:** `lv_text_utf8_next(NULL, &idx)` \u2192 returns garbage (stack contents) \u2192 caller treats garbage as a valid code point \u2192 buffer overrun or logic corruption downstream.\n\n---",
         "path": "src/misc/lv_text.c",
         "start_line": 653,
         "end_line": 653,
-        "observation_id": "a5bbfaf4f19b1cfd",
+        "observation_id": "8008157aa88116b6",
         "claimed_path": "src/misc/lv_text.c",
         "path_resolution": "exact",
         "merged_from": []
@@ -14,11 +24,11 @@
     ]
   },
   "rundir": "/home/mjarnold/.cache/llm-panel/runs/aacr-up-15bnzl06-736e40be2a08/20260825-163203-1618520",
-  "extractor": "2",
+  "extractor": "3",
   "unlocated": [
     {
       "content": "**DEFECT 2: `tests/src/test_cases/test_txt.c` \u2014 Tests target wrong function**\n\nAll 5 new tests call `lv_text_encoded_letter_next_2()`, but the production change is in `lv_text_utf8_next()`. Unless `lv_text_encoded_letter_next_2` is a thin wrapper that directly calls `lv_text_utf8_next` (not visible in this diff), these tests do **not** exercise the added null/empty-string guard. The actual modifie",
-      "observation_id": "05ec36ab529aad58",
+      "observation_id": "a375c64c79645cb3",
       "claimed_path": "tests/src/test_cases/test_txt.c",
       "path_resolution": "exact"
     }

@@ -2,60 +2,157 @@
   "review": {
     "comments": [
       {
-        "content": "**DEFECT 1: Empty `batch.Outputs` tensor passed to last layer instead of nil tensor**\n\n**Files & Lines (from diff hunk headers):**\n- `model/models/gptoss/model.go:40-41`\n- `model/models/llama/model.go:158-160`\n- `model/models/qwen2/model.go:109-111`\n- `model/models/qwen3/model.go:163-165`\n- `model/models/gemma2/model.go:190-192`\n- `model/models/gemma3/model_text.go:191-193`\n- `model/models/mistral3/model_text.go:111-113`\n- `model/models/qwen25vl/model_text.go:140-142`",
+        "content": "- `model/models/gptoss/model.go:40-41`",
         "path": "model/models/gptoss/model.go",
         "start_line": 40,
         "end_line": 40,
-        "observation_id": "6cc6bdf8bbbadaba",
-        "claimed_path": null,
-        "path_resolution": "relocated",
-        "merged_from": [
-          "62a957bfed61de25"
-        ]
+        "observation_id": "402ae5004a89048d",
+        "claimed_path": "model/models/gptoss/model.go",
+        "path_resolution": "exact",
+        "merged_from": []
       },
       {
-        "content": "**Failure Scenario:**\nWhen processing a batch where no sequence has its final input (e.g., prefill of long sequences, or chunked processing where the last chunk doesn't complete any sequence), `batchOutputs` slice is empty in `runner/ollamarunner/runner.go:579`. This creates an empty `batch.Outputs` tensor (Dim(0) == 0). \n\n**Before:** The `len(batch.Outputs) > 0` guard meant `outputs` remained a nil `ml.Tensor` (zero value), and layers received nil.\n**After:** `outputs = batch.Outputs` passes an empty but non-nil tensor.\n\nLayer `Forward` implementations likely use `outputs` for indexing/gathering (e.g., `Rows`, `Gather`, or similar). An empty tensor may cause: index out of bounds, invalid memory access, or silent wrong results (gathering 0 elements). A nil tensor would typically be checked and skipped; an empty tensor bypasses nil checks but has no valid data.\n\n**Concrete Input \u2192 Wrong Behavior:**\n- Input: Batch with 2 sequences, each having 3 pending inputs, processing first 2 inputs of each (no sequence completes)\n- `batchOutputs` = `[]int32{}` (empty)\n- `batch.Outputs` = empty tensor (Dim(0)=0)\n- Last layer receives empty `outputs` tensor \u2192 attempts `hiddenStates.Rows(ctx, outputs)` or similar \u2192 panic or corrupt output\n\n---\n\n**DEFECT 2: No validation that `len(batch.Sequences) == len(batch.Positions.Ints())` in `kvcache` `StartForward` methods**",
+        "content": "- `model/models/llama/model.go:158-160`",
+        "path": "model/models/llama/model.go",
+        "start_line": 158,
+        "end_line": 158,
+        "observation_id": "33f8f2f1cf7e91fd",
+        "claimed_path": "model/models/llama/model.go",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "- `model/models/qwen2/model.go:109-111`",
+        "path": "model/models/qwen2/model.go",
+        "start_line": 109,
+        "end_line": 109,
+        "observation_id": "a09d9c0b533f291f",
+        "claimed_path": "model/models/qwen2/model.go",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "- `model/models/qwen3/model.go:163-165`",
+        "path": "model/models/qwen3/model.go",
+        "start_line": 163,
+        "end_line": 163,
+        "observation_id": "1c11c260ece5d491",
+        "claimed_path": "model/models/qwen3/model.go",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "- `model/models/gemma2/model.go:190-192`",
+        "path": "model/models/gemma2/model.go",
+        "start_line": 190,
+        "end_line": 190,
+        "observation_id": "32dda906feedddd2",
+        "claimed_path": "model/models/gemma2/model.go",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "- `model/models/gemma3/model_text.go:191-193`",
+        "path": "model/models/gemma3/model_text.go",
+        "start_line": 191,
+        "end_line": 191,
+        "observation_id": "d59a6e853705b1de",
+        "claimed_path": "model/models/gemma3/model_text.go",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "- `model/models/mistral3/model_text.go:111-113`",
+        "path": "model/models/mistral3/model_text.go",
+        "start_line": 111,
+        "end_line": 111,
+        "observation_id": "dfd57467417dbe75",
+        "claimed_path": "model/models/mistral3/model_text.go",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "- `model/models/qwen25vl/model_text.go:140-142`",
+        "path": "model/models/qwen25vl/model_text.go",
+        "start_line": 140,
+        "end_line": 140,
+        "observation_id": "f07dfdb083a41f4d",
+        "claimed_path": "model/models/qwen25vl/model_text.go",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "**Failure Scenario:**\nWhen processing a batch where no sequence has its final input (e.g., prefill of long sequences, or chunked processing where the last chunk doesn't complete any sequence), `batchOutputs` slice is empty in `runner/ollamarunner/runner.go:579`. This creates an empty `batch.Outputs` tensor (Dim(0) == 0). \n\n**Before:** The `len(batch.Outputs) > 0` guard meant `outputs` remained a nil `ml.Tensor` (zero value), and layers received nil.\n**After:** `outputs = batch.Outputs` passes an empty but non-nil tensor.\n\nLayer `Forward` implementations likely use `outputs` for indexing/gathering (e.g., `Rows`, `Gather`, or similar). An empty tensor may cause: index out of bounds, invalid memory access, or silent wrong results (gathering 0 elements). A nil tensor would typically be checked and skipped; an empty tensor bypasses nil checks but has no valid data.\n\n**Concrete Input \u2192 Wrong Behavior:**\n- Input: Batch with 2 sequences, each having 3 pending inputs, processing first 2 inputs of each (no sequence completes)\n- `batchOutputs` = `[]int32{}` (empty)\n- `batch.Outputs` = empty tensor (Dim(0)=0)\n- Last layer receives empty `outputs` tensor \u2192 attempts `hiddenStates.Rows(ctx, outputs)` or similar \u2192 panic or corrupt output\n\n---\n\n**DEFECT 2: No validation that `len(batch.Sequences) == len(batch.Positions.Ints())` in `kvcache` `StartForward` methods**\n\n**Files & Lines (from diff hunk headers):**",
         "path": "runner/ollamarunner/runner.go",
         "start_line": 579,
         "end_line": 579,
-        "observation_id": "17e318ab65063a26",
+        "observation_id": "cd568babb3cffc9f",
         "claimed_path": "runner/ollamarunner/runner.go",
         "path_resolution": "exact",
         "merged_from": [
-          "524c28b76c6829a1",
-          "34e740e8c10db639"
+          "618fa46aed65baa2",
+          "c8968a0f475b515b",
+          "b736cb277ca4aa87"
         ]
       },
       {
-        "content": "**Files & Lines (from diff hunk headers):**\n- `kvcache/causal.go:201-203` (uses `c.curPositions` and `batch.Sequences` with same index)\n- `kvcache/encoder.go:94` (indexes `batch.Positions.Ints()` with `MultimodalIndex.Index`)\n- `kvcache/wrapper.go:50-54` (loops `curPositions` and indexes `batch.Sequences[k]`)\n\n**Failure Scenario:**\n`model.Forward` validates `batch.Positions.Dim(0) == len(batch.Sequences)` at `model/model.go:285`, but `kvcache.Cache.StartForward` is a public interface. Direct calls (e.g., from tests, custom pipelines, or future code) with mismatched lengths cause index out of bounds panic.\n\n**Concrete Input \u2192 Wrong Behavior:**\n- Input: `batch.Positions` tensor with 5 elements, `batch.Sequences` with 3 elements\n- `causal.StartForward` \u2192 `c.curPositions` has 5 elements, loop runs 5 times \u2192 `batch.Sequences[3]` panic at iteration 3\n\n---\n\n**DEFECT 3: `testTensor.Ints()` truncates/rounds `float32` data to `int32`**",
+        "content": "- `kvcache/causal.go:201-203` (uses `c.curPositions` and `batch.Sequences` with same index)",
         "path": "kvcache/causal.go",
         "start_line": 201,
         "end_line": 201,
-        "observation_id": "e2203c691c286165",
+        "observation_id": "cf4b5650310f08ae",
         "claimed_path": "kvcache/causal.go",
         "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "- `kvcache/encoder.go:94` (indexes `batch.Positions.Ints()` with `MultimodalIndex.Index`)",
+        "path": "kvcache/encoder.go",
+        "start_line": 94,
+        "end_line": 94,
+        "observation_id": "d560408518564981",
+        "claimed_path": "kvcache/encoder.go",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "- `kvcache/wrapper.go:50-54` (loops `curPositions` and indexes `batch.Sequences[k]`)\n\n**Failure Scenario:**\n`model.Forward` validates `batch.Positions.Dim(0) == len(batch.Sequences)` at `model/model.go:285`, but `kvcache.Cache.StartForward` is a public interface. Direct calls (e.g., from tests, custom pipelines, or future code) with mismatched lengths cause index out of bounds panic.\n\n**Concrete Input \u2192 Wrong Behavior:**\n- Input: `batch.Positions` tensor with 5 elements, `batch.Sequences` with 3 elements\n- `causal.StartForward` \u2192 `c.curPositions` has 5 elements, loop runs 5 times \u2192 `batch.Sequences[3]` panic at iteration 3\n\n---\n\n**DEFECT 3: `testTensor.Ints()` truncates/rounds `float32` data to `int32`**\n\n**File & Line (from diff hunk header):**",
+        "path": "kvcache/wrapper.go",
+        "start_line": 50,
+        "end_line": 50,
+        "observation_id": "ce1c16791fb0b58c",
+        "claimed_path": "kvcache/wrapper.go",
+        "path_resolution": "exact",
         "merged_from": [
-          "d2052a67a5edaa84",
-          "74160f5caeba5d43",
-          "a4b74d2bbdb6b97d"
+          "cc7281ae150309db",
+          "38020e1e259aedf5",
+          "6f69402033b17181",
+          "329b6d9297e1b889"
         ]
       },
       {
-        "content": "**File & Line (from diff hunk header):**\n- `kvcache/causal_test.go:672-678`\n\n**Failure Scenario:**\n`testTensor.data` is `[]float32` (per `Floats()` method). `Ints()` casts each `float32` to `int32` directly. If test data contains non-integer floats (e.g., from FP ops), positions become truncated.\n\n**Concrete Input \u2192 Wrong Behavior:**\n- Test creates tensor with positions `[0.0, 1.5, 2.0]` (hypothetical)\n- `Ints()` returns `[0, 1, 2]` \u2014 position 1.5 \u2192 1, losing precision\n- Cache uses wrong positions \u2192 incorrect KV cache indexing \u2192 silent wrong output\n\n(Note: Current tests use integer positions, so latent. But `testTensor` is a general test double; this violates type safety.)",
+        "content": "- `kvcache/causal_test.go:672-678`\n\n**Failure Scenario:**\n`testTensor.data` is `[]float32` (per `Floats()` method). `Ints()` casts each `float32` to `int32` directly. If test data contains non-integer floats (e.g., from FP ops), positions become truncated.\n\n**Concrete Input \u2192 Wrong Behavior:**\n- Test creates tensor with positions `[0.0, 1.5, 2.0]` (hypothetical)\n- `Ints()` returns `[0, 1, 2]` \u2014 position 1.5 \u2192 1, losing precision\n- Cache uses wrong positions \u2192 incorrect KV cache indexing \u2192 silent wrong output\n\n(Note: Current tests use integer positions, so latent. But `testTensor` is a general test double; this violates type safety.)",
         "path": "kvcache/causal_test.go",
         "start_line": 672,
         "end_line": 672,
-        "observation_id": "f7b8536ec40ad4e2",
+        "observation_id": "3465acc47c1bef33",
         "claimed_path": "kvcache/causal_test.go",
         "path_resolution": "exact",
         "merged_from": [
-          "5b72a8b6b9ada43c",
-          "e73d01d7e2d0a5f4"
+          "e0ccc5c8903d449f",
+          "b5b72bd3e006f4a6"
         ]
       }
     ]
   },
   "rundir": "/home/mjarnold/.cache/llm-panel/runs/aacr-up-4x1037jh-f73cdc1c4069/20260825-155943-1470190",
-  "extractor": "2",
-  "unlocated": []
+  "extractor": "3",
+  "unlocated": [
+    {
+      "content": "**DEFECT 1: Empty `batch.Outputs` tensor passed to last layer instead of nil tensor**\n\n**Files & Lines (from diff hunk headers):**",
+      "observation_id": "91a530cd4fe4377c",
+      "claimed_path": null,
+      "path_resolution": "absent"
+    }
+  ]
 }

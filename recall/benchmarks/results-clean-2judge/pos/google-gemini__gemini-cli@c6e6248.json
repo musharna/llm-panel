@@ -1,0 +1,46 @@
+{
+  "review": {
+    "comments": [
+      {
+        "content": "- **P1 \u2014 `integration-tests/extensions-install.test.ts:27`**: The command inherits the caller\u2019s home directory, so an existing user extension named `test-extension` is uninstalled. Input: run the suite while that extension is installed \u2192 the real extension is deleted, replaced by the fixture, then the fixture is deleted; the original is permanently lost.",
+        "path": "integration-tests/extensions-install.test.ts",
+        "start_line": 27,
+        "end_line": 27,
+        "observation_id": "79d8f63f941d0ea2",
+        "claimed_path": "integration-tests/extensions-install.test.ts",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "- **P2 \u2014 `integration-tests/extensions-install.test.ts:31`**: Cleanup is not protected by `finally`. Input: installation succeeds, then `extensions update` exits nonzero or an assertion fails \u2192 execution skips the uninstall and `rig.cleanup()`, leaving the fixture globally installed and the temporary directory behind, contaminating later runs.## DEFECT",
+        "path": "integration-tests/extensions-install.test.ts",
+        "start_line": 31,
+        "end_line": 31,
+        "observation_id": "17b8c875bab5ff71",
+        "claimed_path": "integration-tests/extensions-install.test.ts",
+        "path_resolution": "exact",
+        "merged_from": [
+          "daece7453b23d079"
+        ]
+      },
+      {
+        "content": "**Missing `error` event handler on spawned child process**\n\n**File:** `integration-tests/test-helper.ts`, **Line:** new code at approximately line 322 (the `child.on('close', ...)` block \u2014 there is no corresponding `child.on('error', ...)`)\n\n**Failure scenario:** If the `spawn('node', ...)` call fails (e.g., `node` binary not found, or `this.bundlePath` points to a missing file), the `ChildProcess` emits an `'error'` event. `EventEmitter` throws on unhandled `'error'` events (Node.js default since forever). Because the error fires asynchronously (next tick after `spawn()` returns), no surrounding `try`/`catch` can intercept it. This causes an **uncaught exception that crashes the test runner process** rather than allowing the test to fail gracefully.\n\nConcrete reproduction:\n1. `rig.bundlePath` points to a file that doesn't exist (e.g., build artifact missing).\n2. `await rig.runCommand(['extensions', 'install', ...])` calls `spawn('node', ['/missing/path', ...])`.\n3. Next tick: `'error'` event fires on `child` \u2192 no listener \u2192 `EventEmitter` throws \u2192 uncaught exception kills the process.\n4. The `close` event (which would have caused `reject()` with a useful error message) never fires, or fires after the crash.\n\n**Fix:** Add `child.on('error', (err) => reject(err))` inside the `Promise` constructor, alongside the existing `child.on('close', ...)` handler.",
+        "path": "integration-tests/test-helper.ts",
+        "start_line": 322,
+        "end_line": 322,
+        "observation_id": "8a280e60c33376bb",
+        "claimed_path": "integration-tests/test-helper.ts",
+        "path_resolution": "exact",
+        "merged_from": [
+          "d53bbed7afdfd81c",
+          "828dfa20a30c8978",
+          "d26cbf68c62f6734",
+          "bea9aceb674f1d11"
+        ]
+      }
+    ]
+  },
+  "rundir": "/home/mjarnold/.cache/llm-panel/runs/aacr-up-y7b1modi-0563b032bc7a/20260825-155048-1452372",
+  "extractor": "3",
+  "unlocated": []
+}

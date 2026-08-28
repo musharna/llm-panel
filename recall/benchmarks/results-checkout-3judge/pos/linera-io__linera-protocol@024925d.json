@@ -2,16 +2,17 @@
   "review": {
     "comments": [
       {
-        "content": "## Defect 1 \u2014 in-flight responses discarded on \"no quorum possible\"; benign outcomes can become hard errors\n\n**File/line:** `linera-core/src/updater.rs:173-176` (hunk `@@ -167,13 +170,15 @@`)\n\nThe old code, when neither quorum nor a quorum was mathematically possible, set `end_time` and kept consuming responses for `GRACE_PERIOD` \u2014 the old comment said this was to \"collect more values or error information and then stop\". That window is how an error could accumulate to `validity_threshold()` and trigger the `return Err(CommunicationError::Trusted(...))` at line 166-170, and how the error sample was built. The new unconditional `break` exits at the first moment quorum becomes impossible, dropping every response still in flight.\n\n**Concrete failure scenario:** Committee of 10 validators, weight 1 each (quorum = 7, validity = 4). Chain `C` is deactivated. `find_received_certificates` (`client/mod.rs:1505`) is running; responses arrive in this order: `V1: NetworkError`, `V2: InactiveChain`, `V3: NetworkError`, `V4: InactiveChain`. On V4: `highest_key_score = 0`, `remaining_votes = 6 < 7` \u2192 `break`. `error_scores = {NetworkError: 2, InactiveChain: 2}`, neither reaches validity 4, so lines 205-208 return `CommunicationError::Sample` \u2192 `client/mod.rs:1531` converts it to a hard `Err`, and `prepare_chain` (`client/mod.rs:972`) / `synchronize_from_validators` (`client/mod.rs:2337`) fail. Old code: `end_time = now + 0.2\u00b7(detection time)`; V5, V6 (both `InactiveChain`) complete inside that window \u2192 weight 4 \u2265 validity \u2192 line 169 returns `Trusted(InactiveChain)` \u2192 `client/mod.rs:1526-1530` matches and returns `Ok(())`, the intended benign \"chain is deactivated, nothing to sync\" path. With identical validator responses and states, the call now succeeds or fails depending on response arrival order, and the reported error variant (`Sample`/`NoConsensus` vs `Trusted`) is decided by whichever \u2308total/3\u2309-weight of responses happened to land first, not by the validators' actual consensus of errors.\n\n## Defect 2 \u2014 default grace period silently halved for every caller\n\n**File/line:** `linera-core/src/updater.rs:36` (hunk `@@ -31,9 +31,9 @@`)\n\n`DEFAULT_GRACE_PERIOD` is changed 0.2 \u2192 0.1, and every existing call site passes `None` (`client/mod.rs:1114, 1150, 1521, 1679`), so no caller opts into anything \u2014 all four silently wait half as long after a quorum to gather \"more values\". The new parameter is dead configurability; the behavioral change is a tuning regression applied unilaterally. The two halves of the old grace mechanism are thereby both weakened by this PR: the no-quorum half is removed entirely (Defect 1) and the post-quorum half is halved here.\n\n**Concrete failure scenario:** `communicate_chain_action` (`client/mod.rs:1137`) \u2014 validators reach quorum in ~100 ms, so the extra-vote window shrinks from 20 ms to 10 ms. Votes from validators whose responses land in the 10-20 ms band are discarded; the `LiteCertificate::try_from_votes(votes)` built at `client/mod.rs:1161` is systematically thinner (fewer signers) than before, and the certificate broadcast to the remaining validators in later rounds carries signatures from a smaller set than the code was tuned to collect. There is no correctness break (quorum weight is already assured when `end_time` is set at line 180-181), but the margin the constant was calibrated for is halved without any caller's consent, compounding Defect 1: the diff's own new comment at lines 178-179 still promises to \"collect more values or error information\", while the error-information half no longer exists and the value-collection half is cut in half.**Defects found:**\n\n---",
+        "content": "- `linera-core/src/updater.rs:174` \u2014 The early break can occur before a validity threshold of identical errors is collected. With four equal-weight validators (quorum 3, validity 2), if a Byzantine validator returns error X and one honest validator returns `InactiveChain(chain_id)`, `remaining_votes` becomes 2 and the loop exits with `Sample`. If the two pending honest validators then return `InactiveChain(chain_id)`, their responses are discarded even though they would produce `Trusted(InactiveChain)`. Consequently, `find_received_certificates` propagates an error instead of correctly returning `Ok(())`, allowing one fast Byzantine response to disrupt an inactive-chain query.## Defect 1 \u2014 in-flight responses discarded on \"no quorum possible\"; benign outcomes can become hard errors\n\n**File/line:** `linera-core/src/updater.rs:173-176` (hunk `@@ -167,13 +170,15 @@`)\n\nThe old code, when neither quorum nor a quorum was mathematically possible, set `end_time` and kept consuming responses for `GRACE_PERIOD` \u2014 the old comment said this was to \"collect more values or error information and then stop\". That window is how an error could accumulate to `validity_threshold()` and trigger the `return Err(CommunicationError::Trusted(...))` at line 166-170, and how the error sample was built. The new unconditional `break` exits at the first moment quorum becomes impossible, dropping every response still in flight.\n\n**Concrete failure scenario:** Committee of 10 validators, weight 1 each (quorum = 7, validity = 4). Chain `C` is deactivated. `find_received_certificates` (`client/mod.rs:1505`) is running; responses arrive in this order: `V1: NetworkError`, `V2: InactiveChain`, `V3: NetworkError`, `V4: InactiveChain`. On V4: `highest_key_score = 0`, `remaining_votes = 6 < 7` \u2192 `break`. `error_scores = {NetworkError: 2, InactiveChain: 2}`, neither reaches validity 4, so lines 205-208 return `CommunicationError::Sample` \u2192 `client/mod.rs:1531` converts it to a hard `Err`, and `prepare_chain` (`client/mod.rs:972`) / `synchronize_from_validators` (`client/mod.rs:2337`) fail. Old code: `end_time = now + 0.2\u00b7(detection time)`; V5, V6 (both `InactiveChain`) complete inside that window \u2192 weight 4 \u2265 validity \u2192 line 169 returns `Trusted(InactiveChain)` \u2192 `client/mod.rs:1526-1530` matches and returns `Ok(())`, the intended benign \"chain is deactivated, nothing to sync\" path. With identical validator responses and states, the call now succeeds or fails depending on response arrival order, and the reported error variant (`Sample`/`NoConsensus` vs `Trusted`) is decided by whichever \u2308total/3\u2309-weight of responses happened to land first, not by the validators' actual consensus of errors.\n\n## Defect 2 \u2014 default grace period silently halved for every caller\n\n**File/line:** `linera-core/src/updater.rs:36` (hunk `@@ -31,9 +31,9 @@`)\n\n`DEFAULT_GRACE_PERIOD` is changed 0.2 \u2192 0.1, and every existing call site passes `None` (`client/mod.rs:1114, 1150, 1521, 1679`), so no caller opts into anything \u2014 all four silently wait half as long after a quorum to gather \"more values\". The new parameter is dead configurability; the behavioral change is a tuning regression applied unilaterally. The two halves of the old grace mechanism are thereby both weakened by this PR: the no-quorum half is removed entirely (Defect 1) and the post-quorum half is halved here.\n\n**Concrete failure scenario:** `communicate_chain_action` (`client/mod.rs:1137`) \u2014 validators reach quorum in ~100 ms, so the extra-vote window shrinks from 20 ms to 10 ms. Votes from validators whose responses land in the 10-20 ms band are discarded; the `LiteCertificate::try_from_votes(votes)` built at `client/mod.rs:1161` is systematically thinner (fewer signers) than before, and the certificate broadcast to the remaining validators in later rounds carries signatures from a smaller set than the code was tuned to collect. There is no correctness break (quorum weight is already assured when `end_time` is set at line 180-181), but the margin the constant was calibrated for is halved without any caller's consent, compounding Defect 1: the diff's own new comment at lines 178-179 still promises to \"collect more values or error information\", while the error-information half no longer exists and the value-collection half is cut in half.**Defects found:**\n\n---",
         "path": "linera-core/src/updater.rs",
-        "start_line": 173,
-        "end_line": 173,
-        "observation_id": "d133c0288a2b281d",
-        "claimed_path": "File/line",
-        "path_resolution": "relocated",
+        "start_line": 174,
+        "end_line": 174,
+        "observation_id": "abaef62e9880f398",
+        "claimed_path": "linera-core/src/updater.rs",
+        "path_resolution": "exact",
         "merged_from": [
-          "98ebc5387f25d8ee",
-          "f5899ef7d8ba18df"
+          "8326d65d80d002e1",
+          "5e119804c47bd4be",
+          "3983f31fa9aee857"
         ]
       },
       {
@@ -19,7 +20,7 @@
         "path": "linera-core/src/node.rs",
         "start_line": 205,
         "end_line": 205,
-        "observation_id": "a23726150b188dec",
+        "observation_id": "b8d61859540043cd",
         "claimed_path": "linera-core/src/node.rs",
         "path_resolution": "exact",
         "merged_from": []
@@ -29,11 +30,11 @@
         "path": "linera-core/src/updater.rs",
         "start_line": 173,
         "end_line": 173,
-        "observation_id": "8ba5d1646ed54e3d",
+        "observation_id": "35f1f9ba4ab4ce48",
         "claimed_path": "linera-core/src/updater.rs",
         "path_resolution": "exact",
         "merged_from": [
-          "3bf81437605bd943"
+          "a3a8f8ba77376730"
         ]
       },
       {
@@ -41,7 +42,7 @@
         "path": "linera-core/src/updater.rs",
         "start_line": 36,
         "end_line": 36,
-        "observation_id": "bdafca1b9cea519c",
+        "observation_id": "d9f198fc2d0a006b",
         "claimed_path": "linera-core/src/updater.rs",
         "path_resolution": "exact",
         "merged_from": []
@@ -49,6 +50,6 @@
     ]
   },
   "rundir": "/home/mjarnold/.cache/llm-panel/runs/linera-io__linera-protocol__024925d-dd7910529348/20260827-130214-2351914",
-  "extractor": "2",
+  "extractor": "3",
   "unlocated": []
 }

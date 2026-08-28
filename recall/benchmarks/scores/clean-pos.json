@@ -1,6 +1,6 @@
 {
   "ex_info": {
-    "start_time": "2026-08-26T10:38:21.515687",
+    "start_time": "2026-08-28T11:49:51.239503",
     "results_dir": "/home/mjarnold/llm-panel/recall/benchmarks/results-clean-3judge/pos",
     "reviewer": "llm-panel",
     "line_k": 1,
@@ -13,15 +13,15 @@
     "evaluated_instances": 18,
     "missing_instances": 0,
     "expected_notes": 123,
-    "generated_notes": 78,
-    "matched_line_notes": 25,
-    "matched_semantic_notes": 13,
-    "semantic_match_rate": 0.167,
-    "line_match_rate": 0.321,
-    "semantic_recall_rate": 0.106,
-    "line_recall_rate": 0.203,
-    "semantic_f1": 0.13,
-    "line_f1": 0.249,
+    "generated_notes": 91,
+    "matched_line_notes": 28,
+    "matched_semantic_notes": 15,
+    "semantic_match_rate": 0.165,
+    "line_match_rate": 0.308,
+    "semantic_recall_rate": 0.122,
+    "line_recall_rate": 0.228,
+    "semantic_f1": 0.14,
+    "line_f1": 0.262,
     "total_duration_seconds": 0.0,
     "avg_duration_seconds": 0.0,
     "total_input_tokens": 0,
@@ -667,7 +667,7 @@
           "to_line": 245,
           "line_match": false,
           "semantic_match": true,
-          "matched_note": "**File: `src/Mod/TechDraw/App/DrawViewPart.h` (lines 242-244)**\n**File: `src/Mod/TechDraw/App/DrawViewPart.cpp` (lines 1501, 1514, 1527)**\n\nThe header declares three methods as `static` with an `App::DocumentObject* owner` parameter:\n```cpp\nstatic bool isCosmeticVertex(App::DocumentObject* owner, std::string element);\nstatic bool isCosmeticEdge(App::DocumentObject* owner, std::string element);\nstatic bool isCenterLine(App::DocumentObject* owner, std::string element);\n```\n\nBut the `.cpp` defines them as non-static member functions **without** the `owner` parameter:\n```cpp\nbool DrawViewPart::isCosmeticVertex(std::string element)  // missing static, missing owner\nbool DrawViewPart::isCosmeticEdge(std::string element)\nbool DrawViewPart::isCenterLine(std::string element)\n```\n\n**Failure scenario:** Any compilation unit including `DrawViewPart.h` and calling these methods (e.g., `DrawViewPart::isCosmeticVertex(obj, \"Vertex1\")`) will fail to link — the declared symbols don't match the defined symbols. The code will not compile/link."
+          "matched_note": "- `src/Mod/TechDraw/App/DrawViewPart.h:243` — The three methods are declared `static` with `(App::DocumentObject*, std::string)`, but their definitions at `DrawViewPart.cpp:1503`, `1514`, and `1524` are non-static one-argument members. Building `DrawViewPart.cpp` therefore fails with “no declaration matches” errors for all three definitions."
         }
       ]
     },
@@ -737,9 +737,9 @@
           "side": "right",
           "from_line": 94,
           "to_line": 94,
-          "line_match": false,
-          "semantic_match": false,
-          "matched_note": ""
+          "line_match": true,
+          "semantic_match": true,
+          "matched_note": "- `kvcache/encoder.go:94` (indexes `batch.Positions.Ints()` with `MultimodalIndex.Index`)"
         },
         {
           "note": "Potential issue: `batch.Positions.Ints()` is called inside the unwind loop. If `Ints()` materializes/copies tensor data, this can be unnecessarily expensive (and potentially unsafe if it depends on ctx/lifetime). Also you iterate `range curPositions` but index `batch.Sequences[k]`; this assumes `len(batch.Sequences)==len(curPositions)`—consider validating once or using a shared length variable.\n\nSuggestion: hoist `curPositions := batch.Positions.Ints()` outside the `for j := ...` loop and iterate up to `min(len(batch.Sequences), len(curPositions))` (or assert equality).\n\n```suggestion\n\t\t\tcurPositions := batch.Positions.Ints()\n\t\t\tfor j := i - 1; j >= 0; j-- {\n\t\t\t\t// assuming sequences and positions align\n\t\t\t\tfor k := 0; k < len(curPositions) && k < len(batch.Sequences); k++ {\n\t\t\t\t\t_ = c.caches[j].Remove(batch.Sequences[k], curPositions[k], math.MaxInt32)\n\t\t\t\t}\n\t\t\t}\n```",
@@ -747,9 +747,9 @@
           "side": "right",
           "from_line": 49,
           "to_line": 54,
-          "line_match": false,
-          "semantic_match": false,
-          "matched_note": ""
+          "line_match": true,
+          "semantic_match": true,
+          "matched_note": "- `kvcache/wrapper.go:50-54` (loops `curPositions` and indexes `batch.Sequences[k]`)\n\n**Failure Scenario:**\n`model.Forward` validates `batch.Positions.Dim(0) == len(batch.Sequences)` at `model/model.go:285`, but `kvcache.Cache.StartForward` is a public interface. Direct calls (e.g., from tests, custom pipelines, or future code) with mismatched lengths cause index out of bounds panic.\n\n**Concrete Input → Wrong Behavior:**\n- Input: `batch.Positions` tensor with 5 elements, `batch.Sequences` with 3 elements\n- `causal.StartForward` → `c.curPositions` has 5 elements, loop runs 5 times → `batch.Sequences[3]` panic at iteration 3\n\n---\n\n**DEFECT 3: `testTensor.Ints()` truncates/rounds `float32` data to `int32`**\n\n**File & Line (from diff hunk header):**"
         },
         {
           "note": "Adding `Ints() []int32` to the `Tensor` interface is an API-breaking change: all concrete tensor implementations and any test fakes/mocks must implement it or compilation will fail. Please ensure every backend/wrapper that implements `Tensor` is updated, and define expected behavior when the underlying tensor dtype is not int32 (e.g., return nil, convert, or panic) to keep implementations consistent.",
@@ -1363,7 +1363,7 @@
           "side": "right",
           "from_line": 653,
           "to_line": 653,
-          "line_match": false,
+          "line_match": true,
           "semantic_match": false,
           "matched_note": ""
         }

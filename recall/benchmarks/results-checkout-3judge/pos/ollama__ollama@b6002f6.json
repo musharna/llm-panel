@@ -2,50 +2,180 @@
   "review": {
     "comments": [
       {
-        "content": "### 1. HIGH: `outputs != nil` check fails for empty tensors \u2014 causes `Rows` to be called with empty indices\n\n**Files & Lines:**\n- `model/models/llama/model.go:140`\n- `model/models/qwen2/model.go:78`\n- `model/models/qwen25vl/model_text.go:115`\n- `model/models/mistral3/model_text.go:87`\n- `model/models/llama4/model_text.go:138`\n- `model/models/qwen3/model.go:131`\n- `model/models/gemma2/model.go:163`\n- `model/models/gemma3/model_text.go:148`\n- `model/models/gptoss/model.go:94`\n- `model/models/mllama/model_text.go:81`\n\n**Failure Scenario:**\nPreviously, `batch.Outputs` was a `[]int32` slice. The model's `Forward` only created an outputs tensor when `len(batch.Outputs) > 0`:\n```go\nif len(batch.Outputs) > 0 && i == len(m.Layers)-1 {\n    outputs = ctx.Input().FromIntSlice(batch.Outputs, len(batch.Outputs))\n}\n```\nOtherwise `outputs` remained `nil`, and the layer's `if outputs != nil` guard skipped the `Rows` call.\n\nNow `batch.Outputs` is **always** a tensor (created via `FromIntSlice` or `Arange` in `runner/ollamarunner/runner.go:583,1070`), even when empty (`Dim(0) == 0`). The layer's `if outputs != nil` check passes, `Rows(ctx, outputs)` is called with an empty indices tensor, and `ggml_get_rows` receives a zero-length indices tensor \u2014 likely causing a crash or silent corruption.\n\n**Concrete Input \u2192 Wrong Behavior:**\n- Runner builds a batch where no sequence is at its final token (`batchOutputs` slice is empty)\n- `batch.Outputs = ctx.Input().FromIntSlice([], 0)` creates a valid but empty tensor\n- Last layer executes `hiddenState.Rows(ctx, emptyTensor)` \u2192 `ggml_get_rows` with empty indices\n\n---\n\n### 2. MEDIUM: No validation that `Positions`/`Outputs` tensors are 1D \u2014 multi-dimensional tensors cause OOB access",
+        "content": "- `model/models/llama/model.go:140`",
         "path": "model/models/llama/model.go",
         "start_line": 140,
         "end_line": 140,
-        "observation_id": "9b9ca2720dd95ceb",
-        "claimed_path": null,
-        "path_resolution": "relocated",
-        "merged_from": [
-          "48aa883aebe54508",
-          "8ce984c88190e868",
-          "a76ba4ed7f76948f",
-          "a2da7825010a217d"
-        ]
+        "observation_id": "6a46ba6e9df950dc",
+        "claimed_path": "model/models/llama/model.go",
+        "path_resolution": "exact",
+        "merged_from": []
       },
       {
-        "content": "**Files & Lines:**\n- `model/model.go:285` (validation only checks `Dim(0)`)\n- `kvcache/causal.go:203,221` (uses `len(c.curPositions)` vs `batch.Sequences[i]`)\n- `kvcache/encoder.go:94` (indexes `Ints()[index]` assuming flat 1D)\n- `kvcache/wrapper.go:50-52` (iterates `curPositions` vs `batch.Sequences[k]`)\n- `model/models/llama4/model_text.go:221-223` (allocates `Dim(0)` but iterates `Ints()`)\n\n**Failure Scenario:**\nThe validation `batch.Positions.Dim(0) != len(batch.Sequences)` only checks the first dimension. If a caller passes a 2D tensor `[batch, seq]`, `Dim(0)` matches `len(Sequences)` but `Ints()` returns `batch*seq` elements. The causal cache then iterates `batch*seq` times while indexing `batch.Sequences[i]`, causing panic or memory corruption.",
+        "content": "- `model/models/qwen2/model.go:78`",
+        "path": "model/models/qwen2/model.go",
+        "start_line": 78,
+        "end_line": 78,
+        "observation_id": "4940dc21317cae8c",
+        "claimed_path": "model/models/qwen2/model.go",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "- `model/models/qwen25vl/model_text.go:115`",
+        "path": "model/models/qwen25vl/model_text.go",
+        "start_line": 115,
+        "end_line": 115,
+        "observation_id": "d9803c136112d721",
+        "claimed_path": "model/models/qwen25vl/model_text.go",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "- `model/models/mistral3/model_text.go:87`",
+        "path": "model/models/mistral3/model_text.go",
+        "start_line": 87,
+        "end_line": 87,
+        "observation_id": "f243e600be970d37",
+        "claimed_path": "model/models/mistral3/model_text.go",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "- `model/models/llama4/model_text.go:138`",
+        "path": "model/models/llama4/model_text.go",
+        "start_line": 138,
+        "end_line": 138,
+        "observation_id": "7d0281336c46b567",
+        "claimed_path": "model/models/llama4/model_text.go",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "- `model/models/qwen3/model.go:131`",
+        "path": "model/models/qwen3/model.go",
+        "start_line": 131,
+        "end_line": 131,
+        "observation_id": "a3970a1550e98cd7",
+        "claimed_path": "model/models/qwen3/model.go",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "- `model/models/gemma2/model.go:163`",
+        "path": "model/models/gemma2/model.go",
+        "start_line": 163,
+        "end_line": 163,
+        "observation_id": "f2fe50e3bafe4fd5",
+        "claimed_path": "model/models/gemma2/model.go",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "- `model/models/gemma3/model_text.go:148`",
+        "path": "model/models/gemma3/model_text.go",
+        "start_line": 148,
+        "end_line": 148,
+        "observation_id": "68268f7f49bf5cea",
+        "claimed_path": "model/models/gemma3/model_text.go",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "- `model/models/gptoss/model.go:94`",
+        "path": "model/models/gptoss/model.go",
+        "start_line": 94,
+        "end_line": 94,
+        "observation_id": "33e00bc4986011ad",
+        "claimed_path": "model/models/gptoss/model.go",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "- `model/model.go:285` (validation only checks `Dim(0)`)",
         "path": "model/model.go",
         "start_line": 285,
         "end_line": 285,
-        "observation_id": "19e4e1a0a84425d5",
+        "observation_id": "d2869b9e78c60734",
         "claimed_path": "model/model.go",
         "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "- `kvcache/causal.go:203,221` (uses `len(c.curPositions)` vs `batch.Sequences[i]`)",
+        "path": "kvcache/causal.go",
+        "start_line": 203,
+        "end_line": 203,
+        "observation_id": "794c523d2952ab71",
+        "claimed_path": "kvcache/causal.go",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "- `kvcache/encoder.go:94` (indexes `Ints()[index]` assuming flat 1D)",
+        "path": "kvcache/encoder.go",
+        "start_line": 94,
+        "end_line": 94,
+        "observation_id": "7768ae703053a8d3",
+        "claimed_path": "kvcache/encoder.go",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "- `kvcache/wrapper.go:50-52` (iterates `curPositions` vs `batch.Sequences[k]`)",
+        "path": "kvcache/wrapper.go",
+        "start_line": 50,
+        "end_line": 50,
+        "observation_id": "8c6f2512ae8a8293",
+        "claimed_path": "kvcache/wrapper.go",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "- `model/models/llama4/model_text.go:221-223` (allocates `Dim(0)` but iterates `Ints()`)\n\n**Failure Scenario:**\nThe validation `batch.Positions.Dim(0) != len(batch.Sequences)` only checks the first dimension. If a caller passes a 2D tensor `[batch, seq]`, `Dim(0)` matches `len(Sequences)` but `Ints()` returns `batch*seq` elements. The causal cache then iterates `batch*seq` times while indexing `batch.Sequences[i]`, causing panic or memory corruption.\n\n**Concrete Input \u2192 Wrong Behavior:**\n- Caller constructs `Positions` as 2D tensor shape `[2, 3]` (6 elements) with `Sequences` length 2\n- Validation passes: `Dim(0)=2 == len(Sequences)=2`",
+        "path": "model/models/llama4/model_text.go",
+        "start_line": 221,
+        "end_line": 221,
+        "observation_id": "6bf0eff2114c2ee9",
+        "claimed_path": "model/models/llama4/model_text.go",
+        "path_resolution": "exact",
         "merged_from": [
-          "bb9125ad93c0cdaf"
+          "de9d9b0b1c226dd0",
+          "3b7ee903d6dd8117"
         ]
       },
       {
-        "content": "**Concrete Input \u2192 Wrong Behavior:**\n- Caller constructs `Positions` as 2D tensor shape `[2, 3]` (6 elements) with `Sequences` length 2\n- Validation passes: `Dim(0)=2 == len(Sequences)=2`\n- `causal.go:221` loops 6 times, `batch.Sequences[2]` panics (index out of range)\n\n---\n\n### 3. LOW: `gemma3/embed.go` assigns `Outputs = Positions` \u2014 propagates multi-dimensional shape to `Rows`\n\n**File & Line:**\n- `model/models/gemma3/embed.go:25`\n\n**Failure Scenario:**\nIf `Positions` is multi-dimensional (defect #2), `Outputs` becomes the same multi-dimensional tensor. The TextModel's last layer calls `hiddenStates.Rows(ctx, batch.Outputs)` with a non-1D indices tensor, which `ggml_get_rows` likely rejects.\n\n---\n\n### Summary of Fixes Needed\n\n| Defect | Fix |\n|--------|-----|\n| #1 | Change all `if outputs != nil` \u2192 `if outputs != nil && outputs.Dim(0) > 0` in layer `Forward` methods |\n| #2 | Add validation in `model.Forward`: `if batch.Positions.Dim(0) != len(batch.Positions.Ints()) { return error }` (or require 1D via shape check) |\n| #3 | In `gemma3/embed.go`, ensure `Outputs` is 1D: `batch.Outputs = batch.Positions.Reshape(ctx, -1)` or validate shape |",
+        "content": "- `causal.go:221` loops 6 times, `batch.Sequences[2]` panics (index out of range)\n\n---\n\n### 3. LOW: `gemma3/embed.go` assigns `Outputs = Positions` \u2014 propagates multi-dimensional shape to `Rows`\n\n**File & Line:**\n- `model/models/gemma3/embed.go:25`\n\n**Failure Scenario:**\nIf `Positions` is multi-dimensional (defect #2), `Outputs` becomes the same multi-dimensional tensor. The TextModel's last layer calls `hiddenStates.Rows(ctx, batch.Outputs)` with a non-1D indices tensor, which `ggml_get_rows` likely rejects.\n\n---\n\n### Summary of Fixes Needed\n\n| Defect | Fix |\n|--------|-----|\n| #1 | Change all `if outputs != nil` \u2192 `if outputs != nil && outputs.Dim(0) > 0` in layer `Forward` methods |\n| #2 | Add validation in `model.Forward`: `if batch.Positions.Dim(0) != len(batch.Positions.Ints()) { return error }` (or require 1D via shape check) |\n| #3 | In `gemma3/embed.go`, ensure `Outputs` is 1D: `batch.Outputs = batch.Positions.Reshape(ctx, -1)` or validate shape |",
         "path": "kvcache/causal.go",
         "start_line": 221,
         "end_line": 221,
-        "observation_id": "718753220586eef8",
+        "observation_id": "f911c0dd8266d8c4",
         "claimed_path": "causal.go",
         "path_resolution": "basename",
         "merged_from": [
-          "bba6b316026a159c",
-          "ff7f2976f29ce0c8",
-          "4d0eb79017f8d278",
-          "9324283f27472317"
+          "1bb1ac1ab8f4354a",
+          "e0c717ee375e7af8",
+          "a986450cb4881a16",
+          "9b76eab2466230e2",
+          "d0861263f8316da1"
         ]
       }
     ]
   },
   "rundir": "/home/mjarnold/.cache/llm-panel/runs/ollama__ollama__b6002f6-a7399e8aa527/20260828-004235-718920",
-  "extractor": "2",
-  "unlocated": []
+  "extractor": "3",
+  "unlocated": [
+    {
+      "content": "### 1. HIGH: `outputs != nil` check fails for empty tensors \u2014 causes `Rows` to be called with empty indices\n\n**Files & Lines:**",
+      "observation_id": "bdfba128028ae577",
+      "claimed_path": null,
+      "path_resolution": "absent"
+    },
+    {
+      "content": "- `model/models/mllama/model_text.go:81`\n\n**Failure Scenario:**\nPreviously, `batch.Outputs` was a `[]int32` slice. The model's `Forward` only created an outputs tensor when `len(batch.Outputs) > 0`:\n```go\nif len(batch.Outputs) > 0 && i == len(m.Layers)-1 {\n    outputs = ctx.Input().FromIntSlice(batch.Outputs, len(batch.Outputs))\n}\n```\nOtherwise `outputs` remained `nil`, and the layer's `if outputs",
+      "observation_id": "ad91be69edb0276c",
+      "claimed_path": "model/models/mllama/model_text.go",
+      "path_resolution": "ambiguous"
+    }
+  ]
 }

@@ -1,5 +1,35 @@
 # Checkout 3-judge run — the same panel, standing in the repository
 
+## ⚠️ Re-measured under extractor 3 (2026-08-28) — quote this table, not the ones below
+
+Extractor 2 did not recognise a **plain** bullet opening with `path:line` — codex's house
+style, no bold — as a finding. Measured over the finished arms: 13 clean-arm reviews and 12
+checkout-arm reviews contributed *zero* findings while holding located items; the broad
+arm lost none (its judges wrote bold headers). The instrument's blind spot varied with the
+condition. Fix in `claimlib` (`_LOCATED_BULLET`, extractor 3; control 5.9 seen failing on
+extractor 2). Every arm was re-extracted from its recorded run dirs and re-scored with the
+same upstream judge — `judge failures during scoring: 0` on all sides. The tables further
+down are extractor-2 figures, kept for the record.
+
+| positive (123 refs) | findings 2→3 | semantic matches 2→3 | semantic recall | precision |
+| ------------------- | -----------: | -------------------: | --------------: | --------: |
+| clean               |      78 → 91 |              13 → 15 |       **12.2%** |     16.5% |
+| checkout            |    126 → 157 |              19 → 19 |           15.4% |     12.1% |
+| broad               |    235 → 243 |              32 → 32 |           26.0% |     13.2% |
+
+Negative (36 rejected refs): clean 29 → 46 findings, **1 → 4 matches (2.8% → 11.1%)**;
+checkout 65 → 69, 4 → 5 (13.9%); broad 156, 6 (16.7%).
+
+Paired tests on the same 123 references (`../../aacr-mcnemar`): broad vs clean McNemar
+**p = 0.0005** (20 gained / 3 lost) — stands. Checkout vs clean **p = 0.48** (11 gained /
+7 lost) — weaker than the 0.21 reported below. The clean arm's "valid-vs-rejected 3.80×,
+p = 0.194" is **withdrawn**: 12.2% vs 11.1%, ratio 1.10, Fisher p = 1.0 — the recovered
+bullets matched rejected comments at the same rate as accepted ones.
+
+Restated: 15 → 19 of 123 (12.2% → 15.4%), 11 gained / **7 lost**, McNemar p = 0.48;
+findings 91 → 157 at precision 16.5% → 12.1%. The checkout arm's own numbers did not move;
+the clean arm it is paired against recovered two matches.
+
 The paired repo-access arm of the clean run. Same 18+9 instances, same roster
 (codex + big-pickle + nemotron), same defect prompt, effort high, timeout 900s, same
 upstream judge (`anthropic/claude-opus-4.5`, `judge failures during scoring: 0` both

@@ -2,11 +2,71 @@
   "review": {
     "comments": [
       {
+        "content": "- `pkg/blockcontroller/blockcontroller.go:354` \u2014 Command blocks store `cmd:env` only in the swap token, but the `cmdStr != \"\"` launch path never exchanges that token. For example, `FOO=bar wsh run -- sh -c 'echo $FOO'` creates the captured env file but prints an empty value instead of `bar`.",
+        "path": "pkg/blockcontroller/blockcontroller.go",
+        "start_line": 354,
+        "end_line": 354,
+        "observation_id": "c40ed2476bb34175",
+        "claimed_path": "pkg/blockcontroller/blockcontroller.go",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "- `pkg/blockcontroller/blockcontroller.go:406` \u2014 A transient `RemoteGetInfoCommand` timeout now aborts startup before the existing no-WSH fallback can run. A healthy SSH/WSL connection whose connserver takes over two seconds to answer therefore opens no terminal, even though the underlying connection could start a plain shell.",
+        "path": "pkg/blockcontroller/blockcontroller.go",
+        "start_line": 406,
+        "end_line": 406,
+        "observation_id": "f459d00fc6a71707",
+        "claimed_path": "pkg/blockcontroller/blockcontroller.go",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "- `pkg/blockcontroller/blockcontroller.go:544` \u2014 The SSH branch checks `conn.WshEnabled` instead of the computed `connUnion.WshEnabled`. With an installed WSH connection and block metadata `cmd:nowsh=true`, the block still receives credentials and starts through WSH; authenticated commands such as `wsh getmeta` remain available despite WSH being explicitly disabled.",
+        "path": "pkg/blockcontroller/blockcontroller.go",
+        "start_line": 544,
+        "end_line": 544,
+        "observation_id": "bd300a9a2e0c0f6a",
+        "claimed_path": "pkg/blockcontroller/blockcontroller.go",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "- `pkg/blockcontroller/blockcontroller.go:401` \u2014 Disabling WSH returns before resolving the local shell path. With system shell `/bin/bash`, `cmd:nowsh=true`, and `term:localshellpath=/usr/bin/fish`, the block starts Bash instead of Fish.",
+        "path": "pkg/blockcontroller/blockcontroller.go",
+        "start_line": 401,
+        "end_line": 401,
+        "observation_id": "9bda7a792c3bb7af",
+        "claimed_path": "pkg/blockcontroller/blockcontroller.go",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "- `pkg/blockcontroller/blockcontroller.go:412` \u2014 Custom initialization scripts are selected using only the remotely detected shell, while actual startup still gives `conn:shellpath` precedence. If the remote reports Bash but the connection config selects Fish, `cmd:initscript.fish` is omitted and a Bash-specific script may be sent to the Fish session.",
+        "path": "pkg/blockcontroller/blockcontroller.go",
+        "start_line": 412,
+        "end_line": 412,
+        "observation_id": "74f66287a66c93f8",
+        "claimed_path": "pkg/blockcontroller/blockcontroller.go",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "- `pkg/blockcontroller/blockcontroller.go:269` \u2014 `resolveEnvMap` ignores its `connName` argument and never reads `GetConnectionOverride`. For metadata containing `\"[user@host]\": {\"cmd:env\": {\"REGION\": \"remote\"}}`, a shell connected to `user@host` starts without `REGION=remote`.",
+        "path": "pkg/blockcontroller/blockcontroller.go",
+        "start_line": 269,
+        "end_line": 269,
+        "observation_id": "8178c7be33eb1efb",
+        "claimed_path": "pkg/blockcontroller/blockcontroller.go",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
         "content": "**1. `cmd:nowsh` local blocks silently lose all user-defined env (and configured shell path)**\n- File: `pkg/shellexec/shellexec.go` (diff hunk `@@ -557,7 +550,6 @@`) and `pkg/blockcontroller/blockcontroller.go` (hunks `@@ -314,14 +351,120 @@`, `@@ -461,25 +579,15 @@`; new-file lines 354-360, 572-582, 400-415).\n- The env file + `cmd:env` are now carried *only* in `swapToken.Env` (`makeSwapToken`, blockcontroller.go:354-360), and the sole application path is the rcfile calling `wsh token \"$WAVETERM_SWAPTOKEN\"`. That command requires `SockName` + `RpcContext` in the token (`wshcmd-root.go:144-149`), which are set only when `connUnion.WshEnabled` is true. For a local block with `cmd:nowsh: true`, WshEnabled is false, the token has no sockname, `wsh token` fails with stderr suppressed (`2>/dev/null` in BashStartup_Bashrc), and the env is never applied. The old code applied it directly (`shellutil.UpdateCmdEnv(ecmd, cmdOpts.Env)` \u2014 removed in this diff). Same mechanism drops the configured `TermLocalShellPath`: `getRemoteInfoAndShellType` returns early at line 401 when `!WshEnabled`, so `connUnion.ShellPath` stays `\"\"` and the nowsh local shell silently launches the default detected shell instead of the user's configured one.\n- Failure scenario: local cmd block with meta `{\"cmd\": \"deploy.sh\", \"cmd:nowsh\": true, \"cmd:env\": {\"FOO\": \"bar\"}}` (or env-file contents) \u2192 shell starts, `FOO` is unset, script misbehaves, and nothing in the terminal indicates env was dropped.",
         "path": "pkg/shellexec/shellexec.go",
         "start_line": 354,
         "end_line": 354,
-        "observation_id": "d59d06fd3db8f9cc",
+        "observation_id": "d17b0d702ec20949",
         "claimed_path": "pkg/shellexec/shellexec.go",
         "path_resolution": "exact",
         "merged_from": []
@@ -16,7 +76,7 @@
         "path": "pkg/blockcontroller/blockcontroller.go",
         "start_line": 544,
         "end_line": 544,
-        "observation_id": "0854759d2d2b485b",
+        "observation_id": "0efe4a1fe759f9cb",
         "claimed_path": "pkg/blockcontroller/blockcontroller.go",
         "path_resolution": "exact",
         "merged_from": []
@@ -26,7 +86,7 @@
         "path": "pkg/blockcontroller/blockcontroller.go",
         "start_line": 406,
         "end_line": 406,
-        "observation_id": "8d00cc904d0f507b",
+        "observation_id": "c4f446a05065cd0e",
         "claimed_path": "pkg/blockcontroller/blockcontroller.go",
         "path_resolution": "exact",
         "merged_from": []
@@ -36,7 +96,7 @@
         "path": "pkg/waveobj/wtypemeta.go",
         "start_line": 53,
         "end_line": 53,
-        "observation_id": "f998cc15c8d0fd58",
+        "observation_id": "d6feb79bdcf3f34c",
         "claimed_path": "pkg/waveobj/wtypemeta.go",
         "path_resolution": "exact",
         "merged_from": []
@@ -46,11 +106,11 @@
         "path": "pkg/blockcontroller/blockcontroller.go",
         "start_line": 354,
         "end_line": 354,
-        "observation_id": "d2d82c626178ed09",
+        "observation_id": "54b2573c043cb881",
         "claimed_path": "pkg/blockcontroller/blockcontroller.go",
         "path_resolution": "exact",
         "merged_from": [
-          "cb2359c29c26f035"
+          "7f516a7e70f66420"
         ]
       },
       {
@@ -58,7 +118,7 @@
         "path": "pkg/shellexec/shellexec.go",
         "start_line": 258,
         "end_line": 258,
-        "observation_id": "2eb3dbd20a8fb615",
+        "observation_id": "e2f56eedadc73c2d",
         "claimed_path": "pkg/shellexec/shellexec.go",
         "path_resolution": "exact",
         "merged_from": []
@@ -68,11 +128,11 @@
         "path": "pkg/shellexec/shellexec.go",
         "start_line": 427,
         "end_line": 427,
-        "observation_id": "da9d36315f66f72c",
+        "observation_id": "ca4c6182d68191af",
         "claimed_path": "pkg/shellexec/shellexec.go",
         "path_resolution": "exact",
         "merged_from": [
-          "23bd19eb4ec6f38e"
+          "5b5a00ec5c45d471"
         ]
       },
       {
@@ -80,11 +140,11 @@
         "path": "pkg/blockcontroller/blockcontroller.go",
         "start_line": 354,
         "end_line": 354,
-        "observation_id": "4921f8f90fe6a5d3",
+        "observation_id": "1c666f8e64670cc0",
         "claimed_path": "pkg/blockcontroller/blockcontroller.go",
         "path_resolution": "exact",
         "merged_from": [
-          "0804c2b32cbfbc5f"
+          "438c0c16f2a66edd"
         ]
       },
       {
@@ -92,7 +152,7 @@
         "path": "pkg/blockcontroller/blockcontroller.go",
         "start_line": 286,
         "end_line": 286,
-        "observation_id": "5e709005fd00ecdb",
+        "observation_id": "c8c6ee26b049f6b8",
         "claimed_path": "pkg/blockcontroller/blockcontroller.go",
         "path_resolution": "exact",
         "merged_from": []
@@ -100,6 +160,6 @@
     ]
   },
   "rundir": "/home/mjarnold/.cache/llm-panel/runs/wavetermdev__waveterm__90a57d5-b94594d0730e/20260827-124519-2221946",
-  "extractor": "2",
+  "extractor": "3",
   "unlocated": []
 }

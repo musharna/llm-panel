@@ -213,11 +213,13 @@ nothing.
   other languages or to defect classes the corpus doesn't contain.
 - **On real PRs, what you ask for determines what you get.** Scored by
   [AACR-Bench](https://github.com/alibaba/aacr-bench)'s **own** evaluator with a real LLM
-  judge, on 18 PRs at full roster: the shipped `defect` prompt scores **10.6% semantic
-  recall / 16.7% precision**, and a `broad` prompt asking for what a careful maintainer
-  would actually raise scores **26.0% / 13.6%** — 2.46x the recall for a slightly lower hit
-  rate and 3x the output. That gain is exactly volume: findings x3.01, precision x0.82
-  (McNemar on the paired references, p = 0.0001).
+  judge, on 18 PRs at full roster: the shipped `defect` prompt scores **12.2% semantic
+  recall / 16.5% precision**, and a `broad` prompt asking for what a careful maintainer
+  would actually raise scores **26.0% / 13.2%** — 2.13x the recall for a slightly lower hit
+  rate and 2.7x the output. That gain is exactly volume: findings x2.67, precision x0.80
+  (McNemar on the paired references, p = 0.0005). Figures are extractor-3 re-measurements
+  (2026-08-28); extractor 2 silently dropped plain `- path:line` bullets, and the loss fell
+  on the `defect` arms, not `broad`.
   An earlier version of this bullet split recall by a DEFECT/IMPROVEMENT classifier I
   wrote; that split was circular and is withdrawn — on the benchmark's own `category`
   field the `defect` prompt recalls both classes at the same rate. The default stays
@@ -228,24 +230,25 @@ nothing.
   are diff-in-prompt review. A reviewer with the checkout — as the benchmark's own
   reviewers have — can see callers, tests and history that these judges cannot.
   The paired repo-access arm (`--cwd-mode checkout`, same instances and roster) puts the
-  judges in a shallow checkout of the PR head: recall moves 10.6% → 15.4% (13 → 19 of the
-  same 123 references) but McNemar p = 0.21, and the checkout **loses 5** of the clean
+  judges in a shallow checkout of the PR head: recall moves 12.2% → 15.4% (15 → 19 of the
+  same 123 references) but McNemar p = 0.48, and the checkout **loses 7** of the clean
   arm's matches while gaining 11 — repo access changes what judges attend to rather than
-  strictly adding. Findings rise 78 → 126 at roughly flat precision, sitting between the
+  strictly adding. Findings rise 91 → 157 at precision 16.5% → 12.1%, sitting between the
   clean and broad arms on every axis. See
   `recall/benchmarks/results-checkout-3judge/README.md`.
-- **Location agreement overstates semantic agreement ~2x.** 20.3% of references had a
-  finding at the right file and line; 10.6% had one a judge called the same concern. A
+- **Location agreement overstates semantic agreement ~2x.** 22.8% of references had a
+  finding at the right file and line; 12.2% had one a judge called the same concern. A
   location-based matcher cannot detect that gap about itself, which is why scoring is
   delegated upstream.
 - **A degraded roster costs about half the recall.** The same sample with one judge's quota
   spent and a 300s timeout scores 5.7% semantic recall against 10.6% — same extractor, so
   only roster and timeout differ. Two instances returned nothing at 300s purely by hitting
   the cap while holding 20 of the 123 references.
-- **Do not read the valid-vs-rejected gap as discrimination.** The panel matched 10.6% of
-  accepted review comments and 2.8% of _rejected_ ones — 3.80x, but Fisher exact
-  **p = 0.194**. It is answerable with a larger negative sample (~138 references per arm
-  against the benchmark's 639 available); it is not answered by this one.
+- **There is no valid-vs-rejected gap to read.** Under extractor 3 the panel matched 12.2%
+  of accepted review comments and 11.1% of _rejected_ ones — ratio 1.10, Fisher exact
+  p = 1.0. (Extractor 2 had reported 3.80x at p = 0.194; the recovered bullets matched
+  rejected comments at the same rate as accepted ones.) The panel does not discriminate
+  comments reviewers accepted from ones they rejected.
 - **Unlocated findings are withheld from upstream, not handed over empty.** Upstream skips
   its path filter when the generated path is falsy and its line filter when the line is
   None, so a location-less comment matches _every_ reference. Passing them through inflated
