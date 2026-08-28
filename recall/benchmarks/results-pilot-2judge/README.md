@@ -1,5 +1,10 @@
 # Pilot run — 2-judge, DEGRADED. Not a headline result.
 
+> **Re-measured under extractor 3 (2026-08-28):** positive 60 findings, 8/123 semantic
+> (6.5%, was 7 / 5.7%); negative 24 findings, 0/36. Installed over `../scores/pilot-*.json`
+> (`judge failures during scoring: 0`). The extractor-2 tables below are kept for the record;
+> see `../results-clean-3judge/README.md` for what extractor 3 changed.
+
 Scored with the UPSTREAM AACR-Bench evaluator (`alibaba/aacr-bench`), real LLM judge
 (`anthropic/claude-opus-4.5` via OpenRouter, outside the panel's own model families).
 `judge failures during scoring: 0` on both arms — asserted by `aacr-score`, not assumed.
