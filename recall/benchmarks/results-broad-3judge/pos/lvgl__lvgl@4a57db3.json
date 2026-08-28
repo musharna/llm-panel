@@ -6,7 +6,7 @@
         "path": "src/draw/lv_draw_label.c",
         "start_line": 221,
         "end_line": 221,
-        "observation_id": "14b6004f9e51697b",
+        "observation_id": "3f153f850b790d63",
         "claimed_path": "src/draw/lv_draw_label.c",
         "path_resolution": "exact",
         "merged_from": []
@@ -16,19 +16,49 @@
         "path": "src/widgets/label/lv_label.c",
         "start_line": 826,
         "end_line": 826,
-        "observation_id": "2df93ee78b799981",
+        "observation_id": "48ffec0458d747d2",
         "claimed_path": "src/widgets/label/lv_label.c",
         "path_resolution": "exact",
         "merged_from": []
       },
       {
-        "content": "**Item 1 \u2014 Wrong result / potential crash (DEFECT)**\n**File:** `src/widgets/label/lv_label.c`, line 968 (in `lv_label_refr_text`)\n**Also affects:** `src/draw/lv_draw_label.c` line 220, `src/widgets/label/lv_label.c` lines 855 and 894\n\n`label->text_size` is assigned from `lv_text_get_size(&size, ..., max_w, ...)` where `max_w` is the label's content width (a constrained value that varies by `long_mode`). However, the three call sites this caching replaces all previously used **`LV_COORD_MAX`** as the width constraint:\n\n- `lv_draw_label.c:220` (the EXPAND branch) \u2014 explicitly needs the **unconstrained** single-line text width to compute how far to scroll.\n- `lv_label.c:855` (scroll/scroll_circular + center/right align offset) \u2014 used `LV_COORD_MAX` to get the full text extent for alignment correction.\n- `lv_label.c:894` (scroll_circular duplicate-draw) \u2014 same.\n\nIf `max_w` in `lv_label_refr_text` is **not** `LV_COORD_MAX` for any of the affected long modes, `label->text_size.x` will be the *clamped* line width rather than the true unclamped width. Consequences:\n- Scroll offset calculations use the wrong width \u2192 text scrolls the wrong distance or clips.\n- Circular scroll duplication at line 894 draws at the wrong offset \u2192 visible gap or overlap.\n\nIf `max_w` happens to always equal `LV_COORD_MAX` for scroll modes in the current LVGL version, the bug is latent but fragile \u2014 any future change to `max_w` selection silently breaks the draw path. Either way, the correct fix is to cache a **separate** unconstrained text size (computed with `LV_COORD_MAX`) for the draw path, or verify/document the invariant that `max_w == LV_COORD_MAX` for all modes that reach these draw sites.",
+        "content": "**Item 1 \u2014 Wrong result / potential crash (DEFECT)**\n**File:** `src/widgets/label/lv_label.c`, line 968 (in `lv_label_refr_text`)\n**Also affects:** `src/draw/lv_draw_label.c` line 220, `src/widgets/label/lv_label.c` lines 855 and 894\n\n`label->text_size` is assigned from `lv_text_get_size(&size, ..., max_w, ...)` where `max_w` is the label's content width (a constrained value that varies by `long_mode`). However, the three call sites this caching replaces all previously used **`LV_COORD_MAX`** as the width constraint:",
         "path": "src/widgets/label/lv_label.c",
         "start_line": 968,
         "end_line": 968,
-        "observation_id": "f498056c15fdd24d",
+        "observation_id": "7e912f1ae48c7b1c",
         "claimed_path": "src/widgets/label/lv_label.c",
         "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "- `lv_draw_label.c:220` (the EXPAND branch) \u2014 explicitly needs the **unconstrained** single-line text width to compute how far to scroll.",
+        "path": "src/draw/lv_draw_label.c",
+        "start_line": 220,
+        "end_line": 220,
+        "observation_id": "e2895534abc1a758",
+        "claimed_path": "lv_draw_label.c",
+        "path_resolution": "basename",
+        "merged_from": []
+      },
+      {
+        "content": "- `lv_label.c:855` (scroll/scroll_circular + center/right align offset) \u2014 used `LV_COORD_MAX` to get the full text extent for alignment correction.",
+        "path": "src/widgets/label/lv_label.c",
+        "start_line": 855,
+        "end_line": 855,
+        "observation_id": "394e2baf8967ec25",
+        "claimed_path": "lv_label.c",
+        "path_resolution": "basename",
+        "merged_from": []
+      },
+      {
+        "content": "- `lv_label.c:894` (scroll_circular duplicate-draw) \u2014 same.\n\nIf `max_w` in `lv_label_refr_text` is **not** `LV_COORD_MAX` for any of the affected long modes, `label->text_size.x` will be the *clamped* line width rather than the true unclamped width. Consequences:\n- Scroll offset calculations use the wrong width \u2192 text scrolls the wrong distance or clips.\n- Circular scroll duplication at line 894 draws at the wrong offset \u2192 visible gap or overlap.\n\nIf `max_w` happens to always equal `LV_COORD_MAX` for scroll modes in the current LVGL version, the bug is latent but fragile \u2014 any future change to `max_w` selection silently breaks the draw path. Either way, the correct fix is to cache a **separate** unconstrained text size (computed with `LV_COORD_MAX`) for the draw path, or verify/document the invariant that `max_w == LV_COORD_MAX` for all modes that reach these draw sites.",
+        "path": "src/widgets/label/lv_label.c",
+        "start_line": 894,
+        "end_line": 894,
+        "observation_id": "8914574eace53724",
+        "claimed_path": "lv_label.c",
+        "path_resolution": "basename",
         "merged_from": []
       },
       {
@@ -36,21 +66,51 @@
         "path": "src/draw/lv_draw_label.h",
         "start_line": 38,
         "end_line": 38,
-        "observation_id": "1ca248773110ea1a",
+        "observation_id": "3a231747756beff5",
         "claimed_path": "src/draw/lv_draw_label.h",
         "path_resolution": "exact",
         "merged_from": []
       },
       {
-        "content": "**CRITICAL: Cached `text_size` uses wrong width constraint for all draw-time consumers**\n\n**File: `src/widgets/label/lv_label.c:967-968`** (and cascading to draw sites)\n`lv_label_refr_text` computes `text_size` with `max_w` (the constrained/wrapping width), but all three draw-time consumers need the unbounded size (`LV_COORD_MAX`):\n- `src/draw/lv_draw_label.c:221` \u2014 EXPAND mode uses `dsc->text_size.x` expecting full single-line width\n- `src/widgets/label/lv_label.c:856` \u2014 scroll alignment check compares against visible area width\n- `src/widgets/label/lv_label.c:894` \u2014 circular scroll same check\n\nOriginal code at all three sites explicitly passed `LV_COORD_MAX` to `lv_text_get_size`. The cached value is the **wrapped** size; consumers need **unwrapped** size. Result: EXPAND mode truncates width, scroll triggers incorrectly/late, circular scroll misbehaves.\n\n---\n\n**HIGH: `invalid_size_cache` flag added but never read**",
+        "content": "**CRITICAL: Cached `text_size` uses wrong width constraint for all draw-time consumers**\n\n**File: `src/widgets/label/lv_label.c:967-968`** (and cascading to draw sites)\n`lv_label_refr_text` computes `text_size` with `max_w` (the constrained/wrapping width), but all three draw-time consumers need the unbounded size (`LV_COORD_MAX`):",
         "path": "src/widgets/label/lv_label.c",
         "start_line": 967,
         "end_line": 967,
-        "observation_id": "5cbbcea6b60ca2fe",
+        "observation_id": "ac518f9d87e496b2",
+        "claimed_path": "src/widgets/label/lv_label.c",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "- `src/draw/lv_draw_label.c:221` \u2014 EXPAND mode uses `dsc->text_size.x` expecting full single-line width",
+        "path": "src/draw/lv_draw_label.c",
+        "start_line": 221,
+        "end_line": 221,
+        "observation_id": "95f4436e7b66e7e5",
+        "claimed_path": "src/draw/lv_draw_label.c",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "- `src/widgets/label/lv_label.c:856` \u2014 scroll alignment check compares against visible area width",
+        "path": "src/widgets/label/lv_label.c",
+        "start_line": 856,
+        "end_line": 856,
+        "observation_id": "4e25dfb51adcf5dc",
+        "claimed_path": "src/widgets/label/lv_label.c",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "- `src/widgets/label/lv_label.c:894` \u2014 circular scroll same check\n\nOriginal code at all three sites explicitly passed `LV_COORD_MAX` to `lv_text_get_size`. The cached value is the **wrapped** size; consumers need **unwrapped** size. Result: EXPAND mode truncates width, scroll triggers incorrectly/late, circular scroll misbehaves.\n\n---\n\n**HIGH: `invalid_size_cache` flag added but never read**",
+        "path": "src/widgets/label/lv_label.c",
+        "start_line": 894,
+        "end_line": 894,
+        "observation_id": "df90fde3db9242db",
         "claimed_path": "src/widgets/label/lv_label.c",
         "path_resolution": "exact",
         "merged_from": [
-          "10e5f8f7176fbe98"
+          "6734080715f138a5"
         ]
       },
       {
@@ -58,11 +118,11 @@
         "path": "src/widgets/label/lv_label_private.h",
         "start_line": 53,
         "end_line": 53,
-        "observation_id": "f03e08426c92c318",
+        "observation_id": "104c9f0ee3282428",
         "claimed_path": "src/widgets/label/lv_label_private.h",
         "path_resolution": "exact",
         "merged_from": [
-          "71fe6846df628542"
+          "8564e7c1b6a928d4"
         ]
       },
       {
@@ -70,11 +130,11 @@
         "path": "src/widgets/label/lv_label_private.h",
         "start_line": 54,
         "end_line": 54,
-        "observation_id": "f380f1dbf42dad60",
+        "observation_id": "a3efa6385b0eb019",
         "claimed_path": "src/widgets/label/lv_label_private.h",
         "path_resolution": "exact",
         "merged_from": [
-          "4ecad60fec75f517"
+          "13f62965bb3df4bc"
         ]
       },
       {
@@ -82,7 +142,7 @@
         "path": "src/widgets/label/lv_label.c",
         "start_line": 968,
         "end_line": 968,
-        "observation_id": "6ee64d5656194afb",
+        "observation_id": "05618d46e021e0a9",
         "claimed_path": "src/widgets/label/lv_label.c",
         "path_resolution": "exact",
         "merged_from": []
@@ -90,6 +150,6 @@
     ]
   },
   "rundir": "/home/user/.cache/llm-panel/runs/aacr-up-cdafznyr-0b98f2498fa4/20260825-185706-2332038",
-  "extractor": "2",
+  "extractor": "3",
   "unlocated": []
 }

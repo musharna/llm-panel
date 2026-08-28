@@ -1,0 +1,39 @@
+{
+  "review": {
+    "comments": [
+      {
+        "content": "- `src/gpu/vulkan/SDL_gpu_vulkan.c:5882` \u2014 If texture cycling occurs under OOM and `VULKAN_INTERNAL_CreateTexture` returns `NULL`, the code passes that null texture to `VULKAN_INTERNAL_TextureTransitionToDefaultUsage` before checking it, causing a null dereference/crash.",
+        "path": "src/gpu/vulkan/SDL_gpu_vulkan.c",
+        "start_line": 5882,
+        "end_line": 5882,
+        "observation_id": "ec59939a49ab74a0",
+        "claimed_path": "src/gpu/vulkan/SDL_gpu_vulkan.c",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "- `src/gpu/vulkan/SDL_gpu_vulkan.c:10533` \u2014 For compute-only or offscreen workloads, every submission has `presentDataCount == 0`, so completed command buffers and pending resource destruction are never cleaned up. Repeated submissions retain fences, command buffers, and released GPU resources until memory/resource exhaustion.",
+        "path": "src/gpu/vulkan/SDL_gpu_vulkan.c",
+        "start_line": 10533,
+        "end_line": 10533,
+        "observation_id": "176db13141f9a682",
+        "claimed_path": "src/gpu/vulkan/SDL_gpu_vulkan.c",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "**DEFECT 1: NULL pointer dereference in `VULKAN_INTERNAL_CycleActiveTexture`**\n\n**File:** `src/gpu/vulkan/SDL_gpu_vulkan.c`\n**New lines ~5880\u20135886** (from hunk `@@ -5870,8 +5875,15 @@`)\n\nThe diff adds this code:\n\n```c\ntexture = VULKAN_INTERNAL_CreateTexture(\n    renderer,\n    false,\n    &container->header.info);\n\nVULKAN_INTERNAL_TextureTransitionToDefaultUsage(  // <-- dereferences texture HERE\n    renderer,\n    commandBuffer,\n    VULKAN_TEXTURE_USAGE_MODE_UNINITIALIZED,\n    texture);\n\nif (!texture) {    // <-- NULL check comes AFTER the dereference\n    return;\n}\n```\n\n`VULKAN_INTERNAL_TextureTransitionToDefaultUsage` is called with `texture` **before** the `if (!texture)` guard. If `VULKAN_INTERNAL_CreateTexture` returns NULL (allocation failure, OOM), the transition function receives a NULL pointer and dereferences it \u2014 crash.\n\n**Failure scenario:** Any memory-pressure condition that causes `VULKAN_INTERNAL_CreateTexture` to return NULL while cycling a texture during `VULKAN_INTERNAL_PrepareTextureSubresourceForWrite` triggers an immediate NULL pointer dereference instead of the graceful early-return that existed before.\n\n**Fix:** Move the `VULKAN_INTERNAL_TextureTransitionToDefaultUsage` call **after** the `if (!texture) { return; }` check.",
+        "path": "src/gpu/vulkan/SDL_gpu_vulkan.c",
+        "start_line": 5880,
+        "end_line": 5880,
+        "observation_id": "d9d2c6ebfde7ceb6",
+        "claimed_path": "src/gpu/vulkan/SDL_gpu_vulkan.c",
+        "path_resolution": "exact",
+        "merged_from": []
+      }
+    ]
+  },
+  "rundir": "/home/user/.cache/llm-panel/runs/aacr-up-t_jwb2rl-2a565c63e2fb/20260825-165339-1649456",
+  "extractor": "3",
+  "unlocated": []
+}

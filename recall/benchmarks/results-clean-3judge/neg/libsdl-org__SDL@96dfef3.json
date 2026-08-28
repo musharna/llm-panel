@@ -2,15 +2,35 @@
   "review": {
     "comments": [
       {
+        "content": "- `src/gpu/vulkan/SDL_gpu_vulkan.c:5882` \u2014 If texture cycling occurs under OOM and `VULKAN_INTERNAL_CreateTexture` returns `NULL`, the code passes that null texture to `VULKAN_INTERNAL_TextureTransitionToDefaultUsage` before checking it, causing a null dereference/crash.",
+        "path": "src/gpu/vulkan/SDL_gpu_vulkan.c",
+        "start_line": 5882,
+        "end_line": 5882,
+        "observation_id": "ec59939a49ab74a0",
+        "claimed_path": "src/gpu/vulkan/SDL_gpu_vulkan.c",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "- `src/gpu/vulkan/SDL_gpu_vulkan.c:10533` \u2014 For compute-only or offscreen workloads, every submission has `presentDataCount == 0`, so completed command buffers and pending resource destruction are never cleaned up. Repeated submissions retain fences, command buffers, and released GPU resources until memory/resource exhaustion.",
+        "path": "src/gpu/vulkan/SDL_gpu_vulkan.c",
+        "start_line": 10533,
+        "end_line": 10533,
+        "observation_id": "176db13141f9a682",
+        "claimed_path": "src/gpu/vulkan/SDL_gpu_vulkan.c",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
         "content": "**DEFECT 1: NULL pointer dereference in `VULKAN_INTERNAL_CycleActiveTexture`**\n\n**File:** `src/gpu/vulkan/SDL_gpu_vulkan.c`\n**New lines ~5880\u20135886** (from hunk `@@ -5870,8 +5875,15 @@`)\n\nThe diff adds this code:\n\n```c\ntexture = VULKAN_INTERNAL_CreateTexture(\n    renderer,\n    false,\n    &container->header.info);\n\nVULKAN_INTERNAL_TextureTransitionToDefaultUsage(  // <-- dereferences texture HERE\n    renderer,\n    commandBuffer,\n    VULKAN_TEXTURE_USAGE_MODE_UNINITIALIZED,\n    texture);\n\nif (!texture) {    // <-- NULL check comes AFTER the dereference\n    return;\n}\n```\n\n`VULKAN_INTERNAL_TextureTransitionToDefaultUsage` is called with `texture` **before** the `if (!texture)` guard. If `VULKAN_INTERNAL_CreateTexture` returns NULL (allocation failure, OOM), the transition function receives a NULL pointer and dereferences it \u2014 crash.\n\n**Failure scenario:** Any memory-pressure condition that causes `VULKAN_INTERNAL_CreateTexture` to return NULL while cycling a texture during `VULKAN_INTERNAL_PrepareTextureSubresourceForWrite` triggers an immediate NULL pointer dereference instead of the graceful early-return that existed before.\n\n**Fix:** Move the `VULKAN_INTERNAL_TextureTransitionToDefaultUsage` call **after** the `if (!texture) { return; }` check.**DEFECT 1: Cleanup only runs on presenting submits \u2014 breaks compute/offscreen workloads**\n- **File**: `src/gpu/vulkan/SDL_gpu_vulkan.c`\n- **Line**: ~10491 (from hunk `@@ -10467,11 +10491,7 @@`)\n- **Failure scenario**: Submit a command buffer with no present data (compute dispatch, offscreen render to texture). The `presenting` variable is `false` (set from `vulkanCommandBuffer->presentDataCount > 0` at line 10421). The entire cleanup block \u2014 fence checking, `VULKAN_INTERNAL_CleanCommandBuffer`, empty allocation deallocation, `VULKAN_INTERNAL_PerformPendingDestroys` \u2014 is skipped. Result: command buffers accumulate forever, fences never signaled, memory never freed, pending destroys never processed \u2192 eventual OOM or GPU hang.\n\n---",
         "path": "src/gpu/vulkan/SDL_gpu_vulkan.c",
         "start_line": 5880,
         "end_line": 5880,
-        "observation_id": "caf817d39f1354a1",
+        "observation_id": "d9d2c6ebfde7ceb6",
         "claimed_path": "src/gpu/vulkan/SDL_gpu_vulkan.c",
         "path_resolution": "exact",
         "merged_from": [
-          "25b061d8f6094dfc"
+          "ac60d0036573deb8"
         ]
       },
       {
@@ -18,7 +38,7 @@
         "path": "src/gpu/vulkan/SDL_gpu_vulkan.c",
         "start_line": 10447,
         "end_line": 10447,
-        "observation_id": "72cfa9f1065061fa",
+        "observation_id": "c8cd041e953e2494",
         "claimed_path": "src/gpu/vulkan/SDL_gpu_vulkan.c",
         "path_resolution": "exact",
         "merged_from": []
@@ -28,7 +48,7 @@
         "path": "src/gpu/vulkan/SDL_gpu_vulkan.c",
         "start_line": 10632,
         "end_line": 10632,
-        "observation_id": "1a4da064df7f7b22",
+        "observation_id": "9a86b839dba836d1",
         "claimed_path": "src/gpu/vulkan/SDL_gpu_vulkan.c",
         "path_resolution": "exact",
         "merged_from": []
@@ -38,7 +58,7 @@
         "path": "src/gpu/vulkan/SDL_gpu_vulkan.c",
         "start_line": 10773,
         "end_line": 10773,
-        "observation_id": "52c305a9d58cfa2f",
+        "observation_id": "18a6e379d9e69df9",
         "claimed_path": "src/gpu/vulkan/SDL_gpu_vulkan.c",
         "path_resolution": "exact",
         "merged_from": []
@@ -48,7 +68,7 @@
         "path": "src/gpu/vulkan/SDL_gpu_vulkan.c",
         "start_line": 10714,
         "end_line": 10714,
-        "observation_id": "593b31f8e33e9b23",
+        "observation_id": "728db7c9333339d8",
         "claimed_path": "src/gpu/vulkan/SDL_gpu_vulkan.c",
         "path_resolution": "exact",
         "merged_from": []
@@ -56,6 +76,6 @@
     ]
   },
   "rundir": "/home/user/.cache/llm-panel/runs/aacr-up-t_jwb2rl-2a565c63e2fb/20260825-165339-1649456",
-  "extractor": "2",
+  "extractor": "3",
   "unlocated": []
 }

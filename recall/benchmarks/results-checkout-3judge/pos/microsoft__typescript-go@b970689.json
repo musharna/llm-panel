@@ -6,7 +6,7 @@
         "path": "internal/parser/reparser.go",
         "start_line": 120,
         "end_line": 120,
-        "observation_id": "fde9d96482f60e5a",
+        "observation_id": "8e2c587d2790e488",
         "claimed_path": "internal/parser/reparser.go",
         "path_resolution": "exact",
         "merged_from": []
@@ -16,7 +16,7 @@
         "path": "internal/parser/reparser.go",
         "start_line": 123,
         "end_line": 123,
-        "observation_id": "809a22a422492c19",
+        "observation_id": "1febedf55beb0808",
         "claimed_path": "internal/parser/reparser.go",
         "path_resolution": "exact",
         "merged_from": []
@@ -26,7 +26,7 @@
         "path": "internal/parser/reparser.go",
         "start_line": 122,
         "end_line": 122,
-        "observation_id": "8548e3c0605cacd0",
+        "observation_id": "1849c1b16467c3b2",
         "claimed_path": "internal/parser/reparser.go",
         "path_resolution": "exact",
         "merged_from": []
@@ -36,7 +36,7 @@
         "path": "internal/ast/ast.go",
         "start_line": 4051,
         "end_line": 4051,
-        "observation_id": "139f75bd69b79c5b",
+        "observation_id": "942accba37bcdfc1",
         "claimed_path": "internal/ast/ast.go",
         "path_resolution": "exact",
         "merged_from": []
@@ -46,7 +46,7 @@
         "path": "testdata/baselines/reference/submodule/conformance/importTag16.types",
         "start_line": 751,
         "end_line": 751,
-        "observation_id": "30a215a73d4e782f",
+        "observation_id": "8d4ed9116ca0eb7e",
         "claimed_path": "importTag16.types",
         "path_resolution": "basename",
         "merged_from": []
@@ -56,11 +56,11 @@
         "path": "internal/parser/reparser.go",
         "start_line": 120,
         "end_line": 120,
-        "observation_id": "c409721906bef366",
+        "observation_id": "653a51464aa9b532",
         "claimed_path": "reparser.go",
         "path_resolution": "basename",
         "merged_from": [
-          "75c7a526dadd97b2"
+          "ceabe1ddd6f19cc9"
         ]
       },
       {
@@ -68,7 +68,7 @@
         "path": "internal/parser/reparser.go",
         "start_line": 120,
         "end_line": 120,
-        "observation_id": "1cee27b4ec29f80a",
+        "observation_id": "f7f7b74697efd355",
         "claimed_path": "reparser.go",
         "path_resolution": "basename",
         "merged_from": []
@@ -78,7 +78,7 @@
         "path": "internal/parser/reparser.go",
         "start_line": 120,
         "end_line": 120,
-        "observation_id": "444306928a5e4cb5",
+        "observation_id": "8880db75d587df5e",
         "claimed_path": "reparser.go",
         "path_resolution": "basename",
         "merged_from": []
@@ -88,21 +88,31 @@
         "path": "internal/parser/reparser.go",
         "start_line": 122,
         "end_line": 122,
-        "observation_id": "6ec485fdd7f6ec73",
+        "observation_id": "a535979d578342e9",
         "claimed_path": "reparser.go",
         "path_resolution": "basename",
         "merged_from": []
       },
       {
-        "content": "3. **Default `@import` type corrupts to `default`** (reparser.go:118-126) \u2014 `@import Foo from \"./x\"` types the alias as symbol `default`, showing `(foo: default)` in hover/type output.\n\nLet me reconsider #2's ordering vs #1. #1 is a crash but on narrow input; #2 is a functional regression on the JSON-import use case which is a headline feature of `@import`. I'll order #1 first (crash) then #2, #3.\n\nActually, let me also reconsider whether #3 could be caused by something that also affects normal import declarations \u2014 i.e., is it specifically the JSImport path. The parameter `foo` is typed from JSDoc `@param { Foo }` where `Foo` is now a declared alias from the JSImportDeclaration. The alias symbol for `Foo` resolves to name \"default\". For a normal TS `import Foo from \"./x\"`, this resolves to the default export symbol properly. So it's specific to the JSImportDeclaration path (the synthesized declaration lacks the proper exported symbol linkage). \n\nLet me do a final check: is there special handling for the default import that requires the import clause's name to be bound to the module's default export symbol, and does it check `node.Kind`? Let me quickly search for where import default bindings get their symbol alias, to confirm JSImportDeclaration is handled or missed.\n\nActually I'll stop here. I've done enough verification. Let me write the report. Let me report the line numbers precisely from the diff hunks:\n\n- reparser.go: the new case is `@@ -115,7 +115,16 @@`, new lines start at 118. The case `KindJSDocImportTag` is at line 118, `importClause := importTag.ImportClause.Clone(&p.factory)` at line 120, `IsTypeOnly = true` at 122.\n\n- checker.go:5069-5073 is the TS2857 emission (not in the diff, but the diff added KindJSImportDeclaration to checkSourceElementWorker at checker.go:2208 which routes to checkImportDeclaration).\n\nLet me finalize the line numbers to cite. For defect 1: internal/parser/reparser.go:120. For defect 2: internal/parser/reparser.go:122 (root) and it surfaces via internal/checker/checker.go:2208 (KindJSImportDeclaration routed to checkImportDeclaration) + checker.go:5069. For defect 3: internal/parser/reparser.go:118-126.\n\nLet me write this up.I have enough to report. Let me do one final confirmation on the `IsDefaultImport`/default-import handling to strengthen defect 3, checking how a JSImportDeclaration's default binding resolves.\n\n\nLet me look at the default-import resolution for JSImport in checker.go around 13691-13827 where non-ambient import bindings resolve, and whether the JSImportDeclaration's default import resolves to the module's default export. The key function for how the import binding's symbol is created. Let me check how default import aliases (name \"default\") vs exported symbol names are set. Actually, line 13827-13849 looks relevant. But this is getting deep.\n\nGiven the `.types` baseline itself demonstrates the `default` regression and it's plainly wrong, I'll report it but keep it at medium severity since it's a type-resolution quality issue, not a crash or an error.\n\nLet me now finalize my report. Let me confirm the exact line numbers in the reparser for the new case. From my read: line 118 `case ast.KindJSDocImportTag:`, 119 `importTag := ...`, 120 `importClause := importTag.ImportClause.Clone(...)`, 121 `importClause.Flags |= ...`, 122 `importClause.AsImportClause().IsTypeOnly = true`, 123 `NewJSImportDeclaration(...)`, 126 `p.reparseList = append(...)`.\n\nI'm confident in the report now.\n\n\nI have verified all the code paths. Let me write the final report.\n\n\nI have all the confirmation I need. Here is my report.\n\n---\n\n## Defects",
+        "content": "3. **Default `@import` type corrupts to `default`** (reparser.go:118-126) \u2014 `@import Foo from \"./x\"` types the alias as symbol `default`, showing `(foo: default)` in hover/type output.\n\nLet me reconsider #2's ordering vs #1. #1 is a crash but on narrow input; #2 is a functional regression on the JSON-import use case which is a headline feature of `@import`. I'll order #1 first (crash) then #2, #3.\n\nActually, let me also reconsider whether #3 could be caused by something that also affects normal import declarations \u2014 i.e., is it specifically the JSImport path. The parameter `foo` is typed from JSDoc `@param { Foo }` where `Foo` is now a declared alias from the JSImportDeclaration. The alias symbol for `Foo` resolves to name \"default\". For a normal TS `import Foo from \"./x\"`, this resolves to the default export symbol properly. So it's specific to the JSImportDeclaration path (the synthesized declaration lacks the proper exported symbol linkage). \n\nLet me do a final check: is there special handling for the default import that requires the import clause's name to be bound to the module's default export symbol, and does it check `node.Kind`? Let me quickly search for where import default bindings get their symbol alias, to confirm JSImportDeclaration is handled or missed.\n\nActually I'll stop here. I've done enough verification. Let me write the report. Let me report the line numbers precisely from the diff hunks:\n\n- reparser.go: the new case is `@@ -115,7 +115,16 @@`, new lines start at 118. The case `KindJSDocImportTag` is at line 118, `importClause := importTag.ImportClause.Clone(&p.factory)` at line 120, `IsTypeOnly = true` at 122.",
         "path": "internal/parser/reparser.go",
         "start_line": 118,
         "end_line": 118,
-        "observation_id": "396a8355dce7def4",
+        "observation_id": "2681d597c4bc848a",
         "claimed_path": "reparser.go",
         "path_resolution": "basename",
+        "merged_from": []
+      },
+      {
+        "content": "- checker.go:5069-5073 is the TS2857 emission (not in the diff, but the diff added KindJSImportDeclaration to checkSourceElementWorker at checker.go:2208 which routes to checkImportDeclaration).\n\nLet me finalize the line numbers to cite. For defect 1: internal/parser/reparser.go:120. For defect 2: internal/parser/reparser.go:122 (root) and it surfaces via internal/checker/checker.go:2208 (KindJSImportDeclaration routed to checkImportDeclaration) + checker.go:5069. For defect 3: internal/parser/reparser.go:118-126.\n\nLet me write this up.I have enough to report. Let me do one final confirmation on the `IsDefaultImport`/default-import handling to strengthen defect 3, checking how a JSImportDeclaration's default binding resolves.\n\n\nLet me look at the default-import resolution for JSImport in checker.go around 13691-13827 where non-ambient import bindings resolve, and whether the JSImportDeclaration's default import resolves to the module's default export. The key function for how the import binding's symbol is created. Let me check how default import aliases (name \"default\") vs exported symbol names are set. Actually, line 13827-13849 looks relevant. But this is getting deep.\n\nGiven the `.types` baseline itself demonstrates the `default` regression and it's plainly wrong, I'll report it but keep it at medium severity since it's a type-resolution quality issue, not a crash or an error.\n\nLet me now finalize my report. Let me confirm the exact line numbers in the reparser for the new case. From my read: line 118 `case ast.KindJSDocImportTag:`, 119 `importTag := ...`, 120 `importClause := importTag.ImportClause.Clone(...)`, 121 `importClause.Flags |= ...`, 122 `importClause.AsImportClause().IsTypeOnly = true`, 123 `NewJSImportDeclaration(...)`, 126 `p.reparseList = append(...)`.\n\nI'm confident in the report now.\n\n\nI have verified all the code paths. Let me write the final report.\n\n\nI have all the confirmation I need. Here is my report.\n\n---\n\n## Defects",
+        "path": "internal/checker/checker.go",
+        "start_line": 5069,
+        "end_line": 5069,
+        "observation_id": "761722e9a84d4d62",
+        "claimed_path": "checker.go",
+        "path_resolution": "basename",
         "merged_from": [
-          "dc7a4a25f997ac6d"
+          "a5ff855438c2ffb9"
         ]
       },
       {
@@ -110,7 +120,7 @@
         "path": "internal/parser/reparser.go",
         "start_line": 120,
         "end_line": 120,
-        "observation_id": "4923c72ac394ba45",
+        "observation_id": "0210ef2da1263796",
         "claimed_path": "internal/parser/reparser.go",
         "path_resolution": "exact",
         "merged_from": []
@@ -120,7 +130,7 @@
         "path": "internal/parser/reparser.go",
         "start_line": 122,
         "end_line": 122,
-        "observation_id": "0ae1deb86675f7e2",
+        "observation_id": "7a891ace73e2bf23",
         "claimed_path": "internal/parser/reparser.go",
         "path_resolution": "exact",
         "merged_from": []
@@ -130,11 +140,11 @@
         "path": "internal/parser/reparser.go",
         "start_line": 118,
         "end_line": 118,
-        "observation_id": "f0400d377ee58cab",
+        "observation_id": "40435a463152d951",
         "claimed_path": "internal/parser/reparser.go",
         "path_resolution": "exact",
         "merged_from": [
-          "ee9320820130301e"
+          "3e9acef25311c9cf"
         ]
       },
       {
@@ -142,7 +152,7 @@
         "path": "internal/ast/ast.go",
         "start_line": 4054,
         "end_line": 4054,
-        "observation_id": "02e60c9ec0914c3c",
+        "observation_id": "4a5cade3c8262e35",
         "claimed_path": "internal/ast/ast.go",
         "path_resolution": "exact",
         "merged_from": []
@@ -152,7 +162,7 @@
         "path": "internal/ast/ast.go",
         "start_line": 4065,
         "end_line": 4065,
-        "observation_id": "75b11a46ed04f7c4",
+        "observation_id": "b103a441a16c5fda",
         "claimed_path": "internal/ast/ast.go",
         "path_resolution": "exact",
         "merged_from": []
@@ -162,7 +172,7 @@
         "path": "internal/ast/ast.go",
         "start_line": 4069,
         "end_line": 4069,
-        "observation_id": "6bacf9da0d3aa1b3",
+        "observation_id": "37a2d49a7a4682b9",
         "claimed_path": "internal/ast/ast.go",
         "path_resolution": "exact",
         "merged_from": []
@@ -172,7 +182,7 @@
         "path": "internal/ast/ast.go",
         "start_line": 4380,
         "end_line": 4380,
-        "observation_id": "acdec037c2a43559",
+        "observation_id": "4b268d5a3c03782b",
         "claimed_path": "internal/ast/ast.go",
         "path_resolution": "exact",
         "merged_from": []
@@ -182,7 +192,7 @@
         "path": "internal/ast/ast.go",
         "start_line": 4080,
         "end_line": 4080,
-        "observation_id": "3f914b10a6c7b969",
+        "observation_id": "d2a97062c9cb8c4c",
         "claimed_path": "internal/ast/ast.go",
         "path_resolution": "exact",
         "merged_from": []
@@ -192,7 +202,7 @@
         "path": "internal/ast/utilities.go",
         "start_line": 2365,
         "end_line": 2365,
-        "observation_id": "87826f5408dcab1e",
+        "observation_id": "8b78614db4a74484",
         "claimed_path": "internal/ast/utilities.go",
         "path_resolution": "exact",
         "merged_from": []
@@ -200,6 +210,6 @@
     ]
   },
   "rundir": "/home/user/.cache/llm-panel/runs/microsoft__typescript-go__b970689-69eea9953c09/20260828-003623-672652",
-  "extractor": "2",
+  "extractor": "3",
   "unlocated": []
 }
