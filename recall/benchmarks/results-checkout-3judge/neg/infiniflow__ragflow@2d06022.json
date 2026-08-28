@@ -1,0 +1,140 @@
+{
+  "review": {
+    "comments": [
+      {
+        "content": "- **[P1] `web/src/components/api-service/embed-modal/index.tsx:21`** \u2014 `languageOptions` is not exported by `@/locales/config`. Running `npm run build` produces a missing-export/TypeScript error, so the web application cannot be built.",
+        "path": "web/src/components/api-service/embed-modal/index.tsx",
+        "start_line": 21,
+        "end_line": 21,
+        "observation_id": "59aa342e947c8e4b",
+        "claimed_path": "web/src/components/api-service/embed-modal/index.tsx",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "- **[P2] `web/src/components/api-service/embed-modal/index.tsx:81`** \u2014 `chat.avatarHidden` does not exist in any locale resource. Opening the embed modal displays the literal key `avatarHidden` instead of a user-facing label.1. **Missing `languageOptions` export** \u2014 import at line 21 and usage at line 91 reference a symbol that does not exist in `@/locales/config`. Build error / `undefined` options. This is the top defect.",
+        "path": "web/src/components/api-service/embed-modal/index.tsx",
+        "start_line": 81,
+        "end_line": 81,
+        "observation_id": "280a41d00728cf4d",
+        "claimed_path": "web/src/components/api-service/embed-modal/index.tsx",
+        "path_resolution": "exact",
+        "merged_from": [
+          "d6ddcfae4d225a3f"
+        ]
+      },
+      {
+        "content": "2. **`avatarHidden` translation key missing** \u2014 line 81, `t('avatarHidden')` returns the literal key string since no locale defines it. Minor UI defect.\n\nLet me check the `locale` mismatch more carefully \u2014 if languageOptions did exist. But since the import fails, I can note the Select would produce undefined options anyway. However, I should consider: maybe languageOptions is supposed to come but the PR is incomplete. I'll report #1.\n\nLet me reconsider whether rewrite.py has any actual defect worth reporting. Let me reconsider the situation where language is a specific code. Actually `gen_lang(self._param.language)` \u2014 if language is e.g. \"en\", returns \"English\". Fine.\n\nI don't see a real new defect in rewrite.py. The restructure appears functionally correct.\n\nWait, let me reconsider one subtle thing in the rewrite prompt: When `language` is falsy, the else branch adds the \"same language of the original\" bullet. But `gen_lang` returns \"\" when language not in dict. However, the default `self.language = \"\"` in the param. So `gen_lang(\"\")` returns \"\" (not in dict). So else branch. Fine.\n\nNow, is there a defect that the else-branch \"same language as original\" constraint applies even when the user DID specify a language that isn't in the dict? That's pre-existing behavior effectively. Not new.\n\nSo I'll report the rewrite.py change as functionally OK (no new defect), and focus on the web defects.\n\nActually, let me reconsider whether the missing `languageOptions` is truly a defect in THIS diff vs. maybe present in the base. The diff adds the import and usage. So the defect is introduced by this diff. Yes.\n\nLet me also double-check: could `languageOptions` be a value the PR intends but the reviewer should note the whole Select/options would be broken? Yes, that's the point.\n\nLet me also check whether there's maybe a git stash / branch where languageOptions exists in a different file that the alias might resolve. I've confirmed only config.ts matches `@/locales/config`. The grep for `languageOptions` found only the two references in the component. Definitive.\n\nLet me finalize. Let me report the defects with file+line from the diff hunk headers.\n\nFor the web/index.tsx:\n- Line 21 (import) and line 91 (options={languageOptions}): missing export. From the diff hunk `@@ -3,10 +3,22 @@`, the import is the added lines. Line 21 is `import { languageOptions } from '@/locales/config';`.\n- Line 81: `t('avatarHidden')` \u2014 missing key.\n\nLet me reconsider severity of #2 (avatarHidden). It's real but minor. \n\nShould I report the missing export as one item? Yes.\n\nLet me also reconsider: is there a defect where `iframeSrc` doesn't update? No \u2014 recomputed each render, state changes trigger re-render. Fine.\n\nLet me also reconsider the rewrite.py one more time \u2014 is there actually a defect in the `else` branch indentation making the else-inserted text not appear as a bullet? No, it's part of a triple-quoted string, indentation is literal but starts with `- ` after a newline. Fine.\n\nNow \u2014 one more consideration on the `locale` value format. If `languageOptions` were meant to be `[{label,value}]` selecting display names, the locale param would be a display name like \"English\" which i18n.changeLanguage(\"English\") would reject (fallback to en). But since we can't know the intended format (the export doesn't exist), I'll note this as secondary only if languageOptions were to be defined. I'll mention it briefly under the main defect.\n\nLet me finalize the report.\n\nLet me get exact line numbers referenced in diff hunk headers:\n- index.tsx hunk: `@@ -3,10 +3,22 @@` and `@@ -48,6 +76,23 @@`. My line numbers (21, 81, 91) are from the current file read, which is the post-diff state. I'll use those.\n\nFor the .less change, it just adds a class used by the new Flex \u2014 no defect.\n\nFinal answer.I have enough to judge. Let me verify final details on the `locale` value the share page expects and whether `languageOptions`' intended value format matters.\n\nBased on my analysis, here are the real defects.\n\n## Defects",
+        "path": "agent/component/rewrite.py",
+        "start_line": 81,
+        "end_line": 81,
+        "observation_id": "46f01d53fdb5ab0f",
+        "claimed_path": "rewrite.py",
+        "path_resolution": "basename",
+        "merged_from": [
+          "6434e3267ff9990f"
+        ]
+      },
+      {
+        "content": "### 1. `languageOptions` is imported but never exported \u2014 build breaks / `options` is `undefined`\n**FILE: `web/src/components/api-service/embed-modal/index.tsx`, LINES 21 and 91** (diff hunk `@@ -3,10 +3,22 @@`)\n\nThe diff adds `import { languageOptions } from '@/locales/config';` (line 21) and passes it as `options={languageOptions}` to the `Select` (line 91). I read `web/src/locales/config.ts` in full: it exports only `translationTable` and the default `i18n` instance \u2014 there is no exported member named `languageOptions` anywhere in `src/locales` (verified by a whole-tree grep; the only two hits are the import and usage in this same component).\n\n**Failure scenario:** any TS build (`error TS2305: Module '\".../locales/config\"' has no exported member 'languageOptions'`) or, under a lenient bundler, `languageOptions` is `undefined`, so the `Select` renders no options and the user cannot pick a locale at all. The module import itself fails, so this can take down the whole embed-modal bundle.\n\nRelated, but subsumed: even if that export were added, the option values would need to match `i18n.supportedLngs`/`i18n.language` (`en`, `zh`, `zh-TRADITIONAL`, `id`, `es`, `vi`, `ja`, `pt-BR`) for the share page's `i18n.changeLanguage(locale)` in `pages/chat/share/large.tsx:49-51` to take effect; nothing here defines that mapping.",
+        "path": "web/src/components/api-service/embed-modal/index.tsx",
+        "start_line": 21,
+        "end_line": 21,
+        "observation_id": "45aaa364b789f007",
+        "claimed_path": "web/src/components/api-service/embed-modal/index.tsx",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "### 2. `avatarHidden` translation key does not exist \u2014 label renders as the literal key\n**FILE: `web/src/components/api-service/embed-modal/index.tsx`, LINE 81** (diff hunk `@@ -48,6 +76,23 @@`)\n\nThe new `Form.Item` uses `label={t('avatarHidden')}`, but no locale file defines `avatarHidden` (grep across `web/` finds it only at this usage site). i18next falls back to returning the key itself.\n\n**Failure scenario:** in every language, the checkbox in the embed dialog shows the raw text `avatarHidden` instead of a translated label, in all locales (the component's `useTranslate('chat')` namespace has no such key).",
+        "path": "web/src/components/api-service/embed-modal/index.tsx",
+        "start_line": 81,
+        "end_line": 81,
+        "observation_id": "296f182a17f714b9",
+        "claimed_path": "web/src/components/api-service/embed-modal/index.tsx",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "### 1. `web/src/components/api-service/embed-modal/index.tsx:21` \u2014 Missing export `languageOptions` causes module import failure\n**Failure scenario:** Component fails to load at runtime with `Module has no exported member 'languageOptions'` because `web/src/locales/config.ts` does not export `languageOptions` (only exports `translationTable` and default `i18n`).\n\n---",
+        "path": "web/src/components/api-service/embed-modal/index.tsx",
+        "start_line": 21,
+        "end_line": 21,
+        "observation_id": "087b46f9a15ff20b",
+        "claimed_path": "web/src/components/api-service/embed-modal/index.tsx",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "### 2. `web/src/components/api-service/embed-modal/index.tsx:56, 58\u201367` \u2014 `iframeSrc` and `text` are stale constants, never reflect state changes\n**Failure scenario:** User toggles \"avatarHidden\" checkbox or selects a locale \u2192 `visibleAvatar`/`locale` state updates \u2192 but `iframeSrc` (line 56) and `text` (lines 58\u201367) are `const` computed once on initial render. The displayed iframe code snippet **never updates**, so copied code lacks the new `visible_avatar=1` or `locale=` parameters.\n\n---",
+        "path": "web/src/components/api-service/embed-modal/index.tsx",
+        "start_line": 56,
+        "end_line": 56,
+        "observation_id": "d0aa8a8e58fe8abf",
+        "claimed_path": "web/src/components/api-service/embed-modal/index.tsx",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "### 3. `web/src/components/api-service/embed-modal/index.tsx:83\u201384` \u2014 Ant Design `Checkbox.onChange` receives boolean, not event\n**Failure scenario:** User clicks checkbox \u2192 `onChange` fires with `checked: boolean` \u2192 handler reads `e.target.checked` \u2192 `undefined` \u2192 `setVisibleAvatar(undefined)` \u2192 checkbox stays unchecked (or toggles to `false` on next click). The checkbox **cannot be turned on**.\n\n---",
+        "path": "web/src/components/api-service/embed-modal/index.tsx",
+        "start_line": 83,
+        "end_line": 83,
+        "observation_id": "c2b1608531da67d2",
+        "claimed_path": "web/src/components/api-service/embed-modal/index.tsx",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "### 4. `web/src/components/api-service/embed-modal/index.tsx:81` \u2014 Missing translation key `avatarHidden`\n**Failure scenario:** Any locale \u2192 UI renders `avatarHidden` literal instead of label (i18next returns key when missing). No `avatarHidden` key exists in `web/src/locales/en.ts` (or any locale file).\n\n---",
+        "path": "web/src/components/api-service/embed-modal/index.tsx",
+        "start_line": 81,
+        "end_line": 81,
+        "observation_id": "394a4c0887feb668",
+        "claimed_path": "web/src/components/api-service/embed-modal/index.tsx",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "### 5. `web/src/components/api-service/embed-modal/index.tsx:87` \u2014 Missing translation key `locale`\n**Failure scenario:** Any locale \u2192 UI renders `locale` literal instead of label. No `locale` key exists in `web/src/locales/en.ts`.\n\n---",
+        "path": "web/src/components/api-service/embed-modal/index.tsx",
+        "start_line": 87,
+        "end_line": 87,
+        "observation_id": "7a3fb62cbea5c084",
+        "claimed_path": "web/src/components/api-service/embed-modal/index.tsx",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "### 6. `web/src/components/api-service/embed-modal/index.tsx:80` \u2014 Hardcoded English \"Option\" label\n**Failure scenario:** Non-English locale \u2192 \"Option\" heading remains English while surrounding UI is translated.\n\n---",
+        "path": "web/src/components/api-service/embed-modal/index.tsx",
+        "start_line": 80,
+        "end_line": 80,
+        "observation_id": "59c5007cce7488bd",
+        "claimed_path": "web/src/components/api-service/embed-modal/index.tsx",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "### 7. `agent/component/rewrite.py:50` \u2014 Nonsensical prompt instruction\n**Failure scenario:** LLM receives \"If the user's latest question is completely, don't do anything\u2026\" \u2014 \"completely\" is an adverb with no adjective/verb to modify. Model may misinterpret or ignore the rule. Intended wording likely \"is complete\" or \"is fully formed\".",
+        "path": "agent/component/rewrite.py",
+        "start_line": 50,
+        "end_line": 50,
+        "observation_id": "b15bb5540d11e5a9",
+        "claimed_path": "agent/component/rewrite.py",
+        "path_resolution": "exact",
+        "merged_from": []
+      }
+    ]
+  },
+  "rundir": "/home/user/.cache/llm-panel/runs/infiniflow__ragflow__2d06022-8fb5a7e5d780/20260827-235019-319718",
+  "extractor": "2",
+  "unlocated": [
+    {
+      "content": "## Not defects\n- **rewrite.py** (`agent/component/rewrite.py`): I traced the new prompt construction for both the `language` set and unset branches against `_run`/`gen_lang`. When a language resolves, the bullet reads `Text generated MUST be in {language}` followed by the two common bullets, all under `Requirements & Restrictions:`; when `gen_lang` returns `\"\"` (e.g. default empty `self.language`)",
+      "observation_id": "c8fd43b0ddb76fa6",
+      "claimed_path": "rewrite.py",
+      "path_resolution": "basename"
+    }
+  ]
+}

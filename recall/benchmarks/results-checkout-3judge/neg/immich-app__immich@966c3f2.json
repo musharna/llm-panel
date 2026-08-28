@@ -1,0 +1,75 @@
+{
+  "review": {
+    "comments": [
+      {
+        "content": "- **server/src/repositories/album.repository.ts:15** \u2014 Making `lastModifiedAssetTimestamp` required leaves all eight `getMetadataForIds.mockResolvedValue(...)` fixtures in `album.service.spec.ts` missing a mandatory field. Running `npm run check` produces TypeScript errors, so the repository\u2019s standard typecheck fails.",
+        "path": "server/src/repositories/album.repository.ts",
+        "start_line": 15,
+        "end_line": 15,
+        "observation_id": "8652a26449bf0a79",
+        "claimed_path": "server/src/repositories/album.repository.ts",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "- **server/src/repositories/album.repository.ts:167** \u2014 Casting `updatedAt` to `date` discards its time. If an asset is updated at 09:00 and again at 17:00 UTC on the same day, both responses contain midnight; mobile\u2019s `_hasRemoteAlbumChanged` comparison sees no change and skips synchronizing the album.",
+        "path": "server/src/repositories/album.repository.ts",
+        "start_line": 167,
+        "end_line": 167,
+        "observation_id": "da72ec65ba47525d",
+        "claimed_path": "server/src/repositories/album.repository.ts",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "- **server/src/repositories/album.repository.ts:146 and 156** \u2014 Casting `localDateTime` to `date` changes the returned start/end instants. For an asset dated `2025-01-01T13:00:00Z`, a browser in New York previously displayed January 1; the new midnight timestamp localizes to December 31, so album date ranges become incorrect.## 1. `lastModifiedAssetTimestamp` is no longer a timestamp \u2014 breaks the mobile app's album change-detection (perpetual re-sync)\n\n**File/line:** `server/src/repositories/album.repository.ts:161-171` (hunk `@@ -132,18 +133,53 @@`; the cast is at lines 165-168): `max((\"assets\".\"updatedAt\" AT TIME ZONE 'UTC')::date)`.\n\n`updatedAt` is a `timestamptz` (`server/src/entities/asset.entity.ts:96-97`); the `::date` cast truncates it to midnight UTC. The field is documented (even in this diff's own comment) as the mobile-app-only signal, and the mobile uses it as an exact-instant equality check:\n\n- `mobile/lib/services/sync.service.dart:997-1009` (`_hasRemoteAlbumChanged`) \u2014 skips the whole album details/asset re-sync when `isAtSameMomentAs(remoteAlbum.lastModifiedAssetTimestamp, dbAlbum.lastModifiedAssetTimestamp)` is true.\n- `mobile/lib/repositories/album.repository.dart:119-120` (`recalculateMetadata`) \u2014 after any sync the app overwrites the stored value with the **exact** `max(updatedAt)` of its local assets.\n\nFailure scenario: server now returns `2026-08-27T00:00:00.000Z` while the locally recalculated value is the real instant (`2026-08-27T14:37:22.000Z`). These are equal only if an asset was updated at exactly UTC midnight, so `_hasRemoteAlbumChanged` returns true for **every album with assets on every sync run** \u2014 the mobile re-fetches full album details, diffs and upserts all assets, and rewrites album rows each time, for every album. Before this change both sides were exact instants and matched. A second consequence of the same truncation: two albums whose newest asset updates landed at 08:00Z and 23:30Z on the same day now both read `00:00:00Z`, so any recency ordering or \"last modified\" display built on this field (its stated purpose) ties them and is off by up to 24 hours.\n\n## 2. `startDate`/`endDate` truncated to the UTC calendar date \u2014 off-by-one-day album date labels for non-UTC users\n\n**File/line:** `server/src/repositories/album.repository.ts:141-160` (hunk `@@ -132,18 +133,53 @@`; casts at lines 144-147 and 153-157): `min/max((\"assets\".\"localDateTime\" AT TIME ZONE 'UTC')::date)`.\n\n`localDateTime` is a `timestamptz` holding the true capture instant. The web client renders these fields in the **user's local timezone** (`web/src/lib/components/album-page/albums-table-row.svelte:61-69`, `album-card.svelte:69-71`, `albums-list.svelte:88`), so truncating to the UTC date before serialization shifts the displayed calendar day whenever the capture's local date \u2260 its UTC date.\n\nFailure scenario: user in UTC+9 adds a photo taken 2026-01-02 06:00 local (= 2026-01-01T21:00Z). Before the change, `endDate` = `2026-01-01T21:00:00.000Z` and the web renders \"Jan 2\". After the change, `endDate` = `2026-01-01T00:00:00.000Z`, which localizes to Jan 1 15:00 \u2014 the album card/table now shows \"Jan 1\", a day before the actual capture; a single-photo album even shows its date range starting and ending on the wrong day. Any capture between local midnight and the local offset (e.g. morning shots for UTC+x zones) is shifted back one day; before the change the raw instant was returned and local rendering was correct.\n\n## 3. Generated SQL snapshot not regenerated \u2014 deterministic CI failure\n\n**File/line:** the rewritten query at `server/src/repositories/album.repository.ts:136-182` (hunk `@@ -132,18 +133,53 @@`) has no corresponding update to the committed snapshot `server/src/queries/album.repository.sql:202-216`, which still contains the old query (`select \"albums\".\"id\" ..., min(\"assets\".\"localDateTime\") ...`) and no `lastModifiedAssetTimestamp`.\n\nCI enforces these snapshots: `.github/workflows/test.yml:544-559` runs `npm run sync:sql` (regenerates `server/src/queries/*.sql` against a real DB) and then hard-fails with \"ERROR: Generated SQL files not up to date!\" if the files changed. Since the PR head's committed snapshot still has the old query shape while `getMetadataForIds` now produces different SQL (new join direction, `AT TIME ZONE`/`::date` expressions, extra `lastModifiedAssetTimestamp` column, new aliases/grouping), the regeneration step produces a diff and the workflow exits 1 \u2014 the PR cannot pass CI as-is.",
+        "path": "server/src/repositories/album.repository.ts",
+        "start_line": 146,
+        "end_line": 146,
+        "observation_id": "c115642f0fd94425",
+        "claimed_path": "server/src/repositories/album.repository.ts",
+        "path_resolution": "exact",
+        "merged_from": [
+          "08628d517f74022d",
+          "0dddd8f6631a4174",
+          "3fb04cb28fd34649"
+        ]
+      },
+      {
+        "content": "**DEFECT 1: `startDate` and `endDate` lose time precision \u2014 truncates to midnight UTC**\n\n- **File:** `server/src/repositories/album.repository.ts` (lines 141\u2013159)\n- **Failure scenario:** Album has assets with `localDateTime` of `2020-12-31T23:59:00.000Z` (earliest) and `2025-01-01T01:02:03.456Z` (latest).  \n  **Old behaviour:** `startDate = 2020-12-31T23:59:00.000Z`, `endDate = 2025-01-01T01:02:03.456Z` (full timestamps).  \n  **New behaviour:** `startDate = 2020-12-31T00:00:00.000Z`, `endDate = 2025-01-01T00:00:00.000Z` (date-only, time zeroed).  \n  The `::date` cast in the SQL (`(\"assets\".\"localDateTime\" AT TIME ZONE 'UTC')::date`) discards the time component. The DTO (`AlbumResponseDto`) and `mapAlbum` both expect full `Date` timestamps (see test at `server/src/dtos/album-response.dto.spec.ts:7\u20138` asserting `2020-12-31T23:59:00.000Z`).\n\n---",
+        "path": "server/src/repositories/album.repository.ts",
+        "start_line": 141,
+        "end_line": 141,
+        "observation_id": "ead82fedd0b786c8",
+        "claimed_path": "server/src/repositories/album.repository.ts",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "**DEFECT 2: `lastModifiedAssetTimestamp` loses time precision \u2014 same root cause**\n\n- **File:** `server/src/repositories/album.repository.ts` (lines 162\u2013170)\n- **Failure scenario:** Album's most-recently-updated asset has `updatedAt = 2024-06-15T14:30:45.123Z`.  \n  **Old behaviour (via removed `getLastUpdatedAssetForAlbumId`):** returned full timestamp `2024-06-15T14:30:45.123Z`.  \n  **New behaviour:** returns `2024-06-15T00:00:00.000Z` (date-only).  \n  The `::date` cast on `assets.updatedAt` discards time. The service at `album.service.ts:68,84` passes this value directly to the DTO.\n\n---",
+        "path": "server/src/repositories/album.repository.ts",
+        "start_line": 162,
+        "end_line": 162,
+        "observation_id": "9f3b089c1fed88d2",
+        "claimed_path": "server/src/repositories/album.repository.ts",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "**DEFECT 3: Timezone conversion is suspect for `timestamptz` columns**\n\n- **File:** `server/src/repositories/album.repository.ts` (lines 144\u2013146, 154\u2013156, 165\u2013167)\n- Both `localDateTime` and `updatedAt` are `TIMESTAMP WITH TIME ZONE` (see migration `1694525143117-AddLocalDateTime.ts:7` and `1675667878312-AddUpdatedAtColumnToAlbumsUsersAssets.ts:9`).  \n  `timestamptz AT TIME ZONE 'UTC'` converts to UTC and returns `timestamp WITHOUT time zone`. The subsequent `::date` then takes the date of that UTC timestamp \u2014 which is correct for *date-only* grouping, but **wrong when the consumer expects the original timestamp**. The old query used `eb.fn.min('assets.localDateTime')` directly, preserving the full `timestamptz` value.\n\n---\n\n**DEFECT 4: Tests will fail / mask the regression**\n\n- **File:** `server/src/services/album.service.spec.ts` (e.g., lines 60\u201361, 102\u2013103, 448\u2013449, etc.)\n- Mocks return `startDate: new Date('1970-01-01')` (midnight UTC). The new query *also* returns midnight UTC, so unit tests pass despite the production behaviour being broken for real timestamps. The integration test at `album-response.dto.spec.ts:7\u20138` uses real `mapAlbum` with fixture data containing non-midnight times and will fail once the repository change is exercised.\n\n---\n\nNo other defects found (join restructuring is logically equivalent for inner joins; albums without assets correctly return no metadata row in both old and new queries).",
+        "path": "server/src/repositories/album.repository.ts",
+        "start_line": 144,
+        "end_line": 144,
+        "observation_id": "a43d642a81f94f4d",
+        "claimed_path": "server/src/repositories/album.repository.ts",
+        "path_resolution": "exact",
+        "merged_from": [
+          "3e956a12af4ecafc"
+        ]
+      }
+    ]
+  },
+  "rundir": "/home/user/.cache/llm-panel/runs/immich-app__immich__966c3f2-c677fb4873cf/20260827-235152-332919",
+  "extractor": "2",
+  "unlocated": []
+}

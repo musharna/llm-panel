@@ -1,0 +1,136 @@
+{
+  "review": {
+    "comments": [
+      {
+        "content": "- **core/src/main/java/io/kestra/plugin/core/execution/Assert.java:89** \u2014 A dynamic list such as `conditions: \"{{ inputs.conditions }}\"`, with `inputs.conditions = [\"{{ 42 == 42 }}\"]`, is parsed as JSON before rendering. Jackson receives the raw `{{ inputs.conditions }}` string and throws instead of executing the valid assertion list.",
+        "path": "core/src/main/java/io/kestra/plugin/core/execution/Assert.java",
+        "start_line": 89,
+        "end_line": 89,
+        "observation_id": "14657cf4fc419029",
+        "claimed_path": "core/src/main/java/io/kestra/plugin/core/execution/Assert.java",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "- **core/src/main/java/io/kestra/core/utils/TruthUtils.java:13** \u2014 `isFalsy(null)` returns `false`, although `isTruthy(null)` also returns `false`. With `conditions: [null]`, `Assert` counts the null condition as successful and completes instead of failing it.",
+        "path": "core/src/main/java/io/kestra/core/utils/TruthUtils.java",
+        "start_line": 13,
+        "end_line": 13,
+        "observation_id": "a15758619ba897ac",
+        "claimed_path": "core/src/main/java/io/kestra/core/utils/TruthUtils.java",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "- **core/src/main/java/io/kestra/plugin/core/execution/Assert.java:53** \u2014 The published example produces a task ID containing the literal text `\\n\" +`. Copying the example yields an ID that violates the task-ID pattern, so the example flow fails validation.",
+        "path": "core/src/main/java/io/kestra/plugin/core/execution/Assert.java",
+        "start_line": 53,
+        "end_line": 53,
+        "observation_id": "3ba29a3217371c65",
+        "claimed_path": "core/src/main/java/io/kestra/plugin/core/execution/Assert.java",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "- **core/src/main/java/io/kestra/plugin/core/output/OutputValues.java:54** \u2014 Copying this example makes the downstream Log task evaluate `outputs.output_values.\u00b2`, which does not exist, instead of `values.taskrun_data`; rendering fails rather than logging the output.",
+        "path": "core/src/main/java/io/kestra/plugin/core/output/OutputValues.java",
+        "start_line": 54,
+        "end_line": 54,
+        "observation_id": "d5233ae2fc78d03d",
+        "claimed_path": "core/src/main/java/io/kestra/plugin/core/output/OutputValues.java",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "**1. `core/src/main/java/io/kestra/plugin/core/execution/Assert.java:88-89` \u2014 conditions expression is JSON-parsed without ever being rendered**\n\n`MAPPER.readValue(this.conditions.getExpression(), LIST_TYPE_REFERENCE)` parses the raw, unrendered expression. Every other `Property<T>` in the codebase is rendered via `RunContext.render(...)` before use (e.g. `OutputValues.java:70`, `Property.as`/`asList`), and the plugin's own schema description says it exists to \"control outputs data emitted from previous task on this execution\".\nFailure scenario: a flow sets `conditions: \"{{ outputs.gen.conditions }}\"` (a templated list produced by a previous task \u2014 exactly the advertised use case). `getExpression()` returns the literal `{{ ... }}` string, `readValue` throws an uncaught `MismatchedInputException`/`JsonProcessingException` (it's outside the `try` that only catches `IllegalVariableEvaluationException`), so the run dies with a Jackson token-dump error, emits **no** `success`/`failed` metrics, and never reports which conditions passed or failed.",
+        "path": "core/src/main/java/io/kestra/plugin/core/execution/Assert.java",
+        "start_line": 88,
+        "end_line": 88,
+        "observation_id": "f207c14b95d6b926",
+        "claimed_path": "core/src/main/java/io/kestra/plugin/core/execution/Assert.java",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "**2. `core/src/main/java/io/kestra/plugin/core/execution/Assert.java:94` + `core/src/main/java/io/kestra/core/utils/TruthUtils.java:13` \u2014 a condition that renders to null is counted as a *success* (fail-open)**\n\n`isFalsy(null)` returns `false` (the `condition != null &&` guard), and `runContext.render(null)` legitimately returns null (`VariableRenderer.java:80-82` short-circuits on null input). So any condition list element that yields null is incremented into `success` instead of failing the task.\nFailure scenario: YAML `conditions: [\"{{ 42 == 42 }}\", ]` (trailing empty `- ` entry) deserializes to a list containing a `null` element \u2014 `PropertyDeserializer` JSON-serializes the array and `readValue` keeps the null element. The null entry renders to null, `isFalsy(null)` is false, `success` is incremented, and the Assert task **passes** despite containing an assertion that was never evaluated. For an assertions plugin a silent false-pass is the worst outcome: the flow continues.",
+        "path": "core/src/main/java/io/kestra/plugin/core/execution/Assert.java",
+        "start_line": 94,
+        "end_line": 94,
+        "observation_id": "75e7b4e5c75ef9bb",
+        "claimed_path": "core/src/main/java/io/kestra/plugin/core/execution/Assert.java",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "**3. `core/src/main/java/io/kestra/plugin/core/output/OutputValues.java:54` \u2014 example corrupted to `{{ outputs.output_values.\u00b2}}`**\n\nThe diff replaced the previously-valid `{{ outputs.output_values.values.taskrun_data }}` with `{{ outputs.output_values.\u00b2}}` (line 54 in the file, confirmed). This is a garbage token, not a rename.\nFailure scenario: the `@Example(full = true)` block is embedded in the public Kestra docs; a user copying this flow hits the `Log` task and Pebble cannot resolve attribute `\u00b2` on `outputs.output_values` \u2014 the documented example fails to render, and the example no longer demonstrates accessing `taskrun_data` at all. Nothing in the loop's try/catch or validation catches this \u2014 it surfaces as a render error in a flow the docs claim works.",
+        "path": "core/src/main/java/io/kestra/plugin/core/output/OutputValues.java",
+        "start_line": 54,
+        "end_line": 54,
+        "observation_id": "e8f2b8fc5d010f11",
+        "claimed_path": "core/src/main/java/io/kestra/plugin/core/output/OutputValues.java",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "**4. `core/src/main/java/io/kestra/plugin/core/execution/Assert.java:113` \u2014 a failing-to-render `errorMessage` replaces the assertion-failure exception**\n\n`runContext.render(errorMessage).as(String.class)` is evaluated while constructing the `throw new Exception(...)`. `RunContextProperty.as` is null-safe (property absent \u2192 empty Optional), but if `errorMessage` *is* set as a template referencing a missing attribute, `Property.as` \u2192 `runContext.render(expression)` throws `IllegalVariableEvaluationException` (via `properPebbleException`, `VariableRenderer.java:54-65`) \u2014 that exception propagates instead of the \"N assertions failed!\" exception.\nFailure scenario: user configures `errorMessage: \"Expected X, got {{ outputs.missing.value }}\"` and a condition fails. The task run fails with \"Unable to find `value`...\" (the render error) and the actual assertion report (`2 assertions failed!` + metrics) is lost from the failure surface; the custom message the user wrote for this exact situation is never delivered.",
+        "path": "core/src/main/java/io/kestra/plugin/core/execution/Assert.java",
+        "start_line": 113,
+        "end_line": 113,
+        "observation_id": "372948300ba088b4",
+        "claimed_path": "core/src/main/java/io/kestra/plugin/core/execution/Assert.java",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "### 1. **Assert.java:112** \u2014 `AtomicInteger.toString()` used instead of `get()` in exception message\n```java\nthrow new Exception(\n    failed + \" assertion\" + (failed.get() > 1 ? \"s\" : \"\") + \" failed!\" + ...\n```\n`failed` is an `AtomicInteger`. `failed + \" assertion\"` invokes `AtomicInteger.toString()` \u2192 `\"java.util.concurrent.atomic.AtomicInteger@<hash>\"`, not the count.  \n**Failure scenario**: Any failed assertion produces an exception message like `java.util.concurrent.atomic.AtomicInteger@1a2b3c4d assertions failed!` instead of `2 assertions failed!`. The test at `AssertTest.java:68` (`containsString(\"2 assertions failed\")`) would fail.\n\n---",
+        "path": "core/src/main/java/io/kestra/plugin/core/execution/Assert.java",
+        "start_line": 112,
+        "end_line": 112,
+        "observation_id": "ddbf141aca567ee8",
+        "claimed_path": "Assert.java",
+        "path_resolution": "basename",
+        "merged_from": []
+      },
+      {
+        "content": "### 2. **Assert.java:95** \u2014 Log placeholder/argument mismatch\n```java\nrunContext.logger().error(\"Assertion `{}` failed!\", s, renderer);\n```\nOne `{}` placeholder but two arguments (`s` and `renderer`). SLF4J ignores the second argument.  \n**Failure scenario**: When an assertion fails, the rendered value (e.g., `\"false\"`) is not logged, only the raw template string `s` is. Debugging failed assertions loses the actual evaluated result.\n\n---",
+        "path": "core/src/main/java/io/kestra/plugin/core/execution/Assert.java",
+        "start_line": 95,
+        "end_line": 95,
+        "observation_id": "3e8d25f41c96c2a8",
+        "claimed_path": "Assert.java",
+        "path_resolution": "basename",
+        "merged_from": []
+      },
+      {
+        "content": "### 3. **Assert.java:53\u201357** \u2014 Invalid YAML in `@Plugin` example\n```java\n\"  - id: fail\\\\n\\\" +\\n\" +\n\"    type: io.kestra.plugin.core.execution.Assert\\n\"\n```\nThe example code embeds a literal `\\n` escape and a Java string concat (`\\\" +`) inside what should be a YAML snippet. This is not valid YAML and will misrender in docs/UI.  \n**Failure scenario**: Users copying the example get a parse error.\n\n---",
+        "path": "core/src/main/java/io/kestra/plugin/core/execution/Assert.java",
+        "start_line": 53,
+        "end_line": 53,
+        "observation_id": "5cfc9ea3adf9a228",
+        "claimed_path": "Assert.java",
+        "path_resolution": "basename",
+        "merged_from": []
+      },
+      {
+        "content": "### 4. **OutputValues.java:54** \u2014 Typo in example template expression\n```yaml\n{{ outputs.output_values.\u00b2}}\n```\n`\u00b2` (U+00B2 SUPERSCRIPT TWO) is not a valid field name. The original (per diff context) was `{{ outputs.output_values.values.taskrun_data }}`.  \n**Failure scenario**: The example flow fails to render with \"Unknown variable `\u00b2`\" or similar Pebble error.\n\n---",
+        "path": "core/src/main/java/io/kestra/plugin/core/output/OutputValues.java",
+        "start_line": 54,
+        "end_line": 54,
+        "observation_id": "df7e619271a695f1",
+        "claimed_path": "OutputValues.java",
+        "path_resolution": "basename",
+        "merged_from": []
+      }
+    ]
+  },
+  "rundir": "/home/user/.cache/llm-panel/runs/kestra-io__kestra__06e7c6e-d4b384c830ff/20260828-001807-547600",
+  "extractor": "2",
+  "unlocated": [
+    {
+      "content": "### Summary\n| File | Line | Severity | Issue |\n|------|------|----------|-------|\n| `Assert.java` | 112 | **Critical** | Exception message corrupted by `AtomicInteger.toString()` |\n| `Assert.java` | 95 | **Medium** | Logged rendered value dropped |\n| `Assert.java` | 53\u201357 | **Low** | Example YAML is syntactically invalid |\n| `OutputValues.java` | 54 | **Low** | Example template has typo `\u00b2` |",
+      "observation_id": "45121b5eae85d578",
+      "claimed_path": "Assert.java",
+      "path_resolution": "basename"
+    }
+  ]
+}

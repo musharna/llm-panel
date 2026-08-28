@@ -1,0 +1,51 @@
+{
+  "review": {
+    "comments": [
+      {
+        "content": "### 1. HIGH: `outputs != nil` check fails for empty tensors \u2014 causes `Rows` to be called with empty indices\n\n**Files & Lines:**\n- `model/models/llama/model.go:140`\n- `model/models/qwen2/model.go:78`\n- `model/models/qwen25vl/model_text.go:115`\n- `model/models/mistral3/model_text.go:87`\n- `model/models/llama4/model_text.go:138`\n- `model/models/qwen3/model.go:131`\n- `model/models/gemma2/model.go:163`\n- `model/models/gemma3/model_text.go:148`\n- `model/models/gptoss/model.go:94`\n- `model/models/mllama/model_text.go:81`\n\n**Failure Scenario:**\nPreviously, `batch.Outputs` was a `[]int32` slice. The model's `Forward` only created an outputs tensor when `len(batch.Outputs) > 0`:\n```go\nif len(batch.Outputs) > 0 && i == len(m.Layers)-1 {\n    outputs = ctx.Input().FromIntSlice(batch.Outputs, len(batch.Outputs))\n}\n```\nOtherwise `outputs` remained `nil`, and the layer's `if outputs != nil` guard skipped the `Rows` call.\n\nNow `batch.Outputs` is **always** a tensor (created via `FromIntSlice` or `Arange` in `runner/ollamarunner/runner.go:583,1070`), even when empty (`Dim(0) == 0`). The layer's `if outputs != nil` check passes, `Rows(ctx, outputs)` is called with an empty indices tensor, and `ggml_get_rows` receives a zero-length indices tensor \u2014 likely causing a crash or silent corruption.\n\n**Concrete Input \u2192 Wrong Behavior:**\n- Runner builds a batch where no sequence is at its final token (`batchOutputs` slice is empty)\n- `batch.Outputs = ctx.Input().FromIntSlice([], 0)` creates a valid but empty tensor\n- Last layer executes `hiddenState.Rows(ctx, emptyTensor)` \u2192 `ggml_get_rows` with empty indices\n\n---\n\n### 2. MEDIUM: No validation that `Positions`/`Outputs` tensors are 1D \u2014 multi-dimensional tensors cause OOB access",
+        "path": "model/models/llama/model.go",
+        "start_line": 140,
+        "end_line": 140,
+        "observation_id": "9b9ca2720dd95ceb",
+        "claimed_path": null,
+        "path_resolution": "relocated",
+        "merged_from": [
+          "48aa883aebe54508",
+          "8ce984c88190e868",
+          "a76ba4ed7f76948f",
+          "a2da7825010a217d"
+        ]
+      },
+      {
+        "content": "**Files & Lines:**\n- `model/model.go:285` (validation only checks `Dim(0)`)\n- `kvcache/causal.go:203,221` (uses `len(c.curPositions)` vs `batch.Sequences[i]`)\n- `kvcache/encoder.go:94` (indexes `Ints()[index]` assuming flat 1D)\n- `kvcache/wrapper.go:50-52` (iterates `curPositions` vs `batch.Sequences[k]`)\n- `model/models/llama4/model_text.go:221-223` (allocates `Dim(0)` but iterates `Ints()`)\n\n**Failure Scenario:**\nThe validation `batch.Positions.Dim(0) != len(batch.Sequences)` only checks the first dimension. If a caller passes a 2D tensor `[batch, seq]`, `Dim(0)` matches `len(Sequences)` but `Ints()` returns `batch*seq` elements. The causal cache then iterates `batch*seq` times while indexing `batch.Sequences[i]`, causing panic or memory corruption.",
+        "path": "model/model.go",
+        "start_line": 285,
+        "end_line": 285,
+        "observation_id": "19e4e1a0a84425d5",
+        "claimed_path": "model/model.go",
+        "path_resolution": "exact",
+        "merged_from": [
+          "bb9125ad93c0cdaf"
+        ]
+      },
+      {
+        "content": "**Concrete Input \u2192 Wrong Behavior:**\n- Caller constructs `Positions` as 2D tensor shape `[2, 3]` (6 elements) with `Sequences` length 2\n- Validation passes: `Dim(0)=2 == len(Sequences)=2`\n- `causal.go:221` loops 6 times, `batch.Sequences[2]` panics (index out of range)\n\n---\n\n### 3. LOW: `gemma3/embed.go` assigns `Outputs = Positions` \u2014 propagates multi-dimensional shape to `Rows`\n\n**File & Line:**\n- `model/models/gemma3/embed.go:25`\n\n**Failure Scenario:**\nIf `Positions` is multi-dimensional (defect #2), `Outputs` becomes the same multi-dimensional tensor. The TextModel's last layer calls `hiddenStates.Rows(ctx, batch.Outputs)` with a non-1D indices tensor, which `ggml_get_rows` likely rejects.\n\n---\n\n### Summary of Fixes Needed\n\n| Defect | Fix |\n|--------|-----|\n| #1 | Change all `if outputs != nil` \u2192 `if outputs != nil && outputs.Dim(0) > 0` in layer `Forward` methods |\n| #2 | Add validation in `model.Forward`: `if batch.Positions.Dim(0) != len(batch.Positions.Ints()) { return error }` (or require 1D via shape check) |\n| #3 | In `gemma3/embed.go`, ensure `Outputs` is 1D: `batch.Outputs = batch.Positions.Reshape(ctx, -1)` or validate shape |",
+        "path": "kvcache/causal.go",
+        "start_line": 221,
+        "end_line": 221,
+        "observation_id": "718753220586eef8",
+        "claimed_path": "causal.go",
+        "path_resolution": "basename",
+        "merged_from": [
+          "bba6b316026a159c",
+          "ff7f2976f29ce0c8",
+          "4d0eb79017f8d278",
+          "9324283f27472317"
+        ]
+      }
+    ]
+  },
+  "rundir": "/home/user/.cache/llm-panel/runs/ollama__ollama__b6002f6-a7399e8aa527/20260828-004235-718920",
+  "extractor": "2",
+  "unlocated": []
+}

@@ -70,7 +70,10 @@ came from the degraded pilot and should be ignored. Both estimates rest on very 
   `--cwd` on an empty temporary directory and the diff in the prompt. These are
   diff-in-prompt numbers; a reviewer with the checkout can see callers, tests and history
   that these judges cannot, and the benchmark's own reviewers had that. Found by or-grok,
-  2026-08-26.
+  2026-08-26. Answered by the paired checkout arm
+  (`../results-checkout-3judge`): with the judges standing in a shallow checkout of the PR
+  head, 13 → 19 of these 123 references match (McNemar p = 0.21), and 5 of the 13 below
+  are LOST there.
 - **One semantic match was scored against a bare header, and survived re-scoring with its
   body attached.** Under extractor v1 the finding scored against FreeCAD@ec3da2e
   `DrawViewPart.h:242` was, in full, `**File: DrawViewPart.h (lines 242-244)**` -- the

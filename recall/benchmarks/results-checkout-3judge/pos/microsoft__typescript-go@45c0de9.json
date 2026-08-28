@@ -1,0 +1,43 @@
+{
+  "review": {
+    "comments": [
+      {
+        "content": "- **[P1] `internal/ls/diagnostics.go:44` \u2014 Nil converter crashes every non-empty diagnostic response.** For example, opening `const x: string = 1;` and requesting document diagnostics produces a semantic diagnostic, passes `nil` to `toLSPDiagnostic`, and panics when `converters.ToLSPRange` dereferences the receiver instead of returning the diagnostic report.## Defect",
+        "path": "internal/ls/diagnostics.go",
+        "start_line": 44,
+        "end_line": 44,
+        "observation_id": "d40cf4f4fe4ae11b",
+        "claimed_path": "internal/ls/diagnostics.go",
+        "path_resolution": "exact",
+        "merged_from": [
+          "098ab1e1bb5d7153"
+        ]
+      },
+      {
+        "content": "**FILE: `internal/ls/diagnostics.go`, LINE 44 (in the added `toLSPDiagnostics` function)**\n**Severity: High \u2014 guaranteed runtime panic (nil pointer dereference)**\n\n```go\nlspDiagnostics = append(lspDiagnostics, toLSPDiagnostic(diag, nil)) // converters can be nil if not needed\n```\n\nThe new `toLSPDiagnostics` passes `nil` for `converters` on the claim that \"converters can be nil if not needed\". This is wrong. `toLSPDiagnostic` (line 50) calls `converters.ToLSPRange(...)` **unconditionally** at both line 68 (related information) and line 86 (the main `Range` field). `ToLSPRange` is a method on `*Converters` with a non-nil receiver that dereferences `c`:\n\n- `converters.go:33` `ToLSPRange` \u2192 `c.PositionToLineAndCharacter(...)`\n- `converters.go:210` \u2192 `lineMap := c.getLineMap(script.FileName())`\n\n`c.getLineMap` on a nil `*Converters` receiver panics with `invalid memory address or nil pointer dereference`.\n\n**Failure scenario:** Open any document that produces at least one diagnostic (a syntax error, semantic error, or suggestion \u2014 i.e. essentially every edit with an issue, and the whole point of this endpoint). `GetDocumentDiagnostics` \u2192 the loop at line 43-45 invokes `toLSPDiagnostic(diag, nil)`; line 86 dereferences the nil receiver and the LSP `textDocument/diagnostic` request crashes with a panic. There is no code path where a diagnostic can be produced without hitting line 86, so the nil is reachable on every non-empty result. The prior code (removed in this diff) correctly passed `l.converters`; the replacement introduces the nil.\n\n**Note on what I checked and ruled out:** I also checked the removal of `Kind: lsproto.StringLiteralFull{}` from the report \u2014 this is NOT a defect. `Kind` is `StringLiteralFull` (lsp_generated.go:9577-9582), whose zero value marshals identically to `\"full\"`, so its removal is behaviorally a no-op. The only real defect is the nil-converters panic.",
+        "path": "internal/ls/diagnostics.go",
+        "start_line": 44,
+        "end_line": 44,
+        "observation_id": "0ba2213d5fcfc394",
+        "claimed_path": "internal/ls/diagnostics.go",
+        "path_resolution": "exact",
+        "merged_from": [
+          "59effb0537a37dec"
+        ]
+      },
+      {
+        "content": "**DEFECT: Nil pointer dereference in `toLSPDiagnostic`**\n\n**File:** `internal/ls/diagnostics.go`  \n**Line:** 44 (call site) / lines 68, 86 (dereference sites)\n\n**Failure scenario:** Any call to `GetDocumentDiagnostics` that returns at least one diagnostic (syntactic, semantic, suggestion, or declaration) will panic with nil pointer dereference.\n\n**Why:** The new `toLSPDiagnostics` function passes `nil` for the `converters` parameter (line 44), but `toLSPDiagnostic` unconditionally calls `converters.ToLSPRange()` on:\n- Line 68: for each `RelatedInformation` entry\n- Line 86: for the main diagnostic range (always executed)\n\nThe comment \"converters can be nil if not needed\" on line 44 is incorrect \u2014 converters are always needed for range conversion.\n\n**Original code** (pre-diff) correctly passed `l.converters` which is non-nil.",
+        "path": "internal/ls/diagnostics.go",
+        "start_line": 44,
+        "end_line": 44,
+        "observation_id": "bd2f5de1101d5047",
+        "claimed_path": "internal/ls/diagnostics.go",
+        "path_resolution": "exact",
+        "merged_from": []
+      }
+    ]
+  },
+  "rundir": "/home/user/.cache/llm-panel/runs/microsoft__typescript-go__45c0de9-dbb2e57c7f7a/20260827-133359-2434505",
+  "extractor": "2",
+  "unlocated": []
+}

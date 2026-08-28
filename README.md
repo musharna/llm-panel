@@ -227,6 +227,13 @@ nothing.
   panel in an empty temporary directory with the diff in the prompt, so the numbers above
   are diff-in-prompt review. A reviewer with the checkout — as the benchmark's own
   reviewers have — can see callers, tests and history that these judges cannot.
+  The paired repo-access arm (`--cwd-mode checkout`, same instances and roster) puts the
+  judges in a shallow checkout of the PR head: recall moves 10.6% → 15.4% (13 → 19 of the
+  same 123 references) but McNemar p = 0.21, and the checkout **loses 5** of the clean
+  arm's matches while gaining 11 — repo access changes what judges attend to rather than
+  strictly adding. Findings rise 78 → 126 at roughly flat precision, sitting between the
+  clean and broad arms on every axis. See
+  `recall/benchmarks/results-checkout-3judge/README.md`.
 - **Location agreement overstates semantic agreement ~2x.** 20.3% of references had a
   finding at the right file and line; 10.6% had one a judge called the same concern. A
   location-based matcher cannot detect that gap about itself, which is why scoring is
