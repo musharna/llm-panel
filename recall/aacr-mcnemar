@@ -1,0 +1,81 @@
+#!/usr/bin/env python3
+"""McNemar (exact, discordant pairs) between two arms judged on the SAME references.
+usage: mcnemar2.py <scores-dir> <armA> <armB>   e.g.  mcnemar2.py scores clean checkout
+Compares armA-pos vs armB-pos and armA-neg vs armB-neg, by ALL / defect-y / maint / AI / human."""
+
+import signal
+import sys
+import json
+import math
+import pathlib
+import importlib.util
+import importlib.machinery
+
+signal.signal(
+    signal.SIGALRM, lambda *_: (sys.stderr.write("walltime guard\n"), sys.exit(2))
+)
+signal.alarm(80)
+from scipy.stats import binomtest, fisher_exact
+
+S = pathlib.Path(sys.argv[1])
+A, B = sys.argv[2], sys.argv[3]
+spec = importlib.util.spec_from_loader(
+    "rc",
+    importlib.machinery.SourceFileLoader(
+        "rc", str(pathlib.Path(__file__).resolve().parent / "aacr-recut")
+    ),
+)
+rc = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(rc)
+rc.HERE = pathlib.Path(__file__).resolve().parent / "benchmarks"
+idx = rc.bench_index()
+
+
+def verdicts(arm):
+    out = {}
+    for inst in json.load(open(S / f"{arm}.json"))["eval_res"]:
+        c = inst["instance_id"].split("@")[-1]
+        for cm in inst["comments"]:
+            k = rc.key_of(c, cm["path"], cm["from_line"], cm["note"])
+            out[k] = (bool(cm.get("semantic_match")), idx[k])
+    return out
+
+
+def wilson(k, n, z=1.96):
+    p = k / n
+    d = 1 + z * z / n
+    c = (p + z * z / (2 * n)) / d
+    h = z * math.sqrt(p * (1 - p) / n + z * z / (4 * n * n)) / d
+    return 100 * (c - h), 100 * (c + h)
+
+
+D = rc.DEFECTY
+for side in ("pos", "neg"):
+    a, b = verdicts(f"{A}-{side}"), verdicts(f"{B}-{side}")
+    assert a.keys() == b.keys(), f"{side}: reference sets differ ({len(a)} vs {len(b)})"
+    for name, pred in (
+        ("ALL", lambda r: True),
+        ("defect-y", lambda r: r.get("category") in D),
+        ("maint", lambda r: r.get("category") not in D),
+        ("AI", lambda r: bool(r.get("is_ai_comment"))),
+        ("human", lambda r: not r.get("is_ai_comment")),
+    ):
+        ks = [k for k in a if pred(a[k][1])]
+        n01 = sum(1 for k in ks if not a[k][0] and b[k][0])
+        n10 = sum(1 for k in ks if a[k][0] and not b[k][0])
+        n11 = sum(1 for k in ks if a[k][0] and b[k][0])
+        ma = sum(1 for k in ks if a[k][0])
+        mb = sum(1 for k in ks if b[k][0])
+        n = len(ks)
+        p_mc = binomtest(n01, n01 + n10, 0.5).pvalue if n01 + n10 else 1.0
+        p_f = fisher_exact([[ma, n - ma], [mb, n - mb]])[1]
+        print(
+            f"{side:3} {name:8} n={n:3} {A} {ma:2} ({100 * ma / n:4.1f}%) {B} {mb:2} ({100 * mb / n:4.1f}%) | both {n11:2} only-{B} {n01:2} only-{A} {n10:2} | McNemar p={p_mc:.4f} (Fisher p={p_f:.4f})"
+        )
+    ma = sum(1 for k in a if a[k][0])
+    mb = sum(1 for k in b if b[k][0])
+    n = len(a)
+    print(
+        f"{side:3} Wilson {A} {ma}/{n}: [%.1f, %.1f]   {B} {mb}/{n}: [%.1f, %.1f]"
+        % (*wilson(ma, n), *wilson(mb, n))
+    )
