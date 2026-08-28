@@ -238,8 +238,10 @@ def panel_findings(diff, judges, effort, timeout, style="defect", cwd=None):
     return read_run(pathlib.Path(m.group(1).rstrip(":]")))
 
 
-def read_run(d):
-    """Observations from a finished panel run dir. Split out from panel_findings so it can
+def read_run(d, only=None):
+    """Observations from a finished panel run dir. `only` = judge names to keep; the
+    rest are recorded as `excluded`, which is not a degradation -- it is the roster-matched
+    control for an arm where one judge could not finish under its condition. Split out from panel_findings so it can
     be exercised against REAL degraded run dirs without spending judge calls."""
     # A JUDGE THAT FAILED IS NOT A JUDGE THAT FOUND NOTHING.
     #
@@ -261,6 +263,9 @@ def read_run(d):
                                                "which judges answered"}
     for jr in judges:
         name, status = jr.get("name"), jr.get("status")
+        if only is not None and name not in only:
+            degraded.append(f"{name}:excluded")
+            continue
         if status not in ANSWERED:
             degraded.append(f"{name}:{status}")
             continue
@@ -501,6 +506,9 @@ def main():
                    help="strict = a finding needs path AND line; file = also hand over "
                         "findings that name a real file but no line (upstream matches "
                         "those file-scoped). Reported as a sensitivity, not a default.")
+    x.add_argument("--judges", default=None,
+                   help="comma list; keep only these judges' reviews (others recorded as "
+                        "excluded). Builds a roster-matched control from finished panels.")
     sub.add_parser("help-eval")
     a = ap.parse_args()
 
@@ -523,7 +531,7 @@ def main():
             if not d.is_dir() or iid is None:
                 print(f"  SKIP {f.name}: rundir missing or unknown instance")
                 continue
-            obs, info = read_run(d)
+            obs, info = read_run(d, set(a.judges.split(",")) if a.judges else None)
             if obs is None:
                 print(f"  SKIP {f.name}: {info.get('why')}")
                 continue
@@ -539,7 +547,8 @@ def main():
                   f"judges={info['reviews']}/{info.get('judges_total', 0)}"
                   + (f"  DEGRADED[{','.join(deg)}]" if deg else ""))
         nrev = sum(r[1] for r in rev); ntot = sum(r[3] for r in rev)
-        degi = [r[0] for r in rev if r[4]]
+        # an excluded judge is a roster choice made at extraction time, not a failed slot
+        degi = [r[0] for r in rev if any(not x.endswith(":excluded") for x in r[4])]
         # REWRITE THE MANIFEST TO DESCRIBE THE DIRECTORY.
         #
         # `run` writes a manifest for the instances IT ran. Re-running a degraded subset
