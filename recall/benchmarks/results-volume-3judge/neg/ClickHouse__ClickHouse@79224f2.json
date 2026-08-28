@@ -1,0 +1,61 @@
+{
+  "review": {
+    "comments": [
+      {
+        "content": "**1. HIGH \u2014 TOCTOU: the lock is released before the keeper commit and before the status flip, so the double-processing the PR claims to fix is still reachable.**\n`src/Storages/ObjectStorageQueue/ObjectStorageQueueIFileMetadata.cpp:265` (lock scope) and the `return std::nullopt` at `:287`; commit happens back in `src/Storages/ObjectStorageQueue/ObjectStorageQueueSource.cpp` after `prepareSetProcessingRequests` returns (`keeper->multi` / OK-branch handling outside the lock).\n`processing_lock` lives only inside this function. It is dropped when the function returns, but the keeper transaction that actually creates the processing node, and the in-memory transition to `Processing`, happen later in the caller. There is no state change observable to a second caller inside the lock's lifetime, so the state check at `:274-279` cannot see the other table's intent.\nFailure scenario: two S3Queue tables on the same server, same keeper path, both list the same new file F. T1 calls prepare (acquires/releases lock), then T2 calls prepare (lock free, local state still Pending \u2192 proceeds). T2's `multi` commits processing-node-2, T2 starts processing F; T1's `multi` then commits processing-node-1 (the requests contain no cross-check on the other node) and T1 also processes F. Result: F is processed twice \u2192 duplicate rows downstream. The window spans a keeper round-trip and is realistic when both tables' prepares/commits interleave.",
+        "path": "src/Storages/ObjectStorageQueue/ObjectStorageQueueIFileMetadata.cpp",
+        "start_line": 265,
+        "end_line": 265,
+        "observation_id": "ddc36188e60337a8",
+        "claimed_path": "src/Storages/ObjectStorageQueue/ObjectStorageQueueIFileMetadata.cpp",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "**2. MEDIUM-HIGH \u2014 the compaction block sits outside `if (status == OK)` and reindexes `new_batch` without reindexing `file_metadatas`; on a failed `multi()` with some dropped files, prepared-but-uncommitted files are still yielded, dropped files are silently discarded, and any failure-path code that pairs `file_metadatas[i]` by index with the compacted batch now touches the wrong file.**\n`src/Storages/ObjectStorageQueue/ObjectStorageQueueSource.cpp:240-252`.\n`num_successful_objects` is counted before `keeper->multi()` runs. The condition `num_successful_objects != new_batch.size()` and the compaction run even when the commit failed. Concrete scenario: batch of 5, prepares for 2 files return nullopt (lock contention), 3 succeed; `multi()` fails with a retryable error. The compaction still fires (3 != 5) and produces a 3-object batch of files whose processing was never committed; those files then flow to the consumer, get processed without any keeper record, and are reprocessed after a restart (duplicates), while the 2 dropped files get no error/retry accounting at all. Additionally, after compaction the i-th element of `new_batch` is no longer the same file the i-th element of `file_metadatas` refers to (nulls were removed from the middle), so any failure-path loop that uses `file_metadatas[i]` against the compacted batch (e.g. preparing reset/retry requests per file) applies metadata operations to the wrong files. Conditional variant: if the (unshown) multi-failure branch clears `new_batch` (a common clear-and-retry pattern), then `num_successful_objects > 0` vs `new_batch.size() == 0` makes the compaction rebuild a vector of `N` default (null) objects, which the batch consumer then dereferences \u2192 null-pointer crash.",
+        "path": "src/Storages/ObjectStorageQueue/ObjectStorageQueueSource.cpp",
+        "start_line": 240,
+        "end_line": 240,
+        "observation_id": "25d24fe379ef788c",
+        "claimed_path": "src/Storages/ObjectStorageQueue/ObjectStorageQueueSource.cpp",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "**3. MEDIUM \u2014 a file in `Failed` with `retries >= max_loading_retries` is dropped from every batch but never settled, so the table re-fetches it forever and can spin.**\n`src/Storages/ObjectStorageQueue/ObjectStorageQueueIFileMetadata.cpp:275-279` (drop) + `src/Storages/ObjectStorageQueue/ObjectStorageQueueSource.cpp:208` (discard).\n`nullopt` for the Failed-max case discards the object without creating any \"given up\" marker in keeper and without any retry/backoff bookkeeping. In unordered mode the file's metadata node still exists and still appears in every subsequent listing: each `next()` batch re-fetches it, prepare returns nullopt, it is dropped, `new_batch` compacts to fewer/zero objects. Concrete scenario: one file permanently poisoned (e.g. max retries reached); the table alternates between returning small/empty batches and immediately refetching the same listing, so it never reaches a clean \"no new files\" idle state and the LOG_TEST lines fire on every iteration \u2014 permanent churn, wasted keeper/S3 listing round trips, and CPU spin for as long as the table runs.",
+        "path": "src/Storages/ObjectStorageQueue/ObjectStorageQueueIFileMetadata.cpp",
+        "start_line": 275,
+        "end_line": 275,
+        "observation_id": "8efef7f04cf08693",
+        "claimed_path": "src/Storages/ObjectStorageQueue/ObjectStorageQueueIFileMetadata.cpp",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "**4. LOW \u2014 contradictory log lines: the second message asserts a cause that contradicts the first.**\n`src/Storages/ObjectStorageQueue/ObjectStorageQueueIFileMetadata.cpp:281-286`.\nThe branch first logs \"File {} has non-processable state `Processed` (retries: \u2026)\", then immediately logs \"File {} is being processed on this server by another table on this server\". For the `Processed` and `Failed`-max cases the file is by definition *not* being processed by another table \u2014 the second line is factually wrong, and for `Processing` the first line's \"non-processable state\" framing is the misleading one. Concrete impact: an operator debugging a stalled queue reads two directly contradictory diagnostics and cannot tell why files are being skipped. The same \"another table\" attribution at `:270` (lock-contention branch) is also wrong for the common case where contention comes from another *thread of the same table* (multiple concurrent readers), not another table.",
+        "path": "src/Storages/ObjectStorageQueue/ObjectStorageQueueIFileMetadata.cpp",
+        "start_line": 281,
+        "end_line": 281,
+        "observation_id": "31f9a045da6564e2",
+        "claimed_path": "src/Storages/ObjectStorageQueue/ObjectStorageQueueIFileMetadata.cpp",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "**5. LOW \u2014 the success log counts dropped files as successfully set.**\n`src/Storages/ObjectStorageQueue/ObjectStorageQueueSource.cpp:219`.\n`new_batch[i]` was already set to `nullptr` for every object whose prepare returned nullopt (`:208`) before this log runs, but the log prints `new_batch.size()` (the pre-drop count) and the `for` loop skips the nulls. Concrete scenario: batch of 10, 3 files already being processed by another table \u2192 log says \"Successfully set 10 files as processing\" while only 7 were set; anyone correlating this log with the actual result count (or with `num_successful_objects`) sees an impossibility.\n\n**6. LOW/CONDITIONAL \u2014 the state-based drop reads only the local in-memory `file_status->state`, so the nullopt mechanism adds no dedup for the stateless/restart case it appears to cover.**\n`src/Storages/ObjectStorageQueue/ObjectStorageQueueIFileMetadata.cpp:274`.\n`file_status->state` is this table's in-memory copy, not the state recorded in keeper. Concrete scenario: table A crashes after committing a processing node for F but before processing it; on restart A rebuilds its status from keeper and sees `Processing` \u2192 drops F forever until the staleness timeout resets it \u2014 meanwhile, back to back with item 1, the check still cannot ever observe the *other* table's pending commit, which is the case the PR's own comment (\"more than one table processing the same keeper path\") targets. This check only ever fires for state this server itself already knows about, so as a cross-table guard it is ineffective on its own; the only real guard is the lock, which suffers the window in item 1.\n\nI stopped here because I had nothing left that is pointable: the remaining hunks (the `LOG_TEST` at `ObjectStorageQueueSource.cpp:151` and the test change `tests/integration/test_storage_s3_queue/test.py:735`, `range(3)`\u2192`range(10)`) only broaden existing coverage/noise and I could not tie them to a wrong behavior without the test body, which is not in the diff.",
+        "path": "src/Storages/ObjectStorageQueue/ObjectStorageQueueSource.cpp",
+        "start_line": 219,
+        "end_line": 219,
+        "observation_id": "6eff915e1fad13b2",
+        "claimed_path": "src/Storages/ObjectStorageQueue/ObjectStorageQueueSource.cpp",
+        "path_resolution": "exact",
+        "merged_from": [
+          "2817b90586493a22"
+        ]
+      }
+    ]
+  },
+  "rundir": "/home/mjarnold/.cache/llm-panel/runs/aacr-up-agje5a7_-4900f0785a4d/20260828-123619-877361",
+  "extractor": "3",
+  "unlocated": []
+}

@@ -1,0 +1,1373 @@
+{
+  "ex_info": {
+    "start_time": "2026-08-28T19:49:10.330299",
+    "results_dir": "/home/mjarnold/llm-panel/recall/benchmarks/results-volume-3judge/pos",
+    "reviewer": "llm-panel",
+    "line_k": 1,
+    "limit": null,
+    "missing_instance_ids": []
+  },
+  "summary": {
+    "total_instances": 18,
+    "candidate_instances": 18,
+    "evaluated_instances": 18,
+    "missing_instances": 0,
+    "expected_notes": 123,
+    "generated_notes": 392,
+    "matched_line_notes": 61,
+    "matched_semantic_notes": 31,
+    "semantic_match_rate": 0.079,
+    "line_match_rate": 0.156,
+    "semantic_recall_rate": 0.252,
+    "line_recall_rate": 0.496,
+    "semantic_f1": 0.12,
+    "line_f1": 0.237,
+    "total_duration_seconds": 0.0,
+    "avg_duration_seconds": 0.0,
+    "total_input_tokens": 0,
+    "total_output_tokens": 0,
+    "total_tokens": 0,
+    "avg_input_tokens": 0,
+    "avg_output_tokens": 0
+  },
+  "eval_res": [
+    {
+      "instance_id": "vllm-project__vllm@6217b0c",
+      "repo": "vllm-project/vllm",
+      "comments": [
+        {
+          "note": "Redundant exception message in logger.exception call: the current implementation includes the exception string in the format specifier, but logger.exception automatically appends full exception details, causing duplication. Remove the `: %s` format specifier and `str(e)` argument.",
+          "path": "vllm/distributed/kv_transfer/kv_connector/v1/multi_connector.py",
+          "side": "right",
+          "from_line": 96,
+          "to_line": 97,
+          "line_match": false,
+          "semantic_match": false,
+          "matched_note": ""
+        }
+      ]
+    },
+    {
+      "instance_id": "lvgl__lvgl@4a57db3",
+      "repo": "lvgl/lvgl",
+      "comments": [
+        {
+          "note": "The change replaces dynamic text width calculation with a cached value (`dsc->text_size.x`), risking incorrect rendering if text updates occur without refreshing the cache. Ensure the cached dimensions remain consistent with the current text state.",
+          "path": "src/draw/lv_draw_label.c",
+          "side": "right",
+          "from_line": 220,
+          "to_line": 221,
+          "line_match": true,
+          "semantic_match": true,
+          "matched_note": "## Analysis\n\nThis diff changes how the width of a label's text is computed for drawing. Previously, both the `draw_main` function and `lv_draw_label_iterate_characters` called `lv_text_get_size(...)` with `LV_COORD_MAX` as `max_w`. Now the size is cached in `label->text_size` (computed in `lv_label_refr_text` with a limited `max_w`) and reused.\n\nThe key change in `lv_label_refr_text`:\n```c\nlv_text_get_size(&size, label->text, font, letter_space, line_space, max_w, flag);\nlabel->text_size = size;\n```\n\nHere `max_w` is the *constrained* width, not `LV_COORD_MAX`. This is the crux of several defects.\n\nLet me enumerate the actual defects:\n\n**Defect 1 — `lv_draw_label.c` line 221 (`w = dsc->text_size.x`) with EXPAND.** The original code in the EXPAND branch deliberately used `LV_COORD_MAX` as the max width to get the *full* unwrapped width of the text. The `text_size` cache is computed with a constrained `max_w`, which is the width used for wrapping. When `LV_LABEL_LONG_MODE_SCROLL` (EXPAND) is set, `max_w` is small (the object width), so `text_size.x` reflects the wrapped width (= object width), NOT the full text width. The original code was specifically computing the full width to force infinite expansion. So when EXPAND is enabled, `w = dsc->text_size.x` will return the constrained width instead of the full text width. This changes drawing behavior — the iterate function may not draw all characters / centers incorrectly.\n\nWait, let me look more carefully. In `lv_label_refr_text`, what is `max_w` when EXPAND is set? Let me recall the LVGL code. Actually I can't read the file. Let me reason from the code structure.\n\nThe variable `size` in `lv_label_refr_text` — the code around line 965 does `lv_text_get_size(&size, ..., max_w, flag)`. This `max_w` is used for wrapping. Under SCROLL/EXPAND modes, there's typically a special handling where `max_w` is set to `LV_COORD_MAX` or the full text width. But the point is: `text_size` is not unconditionally computed with `LV_COORD_MAX`. And critically, the cache is only refreshed in `lv_label_refr_text`, which is called on refresh events.\n\nKey defect: **The cache `text_size` computed with a wrapping `max_w` differs from what the drawing code needs (`LV_COORD_MAX`).** In the scroll/expand case, the drawn width must be the full unwrapped text width so the text can be scrolled/centered properly. But `text_size.x` reflects the width constrained to `max_w`.\n\nLet me think about the specific modes:\n\nFor `SCROLL` mode, `max_w` in `lv_label_refr_text` is typically `LV_COORD_MAX` actually — scroll labels are set with a huge width so text doesn't wrap. Hmm, in LVGL the scroll mode sets `label->expand` and the width. Actually, let me recall the real code.\n\nActually let me reason about the concrete bug about `text_size` being **uninitialized on first draw before first refresh**.\n\n**Defect 2 — Uninitialized `text_size` on first draw.** `label->text_size` is a new field in the struct. It's written only in `lv_label_refr_text`. But it's read in `draw_main` (lines 856, 894) and via `lv_draw_label_iterate_characters`. Is `lv_label_refr_text` guaranteed to be called before the first `draw_main`? It's called from `lv_label`'s refr flow (via the destructor/constructor event or on style/attribute change). However, `lv_draw_label_iterate_characters` (in `lv_draw_label.c`) is a general function that callers other than `lv_label` may use. If any external code or the library itself calls `lv_draw_label_iterate_characters` (or `lv_draw_label` with the draw descriptor) without the `text_size` being set by `lv_label_refr_text`, then `dsc->text_size.x` is garbage.\n\nMore importantly, the new `text_size` field in `lv_draw_label_dsc_t` — the `draw_main` sets it from `label->text_size`, but `lv_draw_label` and callers of the descriptor that construct their own descriptor don't initialize `text_size`. The struct formerly didn't have this field; now it's added to the middle of the struct in `lv_draw_label.h` at line 38 (after `text`). If any code does a designated-initializer or memset, the field could be garbage or zero. `lv_draw_label_iterate_characters` reads `dsc->text_size.x` unconditionally in the EXPAND branch. For callers that don't fill `text_size`, this reads uninitialized/garbage data.\n\nActually `lv_draw_label.h` — is there an `lv_draw_label_dsc_init`? In actual LVGL there isn't; descriptors are memset to 0 typically. So `text_size.x = 0` if memset. But `lv_draw_label_iterate_characters` is used by... let me think. This is a real concern: the function is a public/iter function that may be called with a descriptor not originating from a label widget.\n\n**Defect 3 — `label->text_size.x` in `draw_main` alignment/scroll checks now uses constrained width instead of full width.** Same root as defect 1.\n\nLet me focus on the most defensible, concrete defect: the semantic difference between caching with constrained `max_w` in `lv_label_refr_text` versus the drawing code which needs `LV_COORD_MAX`.\n\nLet me reason about `max_w` in `lv_label_refr_text`. In the LVGL source, `lv_label_refr_text` is:\n\n```c\nstatic void lv_label_refr_text(lv_obj_t * obj)\n{\n    lv_label_t * label = (lv_label_t *) obj;\n    uint32_t txt_len = lv_text_get_size(...); // no\n```\n\nActually the real one uses `lv_label_get_text` logic for dot handling. But we can see from the diff: it uses `max_w` from... The function does `lv_text_get_size(&size, label->text, font, letter_space, line_space, max_w, flag)`. Where does `max_w` come from? From `lv_obj_get_width(obj)`. So it's the widget width.\n\nNow, for SCROLL mode: scroll labels set the label's width to `LV_COORD_MAX` effectively via `label->expand` and margins. Actually scroll labels DO have a huge width. Hmm.\n\nLet me focus on the clearest case instead: **non-scroll, wrapped label where text wraps to a smaller height — width is fine actually.**\n\nHmm, let me reconsider. The original drawing code for alignment (line 856) computed size with `LV_COORD_MAX`, i.e., the natural unwrapped width, to check `if(size.x > lv_area_get_width(&txt_coords))` for center/right misalignment correction. Now it uses `label->text_size.x`, which is the wrapped width (capped at `max_w` ≈ widget width). For a wrapped, centered label whose text is wider than the label, the wrapped width == label width, so `size.x > width` is now **false**, when previously (with natural width > width) it was **true**. This changes the misalignment correction behavior → misplaced text for center/right-aligned wrapped scroll labels. That's a concrete behavior change / defect.\n\nActually wait — but the alignment correction (offset adjustment) is inside `if(size.x > lv_area_get_width(&txt_coords))`. With natural width the offset was applied; with wrapped text_size it won't be. That's a real defect: **centered/right-aligned labels whose text is wider than the label box will no longer receive the misalignment correction, causing misaligned/truncated rendering.**\n\nSimilarly for SCROLL_CIRCULAR (line 894): `if(size.x > lv_area_get_width(&txt_coords))` — with `text_size.x` being the wrapped/constrained width, the circular re-draw condition may not trigger for wrapped text. Previously the natural width would exceed the viewport → redraw. Now if wrapped width == viewport width, the condition `>` fails → circular scroll effect lost for wrapped text.\n\nHmm, but scroll labels typically don't wrap. These align/scroll cases mostly involve non-wrapping text. Still, the constrained-width semantics is the core flaw.\n\nLet me also consider the **expand branch in `lv_draw_label_iterate_characters`**. This is the clearest one. The `else` branch is the EXPAND case (per the comment \"If EXPAND is enabled then not limit the text's width to the object's width\"). It sets `w = text_size.x`. But `text_size.x` is capped at the object's width (from `lv_label_refr_text`'s `max_w`). So for EXPAND/SCROLL labels, `w` is now limited to the object width, which defeats the entire purpose of the EXPAND branch — text longer than the object won't be fully iterated/drawn. This is the most severe defect: **scroll/expand labels will not render the full text width; text is truncated at the object width.**\n\nActually wait — for scroll labels, `max_w` used in `lv_label_refr_text`... For SCROLL mode, LVGL sets the label's width to the full text width (via `lv_obj_set_width(label, w)` with `label->expand`), so `max_w` equals the full text width and `text_size.x == full width`. Hmm. In that case the scroll case might be fine. But `LV_LABEL_LONG_MODE_SCROLL_CIRCULAR` and `SCROLL` — the original code used `LV_COORD_MAX` deliberately. Whether text_size matches depends on whether max_w at refresh time equals the full text width.\n\nActually, the dirtiness characteristic: the drawing code previously computed size **fresh each draw** (at draw time, with the current font etc.). Now it reads a cached value computed at **refresh time**. If the label's geometry or the drawing conditions change between refresh and draw without a refresh, the cached value is stale. E.g., if `lv_obj_refr` recomputes layout but `lv_label_refr_text` is optimized out for some style-only changes, the cached size could be stale.\n\nLet me also note: **`label->text_size` is only written in `lv_label_refr_text`, but is it reset/zeroed at construction?** No constructor change in the diff. So on first draw before any refresh, `text_size` is garbage. `draw_main` is invoked on the first render; `lv_label_refr_text` is triggered by the label's refresh mechanism when the label is created (via the constructor calling it). But there's a pathway: if a label is created without text, `lv_label_refr_text` runs with empty text and sets text_size = {0,0}? Possibly. Still, the ordering is not guaranteed for the external `lv_draw_label_iterate_characters` path.\n\nLet me now nail the external-caller defect more concretely: `lv_draw_label_iterate_characters` is a public function in the draw API. Before this change, it computed the size itself from `dsc->text` — self-contained, correct for any caller. After the change, in the EXPAND branch it relies on `dsc->text_size`, which is a field that only `lv_label`'s `draw_main` populates. Any other caller of `lv_draw_label_iterate_characters` (or `lv_draw_label`) with EXPAND flag set will read an uninitialized `text_size` → garbage width → wrong iteration/rendering. This is a genuine API regression.\n\nNow for the `lv_draw_label.h` struct addition: adding `lv_point_t text_size` in the middle of the struct. If anything initializes via aggregate/designated initializers relying on positional layout, this shifts fields. But more importantly, `lv_draw_label`'s descriptor is typically initialized via `lv_draw_label_dsc_init` (which likely memsets). Since I can't verify, I'll note it as a lower-confidence item.\n\nLet me also mention the **stale cache on scroll/offset change.** `label->text_size` doesn't change, but that's fine.\n\nLet me consider the **`lv_label_refr_text` — the cached size is computed with the current `max_w`, but EXPAND text needs unbounded.** Already covered.\n\nNow let me also consider: is `text_size` ever invalidated correctly? There's `invalid_size_cache` bit in the struct. The new `text_size` is updated in `lv_label_refr_text`, but is `lv_label_refr_text` called on every relevant invalidation? On font size change, style change, width change — yes probably. But the alignment correction at draw time uses a size that might be for a different `max_w` than the draw-time `txt_coords` width, causing the exact misalignment the original comment warns about.\n\nLet me also flag: **`lv_draw_label.c` `w = dsc->text_size.x` — but `text_size` may be {0,0} if it's a generic draw descriptor where the caller didn't populate it.** Same as the external caller issue — this is the read point.\n\nLet me also note the low-probability: if `dsc->text` and `text_size` are inconsistent (someone edits text without refreshing), etc. — that's the cache-staleness class.\n\nNow, let me also check `draw_main` line 856 — the replaced code:\n```c\nlv_point_t size = label->text_size;\nif(size.x > lv_area_get_width(&txt_coords)) {\n```\nThe original recomputed with `LV_COORD_MAX`. Now uses wrapped `text_size.x`. Defect as described.\n\nLet me also consider whether there's an even more direct wrong-type issue: `text_size.y` — the drawing code only reads `.x` in these spots. `lv_label_refr_text` computes with `max_w` so `text_size.y` is the wrapped height. Not used in the diff, so no defect there directly.\n\nNow let me also check: **the `LV_LABEL_LONG_TXT_HINT` block** and dot handling. `lv_label_refr_text` calls `lv_label_revert_dots` before `lv_text_get_size`, then presumably re-applies dots. Fine.\n\nLet me count the items:"
+        },
+        {
+          "note": "`label->text_size` is reused later for scroll alignment/scroll-circular logic, but it’s only updated in `lv_label_refr_text()`. If font/letter_space/line_space/flags/max_w or `label->text` change and `lv_label_refr_text()` is not called before `draw_main()`, `text_size` can become stale and cause wrong alignment/scroll behavior. Consider either recomputing size in the specific draw paths when needed, or ensure all setters that impact text metrics update `label->text_size` (or invalidate and trigger `lv_label_refr_text()`) before draw.",
+          "path": "src/widgets/label/lv_label.c",
+          "side": "right",
+          "from_line": 856,
+          "to_line": 856,
+          "line_match": true,
+          "semantic_match": false,
+          "matched_note": ""
+        },
+        {
+          "note": "`label->text_size` is updated here based on current `max_w` and flags. If other code paths compute size with a different `max_w` (e.g., `LV_COORD_MAX` used in scroll checks previously), reusing this cached value can change behavior. Verify that `label->text_size` is intended to represent the unbounded width (`LV_COORD_MAX`) size for scrolling decisions; otherwise consider caching both constrained and unconstrained sizes or keep the local `lv_text_get_size(... LV_COORD_MAX ...)` for scroll logic.",
+          "path": "src/widgets/label/lv_label.c",
+          "side": "right",
+          "from_line": 968,
+          "to_line": 968,
+          "line_match": true,
+          "semantic_match": true,
+          "matched_note": "### 8. `src/widgets/label/lv_label.c:968` — `text_size` computed with wrong `max_w` for draw-time needs\n`lv_label_refr_text` calls `lv_text_get_size(&size, ..., max_w, flag)` where `max_w` is the object's current width constraint. But draw paths at lines 853/891/224 need `LV_COORD_MAX` (unconstrained).  \n**Failure scenario:** Any label where text exceeds widget width. Cached size is artificially clamped. All scroll/expand logic breaks as in defects 1-3.\n\n---"
+        },
+        {
+          "note": "The newly added `text_size` struct member is uninitialized, risking undefined behavior if accessed before `lv_label_refr_text` sets it; initialize to `{0, 0}` during label creation.",
+          "path": "src/widgets/label/lv_label_private.h",
+          "side": "right",
+          "from_line": 54,
+          "to_line": 56,
+          "line_match": true,
+          "semantic_match": true,
+          "matched_note": "### 7. `src/widgets/label/lv_label_private.h:53` — `text_size` not zero-initialized in constructor\nField added to struct but no initialization shown. LVGL objects are typically zeroed on alloc, but not guaranteed for all creation paths.  \n**Failure scenario:** Label created via non-standard path (e.g., manual `lv_obj_create` + type cast) or if allocator doesn't zero. First draw uses uninitialized `text_size` (defect 4 amplified).\n\n---"
+        },
+        {
+          "note": "The new text_size field is not consistently updated when the cache is invalidated. In LV_EVENT_GET_SELF_SIZE handler, when invalid_size_cache is true, only size_cache gets updated but text_size remains stale. This creates inconsistency between the two cached size fields.",
+          "path": "src/widgets/label/lv_label_private.h",
+          "side": "right",
+          "from_line": 54,
+          "to_line": 54,
+          "line_match": true,
+          "semantic_match": false,
+          "matched_note": ""
+        }
+      ]
+    },
+    {
+      "instance_id": "FreeCAD__FreeCAD@82fef4a",
+      "repo": "FreeCAD/FreeCAD",
+      "comments": [
+        {
+          "note": "Unnamed parameters in `NoOpEntityResolver::resolveEntity` trigger a linter warning; name the parameters and mark them as unused (e.g., with `[[maybe_unused]]` or a `(void)` cast) to resolve both the unnamed-parameter and unused-variable warnings.",
+          "path": "src/Base/Parameter.cpp",
+          "side": "right",
+          "from_line": 1866,
+          "to_line": 1866,
+          "line_match": false,
+          "semantic_match": false,
+          "matched_note": ""
+        },
+        {
+          "note": "Double newline detected. The string \"\\n\" followed by \"\\n\" produces two consecutive newlines. Consider using a single \"\\n\" or std::endl for consistency with other error messages.\n\n```suggestion\n        std::cerr << \"An error occurred during parsing\\n\";\n```",
+          "path": "src/Base/Parameter.cpp",
+          "side": "right",
+          "from_line": 1911,
+          "to_line": 1911,
+          "line_match": false,
+          "semantic_match": false,
+          "matched_note": ""
+        },
+        {
+          "note": "Replacing `std::endl` with `\\n` in error messages may delay critical error visibility due to lack of explicit flushing; revert to `std::endl` to guarantee immediate terminal output for error reporting.",
+          "path": "src/Base/Parameter.cpp",
+          "side": "right",
+          "from_line": 1913,
+          "to_line": 1913,
+          "line_match": false,
+          "semantic_match": false,
+          "matched_note": ""
+        }
+      ]
+    },
+    {
+      "instance_id": "elastic__elasticsearch@a6a4623",
+      "repo": "elastic/elasticsearch",
+      "comments": [
+        {
+          "note": "Minor clarity: `getNotNull()` is called after a null-check, but it returns a primitive `int` and can never be null. The name reads like it might perform a nullability check/throw. Consider renaming to something like `get()`/`value()`/`asInt()` (or at least aligning naming across usages) to reduce confusion for future readers.\n\n```suggestion\n            off = new LimitedOffsetsEnum(off, queryMaxAnalyzedOffset.value());\n```",
+          "path": "server/src/main/java/org/elasticsearch/lucene/search/uhighlight/CustomFieldHighlighter.java",
+          "side": "right",
+          "from_line": 116,
+          "to_line": 116,
+          "line_match": false,
+          "semantic_match": false,
+          "matched_note": ""
+        },
+        {
+          "note": "There appears to be a mismatch between the comment indicating special handling for negative values and the actual constructor implementation which directly assigns the value. Either the comment should be updated or the constructor should implement the described behavior.",
+          "path": "server/src/main/java/org/elasticsearch/lucene/search/uhighlight/QueryMaxAnalyzedOffset.java",
+          "side": "right",
+          "from_line": 15,
+          "to_line": 18,
+          "line_match": false,
+          "semantic_match": false,
+          "matched_note": ""
+        },
+        {
+          "note": "Confusing method name: The name `getNotNull()` is misleading because: 1) It returns a primitive int which cannot be null anyway, 2) The QueryMaxAnalyzedOffset instance itself could be null (when `create` returns null), potentially causing NPE when calling this method, 3) The name doesn't clearly convey what value is being returned. Consider renaming to something more descriptive like `getValue()` or `getMaxAnalyzedOffset()`.",
+          "path": "server/src/main/java/org/elasticsearch/lucene/search/uhighlight/QueryMaxAnalyzedOffset.java",
+          "side": "right",
+          "from_line": 27,
+          "to_line": 29,
+          "line_match": false,
+          "semantic_match": false,
+          "matched_note": ""
+        },
+        {
+          "note": "The current validation condition for `maxAnalyzedOffset` incorrectly allows 0, which is invalid as highlighting zero characters is nonsensical and may cause undefined behavior. The condition should reject 0 while permitting -1 (special default) and positive integers.",
+          "path": "server/src/main/java/org/elasticsearch/search/fetch/subphase/highlight/AbstractHighlighterBuilder.java",
+          "side": "right",
+          "from_line": 568,
+          "to_line": 568,
+          "line_match": true,
+          "semantic_match": false,
+          "matched_note": ""
+        },
+        {
+          "note": "`QueryMaxAnalyzedOffset.create(...)` returns `null` when the query param is unset. That part is fine, but the current code mixes wrapper-vs-null semantics in a confusing way:\n\n- In the `if` guard, `queryMaxAnalyzedOffset == null || queryMaxAnalyzedOffset.getNotNull() > maxAnalyzedOffset` is logically equivalent to the previous Integer-based check, but it obscures intent and invites mistakes.\n- `wrapAnalyzer(...)` takes a `QueryMaxAnalyzedOffset` yet still checks for null; this is OK functionally, but the naming (`maxAnalyzedOffset`) suggests a primitive/int, and makes it easy to accidentally call `getNotNull()` without guarding in future edits.\n\nSuggestion: keep an `Integer` variable for the query param and only construct the wrapper when non-null (or rename the wrapper variable to `queryMaxAnalyzedOffsetWrapper` / `queryMaxOffset`), so nullability is obvious and `getNotNull()` is only used on a clearly non-null reference.\n\n```suggestion\n        final Integer queryMaxAnalyzedOffset = fieldContext.field.fieldOptions().maxAnalyzedOffset();\n        final QueryMaxAnalyzedOffset queryMaxAnalyzedOffsetWrapper = QueryMaxAnalyzedOffset.create(queryMaxAnalyzedOffset, maxAnalyzedOffset);\n        Analyzer analyzer = wrapAnalyzer(\n            context.getSearchExecutionContext().getIndexAnalyzer(f -> Lucene.KEYWORD_ANALYZER),\n            queryMaxAnalyzedOffsetWrapper\n        );\n```",
+          "path": "server/src/main/java/org/elasticsearch/search/fetch/subphase/highlight/PlainHighlighter.java",
+          "side": "right",
+          "from_line": 111,
+          "to_line": 118,
+          "line_match": false,
+          "semantic_match": false,
+          "matched_note": ""
+        }
+      ]
+    },
+    {
+      "instance_id": "microsoft__typescript-go@b970689",
+      "repo": "microsoft/typescript-go",
+      "comments": [
+        {
+          "note": "Removing KindJSDocImportTag from this switch statement may cause runtime panics when calling ModuleSpecifier() on JSDocImportTag nodes. Since JSDocImportTag has a ModuleSpecifier property (as evidenced by other methods including it and the NewJSDocImportTag function setting it), it should likely be handled here similar to other import declaration types.",
+          "path": "internal/ast/ast.go",
+          "side": "right",
+          "from_line": 754,
+          "to_line": 757,
+          "line_match": true,
+          "semantic_match": true,
+          "matched_note": "9. **Low — `internal/ast/ast.go:754`**: `Node.ModuleSpecifier` no longer accepts an original `KindJSDocImportTag`, even though such nodes still exist in the JSDoc AST. Parsing `/** @import { T } from \"./m\" */` and calling `ModuleSpecifier()` on that tag now panics with “Unhandled case” instead of returning `\"./m\"`."
+        },
+        {
+          "note": "`IsDefaultImport` now accepts `KindJSImportDeclaration` but still calls `node.AsImportDeclaration()`. This is safe only if `JSImportDeclaration` is represented by the same struct/accessor as `ImportDeclaration`. If `KindJSImportDeclaration` has its own node type (e.g., `AsJSImportDeclaration()`), this will panic or misread fields at runtime. Please confirm the accessor mapping for `KindJSImportDeclaration`, and if needed switch to the correct `As*` method (or add a shared helper that extracts `ImportClause` for both kinds).",
+          "path": "internal/ast/utilities.go",
+          "side": "right",
+          "from_line": 2367,
+          "to_line": 2369,
+          "line_match": false,
+          "semantic_match": false,
+          "matched_note": ""
+        },
+        {
+          "note": "Calling `AsImportDeclaration()` on a node of kind `KindExportDeclaration` will cause a panic because `ExportDeclaration` uses a different struct than `ImportDeclaration`. Consider using `getModuleSpecifierFromNode(parent)` which handles both kinds correctly, or split the check.",
+          "path": "internal/checker/checker.go",
+          "side": "right",
+          "from_line": 29386,
+          "to_line": 29386,
+          "line_match": false,
+          "semantic_match": false,
+          "matched_note": ""
+        },
+        {
+          "note": "Potential panic: `importTag.ImportClause` might be nil (e.g., for side-effect imports like `/** @import \"mod\" */`). If so, `Clone` might return nil (or panic if not nil-safe), and subsequent access to `importClause.Flags` or `AsImportClause()` will cause a panic. \n\nSuggestion: Add a nil check for `importTag.ImportClause`.",
+          "path": "internal/parser/reparser.go",
+          "side": "right",
+          "from_line": 120,
+          "to_line": 122,
+          "line_match": true,
+          "semantic_match": true,
+          "matched_note": "1. **Critical — `internal/parser/reparser.go:120`**: `importTag.ImportClause` is optional, but it is dereferenced unconditionally. An incomplete comment such as `/** @import */`—common while editing—or a clause-less form yields `ImportClause == nil`, causing a nil-pointer panic instead of a syntax diagnostic."
+        },
+        {
+          "note": "Directly mutating IsTypeOnly after cloning may violate immutability assumptions present in other parts of the codebase. Consider using a factory method or reconstruction pattern consistent with how similar mutations are performed elsewhere.",
+          "path": "internal/parser/reparser.go",
+          "side": "right",
+          "from_line": 122,
+          "to_line": 122,
+          "line_match": true,
+          "semantic_match": false,
+          "matched_note": ""
+        },
+        {
+          "note": "Unhandled `KindJSImportDeclaration` case in `emitStatement` switch lacks implementation; must either add dedicated emit logic or explicitly panic if transformation is expected.",
+          "path": "internal/printer/printer.go",
+          "side": "left",
+          "from_line": 3956,
+          "to_line": 3956,
+          "line_match": false,
+          "semantic_match": false,
+          "matched_note": ""
+        },
+        {
+          "note": "CommonJSModuleTransformer should not handle `JSImportDeclaration` directly; this node kind should be normalized by earlier passes (e.g., type eraser or import ellision) to maintain transformer separation of concerns and ensure module transformers only process edition-appropriate syntax.",
+          "path": "internal/transformers/commonjsmodule.go",
+          "side": "right",
+          "from_line": 66,
+          "to_line": 66,
+          "line_match": false,
+          "semantic_match": false,
+          "matched_note": ""
+        },
+        {
+          "note": "The `JSImportDeclaration` node should not be set to nil in this transformer; it must be processed during an earlier transformation phase instead.",
+          "path": "internal/transformers/esmodule.go",
+          "side": "right",
+          "from_line": 43,
+          "to_line": 43,
+          "line_match": false,
+          "semantic_match": false,
+          "matched_note": ""
+        },
+        {
+          "note": "The addition of `KindJSImportDeclaration` to the `transformUsingDeclarations` switch case is misplaced; this node type should be processed in an earlier transformation stage before reaching this function.",
+          "path": "internal/transformers/esnext.go",
+          "side": "right",
+          "from_line": 371,
+          "to_line": 371,
+          "line_match": false,
+          "semantic_match": false,
+          "matched_note": ""
+        },
+        {
+          "note": "The change to include `ast.KindJSImportDeclaration` in the import handling switch case is invalid because type-only imports are elided during compilation and should not affect runtime module dependency collection.",
+          "path": "internal/transformers/externalmoduleinfo.go",
+          "side": "right",
+          "from_line": 50,
+          "to_line": 50,
+          "line_match": false,
+          "semantic_match": false,
+          "matched_note": ""
+        },
+        {
+          "note": "Grouping ast.KindImportDeclaration and ast.KindJSImportDeclaration assumes interchangeable use of .AsImportDeclaration(). Please verify that both node kinds structurally support this conversion uniformly.",
+          "path": "internal/transformers/externalmoduleinfo.go",
+          "side": "right",
+          "from_line": 50,
+          "to_line": 50,
+          "line_match": false,
+          "semantic_match": false,
+          "matched_note": ""
+        },
+        {
+          "note": "The addition of `ast.KindJSImportDeclaration` to the import case statement is incorrect because `JSImportDeclaration` nodes should have been processed by `typeeraser.go` and thus never reach the `ImportElisionTransformer`.",
+          "path": "internal/transformers/importelision.go",
+          "side": "right",
+          "from_line": 31,
+          "to_line": 31,
+          "line_match": false,
+          "semantic_match": false,
+          "matched_note": ""
+        },
+        {
+          "note": "Adding ast.KindJSImportDeclaration to the switch case is redundant because typeeraser.go is designed to handle JSImportDeclaration nodes.",
+          "path": "internal/transformers/importelision.go",
+          "side": "right",
+          "from_line": 169,
+          "to_line": 169,
+          "line_match": false,
+          "semantic_match": false,
+          "matched_note": ""
+        },
+        {
+          "note": "ast.KindJSImportDeclaration should be handled in a separate case to elide the node, not grouped with ast.KindImportDeclaration which requires different processing.",
+          "path": "internal/transformers/typeeraser.go",
+          "side": "right",
+          "from_line": 258,
+          "to_line": 258,
+          "line_match": false,
+          "semantic_match": false,
+          "matched_note": ""
+        },
+        {
+          "note": "The type display has regressed from 'Foo' to 'default'. This reduces clarity as 'Foo' is the local name of the imported interface. This change likely results from the new handling of JSDoc `@import` tags (via `JSImportDeclaration`) where the default import symbol is not being correctly aliased or printed with its local name.",
+          "path": "testdata/baselines/reference/submodule/conformance/importTag3.types",
+          "side": "right",
+          "from_line": 18,
+          "to_line": 19,
+          "line_match": false,
+          "semantic_match": false,
+          "matched_note": ""
+        }
+      ]
+    },
+    {
+      "instance_id": "valkey-io__valkey@866fa4a",
+      "repo": "valkey-io/valkey",
+      "comments": [
+        {
+          "note": "Memory-safety (per checklist): after freeServerConfig(), consider setting the pointer to NULL. This reduces risk of accidental reuse/double-free if future code adds additional cleanup paths or early returns.\n\n```suggestion\n        if (config.server_config != NULL) {\n            freeServerConfig(config.server_config);\n            config.server_config = NULL;\n        }\n```",
+          "path": "src/valkey-benchmark.c",
+          "side": "right",
+          "from_line": 1998,
+          "to_line": 1998,
+          "line_match": false,
+          "semantic_match": false,
+          "matched_note": ""
+        }
+      ]
+    },
+    {
+      "instance_id": "microsoft__typescript-go@892b4a3",
+      "repo": "microsoft/typescript-go",
+      "comments": [
+        {
+          "note": "The getManualTests function crashes when manualTests.txt is missing due to lack of file existence check; it should return an empty set in this scenario.",
+          "path": "internal/fourslash/_scripts/convertFourslash.mts",
+          "side": "right",
+          "from_line": 26,
+          "to_line": 29,
+          "line_match": true,
+          "semantic_match": true,
+          "matched_note": "1. **High — `internal/fourslash/_scripts/convertFourslash.mts:29`**  \n   A fresh checkout has no `manualTests.txt` in this diff. Running `npm run convertfourslash` first deletes `tests/gen`, then `readFileSync` throws `ENOENT`, leaving all generated tests removed and conversion incomplete."
+        },
+        {
+          "note": "Inconsistent test name processing: getFailingTests() uses substring(4) to remove prefix, but getManualTests() doesn't. This could cause manual test filtering to fail if the manual tests file uses the same format as failing tests.",
+          "path": "internal/fourslash/_scripts/convertFourslash.mts",
+          "side": "right",
+          "from_line": 26,
+          "to_line": 29,
+          "line_match": false,
+          "semantic_match": false,
+          "matched_note": ""
+        },
+        {
+          "note": "manualOutputDir is created but never used. Either remove this directory creation or implement the logic to use it for manual tests.",
+          "path": "internal/fourslash/_scripts/convertFourslash.mts",
+          "side": "right",
+          "from_line": 44,
+          "to_line": 44,
+          "line_match": true,
+          "semantic_match": true,
+          "matched_note": "## 5. [LOW] Unused `manualOutputDir` creation\n\n**convertFourslash.mts:44** (`fs.mkdirSync(manualOutputDir, ...)`)\n\n`convertFourslash` creates `manualOutputDir` but never writes to or reads from it anywhere in the file — only the separate `makeManual.mts` populates it. This creates an empty `tests/manual/` directory on every convert run with no purpose in this script, and creates a second (unused) \"manual\" directory whose contents are not governed by the skip logic here (the skip `return`s without writing anything).\n\n---\n\nIf the diff is intended to behave as written, items 1 and 4 together mean the manual-test feature produces no effect while still moving/regenerating files, so the strongest verified defect is #1."
+        },
+        {
+          "note": "There is a potential naming mismatch between how test names are stored in `manualTests.txt` and how they are checked. In `makeManual.mts`, the test name is stored as the full filename (e.g., 'testFile_test.go'), but here the code checks against the capitalized base name (e.g., 'TestFile'). This inconsistency means the skip logic may not work correctly. Consider ensuring consistent naming between the two scripts, or check against both formats.",
+          "path": "internal/fourslash/_scripts/convertFourslash.mts",
+          "side": "right",
+          "from_line": 70,
+          "to_line": 74,
+          "line_match": true,
+          "semantic_match": true,
+          "matched_note": "4. [LOW] `if (testContent)` silently drops the output file when generateGoTest returns falsy (convertFourslash.mts:73-77) — silent write suppression.\n5. [LOW] unused manualOutputDir in convertFourslash (creates a dir it never writes). — borderline, I'll mention.\n\nLet me also reconsider if there's a defect about makeManual writing txt even when the rename target would clash — covered.\n\nAlso: makeManual doesn't verify the moved file actually is a generated Go test; if user passes a path that exists, it moves anything. Minor.\n\nAlso the manualTests.txt is only appended then sorted — but convertFourslash reads it fresh each run. Fine.\n\nI'll deliver 4 solid defects plus a couple minor. Let me write.I only have the diff (the working directory is empty, so I verified the diff content is all I can reason from). Reviewing the two files' logic against each other:\n\n## 1. [HIGH] Identifier mismatch makes the entire manual-skip feature a no-op — and silently undoes itself"
+        },
+        {
+          "note": "This logic assumes `test.name` is not empty. If a filename results in an empty name (e.g. `.ts`), accessing index 0 will cause a runtime error. Consider adding a check for `test.name.length > 0`.",
+          "path": "internal/fourslash/_scripts/convertFourslash.mts",
+          "side": "right",
+          "from_line": 70,
+          "to_line": 70,
+          "line_match": false,
+          "semantic_match": false,
+          "matched_note": ""
+        },
+        {
+          "note": "The condition `if (testContent)` fails to prevent writing files containing only whitespace, as non-empty whitespace strings evaluate as truthy in JavaScript. It should instead verify meaningful content exists by checking `testContent.trim().length > 0` before writing the file.",
+          "path": "internal/fourslash/_scripts/convertFourslash.mts",
+          "side": "right",
+          "from_line": 75,
+          "to_line": 79,
+          "line_match": false,
+          "semantic_match": false,
+          "matched_note": ""
+        },
+        {
+          "note": "This conditional check is unnecessary. The `generateGoTest` function has a return type of `string` and always returns a non-empty template string. This check adds unnecessary complexity and might confuse future maintainers into thinking that `generateGoTest` can return falsy values. Consider removing this check and directly writing the file as in the original code.",
+          "path": "internal/fourslash/_scripts/convertFourslash.mts",
+          "side": "right",
+          "from_line": 75,
+          "to_line": 79,
+          "line_match": false,
+          "semantic_match": false,
+          "matched_note": ""
+        },
+        {
+          "note": "The script exits silently with status 1 when no arguments are provided, failing to inform users of the required usage. Add descriptive error messages explaining the expected argument format and purpose.",
+          "path": "internal/fourslash/_scripts/makeManual.mts",
+          "side": "right",
+          "from_line": 12,
+          "to_line": 14,
+          "line_match": true,
+          "semantic_match": false,
+          "matched_note": ""
+        },
+        {
+          "note": "`testName` comes directly from CLI and is used to build a path under `genDir`. If a user passes something like `../foo`, `path.join` will resolve outside `genDir`, and `renameSync` could move arbitrary files. Consider restricting input to a filename (no path separators) via `path.basename` + equality check and/or validating allowed characters.\n\n```suggestion\n    const testName = args[0];\n    const testFileName = path.basename(testName);\n    if (testFileName !== testName) {\n        console.error(\"Invalid test name: must be a file name, not a path.\");\n        process.exit(1);\n    }\n    const genTestFile = path.join(genDir, testFileName);\n```",
+          "path": "internal/fourslash/_scripts/makeManual.mts",
+          "side": "right",
+          "from_line": 16,
+          "to_line": 18,
+          "line_match": true,
+          "semantic_match": true,
+          "matched_note": "5. **Medium — `internal/fourslash/_scripts/makeManual.mts:18`**  \n   The argument is not constrained to remain under `genDir`. Running `npm run makemanual -- ../../../../package.json` resolves to the repository’s `package.json`, passes `existsSync`, and moves it into the manual-test directory."
+        },
+        {
+          "note": "Missing validation: The script doesn't verify that genTestFile is actually a Go test file (should end with _test.go). This could accidentally move non-test files or directories if they exist with the matching name. Consider adding a file extension check.\n\n```suggestion\n    const genTestFile = path.join(genDir, `${testFileName}_test.go`);\n    if (!fs.existsSync(genTestFile)) {\n        console.error(`Test file not found: ${genTestFile}`);\n        console.error(\"Make sure the test exists in the gen directory first.\");\n        process.exit(1);\n    }\n```",
+          "path": "internal/fourslash/_scripts/makeManual.mts",
+          "side": "right",
+          "from_line": 18,
+          "to_line": 23,
+          "line_match": true,
+          "semantic_match": true,
+          "matched_note": "### 5. `internal/fourslash/_scripts/makeManual.mts:18-21` — `testFileName` uses raw `testName` without extension handling\n```typescript\nconst testFileName = testName;\nconst genTestFile = path.join(genDir, `${testFileName}`);\n```\n**Failure scenario**: User runs `npm run makemanual GoToDefinition`. Script looks for `gen/GoToDefinition` but actual file is `gen/GoToDefinition_test.go`. `fs.existsSync` fails → \"Test file not found\" error. The script assumes the input matches the generated filename exactly, but generated files have `_test.go` suffix.\n\n---"
+        },
+        {
+          "note": "Missing error handling: The `renameSync` operation can fail (e.g., permission issues, disk full, file locked). If it fails after the existence check, the script will crash. Consider wrapping file operations in try-catch blocks to handle errors gracefully and provide meaningful error messages.",
+          "path": "internal/fourslash/_scripts/makeManual.mts",
+          "side": "right",
+          "from_line": 29,
+          "to_line": 30,
+          "line_match": true,
+          "semantic_match": false,
+          "matched_note": ""
+        },
+        {
+          "note": "Consider adding error handling for the manualTests.txt file operations. If the file is corrupted or has invalid content, the split operation might fail. Also, consider using a try-catch block for file operations.",
+          "path": "internal/fourslash/_scripts/makeManual.mts",
+          "side": "right",
+          "from_line": 32,
+          "to_line": 36,
+          "line_match": true,
+          "semantic_match": false,
+          "matched_note": ""
+        },
+        {
+          "note": "Appending an empty string to `manualTests` ensures a trailing newline upon join(), but consider controlling EOL explicitly instead of relying on array manipulation which can lead to inconsistent formatting especially if readers don't trim inputs uniformly.",
+          "path": "internal/fourslash/_scripts/makeManual.mts",
+          "side": "right",
+          "from_line": 41,
+          "to_line": 41,
+          "line_match": true,
+          "semantic_match": false,
+          "matched_note": ""
+        }
+      ]
+    },
+    {
+      "instance_id": "wavetermdev__waveterm@90a57d5",
+      "repo": "wavetermdev/waveterm",
+      "comments": [
+        {
+          "note": "Improper error comparison may miss wrapped `fs.ErrNotExist` errors. Replace direct `err == fs.ErrNotExist` comparison with `errors.Is(err, fs.ErrNotExist)` to properly handle potentially wrapped filesystem errors when checking for non-existent files.",
+          "path": "pkg/blockcontroller/blockcontroller.go",
+          "side": "right",
+          "from_line": 149,
+          "to_line": 156,
+          "line_match": false,
+          "semantic_match": false,
+          "matched_note": ""
+        },
+        {
+          "note": "Insufficient command string validation when shell execution is disabled; the current space check doesn't prevent command injection via other special characters. Implement more robust validation to ensure only valid executable paths are accepted when cmd:shell is false.",
+          "path": "pkg/blockcontroller/blockcontroller.go",
+          "side": "right",
+          "from_line": 285,
+          "to_line": 310,
+          "line_match": true,
+          "semantic_match": false,
+          "matched_note": ""
+        },
+        {
+          "note": "Debug log outputs sensitive swap token value. Remove the token value from the log message to prevent credential exposure.",
+          "path": "pkg/shellexec/shellexec.go",
+          "side": "right",
+          "from_line": 258,
+          "to_line": 263,
+          "line_match": true,
+          "semantic_match": true,
+          "matched_note": "6. **High — `pkg/shellexec/shellexec.go:259`, `pkg/wslconn/wslconn.go:120`** — WSL swap credentials are written to normal information logs. Input: start any WSL terminal with debug logging disabled → `Debugf` delegates to `Infof`, and the packed one-time token is also included in the logged combined command. A log reader can redeem it before the shell and obtain the token’s environment/JWT, leaving the legitimate shell unable to exchange it."
+        },
+        {
+          "note": "These new fields introduce dotted JSON tags like `cmd:initscript.sh`. Plain `encoding/json` treats the tag as a literal key (fine), but if any layer later interprets dots as path separators for nesting, this could break compatibility or create ambiguity with `[conn]` nesting. Suggest verifying the meta parsing/flattening logic expects literal keys and documenting/enforcing one convention. Also consider whether `CmdEnv`/`CmdCwd` being described as nestable under `[conn]` requires special merge behavior; nil vs empty map differences can affect overrides (e.g., clearing env).",
+          "path": "pkg/waveobj/wtypemeta.go",
+          "side": "right",
+          "from_line": 52,
+          "to_line": 62,
+          "line_match": false,
+          "semantic_match": false,
+          "matched_note": ""
+        },
+        {
+          "note": "This Debugf method is calling blocklogger.Infof instead of blocklogger.Debugf. This is likely a copy-paste error and should probably use Debugf to match the function's intent.",
+          "path": "pkg/wslconn/wslconn.go",
+          "side": "right",
+          "from_line": 121,
+          "to_line": 121,
+          "line_match": false,
+          "semantic_match": false,
+          "matched_note": ""
+        }
+      ]
+    },
+    {
+      "instance_id": "google-gemini__gemini-cli@c6e6248",
+      "repo": "google-gemini/gemini-cli",
+      "comments": [
+        {
+          "note": "* The new `runCommand` method lacks validation that `setup()` has been called, risking runtime errors when `testDir` is uninitialized.  \n* The existing `run` method has the same vulnerability and requires identical setup validation.",
+          "path": "integration-tests/test-helper.ts",
+          "side": "right",
+          "from_line": 309,
+          "to_line": 312,
+          "line_match": false,
+          "semantic_match": false,
+          "matched_note": ""
+        },
+        {
+          "note": "The `runCommand` method duplicates process execution and stream handling logic already present in the `run` method, violating DRY principles and increasing maintenance burden. Extract the common child process spawning, stream collection, and promise resolution into a private helper method shared by both functions.",
+          "path": "integration-tests/test-helper.ts",
+          "side": "right",
+          "from_line": 309,
+          "to_line": 358,
+          "line_match": true,
+          "semantic_match": false,
+          "matched_note": ""
+        },
+        {
+          "note": "Using non-null assertion operators (!) on child process streams could lead to runtime errors if the streams are unexpectedly null. Consider adding proper null checks for better safety.",
+          "path": "integration-tests/test-helper.ts",
+          "side": "right",
+          "from_line": 323,
+          "to_line": 326,
+          "line_match": true,
+          "semantic_match": false,
+          "matched_note": ""
+        },
+        {
+          "note": "If `options.stdin` is an empty string, this branch won’t run, and stdin won’t be closed. Prefer checking `options.stdin !== undefined` so callers can intentionally send empty input and still close stdin to avoid child waiting for EOF.\n\n```suggestion\n    if (options.stdin !== undefined) {\n      child.stdin!.write(options.stdin);\n      child.stdin!.end();\n    }\n```",
+          "path": "integration-tests/test-helper.ts",
+          "side": "right",
+          "from_line": 323,
+          "to_line": 326,
+          "line_match": false,
+          "semantic_match": true,
+          "matched_note": "3. **[High] integration-tests/test-helper.ts:323** — `stdin` is ended only when a truthy string is supplied. The update call at `extensions-install.test.ts:42` supplies no input, so when update requests confirmation it waits forever on an open pipe and the test hangs until the runner times out. Passing `stdin: ''` has the same defect. The later upstream test supplies confirmation input to update. [Upstream test](https://github.com/google-gemini/gemini-cli/blob/main/integration-tests/extensions-install.test.ts)"
+        },
+        {
+          "note": "`stdout += data` / `stderr += data` is concatenating a Buffer to a string, which relies on implicit coercion and can produce unexpected output (e.g., \"[object Object]\") depending on runtime/TS settings. Convert explicitly via `data.toString('utf8')` (or set encoding on the streams) before appending.\n\n```suggestion\n    child.stdout!.setEncoding('utf8');\n    child.stdout!.on('data', (data: string) => {\n      stdout += data;\n      if (env.KEEP_OUTPUT === 'true' || env.VERBOSE === 'true') {\n        process.stdout.write(data);\n      }\n    });\n```",
+          "path": "integration-tests/test-helper.ts",
+          "side": "right",
+          "from_line": 328,
+          "to_line": 333,
+          "line_match": true,
+          "semantic_match": false,
+          "matched_note": ""
+        },
+        {
+          "note": "Missing `child.on('error', ...)` handling. If spawning `node` fails (ENOENT, permission, etc.), the promise will never settle. Add an `error` listener that rejects.\n\n```suggestion\n    const promise = new Promise<string>((resolve, reject) => {\n      child.on('error', reject);\n      child.on('close', (code: number | null, signal: NodeJS.Signals | null) => {\n        if (code === 0) {\n          this._lastRunStdout = stdout;\n          let result = stdout;\n          if (stderr) result += `\\n\\nStdErr:\\n${stderr}`;\n          resolve(result);\n        } else {\n          const extra = signal ? ` (signal: ${signal})` : '';\n          reject(new Error(`Process exited with code ${code}${extra}:\\n${stderr}`));\n        }\n      });\n    });\n```",
+          "path": "integration-tests/test-helper.ts",
+          "side": "right",
+          "from_line": 342,
+          "to_line": 355,
+          "line_match": true,
+          "semantic_match": false,
+          "matched_note": ""
+        },
+        {
+          "note": "The error handling only includes stderr in the rejection. For better debugging, consider including both stdout and stderr in the error message.",
+          "path": "integration-tests/test-helper.ts",
+          "side": "right",
+          "from_line": 352,
+          "to_line": 352,
+          "line_match": false,
+          "semantic_match": true,
+          "matched_note": "11. **[Low] integration-tests/test-helper.ts:352** — On nonzero exit, stdout is discarded even though many CLI paths render their error text there. If a command prints `Extension test-extension was not found` to stdout and exits 1 with empty stderr, callers receive only `Process exited with code 1:` and lose the actual failure reason."
+        }
+      ]
+    },
+    {
+      "instance_id": "FreeCAD__FreeCAD@ec3da2e",
+      "repo": "FreeCAD/FreeCAD",
+      "comments": [
+        {
+          "note": "The function `isCosmeticVertex` should accept the string parameter by `const std::string&` instead of by value to prevent unnecessary string copying and enforce immutability of the input.",
+          "path": "src/Mod/TechDraw/App/DrawViewPart.cpp",
+          "side": "right",
+          "from_line": 1502,
+          "to_line": 1502,
+          "line_match": true,
+          "semantic_match": false,
+          "matched_note": ""
+        },
+        {
+          "note": "The string parameter in `isCosmeticVertex` should be passed by const reference instead of by value to avoid unnecessary copying. Change `std::string element` to `const std::string& element` for better performance.",
+          "path": "src/Mod/TechDraw/App/DrawViewPart.h",
+          "side": "right",
+          "from_line": 242,
+          "to_line": 242,
+          "line_match": true,
+          "semantic_match": false,
+          "matched_note": ""
+        },
+        {
+          "note": "The newly added member functions `isCosmeticVertex`, `isCosmeticEdge`, and `isCenterLine` are incorrectly declared as `static` with an unnecessary `owner` parameter; remove `static` and the `App::DocumentObject* owner` argument to correctly implement them as non-static member functions operating on the current instance.",
+          "path": "src/Mod/TechDraw/App/DrawViewPart.h",
+          "side": "right",
+          "from_line": 242,
+          "to_line": 245,
+          "line_match": false,
+          "semantic_match": true,
+          "matched_note": "**1. DrawViewPart.h:242 vs DrawViewPart.cpp:1502 — `isCosmeticVertex` declaration and definition do not match (compile-breaking).**\nHeader declares `static bool isCosmeticVertex(App::DocumentObject* owner, std::string element)`; the definition is `bool DrawViewPart::isCosmeticVertex(std::string element)` — one parameter vs two. Failure scenario: compiling DrawViewPart.cpp, the qualified-id matches no declaration in the class → hard error (\"no declaration matches…\"), the TechDraw App module cannot build, and every call site of the new API fails regardless of which shape it uses (a 2-arg call has no definition; a 1-arg call has no declaration)."
+        }
+      ]
+    },
+    {
+      "instance_id": "linera-io__linera-protocol@024925d",
+      "repo": "linera-io/linera-protocol",
+      "comments": [
+        {
+          "note": "The typo 'Reponse' was correctly fixed to 'Response', but there is another typo 'ceritifcates' that should also be corrected to 'certificates'.\n\n```suggestion\n    #[error(\"Response doesn't contain requested certificates: {0:?}\")]\n```",
+          "path": "linera-core/src/node.rs",
+          "side": "right",
+          "from_line": 205,
+          "to_line": 205,
+          "line_match": true,
+          "semantic_match": true,
+          "matched_note": "2. **Low — `linera-core/src/node.rs:205`**: The user-visible error still misspells “certificates” as “ceritifcates.” For example, formatting `NodeError::MissingCertificates(vec![hash])` produces `Response doesn't contain requested ceritifcates: [...]`.## Analysis of the diff"
+        },
+        {
+          "note": "The `grace_period` parameter should use `Option<f64>` instead of `impl Into<Option<f64>>` to maintain strong type checking and code normalization standards.",
+          "path": "linera-core/src/updater.rs",
+          "side": "right",
+          "from_line": 109,
+          "to_line": 109,
+          "line_match": false,
+          "semantic_match": false,
+          "matched_note": ""
+        },
+        {
+          "note": "Robustness: `grace_period` comes from callers and is used in `mul_f64`. If it’s negative/NaN/inf, `Duration::mul_f64` can panic or behave unexpectedly. Recommend validating/clamping before use (e.g., ensure finite and >= 0.0; optionally cap to a max like 1.0).\n\n```suggestion\n    let grace_period = grace_period.into().unwrap_or(DEFAULT_GRACE_PERIOD);\n    let grace_period = if grace_period.is_finite() && grace_period >= 0.0 {\n        grace_period\n    } else {\n        0.0\n    };\n```",
+          "path": "linera-core/src/updater.rs",
+          "side": "right",
+          "from_line": 139,
+          "to_line": 139,
+          "line_match": false,
+          "semantic_match": false,
+          "matched_note": ""
+        },
+        {
+          "note": "The loop label 'vote_wait is added but doesn't appear to be referenced by any break or continue statements. Consider removing the label if it's not actually used for control flow.",
+          "path": "linera-core/src/updater.rs",
+          "side": "right",
+          "from_line": 141,
+          "to_line": 141,
+          "line_match": false,
+          "semantic_match": false,
+          "matched_note": ""
+        }
+      ]
+    },
+    {
+      "instance_id": "ollama__ollama@b6002f6",
+      "repo": "ollama/ollama",
+      "comments": [
+        {
+          "note": "The call to `batch.Positions.Ints()` to convert the tensor back to a slice is necessary here for iteration. However, this creates a performance concern: we're converting from slice to tensor when building the batch, then back to slice for cache operations. Consider whether the cache layer could work directly with tensors to avoid this round-trip conversion, though that may be out of scope for this PR.",
+          "path": "kvcache/causal.go",
+          "side": "right",
+          "from_line": 202,
+          "to_line": 202,
+          "line_match": true,
+          "semantic_match": false,
+          "matched_note": ""
+        },
+        {
+          "note": "Potential panic/semantic change: switching to `batch.Positions.Ints()[...]` assumes `Ints()` returns a non-nil slice with at least the required length and that it stays consistent with `batch.Multimodal[*].Index`. If `Ints()` can return nil/empty (or a newly allocated slice with different length), this will panic at runtime. Consider guarding (e.g., check `idx < len(batch.Positions.Ints())`) or caching the slice once and validating its length before indexing to preserve previous behavior.",
+          "path": "kvcache/encoder.go",
+          "side": "right",
+          "from_line": 94,
+          "to_line": 94,
+          "line_match": true,
+          "semantic_match": true,
+          "matched_note": "### 7. `kvcache/encoder.go:94` — Index into `Ints()` result without bounds check\n**Failure scenario:** `batch.Multimodal[last].Index = 10` but `batch.Positions.Ints()` returns slice of length 5. Panic: index out of range.\n\n---"
+        },
+        {
+          "note": "Potential issue: `batch.Positions.Ints()` is called inside the unwind loop. If `Ints()` materializes/copies tensor data, this can be unnecessarily expensive (and potentially unsafe if it depends on ctx/lifetime). Also you iterate `range curPositions` but index `batch.Sequences[k]`; this assumes `len(batch.Sequences)==len(curPositions)`—consider validating once or using a shared length variable.\n\nSuggestion: hoist `curPositions := batch.Positions.Ints()` outside the `for j := ...` loop and iterate up to `min(len(batch.Sequences), len(curPositions))` (or assert equality).\n\n```suggestion\n\t\t\tcurPositions := batch.Positions.Ints()\n\t\t\tfor j := i - 1; j >= 0; j-- {\n\t\t\t\t// assuming sequences and positions align\n\t\t\t\tfor k := 0; k < len(curPositions) && k < len(batch.Sequences); k++ {\n\t\t\t\t\t_ = c.caches[j].Remove(batch.Sequences[k], curPositions[k], math.MaxInt32)\n\t\t\t\t}\n\t\t\t}\n```",
+          "path": "kvcache/wrapper.go",
+          "side": "right",
+          "from_line": 49,
+          "to_line": 54,
+          "line_match": true,
+          "semantic_match": true,
+          "matched_note": "**5. `kvcache/wrapper.go` (~lines 50-52) — `batch.Positions.Ints()` was hoisted out of the inner loop but moved *into* the per-cache `for j` loop, so it re-materializes per cache on the unwind path.**\nWhen `sync != nil` (the copy path), each `Ints()` call allocates `nelements * 4` bytes and memcpies the full array; the abort path now does that once per already-populated cache (O(caches)) instead of once per `StartForward`. Concrete failure: a multi-modal model whose forward fails partway (this code exists to unwind on error), e.g. an OOM or shape error at cache i, pays O(i × batch) extra allocation during error handling; with 8+ caches and a large batch this is a measurable stall in exactly the path meant to recover gracefully. If the CPU view path is taken instead, the repeated calls are only redundant, but then the deeper problem is item 1's aliasing during unwind."
+        },
+        {
+          "note": "Adding `Ints() []int32` to the `Tensor` interface is an API-breaking change: all concrete tensor implementations and any test fakes/mocks must implement it or compilation will fail. Please ensure every backend/wrapper that implements `Tensor` is updated, and define expected behavior when the underlying tensor dtype is not int32 (e.g., return nil, convert, or panic) to keep implementations consistent.",
+          "path": "ml/backend.go",
+          "side": "right",
+          "from_line": 402,
+          "to_line": 404,
+          "line_match": true,
+          "semantic_match": true,
+          "matched_note": "**10. `ml/backend.go` (~line 404) — adding `Ints()` to the `ml.Tensor` interface is a compile break for every implementer not updated in this diff.**\nThe diff updates `ggml.Tensor` and the test's `testTensor`, but I cannot inspect the tree (empty working directory) to confirm there are no other implementations — e.g., alternate backends or mock tensors in other test packages — in which case this PR does not compile. This is unverifiable from the provided material, flagged because an interface method addition is a hard, whole-repo failure when any implementer is missed."
+        },
+        {
+          "note": "The use of `C.GoBytes` with `C.int` cast for the length creates a risk of data truncation. `C.int` is typically 32-bit, so if the tensor size exceeds ~2GB, the data will be truncated. It is recommended to manually allocate the slice and copy the data to support larger tensors, ensuring consistency with the `t.sync != nil` branch.",
+          "path": "ml/backend/ggml/ggml.go",
+          "side": "right",
+          "from_line": 1007,
+          "to_line": 1010,
+          "line_match": false,
+          "semantic_match": false,
+          "matched_note": ""
+        },
+        {
+          "note": "The `Bytes()` method now handles CPU tensors by using `C.GoBytes()` which creates a copy of the data. However, there's a potential issue: if the tensor is neither on a backend (sync == nil) nor in CPU memory (bts == nil), the function will return a nil slice without any error or warning. Consider adding an error return or at least logging this edge case to prevent silent failures.",
+          "path": "ml/backend/ggml/ggml.go",
+          "side": "right",
+          "from_line": 1007,
+          "to_line": 1007,
+          "line_match": false,
+          "semantic_match": false,
+          "matched_note": ""
+        },
+        {
+          "note": "Good addition of the `Ints()` method to complement `Floats()` and `Bytes()`. However, the same concern applies here: when both `sync` is nil and `C.ggml_get_data(t.t)` returns nil, the function silently returns a nil slice. This could lead to nil pointer dereferences in calling code. Consider adding error handling or defensive checks.",
+          "path": "ml/backend/ggml/ggml.go",
+          "side": "right",
+          "from_line": 1029,
+          "to_line": 1029,
+          "line_match": true,
+          "semantic_match": false,
+          "matched_note": ""
+        },
+        {
+          "note": "The word 'indicies' is misspelled. It should be 'indices'.\n\n```suggestion\n\t// Outputs are the set of indices into Inputs for which output data should\n\t// be returned.\n\tOutputs ml.Tensor\n```",
+          "path": "model/input/input.go",
+          "side": "right",
+          "from_line": 61,
+          "to_line": 63,
+          "line_match": true,
+          "semantic_match": false,
+          "matched_note": ""
+        },
+        {
+          "note": "The change from `len(batch.Positions)` to `batch.Positions.Dim(0)` is correct for the new tensor-based API. However, there's a potential nil pointer dereference risk if `batch.Positions` is nil. Consider adding a nil check before calling `Dim(0)`, or ensure that batch validation happens earlier in the call chain to guarantee `Positions` is always initialized.",
+          "path": "model/model.go",
+          "side": "right",
+          "from_line": 285,
+          "to_line": 285,
+          "line_match": true,
+          "semantic_match": true,
+          "matched_note": "- **Medium — `model/model.go:285`**: A missing positions tensor now panics before validation. `Forward(ctx, m, input.Batch{Positions:nil, Sequences:nil})` previously returned “batch size cannot be less than 1”; it now dereferences the nil interface at `Dim(0)`."
+        },
+        {
+          "note": "Behavior change: lastLayerOutputs now comes from `batch.Outputs` instead of an explicit `outputs` argument. If `batch.Outputs` can be nil/zero (or not sized for the current forward), the last layer may silently skip writing requested outputs or panic later. Consider validating `batch.Outputs` when `i==len(m.Layers)-1` (or keep the explicit parameter) to preserve previous contract.",
+          "path": "model/models/llama4/model_text.go",
+          "side": "right",
+          "from_line": 238,
+          "to_line": 241,
+          "line_match": false,
+          "semantic_match": false,
+          "matched_note": ""
+        },
+        {
+          "note": "Good refactoring - moving tensor creation closer to where it's used. The code now creates `batchPositions` and `batchOutputs` as slices first, then converts them to tensors just before the Forward call. This is cleaner and more efficient. However, ensure that the `ctx.Input()` calls for creating tensors don't fail silently if the context is invalid.",
+          "path": "runner/ollamarunner/runner.go",
+          "side": "right",
+          "from_line": 581,
+          "to_line": 581,
+          "line_match": false,
+          "semantic_match": false,
+          "matched_note": ""
+        },
+        {
+          "note": "Potential runtime panic: vocabSize := len(outputs) / activeBatch.batch.Outputs.Dim(0) will divide by zero if Outputs is empty (Dim(0)==0). Even if normally non-empty, add a defensive guard (and ideally validate Outputs is 1-D) to avoid panics and hard-to-debug slice bound errors when sampling.\n\n```suggestion\n\t\toutN := activeBatch.batch.Outputs.Dim(0)\n\t\tif outN <= 0 {\n\t\t\ts.hardErrCh <- fmt.Errorf(\"invalid Outputs dimension: %d\", outN)\n\t\t\treturn\n\t\t}\n\t\tvocabSize := len(outputs) / outN\n\t\tlogutil.Trace(\"computeBatch: vocab details\", \"batchID\", activeBatch.id, \"seqIdx\", i, \"len(logits)\", len(outputs), \"len(activeBatch.batch.Outputs)\", outN, \"vocabSize\", vocabSize, \"iBatches\", iBatches)\n```",
+          "path": "runner/ollamarunner/runner.go",
+          "side": "right",
+          "from_line": 711,
+          "to_line": 712,
+          "line_match": true,
+          "semantic_match": false,
+          "matched_note": ""
+        }
+      ]
+    },
+    {
+      "instance_id": "mpv-player__mpv@dbd327d",
+      "repo": "mpv-player/mpv",
+      "comments": [
+        {
+          "note": "Potential signed/unsigned narrowing: `pl->num_entries` is likely `int`, but `mp_rand_in_range32` takes `uint32_t`. If `num_entries` can exceed `UINT32_MAX` or be negative (corrupted state), implicit conversion can wrap and lead to OOB access. Consider casting with validation (and early-return if `num_entries <= 1`) to keep bounds safe.\n\n```suggestion\n        if (pl->num_entries <= 1)\n            return;\n        \n        uint32_t nn = (uint32_t)pl->num_entries; // consider asserting pl->num_entries > 0\n        uint32_t i = (uint32_t)n;\n        size_t j = mp_rand_in_range32(&s, i, nn);\n        MPSWAP(struct playlist_entry *, pl->entries[n], pl->entries[j]);\n```",
+          "path": "common/playlist.c",
+          "side": "right",
+          "from_line": 175,
+          "to_line": 176,
+          "line_match": true,
+          "semantic_match": true,
+          "matched_note": "### 2. common/playlist.c:176 — `uint32_t` truncation for large playlists\n**Failure scenario:** Playlist with `pl->num_entries = 5,000,000,000` ( > UINT32_MAX). `mp_rand_in_range32(&s, n, pl->num_entries)` truncates `max` to `705,032,704`. The returned `j` is in `[n, 705M)` instead of `[n, 5B)`, causing `pl->entries[j]` to access only the first ~14% of the playlist — entries beyond 705M are never swapped, producing a biased shuffle.\n\n---"
+        },
+        {
+          "note": "The new per-function RNG state (`struct mp_rand_state s = mp_rand_seed(0);`) changes behavior from using a global RNG (`mp_rand_next()` without state) to a locally-seeded stream. Seeding with a constant `0` makes the sequence deterministic for every call, which can increase collision risk across concurrent calls/processes. If the goal is merely to avoid global state, consider seeding from a higher-entropy source (time/PID/urandom) or document why determinism is acceptable here. Also consider moving the seed outside the loop is fine (as done), but ensure `mp_rand_seed(0)` is not an expensive call in this hot path.",
+          "path": "misc/io_utils.c",
+          "side": "right",
+          "from_line": 43,
+          "to_line": 47,
+          "line_match": true,
+          "semantic_match": true,
+          "matched_note": "### 4. misc/io_utils.c:43 — Re-seeding PRNG on every temp file creation\n**Failure scenario:** Rapid calls to `mp_mkostemps()` (e.g., parallel test suite creating temp files). Each call seeds with `mp_rand_seed(0)`. Fallback seed (`time_ns` + ASLR + stack) identical across calls → same \"random\" 6-hex-digit sequence generated → `memcpy(t, crap, 6)` produces identical suffixes → loop runs `UINT32_MAX` iterations (DoS) before finding unused name.\n\n---"
+        },
+        {
+          "note": "The variable names 'fuckshit' and 'fuckmess' contain inappropriate profanity and violate the naming conventions requirement. Variable names should be meaningful and use snake_case. Please rename these to descriptive names like 'attempt' or 'iteration' for the loop counter, and 'random_value' or 'rand_val' for the random value.\n\n```suggestion\n    for (size_t attempt = 0; attempt < UINT32_MAX; attempt++) {\n        // Using a random value may make it require fewer iterations (even if\n        // not truly random; just a counter would be sufficient).\n        size_t rand_val = mp_rand_next(&s);\n```",
+          "path": "misc/io_utils.c",
+          "side": "right",
+          "from_line": 44,
+          "to_line": 47,
+          "line_match": true,
+          "semantic_match": false,
+          "matched_note": ""
+        },
+        {
+          "note": "Remove unused function `mp_rand_next_double` as it is not referenced in the current codebase and adds unnecessary dead code.",
+          "path": "misc/random.c",
+          "side": "right",
+          "from_line": 84,
+          "to_line": 84,
+          "line_match": false,
+          "semantic_match": false,
+          "matched_note": ""
+        },
+        {
+          "note": "The reference link in the algorithm documentation should be updated to include a Wayback Machine snapshot on a separate line, matching the project's convention for preventing dead links and enabling easier URL copying.",
+          "path": "misc/random.c",
+          "side": "right",
+          "from_line": 89,
+          "to_line": 89,
+          "line_match": true,
+          "semantic_match": false,
+          "matched_note": ""
+        },
+        {
+          "note": "mp_rand_in_range32(): `mp_round_next_power_of_2()` explicitly returns 0 on overflow (e.g. for values needing 2^32). If `range > 0x80000000`, `mp_round_next_power_of_2(range)` becomes 0, so `mask` underflows to `UINT32_MAX`. The rejection loop still terminates but can become extremely slow (acceptance probability ~= range/2^32), and this behavior is surprising. Suggest: explicitly handle large ranges, e.g.:\n- if `range` is a power of two: just `min + (mp_rand_next(s) & (range - 1))`\n- else if `mp_round_next_power_of_2(range)==0`: use a 64-bit mask/rejection (or Lemire method) based on `uint64_t r = mp_rand_next(s)` and `ret = (uint32_t)(r % range)` with bias-free technique.\nAt minimum, add a guard/fast-path to avoid the underflow case.",
+          "path": "misc/random.c",
+          "side": "right",
+          "from_line": 93,
+          "to_line": 99,
+          "line_match": true,
+          "semantic_match": true,
+          "matched_note": "**2. `misc/random.c` — `mp_rand_in_range32`: undefined/roundoff behavior at `range > 2^31` (line ~96–102).**\n```c\nuint32_t range = max - min;\nuint32_t mask = mp_round_next_power_of_2(range) - 1;\n```\nFor `range ∈ (2^31, 2^32-1]`, the next power of two is `2^32`, which does **not fit in `uint32_t`**. `mp_round_next_power_of_2` must either wrap to 0 (then `mask = 0xFFFFFFFF`, and the function happens to stay uniform-by-coincidence) or behave differently/UB — I cannot verify which without the helper's definition, which is not on disk. If it does anything other than wrap-to-0 (e.g. returns `range` itself or a small value), the mask is wrong → `mp_rand_in_range32` returns **biased / non-uniform** values, or rejects (`ret >= range`) with a probability near 1 → effectively an infinite loop. Not triggered by the current two call sites (`num_entries` is small), so it is latent, but it is a correctness boundary of the new API as documented in `misc/random.h` (\"uniform distribution ... Caller should ensure min < max\" — no documented upper range limit)."
+        },
+        {
+          "note": "The project convention prohibits typedef'ing internal structs; retain `mp_rand_state` as `struct mp_rand_state` without typedef to maintain consistency.",
+          "path": "misc/random.h",
+          "side": "right",
+          "from_line": 28,
+          "to_line": 28,
+          "line_match": false,
+          "semantic_match": false,
+          "matched_note": ""
+        }
+      ]
+    },
+    {
+      "instance_id": "microsoft__typescript-go@45c0de9",
+      "repo": "microsoft/typescript-go",
+      "comments": [
+        {
+          "note": "Passing `nil` for converters to `toLSPDiagnostic` in the new `toLSPDiagnostics` helper will cause a panic since the function requires non-nil converters; propagate `l.converters` from the receiver instead.",
+          "path": "internal/ls/diagnostics.go",
+          "side": "right",
+          "from_line": 44,
+          "to_line": 44,
+          "line_match": true,
+          "semantic_match": false,
+          "matched_note": ""
+        }
+      ]
+    },
+    {
+      "instance_id": "elastic__elasticsearch@e38d20c",
+      "repo": "elastic/elasticsearch",
+      "comments": [
+        {
+          "note": "The method `maybeWrapListenerForStackTrace` introduces unnecessary heavy dependencies by requiring `ClusterService` and the full `ShardSearchRequest` when only the local node ID and shard ID are needed.",
+          "path": "server/src/main/java/org/elasticsearch/search/SearchService.java",
+          "side": "right",
+          "from_line": 549,
+          "to_line": 549,
+          "line_match": false,
+          "semantic_match": false,
+          "matched_note": ""
+        },
+        {
+          "note": "The current implementation logs server errors (5xx) at debug level when stripping stack traces (`header == false`), which obscures critical failures in production. Change logging to WARN level for 5xx errors and replace trace-removal messaging with clear exception details.",
+          "path": "server/src/main/java/org/elasticsearch/search/SearchService.java",
+          "side": "right",
+          "from_line": 555,
+          "to_line": 555,
+          "line_match": true,
+          "semantic_match": false,
+          "matched_note": ""
+        },
+        {
+          "note": "**Inefficiency concern**: Using a lambda with `logger.debug()` is good for avoiding string formatting when debug is disabled. However, the lambda still captures the `clusterService.localNode()` call and `request.shardId()` which happens before checking if debug is enabled. Consider if this adds unnecessary overhead in production when debug logging is disabled (which is the common case).\n\nThe current implementation is acceptable, but if performance is critical, you might want to check the log level first before any computation.",
+          "path": "server/src/main/java/org/elasticsearch/search/SearchService.java",
+          "side": "right",
+          "from_line": 556,
+          "to_line": 556,
+          "line_match": true,
+          "semantic_match": false,
+          "matched_note": ""
+        },
+        {
+          "note": "Failure-path robustness: this debug log dereferences `clusterService.localNode().getId()` and `request.shardId()` while already handling an exception. If `localNode()` is null during startup/shutdown, logging will throw and could mask the original failure or change behavior. Consider null-safe node id / shard id extraction (or log `clusterService.state().nodes().getLocalNodeId()` if guaranteed) and avoid any additional failure points here.\n\n```suggestion\n                final String nodeId = clusterService != null && clusterService.localNode() != null ? clusterService.localNode().getId() : \"_unknown\";\n                final Object shardId = request != null ? request.shardId() : \"_unknown\";\n                logger.debug(() -> format(\"[%s]%s Clearing stack trace before transport:\", nodeId, shardId), e);\n```",
+          "path": "server/src/main/java/org/elasticsearch/search/SearchService.java",
+          "side": "right",
+          "from_line": 557,
+          "to_line": 560,
+          "line_match": true,
+          "semantic_match": false,
+          "matched_note": ""
+        },
+        {
+          "note": "The log message format includes the closing bracket in the wrong position. The format string shows `[%s]%s Clearing stack trace` but should be `[%s][%s] Clearing stack trace` to properly match the pattern `[nodeId][indexName][shard]` mentioned in the PR description. \n\nCurrently: `[nodeId][indexName][shard] Clearing stack trace`\nExpected: `[nodeId][indexName][shard] Clearing stack trace`\n\nThe issue is that `request.shardId()` returns a ShardId object which already includes the index name and shard number in its toString() format like `[indexName][shard]`, so the format should be `[%s]%s` (which is correct as written). However, this makes the log format inconsistent with the description that claims it will be prefixed with `[nodeId][indexName][shard]`.",
+          "path": "server/src/main/java/org/elasticsearch/search/SearchService.java",
+          "side": "right",
+          "from_line": 558,
+          "to_line": 558,
+          "line_match": true,
+          "semantic_match": true,
+          "matched_note": "### 20. SearchService.java:557 - Log message format inconsistent with test expectations\n\n**File: server/src/main/java/org/elasticsearch/search/SearchService.java, Line 557** (from hunk `@@ -537,21 +537,27 @@`)\n\n```java\nlogger.debug(\n    () -> format(\"[%s]%s Clearing stack trace before transport:\", clusterService.localNode().getId(), request.shardId()),\n    e\n);\n```\n\nThe format produces: `[nodeId]shardId Clearing stack trace before transport:`\n\nBut ErrorTraceHelper expects: `[nodeId][indexName][shardId] Clearing stack trace before transport:`\n\nAnd SearchServiceTests expects: `\\[node\\]\\[index\\]\\[shardId\\] Clearing stack trace before transport:`\n\n**Defect:** Three different formats across production code, test helper, and unit test. None match.\n\n**Concrete failure scenario:** All tests using these expectations fail (defects #6, #7, #8, #11, #13, #14, #15)."
+        }
+      ]
+    },
+    {
+      "instance_id": "CherryHQ__cherry-studio@5644b00",
+      "repo": "CherryHQ/cherry-studio",
+      "comments": [
+        {
+          "note": "Avoid using 'any' type. Consider using a more specific type for the rest object or provide proper type definitions.",
+          "path": "src/renderer/src/middleware/convertLinksMiddleware.ts",
+          "side": "right",
+          "from_line": 9,
+          "to_line": 9,
+          "line_match": false,
+          "semantic_match": false,
+          "matched_note": ""
+        },
+        {
+          "note": "The `@ts-expect-error` comment suppresses a legitimate TypeScript type error. When the generic type `T` is provided without a `textDelta` property (e.g., `convertLinksMiddleware<MyCustomType>()`), accessing `chunk.textDelta` will cause a runtime error. Consider either: 1) Using a type guard to check if `textDelta` exists before accessing it, or 2) Defining a proper constraint that ensures `T` has `textDelta` when `type === 'text-delta'`.\n\n```suggestion\n              if (chunk.type === 'text-delta') {\n                const textDelta = (chunk as any).textDelta\n                if (textDelta !== undefined) {\n                  controller.enqueue({\n                    ...chunk,\n                    textDelta: convertLinks(textDelta as string)\n                  })\n                } else {\n                  controller.enqueue(chunk)\n                }\n```",
+          "path": "src/renderer/src/middleware/convertLinksMiddleware.ts",
+          "side": "right",
+          "from_line": 16,
+          "to_line": 21,
+          "line_match": false,
+          "semantic_match": false,
+          "matched_note": ""
+        },
+        {
+          "note": "**Type Safety Improvement**\n\nUsing `@ts-expect-error` suppresses the type check but doesn't guarantee runtime safety. If a chunk has `type: 'text-delta'` but is missing `textDelta`, this will throw.\n\n**Suggestion**:\nUse a type guard or a safe cast to ensure `textDelta` exists.\n\n```typescript\nif (chunk.type === 'text-delta' && 'textDelta' in chunk && typeof chunk.textDelta === 'string') {\n  controller.enqueue({\n    ...chunk,\n    textDelta: convertLinks(chunk.textDelta)\n  })\n}\n```",
+          "path": "src/renderer/src/middleware/convertLinksMiddleware.ts",
+          "side": "right",
+          "from_line": 16,
+          "to_line": 22,
+          "line_match": false,
+          "semantic_match": false,
+          "matched_note": ""
+        },
+        {
+          "note": "Hard-coded string: `'text-delta'` is a protocol constant. If this value is used elsewhere, consider centralizing it (enum/const) to avoid drift and improve discoverability. Also consider guarding `chunk.textDelta` with a runtime type check if chunks can be malformed (e.g., `typeof (chunk as any).textDelta === 'string'`) to prevent `convertLinks` from throwing.",
+          "path": "src/renderer/src/middleware/convertLinksMiddleware.ts",
+          "side": "right",
+          "from_line": 16,
+          "to_line": 21,
+          "line_match": false,
+          "semantic_match": false,
+          "matched_note": ""
+        },
+        {
+          "note": "The tag extraction logic in `extractReasoningMiddleware` lacks validation for nested or malformed tags, risking incorrect content extraction; implement structural validation and explicit error handling for tag integrity.",
+          "path": "src/renderer/src/middleware/extractReasoningMiddleware.ts",
+          "side": "right",
+          "from_line": 12,
+          "to_line": 12,
+          "line_match": true,
+          "semantic_match": false,
+          "matched_note": ""
+        },
+        {
+          "note": "Missing error handling in async function. Consider adding try-catch blocks to handle potential errors from doGenerate() call.",
+          "path": "src/renderer/src/middleware/extractReasoningMiddleware.ts",
+          "side": "right",
+          "from_line": 20,
+          "to_line": 22,
+          "line_match": false,
+          "semantic_match": false,
+          "matched_note": ""
+        },
+        {
+          "note": "Type safety: `Record<string, any>` weakens typing and spreads `any` through callers. Prefer a generic return type that preserves provider-specific fields (e.g., `<R extends {text:string}>(...) => Promise<R>`), or at least use `Record<string, unknown>`.\n\nAlso consider typing `doGenerate/doStream` params via a shared interface to avoid repeating/loosening types.",
+          "path": "src/renderer/src/middleware/extractReasoningMiddleware.ts",
+          "side": "right",
+          "from_line": 21,
+          "to_line": 22,
+          "line_match": false,
+          "semantic_match": false,
+          "matched_note": ""
+        },
+        {
+          "note": "Use strict equality `===` instead of loose equality `==`. Loose equality can lead to unexpected type coercion behavior.",
+          "path": "src/renderer/src/middleware/extractReasoningMiddleware.ts",
+          "side": "right",
+          "from_line": 23,
+          "to_line": 23,
+          "line_match": false,
+          "semantic_match": false,
+          "matched_note": ""
+        },
+        {
+          "note": "Potential null pointer issue: `RegExpMatchArray.index` can return `number | undefined` in TypeScript. Using type assertion `as number` without null checking could cause runtime errors if `match.index` is undefined. Please add a null check before using `match.index`.\n\n```suggestion\n      for (let i = matches.length - 1; i >= 0; i--) {\n        const match = matches[i] as RegExpMatchArray\n        if (match.index == null) continue\n        const beforeMatch = textWithoutReasoning.slice(0, match.index)\n        const afterMatch = textWithoutReasoning.slice(match.index + match[0].length)\n```",
+          "path": "src/renderer/src/middleware/extractReasoningMiddleware.ts",
+          "side": "right",
+          "from_line": 34,
+          "to_line": 37,
+          "line_match": false,
+          "semantic_match": false,
+          "matched_note": ""
+        },
+        {
+          "note": "Potential data loss: the transform has no `flush()` implementation. If the stream ends with remaining `buffer` content (e.g., partial tag or trailing text), it will never be emitted. Add a `flush(controller)` to `publish(buffer)` at end (taking `isReasoning/afterSwitch` into account).\n\n```suggestion\n          new TransformStream<T, T>({\n                      transform: (chunk, controller) => {\n                        // ...existing logic...\n                      },\n                      flush: (controller) => {\n                        if (buffer.length > 0) {\n                          // publish remaining buffer as-is\n                          const prefix = afterSwitch && (isReasoning ? !isFirstReasoning : !isFirstText) ? separator : ''\n                          controller.enqueue({\n                            ...(lastChunk as any),\n                            type: isReasoning ? 'reasoning' : 'text-delta',\n                            textDelta: prefix + buffer\n                          })\n                          buffer = ''\n                        }\n                      }\n                    })\n```",
+          "path": "src/renderer/src/middleware/extractReasoningMiddleware.ts",
+          "side": "right",
+          "from_line": 56,
+          "to_line": 57,
+          "line_match": true,
+          "semantic_match": true,
+          "matched_note": "- **Medium — `src/renderer/src/middleware/extractReasoningMiddleware.ts:57`**: The transform has no `flush` handler. If the response ends with text that is a prefix of a tag, such as `answer <thi` or a literal trailing `<`, that suffix remains in `buffer` and is silently discarded. A following `finish` chunk is forwarded before stream closure, so `TEXT_COMPLETE` also contains the truncated text."
+        },
+        {
+          "note": "This conditional assignment relies heavily on previous state flags (afterSwitch, isFirst*, etc.). Its complexity makes it harder to follow. Refactoring into helper functions or clearer conditionals could improve readability.",
+          "path": "src/renderer/src/middleware/extractReasoningMiddleware.ts",
+          "side": "right",
+          "from_line": 66,
+          "to_line": 66,
+          "line_match": false,
+          "semantic_match": false,
+          "matched_note": ""
+        },
+        {
+          "note": "The 'finish' variant of `OpenAIStreamChunk` uses `any` for `finishReason`, `usage`, `delta`, and `chunk`, undermining TypeScript's type safety; replace with structured interfaces defining explicit properties and types.",
+          "path": "src/renderer/src/providers/AiProvider/OpenAIProvider.ts",
+          "side": "right",
+          "from_line": 63,
+          "to_line": 66,
+          "line_match": false,
+          "semantic_match": false,
+          "matched_note": ""
+        },
+        {
+          "note": "`time_first_token_millsec` is set on first reasoning OR first text delta; but `time_first_content_millsec_delta` metric is never assigned (always 0), which can break analytics/UX relying on it. Either compute it when first text token arrives or remove it from metrics.\n\n```suggestion\n      let time_first_token_millsec = 0\n      let time_first_token_millsec_delta = 0\n      let time_first_content_millsec = 0\n      let time_first_content_millsec_delta = 0 // set when first text-delta arrives after start\n      // ...\n      if (time_first_content_millsec === 0 && chunk.type === 'text-delta') {\n        time_first_content_millsec = currentTime\n        time_first_content_millsec_delta = currentTime - start_time_millsec\n      }\n```",
+          "path": "src/renderer/src/providers/AiProvider/OpenAIProvider.ts",
+          "side": "right",
+          "from_line": 496,
+          "to_line": 498,
+          "line_match": false,
+          "semantic_match": false,
+          "matched_note": ""
+        },
+        {
+          "note": "These tag names are still effectively hardcoded. Define them as named constants (e.g., `TAG_THINK = 'think'; TAG_REASONING = 'reasoning';`) and use those constants here for improved readability and easier maintenance.",
+          "path": "src/renderer/src/providers/AiProvider/OpenAIProvider.ts",
+          "side": "right",
+          "from_line": 502,
+          "to_line": 505,
+          "line_match": true,
+          "semantic_match": false,
+          "matched_note": ""
+        },
+        {
+          "note": "`openAIChunkToTextDelta` assumes `chunk.choices[0]` always exists. In partial/edge cases this can be undefined, causing runtime errors. Add guards (and consider emitting finish on stream end).\n\n```suggestion\n          const choice0 = chunk?.choices?.[0]\n          const delta = choice0?.delta\n          if (delta?.reasoning_content || delta?.reasoning) {\n            yield { type: 'reasoning', textDelta: delta.reasoning_content ?? delta.reasoning }\n          }\n          if (delta?.content) {\n            yield { type: 'text-delta', textDelta: delta.content }\n          }\n          const finishReason = choice0?.finish_reason\n```",
+          "path": "src/renderer/src/providers/AiProvider/OpenAIProvider.ts",
+          "side": "right",
+          "from_line": 518,
+          "to_line": 525,
+          "line_match": true,
+          "semantic_match": false,
+          "matched_note": ""
+        },
+        {
+          "note": "There is a risk of missing the `usage` data here.\n\n1. OpenAI often sends the `usage` field in a separate final chunk *after* the chunk containing `finish_reason`. Breaking the loop immediately when `finishReason` is found prevents processing that subsequent usage chunk.\n2. The usage-only chunk typically has empty `choices`, so `finishReason` will be undefined, causing the loop to skip yielding the usage data.\n\nSuggestion: Remove the `break` and update the condition to yield if either `finishReason` exists OR `chunk.usage` is present.",
+          "path": "src/renderer/src/providers/AiProvider/OpenAIProvider.ts",
+          "side": "right",
+          "from_line": 525,
+          "to_line": 529,
+          "line_match": true,
+          "semantic_match": true,
+          "matched_note": "- **High — `src/renderer/src/providers/AiProvider/OpenAIProvider.ts:528`**: The generator stops consuming immediately on the finish-reason chunk. With OpenAI’s streamed usage format—`finish_reason: \"stop\", usage: null`, followed by a final choices-empty chunk containing `usage`—the usage chunk is never read, so `BLOCK_COMPLETE.response.usage` and `completion_tokens` are undefined."
+        },
+        {
+          "note": "Missing error handling: The middleware calls and stream iteration lack try-catch blocks. If the middleware or stream processing fails, errors could crash the stream without proper user feedback. Consider wrapping this section in try-catch to handle potential errors gracefully.",
+          "path": "src/renderer/src/providers/AiProvider/OpenAIProvider.ts",
+          "side": "right",
+          "from_line": 533,
+          "to_line": 549,
+          "line_match": true,
+          "semantic_match": false,
+          "matched_note": ""
+        },
+        {
+          "note": "`time_first_token_millsec` is reused as both \"first token\" and \"thinking start\" in reasoning path. This makes `time_first_token_millsec_delta` ambiguous when there is reasoning first. Consider keeping separate timestamps for \"first token overall\" and \"thinking start\" (you already have `time_thinking_start`).",
+          "path": "src/renderer/src/providers/AiProvider/OpenAIProvider.ts",
+          "side": "right",
+          "from_line": 553,
+          "to_line": 557,
+          "line_match": true,
+          "semantic_match": true,
+          "matched_note": "- **Medium — `src/renderer/src/providers/AiProvider/OpenAIProvider.ts:555`**: A reasoning phase that starts after visible text overwrites the true first-token timestamp. For `intro<think>reasoning</think>answer`, the first text sets the metric correctly, but entering reasoning later assigns `time_first_token_millsec` again, causing `time_first_token_millsec_delta` to report the later reasoning start."
+        },
+        {
+          "note": "Minor: `const currentTime` is declared at loop top and re-declared inside `finish` case, which is redundant and can confuse readers. Reuse the outer variable.",
+          "path": "src/renderer/src/providers/AiProvider/OpenAIProvider.ts",
+          "side": "right",
+          "from_line": 585,
+          "to_line": 591,
+          "line_match": true,
+          "semantic_match": false,
+          "matched_note": ""
+        },
+        {
+          "note": "Naming inconsistency: The filename is `getPotentialIndex.ts` but the exported function is named `getPotentialStartIndex`. Consider renaming the file to `getPotentialStartIndex.ts` to match the function name, which will make imports more intuitive and consistent.",
+          "path": "src/renderer/src/utils/getPotentialIndex.ts",
+          "side": "right",
+          "from_line": 7,
+          "to_line": 7,
+          "line_match": false,
+          "semantic_match": false,
+          "matched_note": ""
+        },
+        {
+          "note": "Potential performance issue: this suffix scan is O(n^2) and allocates a new substring on each iteration (`text.substring(i)`). If `text` can be large (streaming buffers), consider avoiding allocations by comparing via indices (e.g., loop k over possible suffix length and check `searchedText.startsWith(text.slice(-k))` with bounded k, or compare characters directly). At minimum, prefer `text.slice(i)` only if necessary and consider early-bounding the scan to `Math.min(text.length, searchedText.length)`.",
+          "path": "src/renderer/src/utils/getPotentialIndex.ts",
+          "side": "right",
+          "from_line": 21,
+          "to_line": 26,
+          "line_match": false,
+          "semantic_match": false,
+          "matched_note": ""
+        },
+        {
+          "note": "The `reader` created from `stream.getReader()` is never closed. According to the Streams API specification, when a reader is created, the stream becomes locked to that reader. If `reader.read()` throws an error or the iteration is interrupted, the reader should be properly closed via `reader.releaseLock()` to allow the stream to be used again and prevent memory leaks. Consider wrapping the async iterator with proper cleanup logic.\n\n```suggestion\nexport function readableStreamAsyncIterable<T>(stream: ReadableStream<T>): AsyncIterable<T> {\n  const reader = stream.getReader()\n  return {\n    [Symbol.asyncIterator](): AsyncIterator<T> {\n      return {\n        async next(): Promise<IteratorResult<T>> {\n          try {\n            return await reader.read()\n          } catch (error) {\n            reader.releaseLock()\n            throw error\n          }\n        },\n        async return(): Promise<IteratorResult<T>> {\n          reader.releaseLock()\n          return { done: true, value: undefined as any }\n        }\n      }\n    }\n  }\n}\n```",
+          "path": "src/renderer/src/utils/stream.ts",
+          "side": "right",
+          "from_line": 1,
+          "to_line": 12,
+          "line_match": true,
+          "semantic_match": true,
+          "matched_note": "- **Low — `src/renderer/src/utils/stream.ts:2`**: The async-iterable adapter never releases or cancels its reader. After complete iteration, attempting to obtain another reader from the same stream throws because it remains locked; breaking iteration early likewise leaves the source locked and uncancelled.**Now the reasoning middleware `wrapGenerate` defect:** \n\n```js\nlet textWithoutReasoning = text\nfor (let i = matches.length - 1; i >= 0; i--) {\n  const match = matches[i] as RegExpMatchArray\n  const beforeMatch = textWithoutReasoning.slice(0, match.index as number)\n  const afterMatch = textWithoutReasoning.slice((match.index as number) + match[0].length)\n  textWithoutReasoning = beforeMatch + (beforeMatch.length > 0 && afterMatch.length > 0 ? separator : '') + afterMatch\n}\n```\n\nThis is a known bug pattern from the Vercel source: using `match.index` against the SHIFTING `textWithoutReasoning` while iterating matches in reverse. Since it iterates in reverse (from last match to first), the indices of earlier matches are unaffected by removals of later matches. `match.index` was computed on the ORIGINAL `text`, but `textWithoutReasoning` at each step equals original text minus all matches after `i` removed. Removing content after index `i` doesn't shift indices before `i`. So indices of earlier matches remain valid in `textWithoutReasoning`. This is correct. Actually this is the same as the Vercel middleware which works. Fine.\n\n**Reasoning middleware `wrapStream` defect — tag detection & the `match.index` issue with buffer slices.** Let me analyze the streaming parser.\n\n```js\nbuffer += chunk.textDelta\nfunction publish(text) {...}\nwhile (true) {\n  const nextTag = isReasoning ? closingTag : openingTag\n  const startIndex = getPotentialStartIndex(buffer, nextTag)\n  if (startIndex == null) {\n    publish(buffer)\n    buffer = ''\n    break\n  }\n  publish(buffer.slice(0, startIndex))\n  const foundFullMatch = startIndex + nextTag.length <= buffer.length\n  if (foundFullMatch) {\n    buffer = buffer.slice(startIndex + nextTag.length)\n    isReasoning = !isReasoning\n    afterSwitch = true\n  } else {\n    buffer = buffer.slice(startIndex)\n    break\n  }\n}\n```\n\nConsider when `nextTag` is the opening tag and `isReasoning` is false. We find the start index of `<think>`. `publish(buffer.slice(0, startIndex))` publishes text before the tag as `text-delta`. Then flip to reasoning.\n\nNow the tag is split across chunks. `getPotentialStartIndex` handles partial matches by returning the suffix-match index. When the full open tag spanning chunks: e.g., buffer ends with `<thi` and next chunk starts with `nk>`. On the first chunk, `getPotentialStartIndex(buffer, \"<think>\")` returns index of `<thi` (suffix matching prefix `<thi`). `foundFullMatch = startIndex + 5 <= buffer.length`? `startIndex` points to `<thi`, length 5, so `startIndex+5 == buffer.length` → foundFullMatch true?? Wait `startIndex + nextTag.length <= buffer.length` → `startIndex + 6 <= buffer.length`. buffer has `<thi` at end: startIndex = buffer.length - 4. So `startIndex + 6 = buffer.length + 2`, not <= buffer.length. So foundFullMatch false → `buffer = buffer.slice(startIndex)`, break. Good, keeps `<thi` in buffer. Next chunk appends `nk>rest`. Then startIndex found, full match, flip. Good, partial tags handled.\n\nBut wait — there's a **serious bug** with `getPotentialStartIndex` when the partial-suffix fallback kicks in for a tag that isn't actually going to match. Consider `text-delta` content that contains the opening character `<` but not a real tag, e.g. content like `\"x < y\"`. Then buffer accumulating... `getPotentialStartIndex` checks direct indexOf \"<think>\" — not found. Then it looks for largest suffix of buffer matching a prefix of \"<think>\". A trailing `<` matches prefix `<`. So returns that index. Then `publish(buffer.slice(0, startIndex))` publishes \"x \" (up to `<`), then `foundFullMatch = startIndex+6 <= len`? buffer `\"...>x <\"` → startIndex = len-1, startIndex+6 > len → false → `buffer = buffer.slice(startIndex)` = `\"<\"`, break. Next chunk `\" y...\"` appends → `\"< y...\"`. Now there's a `<` at position 0 but no `<think>`. It accumulates more. This causes the parser to keep searching. If the content never contains `<think>`, `getPotentialStartIndex` keeps returning null eventually once the `<` isn't a suffix... Actually each iteration: if no `<think>` and no suffix-prefix match, return null → publish(buffer), clear. But the trailing `<` keeps getting \"sticky\" — it will only match if it's at the end. This causes buffer to be withheld one chunk. Minor timing issue but not a correctness failure. Actually it does cause a split: a lone `<` at the end of a chunk is deferred to the next chunk's processing, so if content is `\"a < b\"` split as `\"a <\"` then `\" b\"`, the `<` stays buffered, and next chunk `\" b\"` yields buffer `\"< b\"` — getPotentialStartIndex: indexOf \"<think>\" no; largest suffix of \"< b\" matching prefix of \"<think>\": suffix \" b\"→\"<think>\".startsWith(\" b\")? no. \"< b\"? no. \"<\"? yes prefix \"<\". So returns 0. Then publish(\"\"), foundFullMatch: 0+6 <= 3? no → buffer = \"< b\", break. So it never publishes! It keeps holding. Next chunk \" c\" → buffer \"< b c\" ... this continues, and every time, trailing... wait the `<` is at index 0 now, not trailing. Let me recheck: buffer = \"< b\". getPotentialStartIndex: largest suffix of \"< b\" matching prefix of \"<think>\". Suffixes: \"b\",\" b\",\"< b\",\"< b\" ... Actually suffixes from end: \"b\" (pos2), \" b\"(pos1→\" b\"), \"< b\"(pos0→\"< b\"). Does \"<think>\".startsWith(\"< b\")? no. \"<think>\".startsWith(\" b\")? no. \"b\"? no. So no suffix match, direct not found → returns null → publish(buffer=\"< b\") as text-delta, buffer cleared. OK so it does eventually publish. Fine, just a one-chunk delay. Not a real defect.\n\nNow the **`<think>` never closes and never opens across the whole stream**: handled.\n\n**Real defect: reasoning text is re-emitted but `THINKING_COMPLETE`/`reasoning` metrics logic.** Let me focus on the consumer switch.\n\n**Defect: `time_thinking_start` / `THINKING_COMPLETE` never fires if reasoning doesn't transition to text.** In the new code, `THINKING_COMPLETE` is emitted only in the `text-delta` case when `time_thinking_start > 0 && time_first_content_millsec === 0`. If reasoning is emitted but no text follows (stream ends with finish while still reasoning), `THINKING_COMPLETE` is never emitted. The old code emitted `THINKING_COMPLETE` when `isReasoningJustDone` detected the reasoning→content transition, also only on content. So similar. But if reasoning but no content ever and finish, old code: on finish, it would call TEXT_COMPLETE with content, BLOCK_COMPLETE. No THINKING_COMPLETE either. Actually old emitted THINKING_COMPLETE on content toggle. Both similar. Not a new defect.\n\n**Defect: In the `text-delta` consumer, `isFirstChunk` gating changed.** New code:\n```js\ncase 'text-delta': {\n  if (isFirstChunk) {\n    isFirstChunk = false\n    if (time_first_token_millsec === 0) {\n      time_first_token_millsec = currentTime\n      time_first_token_millsec_delta = currentTime - start_time_millsec\n    }\n  }\n  ...\n}\n```\nWait — the OLD code only set `time_first_token` on the FIRST chunk when there was no reasoning before. The old code:\n```js\nif (isFirstChunk && time_first_token_millsec === 0 && time_first_token_millsec_delta === 0) {\n  isFirstChunk = false\n  time_first_token_millsec = currentTime\n  time_first_token_millsec_delta = ...\n}\n```\nnew code only checks `isFirstChunk`. But `isFirstChunk` is also set to false on... let me check. In old code isFirstChunk started true. New code: `let isFirstChunk = true`, set false on first text-delta. Fine—time_first_token set to time of first text delta if not already set by reasoning. OK equivalent.\n\n**Now the reasoning timing.** Old: `time_first_token` set on first reasoning chunk via `isFirstThinkingChunk`. New: set in `reasoning` case when `time_thinking_start===0`. Fine.\n\n**Defect: metrics `time_thinking_millsec`** — old used `final_time_thinking_millsec_delta` which was `time_first_content_millsec - time_first_token_millsec`. New uses `final_time_thinking_millsec_delta = time_first_content_millsec - time_thinking_start`. Slight change in semantics (start of reasoning vs first token). Both similar. Not clearly a defect.\n\n**Defect: `time_first_token_millsec_delta` reset between calls.** New code — is it reset? Old code had `// FIXME: 临时方案，重置时间戳和思考内容 time_first_token_millsec = 0; time_first_content_millsec = 0` after each loop. But new code declares these INSIDE `processStream` (function-scoped), so they're fresh per call. Good, no cross-call leakage. Actually wait — old code had them declared OUTSIDE processStream (in the outer completions function scope: `let time_first_token_millsec = 0` at line ~430 outside processStream), hence needed the FIXME reset. New code moved them inside. Fine.\n\nLet me verify by reading diff: In the removed block, `let time_first_token_millsec = 0 let time_first_token_millsec_delta = 0 let time_first_content_millsec = 0` appear at the removed lines outside processStream. New code adds them inside processStream (`let time_first_token_millsec = 0` etc. inside processStream). Yes, moved inside. Good.\n\n**Defect — `isEnabledWebSearch` variable.** In finish case, `if (isEnabledWebSearch && isZhipuModel(model) && ...)`. Fine.\n\n**Now the biggest regression candidate: link conversion.** Let me look at the `convertLinks` signature and how the middleware calls it, and what the old provider-specific conversions did. Since files aren't present, I'll reason from the diff.\n\nOld code did this conversion only `if (assistant.enableWebSearch)`, and branched on annotations vs provider. The new `convertLinksMiddleware` unconditionally calls `convertLinks(chunk.textDelta)` on EVERY text-delta chunk (no `assistant.enableWebSearch` gate, no `isFirstChunk`). Consequences:\n1. Links are now rewritten even when web search is disabled — a behavior change (converting links for all normal chats). This could be considered intended (\"convertLinks middleware\") but it drops the `enableWebSearch` gate and the provider-specific logic including Hunyuan search results injection. That's a functional regression: **Hunyuan web search links will no longer be injected** because the old code built links from `chunk.search_info.search_results` via `convertLinksToHunyuan`. Now that's gone and generic convertLinks has no search results. Defect.\n\n2. `isFirstChunk` semantics lost — convertLinks may have used isFirstChunk to decide format of the link (e.g., applying a prefix only on first chunk). Passing it wrong could produce malformed first-chunk links. I can't verify signature, so I'll flag it conditionally.\n\n**Defect — `convertLinksMiddleware` transforms every chunk spread, preserving `type: 'text-delta'` but the reasoning middleware re-emits `reasoning` chunks downstream **before** convert middleware? Order: reasoningStream → convertLinks → processedStream. The reasoning middleware emits reasoning-type chunks (with textDelta). convertLinksMiddleware transform: `if (chunk.type === 'text-delta')` then convert; else enqueue as-is. Good, reasoning chunks pass through unconverted. Fine.\n\n**Defect — finish chunk loses reasoning text not yet published?** The reasoning middleware increments `buffer`, and publishes as it goes. If the underlying stream ends abruptly (error) with a partial `<think>` in buffer, that partial reasoning is dropped. Old code, similarly, would just not have full reasoning. Minor.\n\n**Now the critical one: the `finish` chunk is NOT tagged as text-delta, so the reasoning middleware passes it through. But also — reasoning middleware `publish` uses `controller.enqueue({...chunk, type: ..., textDelta: ...})` where `chunk` is the current chunk. When reasoning is split across multiple input chunks, the published reasoning chunk carries the `chunk` of whichever underlying chunk triggered the publish. For finish handling that's fine.\n\n**Defect: `convertLinksMiddleware` and reasoning ordering with downstream `text-delta` type check.** Not an issue.\n\n**Defect — `openAIChunkToTextDelta` breaks the loop on first `finishReason`, dropping web search data from subsequent chunks.** Old code continued? Old code did NOT break on finishReason; it ran the full for-await loop. Actually it processed the finishReason chunk and continued looping (there might be more chunks, though typically finish is last). New code `break`s after finish. Since finish is typically last, fine.\n\nBut there's a subtle issue: **the old code output web search / TEXT_COMPLETE on the finish chunk only if `!isEmpty(finishReason)`; the new finish case is guarded by `if (!isEmpty(finishReason))` then does TEXT_COMPLETE + web searches — but the `processToolUses` and `BLOCK_COMPLETE` are INSIDE that if-block too.** So if finishReason present (normal), fine. If finishReason absent → no finish chunk emitted at all (since generator only yields finish when `!isEmpty(finishReason)`) and no BLOCK_COMPLETE. Covered as defect #1.\n\nNow **another real defect: the `finish` chunk yields `delta` which is the SDK delta that may include `content` but the web-search annotations.** The old code checked `delta?.annotations` inside the content handling. New checks in finish case `delta?.annotations`. Same.\n\n**Defect — `convertLinksMiddleware` with `T` and stream typing, `textDelta` on reasoning chunk.** TS only.\n\n**Defect in `readableStreamAsyncIterable` / pull: when generator returns done and `controller.close()` — if a chunk is enqueued after close error. pull calls gen.next(); if done close; else enqueue. Fine. But if `next()` throws (stream error), no error propagated to controller (controller.error not called), the reader will hang forever (`done=false` forever). Old code used for-await over raw stream; on error it propagated. Now an exception in the generator from the underlying stream → `pull` rejects → actually pull rejection propagates as stream error automatically in ReadableStream. Hmm, pull returning a rejected promise errors the stream. So reader.read() rejects. That propagates. OK fine.\n\n**Defect — `asyncGeneratorToReadableStream` doesn't handle cancellation.** Not relevant to correctness.\n\nNow let me also check `extractReasoningMiddleware.wrapGenerate` — it is never used by OpenAIProvider (only wrapStream used), but it exists as a defect for other consumers. Not in this PR's usage. Skip.\n\n**The `reasoningTags` array & `getAppropriateTag`:** Both branches return `reasoningTags[0]` (`think`). So the `claude` check and `reasoning` tag entry are dead code. The second entry `{ tagName: 'reasoning' }` is never used. This means models that use `<reasoning>` tags (not `<think>`) — e.g., some DeepSeek/GLM reasoning models that emit `<reasoning>` — will NOT have their reasoning extracted/reclassified, and the reasoning text will be emitted as `text-delta` instead (content), and `reasoning` chunks never produced. Since `getAppropriateTag` always returns `think`, the `reasoning` tag config is dead. That's a logic defect: intended configurability never triggers. Actually more importantly the whole design only handles `<think>`. Whether that's a defect depends on intent. I'll note it: the `reasoning` tagName config and the model branching are dead code, so any model emitting `<reasoning>` (e.g. DeepSeek R1 with reasoning_content is handled separately, but GLM-Zero emits `<reasoning>`) will not be parsed and reasoning text leaks into content. Concrete failure: a model emitting `<reasoning>...</reasoning>` tags → reasoning shown as normal text and THINKING_DELTA never emitted.\n\nNow, **the ordering defect: reasoning text with `<think>` in the STREAM — when tag never closes, all becomes text-delta?** If a model emits `<think>` but the closing `</think>` arrives but reasoning middleware... handled.\n\n**Defect — the `publish` prefix separator logic and multiple `<think>` blocks:** `afterSwitch` gets set true after a switch, and the next publish uses separator prefix. This is to insert `\\n` between reasoning... but reasoning blocks joined with '\\n'. In wrapStream, consecutive reasoning blocks joined with separator via prefix. Fine-ish.\n\n**Now `wrapGenerate` index bug with `` matches across loop and `beforeMatch.length > 0 && afterMatch.length > 0`** fine.\n\nLet me also examine: **`openAIChunkToTextDelta` — the `TEXT_COMPLETE` uses `content` accumulated AFTER the middleware processing. But the middleware for reasoning RE-writes text-delta chunks (link conversion) — content accumulates the converted text, good. But reasoning text converted from `<think>` is classified into reasoning and excluded from content — so `content` only includes text-delta. Good.\n\n**Important: `thinkingContent` is reassembled but used for THINKING_COMPLETE. And `processToolUses(content, idx)` operates on converted content. Fine.\n\nNow let me nail the **most significant defects with line numbers**. Let me get line numbers from hunk headers.\n\nFor OpenAIProvider.ts, hunk `@@ -522,198 +487,172 @@`. The new lines start at 487. Let me count new-file lines for the key items.\n\nActually I need to identify specific line numbers in the new file. Let me reconstruct line numbers.\n\nNew hunk starts at new line 487. Let me map the new content:\n\n```\n487:       let content = '' // Accumulate content for tool processing if needed\n488:       let thinkingContent = ''\n489:       let final_time_completion_millsec_delta = 0\n490:       let final_time_thinking_millsec_delta = 0\n491:       let lastUsage: Usage | undefined = undefined\n492:       let isFirstChunk = true\n493:       let time_first_token_millsec = 0\n494:       let time_first_token_millsec_delta = 0\n495:       let time_first_content_millsec = 0\n496:       let time_thinking_start = 0\n497: (blank)\n498:       // 1. 初始化中间件\n499:       const reasoningTags = [\n500:         { tagName: 'think', separator: '\\n' },\n501:         { tagName: 'reasoning', separator: '\\n' }\n502:       ]\n503:       const getAppropriateTag = (model: Model | undefined) => {\n504:         if (!model) return reasoningTags[0]\n505:         if (model.id.includes('claude')) return reasoningTags[0]\n506:         return reasoningTags[0]\n507:       }\n508:       const reasoningTag = getAppropriateTag(model)\n509: (blank)\n510:       async function* openAIChunkToTextDelta(stream: any): AsyncGenerator<OpenAIStreamChunk> {\n511:         for await (const chunk of stream) {\n512:           if (window.keyv.get(EVENT_NAMES.CHAT_COMPLETION_PAUSED)) {\n513:             break\n514:           }\n515:           const delta = chunk.choices[0]?.delta\n516:           if (delta?.reasoning_content || delta?.reasoning) {\n517:             yield { type: 'reasoning', textDelta: delta.reasoning_content || delta.reasoning }\n518:           }\n519:           if (delta?.content) {\n520:             yield { type: 'text-delta', textDelta: delta.content }\n521:           }\n522:           const finishReason = chunk.choices[0]?.finish_reason\n523:           if (!isEmpty(finishReason)) {\n524:             yield { type: 'finish', finishReason, usage: chunk.usage, delta, chunk }\n525:             break\n526:           }\n527:         }\n528:       }\n529: (blank)\n530:       // 2. 使用中间件\n531:       const { stream: reasoningStream } = await extractReasoningMiddleware<OpenAIStreamChunk>({\n532:         tagName: reasoningTag.tagName,\n533:         separator: reasoningTag.separator,\n534:         startWithReasoning: false\n535:       }).wrapStream({\n536:         doStream: async () => ({\n537:           stream: asyncGeneratorToReadableStream(openAIChunkToTextDelta(stream))\n538:         })\n539:       })\n540: (blank)\n541:       const { stream: processedStream } = await convertLinksMiddleware<OpenAIStreamChunk>().wrapStream({\n542:         doStream: async () => ({ stream: reasoningStream })\n543:       })\n544: (blank)\n545:       // 3. 消费 processedStream，分发 onChunk\n546:       for await (const chunk of readableStreamAsyncIterable(processedStream)) {\n547:         const currentTime = new Date().getTime()\n548:         switch (chunk.type) {\n549:           case 'reasoning': {\n...\n```\n\nLet me get the finish case numbers. Continue:\n\n```\n550:             if (time_thinking_start === 0) {\n551:               time_thinking_start = currentTime\n552:               time_first_token_millsec = currentTime\n553:               time_first_token_millsec_delta = currentTime - start_time_millsec\n554:             }\n555:             thinkingContent += chunk.textDelta\n556:             const thinking_time = currentTime - time_thinking_start\n557:             onChunk({ type: ChunkType.THINKING_DELTA, text: chunk.textDelta, thinking_millsec: thinking_time })\n558:             break\n559:           }\n560:           case 'text-delta': {\n561:             if (isFirstChunk) {\n562:               isFirstChunk = false\n563:               if (time_first_token_millsec === 0) {\n564:                 time_first_token_millsec = currentTime\n565:                 time_first_token_millsec_delta = currentTime - start_time_millsec\n566:               }\n567:             }\n568:             content += chunk.textDelta\n569:             // 推理转正文的分界点\n570:             if (time_thinking_start > 0 && time_first_content_millsec === 0) {\n571:               time_first_content_millsec = currentTime\n572:               final_time_thinking_millsec_delta = time_first_content_millsec - time_thinking_start\n573:               onChunk({\n574:                 type: ChunkType.THINKING_COMPLETE,\n575:                 text: thinkingContent,\n576:                 thinking_millsec: final_time_thinking_millsec_delta\n577:               })\n578:             }\n579:             onChunk({ type: ChunkType.TEXT_DELTA, text: chunk.textDelta })\n580:             break\n581:           }\n582:           case 'finish': {\n583:             // 处理 finishReason、usage、websearch\n584:             const finishReason = chunk.finishReason\n585:             const usage = chunk.usage\n586:             const delta = chunk.delta\n587:             const rawChunk = chunk.chunk\n588:             const currentTime = new Date().getTime()\n589:             if (!isEmpty(finishReason)) {\n590:               onChunk({ type: ChunkType.TEXT_COMPLETE, text: content })\n...\n```\n\nI can't be 100% precise on line numbers given manual mapping, but I'll cite approximate new-file line numbers with the hunk context. Let me note the exact lines I'm confident about for the new files (extractReasoningMiddleware.ts, convertLinksMiddleware.ts, getPotentialIndex.ts, stream.ts) since their line numbers are directly given.\n\nFor extractReasoningMiddleware.ts, key defects:\n- Line 100-103 (approx): the stream `publish` and buffering. Actually let me map new file lines.\n\nThe file is 106 lines. Let me map. Line 1: comment. 2 blank. 3 import. 4 blank. 5 export interface...Options {. 6 tagName. 7 separator. 8 startWithReasoning. 9 }. 10 blank. 11 comment. 12 export function extractReasoningMiddleware... 13 const openingTag. 14 const closingTag. 15 blank. 16 return {. 17 wrapGenerate: 18 tail...\n\nLet me be more careful about which mid-tier defects to report.\n\nLet me focus on the strongest defect list:"
+        },
+        {
+          "note": "The `asyncGeneratorToReadableStream` function lacks error handling. If `gen.next()` throws an error or the generator encounters an error, the `controller.error(error)` should be called to propagate the error to the stream consumer. Without this, errors may be silently swallowed or cause unhandled promise rejections.\n\n```suggestion\nexport function asyncGeneratorToReadableStream<T>(gen: AsyncGenerator<T>): ReadableStream<T> {\n  return new ReadableStream<T>({\n    async pull(controller) {\n      try {\n        const { value, done } = await gen.next()\n        if (done) {\n          controller.close()\n        } else {\n          controller.enqueue(value)\n        }\n      } catch (error) {\n        controller.error(error)\n      }\n    },\n    cancel() {\n      gen.return?.()\n    }\n  })\n}\n```",
+          "path": "src/renderer/src/utils/stream.ts",
+          "side": "right",
+          "from_line": 14,
+          "to_line": 25,
+          "line_match": true,
+          "semantic_match": false,
+          "matched_note": ""
+        }
+      ]
+    },
+    {
+      "instance_id": "ClickHouse__ClickHouse@5fb6ee3",
+      "repo": "ClickHouse/ClickHouse",
+      "comments": [
+        {
+          "note": "The lambda examples for `arrayMin`/`arrayMax` appear to use a function-argument order inconsistent with the documented syntax (`arrayMin([func], source, ...)`). The example `SELECT arrayMin(x, y -> x/y, ...)` reads like `func` is the second argument, which may not parse / may confuse users.\n\nSuggestion: align examples with the declared syntax, e.g. `arrayMin((x, y) -> x / y, [..], [..])` (or whatever the engine expects). Please verify the correct lambda signature/order and update accordingly.\n\n```suggestion\n    FunctionDocumentation::Examples examples_min = {\n        {\"Basic example\", \"SELECT arrayMin([5, 3, 2, 7]);\", \"2\"},\n        {\"Usage with lambda function\", \"SELECT arrayMin((x, y) -> x / y, [4, 8, 12, 16], [1, 2, 1, 2]);\", \"4\"},\n    };\n```",
+          "path": "src/Functions/array/arrayAggregation.cpp",
+          "side": "right",
+          "from_line": 461,
+          "to_line": 464,
+          "line_match": true,
+          "semantic_match": false,
+          "matched_note": ""
+        },
+        {
+          "note": "The returned_value description incorrectly states 'minimum element' when this is the arrayMax function. It should say 'maximum element' to match the function's behavior.\n\n```suggestion\n    FunctionDocumentation::ReturnedValue returned_value_max = \"Returns the maximum element in the source array, or the maximum element of the lambda results if provided.\";\n```",
+          "path": "src/Functions/array/arrayAggregation.cpp",
+          "side": "right",
+          "from_line": 482,
+          "to_line": 482,
+          "line_match": true,
+          "semantic_match": true,
+          "matched_note": "6. **`src/Functions/array/arrayAggregation.cpp:483`** — The `arrayMax` returned-value metadata says a lambda call returns the minimum lambda result. For the included input `[4,8,12,16]` and `[1,2,1,2]`, the text predicts `4`, while `arrayMax` returns `12`."
+        },
+        {
+          "note": "Inconsistent syntax notation: `arrayFirst` uses `λ(x[, y1, ..., yN])` while `arrayFirstOrNull` uses `func(x[, y1, ..., yN])`. For consistency, all four functions should use the same notation style (either λ or func).",
+          "path": "src/Functions/array/arrayFirstLast.cpp",
+          "side": "right",
+          "from_line": 231,
+          "to_line": 231,
+          "line_match": false,
+          "semantic_match": false,
+          "matched_note": ""
+        },
+        {
+          "note": "The 'No match' example for arrayLast incorrectly uses `arrayFirst` instead of `arrayLast`. This example should demonstrate the arrayLast function's behavior when there is no match, not the arrayFirst function.",
+          "path": "src/Functions/array/arrayFirstLast.cpp",
+          "side": "right",
+          "from_line": 262,
+          "to_line": 266,
+          "line_match": true,
+          "semantic_match": true,
+          "matched_note": "7. **`src/Functions/array/arrayFirstLast.cpp:265`** — The `arrayLast` “No match” example invokes `arrayFirst`. With distinguishing inputs such as `[1,2,3]` and `[1,0,3]`, adapting that example returns `1`; the documented function should return the last matching value, `3`."
+        },
+        {
+          "note": "Inconsistent quotation mark usage detected. The word '0' is sometimes enclosed in backticks (\\`0\\`) and sometimes in single quotes ('0'). Consistent formatting improves readability.",
+          "path": "src/Functions/array/arrayFirstLastIndex.cpp",
+          "side": "right",
+          "from_line": 128,
+          "to_line": 130,
+          "line_match": false,
+          "semantic_match": false,
+          "matched_note": ""
+        },
+        {
+          "note": "The arrayFirstIndex documentation examples use invalid lambda syntax by omitting parentheses for multiple parameters; they should use `(x, y) -> x=y` instead of `x, y -> x=y`.",
+          "path": "src/Functions/array/arrayFirstLastIndex.cpp",
+          "side": "right",
+          "from_line": 157,
+          "to_line": 157,
+          "line_match": false,
+          "semantic_match": false,
+          "matched_note": ""
+        },
+        {
+          "note": "Semicolons inside SQL statements in examples are inconsistent with documentation pattern in other array functions. Semicolons should be outside the SQL statements.",
+          "path": "src/Functions/array/arrayFirstLastIndex.cpp",
+          "side": "right",
+          "from_line": 159,
+          "to_line": 159,
+          "line_match": false,
+          "semantic_match": false,
+          "matched_note": ""
+        },
+        {
+          "note": "The `documentation_last` object was created but not passed to `factory.registerFunction<FunctionArrayLastIndex>()`. This is inconsistent with `FunctionArrayFirstIndex` which properly passes its documentation. Please pass `documentation_last` to the register function.\n\n```suggestion\n    factory.registerFunction<FunctionArrayLastIndex>(documentation_last);\n```",
+          "path": "src/Functions/array/arrayFirstLastIndex.cpp",
+          "side": "right",
+          "from_line": 166,
+          "to_line": 166,
+          "line_match": true,
+          "semantic_match": true,
+          "matched_note": "1. **`src/Functions/array/arrayFirstLastIndex.cpp:167`** — `documentation_last` is constructed but not passed to `registerFunction`. Querying `system.functions` for `arrayLastIndex` therefore still yields empty documentation/version metadata, and both updated reference files continue listing it as undocumented."
+        },
+        {
+          "note": "The documentation string for `ArraySplit` requires two clarifications:  \n- Replace \"returns something other than zero\" with \"returns true\" for boolean accuracy.  \n- Change \"on the left hand side of the element\" to \"to the left of the element\" for concise phrasing.",
+          "path": "src/Functions/array/arraySplit.cpp",
+          "side": "right",
+          "from_line": 118,
+          "to_line": 118,
+          "line_match": false,
+          "semantic_match": false,
+          "matched_note": ""
+        },
+        {
+          "note": "Doc string formatting: missing space before the markdown link. `(...)(`y`).[Lambda function]` renders poorly; add a space before `[Lambda function]` for readability.\n\n```suggestion\n        {\"func(x[, y1, ..., yN])\", \"A lambda function which operates on elements of the source array (`x`) and condition arrays (`y`). [Lambda function](/sql-reference/functions/overview#arrow-operator-and-lambda).\"},\n```",
+          "path": "src/Functions/array/arraySplit.cpp",
+          "side": "right",
+          "from_line": 121,
+          "to_line": 121,
+          "line_match": false,
+          "semantic_match": false,
+          "matched_note": ""
+        },
+        {
+          "note": "Documentation variable names are ambiguous between split functions. Rename `FunctionArraySplit`'s documentation variables to `*_split` style (e.g., `description_split`) and `FunctionArrayReverseSplit`'s to `*_reverse_split` style (e.g., `description_reverse_split`) for clear distinction.",
+          "path": "src/Functions/array/arraySplit.cpp",
+          "side": "right",
+          "from_line": 133,
+          "to_line": 133,
+          "line_match": false,
+          "semantic_match": false,
+          "matched_note": ""
+        }
+      ]
+    },
+    {
+      "instance_id": "lvgl__lvgl@a0067e3",
+      "repo": "lvgl/lvgl",
+      "comments": [
+        {
+          "note": "The added null check for `txt` parameter omits the required logging; include LOG_ERR or LOG_WRN specifically when `txt` is NULL.",
+          "path": "src/misc/lv_text.c",
+          "side": "right",
+          "from_line": 653,
+          "to_line": 653,
+          "line_match": true,
+          "semantic_match": false,
+          "matched_note": ""
+        },
+        {
+          "note": "**Potential logic issue**: Checking `txt[*i] == '\\0'` before processing might change the expected behavior of this function. \n\nIf `*i` points to the null terminator, this returns early without incrementing `*i`. Callers might expect `*i` to be incremented even when reaching the end of the string.\n\nConsider whether this early return is the intended behavior, or if the null check should only prevent accessing beyond valid memory while still allowing normal processing of the null terminator case.",
+          "path": "src/misc/lv_text.c",
+          "side": "right",
+          "from_line": 653,
+          "to_line": 653,
+          "line_match": true,
+          "semantic_match": true,
+          "matched_note": "**2. `src/misc/lv_text.c:653` — returning without advancing `*i` silently changes the function's observable contract for NUL/exhausted input.**\n\nPre-patch, when `txt[*i]` was the terminator, the ASCII branch returned 0 *and advanced `*i` past the NUL*. Post-patch, the guard returns 0 with `*i` frozen at the terminator. Concrete delta, observable through the API the new tests themselves exercise: `lv_text_encoded_letter_next_2(\"A\", &l, &ln, &ofs)` now yields `ofs = 1` (previously 2), and on `\"\"` yields `ofs = 0` (previously 2). Any pre-existing caller that iterates by resuming from the returned offset — read `X`, `ofs` lands on NUL, `txt[ofs]` is no longer \"consumed-past\" — now gets a different resume position for the same inputs, so per-character position math (line breaking, caret placement, hit testing) that was correct against the old offset is now off by one byte at every string end. The PR updates no callers to the new semantics; it only pins the new values in new tests."
+        }
+      ]
+    }
+  ]
+}

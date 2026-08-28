@@ -1,0 +1,230 @@
+{
+  "review": {
+    "comments": [
+      {
+        "content": "- **P1 \u2014 `src/misc/lv_text.c:653`:** The null guard exists only in `lv_text_utf8_next`. With `LV_TXT_ENC == LV_TXT_ENC_ASCII`, calling `lv_text_encoded_letter_next_2(NULL, &letter, &letter_next, &ofs)` still dispatches to `lv_text_iso8859_1_next`, dereferences `txt`, and crashes instead of returning zero values.",
+        "path": "src/misc/lv_text.c",
+        "start_line": 653,
+        "end_line": 653,
+        "observation_id": "8508860835e2c210",
+        "claimed_path": "src/misc/lv_text.c",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "- **P2 \u2014 `tests/src/test_cases/test_txt.c:181`:** The UTF-8-specific tests are unconditional. With `LV_TXT_ENC == LV_TXT_ENC_ASCII` and UTF-8 source bytes, `\"\u00e9\"` is decoded as `0xC3` with `ofs == 1`, not `0xE9` with `ofs == 2`; both newly added multibyte tests therefore fail in a supported ASCII configuration.",
+        "path": "tests/src/test_cases/test_txt.c",
+        "start_line": 181,
+        "end_line": 181,
+        "observation_id": "0951e29e5d71d718",
+        "claimed_path": "tests/src/test_cases/test_txt.c",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "- **P3 \u2014 `tests/src/test_cases/test_txt.c:183`:** The tests assume the ordinary source literal `\"\u00e9\"` is encoded as UTF-8, which C does not guarantee. With a Latin-1 execution character set, the literal becomes `E9 00`; the UTF-8 decoder returns invalid character `0` with `ofs == 1`, failing the asserted `0xE9` and offset `2`. The `\"\u00e9A\"` literal at line 196 has the same defect.",
+        "path": "tests/src/test_cases/test_txt.c",
+        "start_line": 183,
+        "end_line": 183,
+        "observation_id": "bbc638622e23106b",
+        "claimed_path": "tests/src/test_cases/test_txt.c",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "**1. `src/misc/lv_text.c:653` \u2014 `return result;` reads a variable whose declaration is not in the diff and which has never been assigned at that point.**\n\nThe hunk shows the function body starting at line 649 (`uint32_t i_tmp = 0;`), and the only visible write to `result` is the assignment on new line 657 (`result = txt[*i];`) \u2014 *after* the new early return. The early return's value therefore depends entirely on an invisible pre-existing declaration above line 649. Failure scenarios:\n- If `result` is not declared before line 653 (nothing in the hunk shows a declaration), the file does not compile \u2192 the whole library build breaks, which also silences the new tests.\n- If it is declared without an initializer, every NULL/empty input returns an **uninitialized value** (UB) instead of 0 \u2192 callers render garbage codepoints for empty strings, and the new tests (`TEST_ASSERT_EQUAL_UINT32(0, letter)`) fail nondeterministically.\n- It is only correct if the hidden declaration is `uint32_t result = 0;` \u2014 which this diff does not show. **Gap:** the base file is not in the workspace, so I could not confirm which case holds.",
+        "path": "src/misc/lv_text.c",
+        "start_line": 653,
+        "end_line": 653,
+        "observation_id": "1e9bcb9731fe7497",
+        "claimed_path": "src/misc/lv_text.c",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "**2. `src/misc/lv_text.c:653` \u2014 returning without advancing `*i` silently changes the function's observable contract for NUL/exhausted input.**\n\nPre-patch, when `txt[*i]` was the terminator, the ASCII branch returned 0 *and advanced `*i` past the NUL*. Post-patch, the guard returns 0 with `*i` frozen at the terminator. Concrete delta, observable through the API the new tests themselves exercise: `lv_text_encoded_letter_next_2(\"A\", &l, &ln, &ofs)` now yields `ofs = 1` (previously 2), and on `\"\"` yields `ofs = 0` (previously 2). Any pre-existing caller that iterates by resuming from the returned offset \u2014 read `X`, `ofs` lands on NUL, `txt[ofs]` is no longer \"consumed-past\" \u2014 now gets a different resume position for the same inputs, so per-character position math (line breaking, caret placement, hit testing) that was correct against the old offset is now off by one byte at every string end. The PR updates no callers to the new semantics; it only pins the new values in new tests.",
+        "path": "src/misc/lv_text.c",
+        "start_line": 653,
+        "end_line": 653,
+        "observation_id": "8fab224d60135938",
+        "claimed_path": "src/misc/lv_text.c",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "**3. `tests/src/test_cases/test_txt.c:204` \u2014 the `\"\u00e9A\"` test's `ofs == 2` expectation contradicts the second-read behavior the patch's other tests rely on.**\n\nThe NULL and empty-string tests only pass if `lv_text_encoded_letter_next_2` reads *both* letters through the same offset counter and the *second* read is the one that hits the NUL guard (otherwise \"ofs unchanged\" for NULL/empty is meaningless). Under that same shape, `\"\u00e9A\"`: first read decodes `\u00e9`, counter \u2192 2; second read decodes `A`, counter \u2192 3; `ofs` is written as 3. The test asserts 2. Failure scenario: run the new suite \u2192 `test_lv_text_encoded_letter_next_2_should_handle_two_utf8_characters` fails outright. The single-char tests only survive because post-patch the second read no longer advances on NUL, masking the same inconsistency. **Gap:** `lv_text_encoded_letter_next_2` is not in this diff, so its exact counter/write order cannot be confirmed \u2014 but on the only implementation consistent with the NULL/empty expectations, the assertion fails.",
+        "path": "tests/src/test_cases/test_txt.c",
+        "start_line": 204,
+        "end_line": 204,
+        "observation_id": "2e00fd628de36269",
+        "claimed_path": "tests/src/test_cases/test_txt.c",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "**4. `tests/src/test_cases/test_txt.c:142-205` \u2014 new tests use the wrong naming convention for this file and may never be executed.**\n\nEvery existing test in this file is `test_txt_*` (e.g. `test_txt_next_line_should_handle_empty_string`); the five new functions are `test_lv_text_encoded_letter_next_2_should_handle_*`. If the harness enumerates tests by the file's convention (explicit list or name pattern tied to the file/target), the new functions are silently not registered. Failure scenario: CI runs the `test_txt` suite, the NULL/empty guards are never exercised, and a later regression to exactly the code this PR claims to fix passes CI. **Gap:** the test runner/registration mechanism is not visible in this diff or the workspace; if the harness auto-discovers any `test_*` symbol this item is moot, which I could not verify.",
+        "path": "tests/src/test_cases/test_txt.c",
+        "start_line": 142,
+        "end_line": 142,
+        "observation_id": "5ce2318cebcb1d02",
+        "claimed_path": "tests/src/test_cases/test_txt.c",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "**5. `tests/src/test_cases/test_txt.c:147` \u2014 the NULL test (and the whole fix) is aimed at the wrong layer: `lv_text_encoded_letter_next_2` is the function being fed NULL, and the diff only guards `lv_text_utf8_next` inside it.**\n\n`test_lv_text_encoded_letter_next_2_should_handle_null_pointer` passes `txt = NULL` and expects benign results. That is only true if `lv_text_encoded_letter_next_2` touches `txt` *only* via the patched `lv_text_utf8_next`. If it reads `txt` directly beforehand (e.g., a `while(txt[i] != '\\0')` pre-scan or reading `*ofs` from the string), the test segfaults instead of passing, and the patch provides no protection. Since the function isn't part of this PR, the fix's coverage is unverifiable, and the test asserts behavior the diff does not guarantee. **Gap:** `lv_text_encoded_letter_next_2`'s body not available.",
+        "path": "tests/src/test_cases/test_txt.c",
+        "start_line": 147,
+        "end_line": 147,
+        "observation_id": "fb92d96ce638b695",
+        "claimed_path": "tests/src/test_cases/test_txt.c",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "**6. `src/misc/lv_text.c:653` \u2014 the guard's `txt[*i]` read is itself an out-of-bounds read for `*i` past the terminator, and the guard does not cover the whole character.**\n\nThe new check `txt[*i] == '\\0'` reads one byte only. Two concrete cases: (a) any caller whose `*i` is already beyond the end (precisely the state the *old* advancing behavior could leave behind, and any stale-offset caller) dereferences OOB in the guard itself \u2014 the patch converts \"crash at ASCII branch\" into \"OOB read in the guard,\" no safer; (b) a truncated multibyte sequence at end-of-buffer (e.g. a lone `0xC3`) passes the guard (first byte \u2260 0) and the continuation-byte reads at `*i+1` still run past the NUL into adjacent memory \u2014 the guard gives no end-of-buffer protection for continuation bytes. Same inputs as before \u2192 same OOB, but the PR's stated purpose (\"ensure the string is not null/empty\") is only partially met. Minor, and partly pre-existing, but the guard as written also fails to make the claim the diff's comments make.\n\n---\n\n**What's missing to settle items 1, 3, 4, 5:** the pre-change `lv_text_utf8_next` (its `result` declaration), the body of `lv_text_encoded_letter_next_2`, and the test harness's function-discovery mechanism \u2014 none of which are in the diff or the (empty) workspace. Items 1-3 are the ones most likely to be real; 2 is a genuine behavioral regression regardless of the hidden code, and 1 is a build-break or UB risk that the diff alone cannot exonerate.",
+        "path": "src/misc/lv_text.c",
+        "start_line": 653,
+        "end_line": 653,
+        "observation_id": "e65601e666212a8f",
+        "claimed_path": "src/misc/lv_text.c",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "### 1. **src/misc/lv_text.c:653** \u2014 Return of uninitialized variable `result`\n\nThe early return `return result;` executes before `result` is declared or initialized anywhere in the visible function body. If `txt == NULL` or `txt[*i] == '\\0'`, the function returns an indeterminate `uint32_t` value.\n\n**Failure scenario:** Call `lv_text_utf8_next(NULL, &idx)` or `lv_text_utf8_next(\"\", &idx)` \u2192 returns garbage (stack contents), causing downstream logic to misinterpret the \"next character\" as a valid code point (e.g., treating it as a printable character, causing buffer over-reads or rendering artifacts).\n\n---",
+        "path": "src/misc/lv_text.c",
+        "start_line": 653,
+        "end_line": 653,
+        "observation_id": "069acc06aabb72d5",
+        "claimed_path": "src/misc/lv_text.c",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "### 2. **src/misc/lv_text.c:653** \u2014 Missing `result` declaration/initialization before the guard\n\nThe diff adds a guard that returns `result`, but the surrounding context (lines 649\u2013651) shows only `i_tmp` and `i` being set up. `result` must be declared and initialized (e.g., `uint32_t result = 0;`) *before* this guard, otherwise the code won't even compile \u2014 or worse, if `result` exists later in the function but is uninitialized at this point, it's UB.\n\n**Failure scenario:** Compilation fails (if `result` not in scope) or runtime UB (if `result` declared later without initializer).\n\n---",
+        "path": "src/misc/lv_text.c",
+        "start_line": 653,
+        "end_line": 653,
+        "observation_id": "7b9aaabc14f131c5",
+        "claimed_path": "src/misc/lv_text.c",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "### 4. **tests/src/test_cases/test_txt.c:143** \u2014 Assumes `ofs` unchanged on NULL input without verifying function contract\n\nThe test asserts `ofs == 0` after passing `txt = NULL`. If `lv_text_encoded_letter_next_2` writes to `*ofs` before checking for NULL (or via a helper that does), the test passes incorrectly while the function corrupts the caller's `ofs` variable.\n\n**Failure scenario:** Implementation does `*ofs = 1; if (!txt) return;` \u2192 test passes (expects 0, gets 0? no, gets 1 \u2014 test would fail, but if the test is written *after* the bug, it locks in wrong behavior). More insidiously: if the function *doesn't* touch `ofs` on NULL, the test is fine, but the test doesn't prove the function *won't* in future.\n\n---",
+        "path": "tests/src/test_cases/test_txt.c",
+        "start_line": 143,
+        "end_line": 143,
+        "observation_id": "e782e90f1e0092cd",
+        "claimed_path": "tests/src/test_cases/test_txt.c",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "### 5. **tests/src/test_cases/test_txt.c:158** \u2014 `lv_text_encoded_letter_next_2` may dereference output pointers on NULL input\n\nThe test passes valid pointers `&letter`, `&letter_next`, `&ofs` with `txt = NULL`. If the function dereferences any of these before the NULL check (e.g., `*letter = 0;` at function start), it's fine \u2014 but if it dereferences `txt` first (already caught) or has a path that writes outputs *after* a partial decode, the test doesn't verify safety of the output pointers themselves.\n\n**Failure scenario:** Function does `if (!txt) { *letter = 0; *letter_next = 0; return; }` \u2192 fine. But if it does `uint32_t c = *txt; *letter = c; ...` \u2192 segfault before test's assertions run.\n\n---",
+        "path": "tests/src/test_cases/test_txt.c",
+        "start_line": 158,
+        "end_line": 158,
+        "observation_id": "2374fa4d029f481a",
+        "claimed_path": "tests/src/test_cases/test_txt.c",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "### 6. **tests/src/test_cases/test_txt.c:177** \u2014 Assumes single-call behavior for \"two characters\" test\n\nThe test calls the function once with `\"\u00e9A\"` and expects `letter = '\u00e9'`, `letter_next = 'A'`, `ofs = 2`. This assumes the function returns *both* current and next character in one call. If the function instead advances `ofs` by one character per call (like an iterator), the test is wrong \u2014 it would need two calls to get both characters.\n\n**Failure scenario:** Function is an iterator: call 1 \u2192 `letter='\u00e9', ofs=2`; call 2 \u2192 `letter='A', ofs=3`. Test expects `letter_next='A'` on first call \u2192 fails or (if `letter_next` is always 0) passes incorrectly.\n\n---",
+        "path": "tests/src/test_cases/test_txt.c",
+        "start_line": 177,
+        "end_line": 177,
+        "observation_id": "bf43fa50c5f15656",
+        "claimed_path": "tests/src/test_cases/test_txt.c",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "### 7. **tests/src/test_cases/test_txt.c:190** \u2014 UTF-8 test uses string literal `\"\u00e9\"` without explicit encoding guarantee\n\nThe comment says `/* UTF-8 encoding: 0xC3 0xA9 */` but the source file encoding isn't specified. If the test file is saved as Latin-1 or the compiler treats it as non-UTF-8, the byte sequence differs and the test fails or passes for wrong reasons.\n\n**Failure scenario:** Source file encoded as ISO-8859-1 \u2192 `\"\u00e9\"` is single byte `0xE9` \u2192 function reads one byte, returns `0xE9`, `ofs=1` \u2192 test expects `ofs=2` \u2192 fails. Or function handles both, test passes but doesn't validate UTF-8 logic.\n\n---",
+        "path": "tests/src/test_cases/test_txt.c",
+        "start_line": 190,
+        "end_line": 190,
+        "observation_id": "caa89dad9a730ac1",
+        "claimed_path": "tests/src/test_cases/test_txt.c",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "### 8. **src/misc/lv_text.c:652** \u2014 Guard condition checks `txt[*i]` but `*i` may be out of bounds\n\nThe guard `txt[*i] == '\\0'` assumes `*i` is a valid index. If the caller passes an index past the end of the string (e.g., `i` pointing to `strlen(txt)`), this reads one byte past the buffer \u2014 UB.\n\n**Failure scenario:** Caller calls `lv_text_utf8_next(\"A\", &idx)` where `idx == 1` (already at end) \u2192 `txt[1]` reads past the null terminator \u2192 UB (ASAN catch, or silent corruption).\n\n---",
+        "path": "src/misc/lv_text.c",
+        "start_line": 652,
+        "end_line": 652,
+        "observation_id": "08c115f7a6ee2232",
+        "claimed_path": "src/misc/lv_text.c",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "### 9. **src/misc/lv_text.c:652** \u2014 Guard returns `result` (uninitialized) for empty string, but doesn't advance `*i`\n\nIf the intent is to act as an iterator, returning \"end of string\" should probably leave `*i` unchanged or set it to a sentinel. The test `test_lv_text_encoded_letter_next_2_should_handle_empty_string` expects `ofs` unchanged (0), which is consistent \u2014 but the *changed function* `lv_text_utf8_next` doesn't take an `ofs` parameter; it takes `i`. The guard doesn't modify `*i`, so repeated calls with empty string would loop forever returning garbage `result`.\n\n**Failure scenario:** Loop `while ((c = lv_text_utf8_next(\"\", &i)) != 0) ...` \u2192 infinite loop returning garbage.\n\n---",
+        "path": "src/misc/lv_text.c",
+        "start_line": 652,
+        "end_line": 652,
+        "observation_id": "e2148bd6e2f1bfc0",
+        "claimed_path": "src/misc/lv_text.c",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "### 11. **tests/src/test_cases/test_txt.c:143** \u2014 Test name references `lv_text_encoded_letter_next_2` but function may not exist in this file\n\nThe test file shows `#endif` at the end, suggesting it's inside a conditional compilation block. If `lv_text_encoded_letter_next_2` is not compiled in (e.g., different config), the test won't compile or will link to a stub.\n\n**Failure scenario:** Build with `LV_USE_TEXT_ENCODED_LETTER_NEXT_2=0` \u2192 test calls undefined function \u2192 link error or tests silently skipped.\n\n---",
+        "path": "tests/src/test_cases/test_txt.c",
+        "start_line": 143,
+        "end_line": 143,
+        "observation_id": "e76de81c66907c01",
+        "claimed_path": "tests/src/test_cases/test_txt.c",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "### 12. **src/misc/lv_text.c:649** \u2014 Function signature uses `uint32_t * i` but guard uses `*i` without checking `i != NULL` first\n\nWait \u2014 line 651 does `if(i == NULL) i = &i_tmp;` *before* the guard. So `i` is never NULL at the guard. This is correct. But `*i` could still be out of bounds (see defect #8).\n\n---",
+        "path": "src/misc/lv_text.c",
+        "start_line": 649,
+        "end_line": 649,
+        "observation_id": "a9524deafc056ca6",
+        "claimed_path": "src/misc/lv_text.c",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "### 14. **tests/src/test_cases/test_txt.c:166** \u2014 Test for \"single ASCII character\" expects `ofs = 1`\n\nThis assumes the function advances `ofs` by 1 byte for ASCII. If the function uses `ofs` as a *character index* (not byte offset), `ofs` would be 1 (correct for both). But the UTF-8 test expects `ofs = 2` for a 2-byte char, confirming `ofs` is byte offset. Consistent \u2014 but only if the function actually implements byte-offset semantics.\n\n---\n\n### 15. **General** \u2014 The diff adds a null-check to `lv_text_utf8_next` but the tests are for `lv_text_encoded_letter_next_2`. If `lv_text_encoded_letter_next_2` calls `lv_text_utf8_next` internally, the tests *indirectly* exercise the guard \u2014 but only for the code paths those tests trigger. The null-pointer test passes `txt=NULL` to `lv_text_encoded_letter_next_2`; if that function checks for NULL *before* calling `lv_text_utf8_next`, the guard in `lv_text_utf8_next` is never reached.\n\n**Failure scenario:** `lv_text_encoded_letter_next_2` has its own NULL check and returns early \u2192 `lv_text_utf8_next` guard untested \u2192 defect #1 ships.\n\n---\n\n**Summary:** The most critical defect is **#1** (uninitialized `result` returned) \u2014 it turns a null/empty input into a silent corruption source. Defects **#3**, **#8**, and **#15** mean the fix is effectively untested. Defects **#4\u2013#7, #10** are test gaps that let future regressions through.",
+        "path": "tests/src/test_cases/test_txt.c",
+        "start_line": 166,
+        "end_line": 166,
+        "observation_id": "e5f0ff6cdac08187",
+        "claimed_path": "tests/src/test_cases/test_txt.c",
+        "path_resolution": "exact",
+        "merged_from": [
+          "50a385b560651f54"
+        ]
+      }
+    ]
+  },
+  "rundir": "/home/mjarnold/.cache/llm-panel/runs/aacr-up-xdr2lsqf-633f9a205060/20260828-163242-1372081",
+  "extractor": "3",
+  "unlocated": [
+    {
+      "content": "### 3. **tests/src/test_cases/test_txt.c** \u2014 Tests target wrong function\n\nAll new tests call `lv_text_encoded_letter_next_2`, but the code change is in `lv_text_utf8_next`. The tests do not exercise the added null/empty-string guard in `lv_text_utf8_next`.\n\n**Failure scenario:** The guard in `lv_text_utf8_next` remains untested; a regression in that function (e.g., the uninitialized `result` above",
+      "observation_id": "db68d3362c945d63",
+      "claimed_path": "tests/src/test_cases/test_txt.c",
+      "path_resolution": "exact"
+    },
+    {
+      "content": "### 10. **tests/src/test_cases/test_txt.c** \u2014 No test for invalid UTF-8 sequences\n\nThe added tests cover NULL, empty, valid ASCII, valid 2-byte UTF-8, and two valid UTF-8 chars. No test for: overlong encoding, surrogate halves, 4-byte sequences, truncated sequences, or invalid lead bytes.\n\n**Failure scenario:** Input `\"\\xC0\\x80\"` (overlong null) \u2192 function may decode as U+0000, or read past buffer",
+      "observation_id": "276751b9d810486b",
+      "claimed_path": "tests/src/test_cases/test_txt.c",
+      "path_resolution": "exact"
+    },
+    {
+      "content": "### 13. **src/misc/lv_text.c** \u2014 No include guard / static function in .c file is fine, but the diff doesn't show the full function\n\nThe function may have other paths that return `result` after initializing it. The defect is specifically that the *new* early-return path returns uninitialized `result`.\n\n---",
+      "observation_id": "0990de0df60b7431",
+      "claimed_path": "src/misc/lv_text.c",
+      "path_resolution": "exact"
+    }
+  ]
+}

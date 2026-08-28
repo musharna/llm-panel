@@ -1,0 +1,248 @@
+{
+  "review": {
+    "comments": [
+      {
+        "content": "## Analysis\n\nThis diff changes how the width of a label's text is computed for drawing. Previously, both the `draw_main` function and `lv_draw_label_iterate_characters` called `lv_text_get_size(...)` with `LV_COORD_MAX` as `max_w`. Now the size is cached in `label->text_size` (computed in `lv_label_refr_text` with a limited `max_w`) and reused.\n\nThe key change in `lv_label_refr_text`:\n```c\nlv_text_get_size(&size, label->text, font, letter_space, line_space, max_w, flag);\nlabel->text_size = size;\n```\n\nHere `max_w` is the *constrained* width, not `LV_COORD_MAX`. This is the crux of several defects.\n\nLet me enumerate the actual defects:\n\n**Defect 1 \u2014 `lv_draw_label.c` line 221 (`w = dsc->text_size.x`) with EXPAND.** The original code in the EXPAND branch deliberately used `LV_COORD_MAX` as the max width to get the *full* unwrapped width of the text. The `text_size` cache is computed with a constrained `max_w`, which is the width used for wrapping. When `LV_LABEL_LONG_MODE_SCROLL` (EXPAND) is set, `max_w` is small (the object width), so `text_size.x` reflects the wrapped width (= object width), NOT the full text width. The original code was specifically computing the full width to force infinite expansion. So when EXPAND is enabled, `w = dsc->text_size.x` will return the constrained width instead of the full text width. This changes drawing behavior \u2014 the iterate function may not draw all characters / centers incorrectly.\n\nWait, let me look more carefully. In `lv_label_refr_text`, what is `max_w` when EXPAND is set? Let me recall the LVGL code. Actually I can't read the file. Let me reason from the code structure.\n\nThe variable `size` in `lv_label_refr_text` \u2014 the code around line 965 does `lv_text_get_size(&size, ..., max_w, flag)`. This `max_w` is used for wrapping. Under SCROLL/EXPAND modes, there's typically a special handling where `max_w` is set to `LV_COORD_MAX` or the full text width. But the point is: `text_size` is not unconditionally computed with `LV_COORD_MAX`. And critically, the cache is only refreshed in `lv_label_refr_text`, which is called on refresh events.\n\nKey defect: **The cache `text_size` computed with a wrapping `max_w` differs from what the drawing code needs (`LV_COORD_MAX`).** In the scroll/expand case, the drawn width must be the full unwrapped text width so the text can be scrolled/centered properly. But `text_size.x` reflects the width constrained to `max_w`.\n\nLet me think about the specific modes:\n\nFor `SCROLL` mode, `max_w` in `lv_label_refr_text` is typically `LV_COORD_MAX` actually \u2014 scroll labels are set with a huge width so text doesn't wrap. Hmm, in LVGL the scroll mode sets `label->expand` and the width. Actually, let me recall the real code.\n\nActually let me reason about the concrete bug about `text_size` being **uninitialized on first draw before first refresh**.\n\n**Defect 2 \u2014 Uninitialized `text_size` on first draw.** `label->text_size` is a new field in the struct. It's written only in `lv_label_refr_text`. But it's read in `draw_main` (lines 856, 894) and via `lv_draw_label_iterate_characters`. Is `lv_label_refr_text` guaranteed to be called before the first `draw_main`? It's called from `lv_label`'s refr flow (via the destructor/constructor event or on style/attribute change). However, `lv_draw_label_iterate_characters` (in `lv_draw_label.c`) is a general function that callers other than `lv_label` may use. If any external code or the library itself calls `lv_draw_label_iterate_characters` (or `lv_draw_label` with the draw descriptor) without the `text_size` being set by `lv_label_refr_text`, then `dsc->text_size.x` is garbage.\n\nMore importantly, the new `text_size` field in `lv_draw_label_dsc_t` \u2014 the `draw_main` sets it from `label->text_size`, but `lv_draw_label` and callers of the descriptor that construct their own descriptor don't initialize `text_size`. The struct formerly didn't have this field; now it's added to the middle of the struct in `lv_draw_label.h` at line 38 (after `text`). If any code does a designated-initializer or memset, the field could be garbage or zero. `lv_draw_label_iterate_characters` reads `dsc->text_size.x` unconditionally in the EXPAND branch. For callers that don't fill `text_size`, this reads uninitialized/garbage data.\n\nActually `lv_draw_label.h` \u2014 is there an `lv_draw_label_dsc_init`? In actual LVGL there isn't; descriptors are memset to 0 typically. So `text_size.x = 0` if memset. But `lv_draw_label_iterate_characters` is used by... let me think. This is a real concern: the function is a public/iter function that may be called with a descriptor not originating from a label widget.\n\n**Defect 3 \u2014 `label->text_size.x` in `draw_main` alignment/scroll checks now uses constrained width instead of full width.** Same root as defect 1.\n\nLet me focus on the most defensible, concrete defect: the semantic difference between caching with constrained `max_w` in `lv_label_refr_text` versus the drawing code which needs `LV_COORD_MAX`.\n\nLet me reason about `max_w` in `lv_label_refr_text`. In the LVGL source, `lv_label_refr_text` is:\n\n```c\nstatic void lv_label_refr_text(lv_obj_t * obj)\n{\n    lv_label_t * label = (lv_label_t *) obj;\n    uint32_t txt_len = lv_text_get_size(...); // no\n```\n\nActually the real one uses `lv_label_get_text` logic for dot handling. But we can see from the diff: it uses `max_w` from... The function does `lv_text_get_size(&size, label->text, font, letter_space, line_space, max_w, flag)`. Where does `max_w` come from? From `lv_obj_get_width(obj)`. So it's the widget width.\n\nNow, for SCROLL mode: scroll labels set the label's width to `LV_COORD_MAX` effectively via `label->expand` and margins. Actually scroll labels DO have a huge width. Hmm.\n\nLet me focus on the clearest case instead: **non-scroll, wrapped label where text wraps to a smaller height \u2014 width is fine actually.**\n\nHmm, let me reconsider. The original drawing code for alignment (line 856) computed size with `LV_COORD_MAX`, i.e., the natural unwrapped width, to check `if(size.x > lv_area_get_width(&txt_coords))` for center/right misalignment correction. Now it uses `label->text_size.x`, which is the wrapped width (capped at `max_w` \u2248 widget width). For a wrapped, centered label whose text is wider than the label, the wrapped width == label width, so `size.x > width` is now **false**, when previously (with natural width > width) it was **true**. This changes the misalignment correction behavior \u2192 misplaced text for center/right-aligned wrapped scroll labels. That's a concrete behavior change / defect.\n\nActually wait \u2014 but the alignment correction (offset adjustment) is inside `if(size.x > lv_area_get_width(&txt_coords))`. With natural width the offset was applied; with wrapped text_size it won't be. That's a real defect: **centered/right-aligned labels whose text is wider than the label box will no longer receive the misalignment correction, causing misaligned/truncated rendering.**\n\nSimilarly for SCROLL_CIRCULAR (line 894): `if(size.x > lv_area_get_width(&txt_coords))` \u2014 with `text_size.x` being the wrapped/constrained width, the circular re-draw condition may not trigger for wrapped text. Previously the natural width would exceed the viewport \u2192 redraw. Now if wrapped width == viewport width, the condition `>` fails \u2192 circular scroll effect lost for wrapped text.\n\nHmm, but scroll labels typically don't wrap. These align/scroll cases mostly involve non-wrapping text. Still, the constrained-width semantics is the core flaw.\n\nLet me also consider the **expand branch in `lv_draw_label_iterate_characters`**. This is the clearest one. The `else` branch is the EXPAND case (per the comment \"If EXPAND is enabled then not limit the text's width to the object's width\"). It sets `w = text_size.x`. But `text_size.x` is capped at the object's width (from `lv_label_refr_text`'s `max_w`). So for EXPAND/SCROLL labels, `w` is now limited to the object width, which defeats the entire purpose of the EXPAND branch \u2014 text longer than the object won't be fully iterated/drawn. This is the most severe defect: **scroll/expand labels will not render the full text width; text is truncated at the object width.**\n\nActually wait \u2014 for scroll labels, `max_w` used in `lv_label_refr_text`... For SCROLL mode, LVGL sets the label's width to the full text width (via `lv_obj_set_width(label, w)` with `label->expand`), so `max_w` equals the full text width and `text_size.x == full width`. Hmm. In that case the scroll case might be fine. But `LV_LABEL_LONG_MODE_SCROLL_CIRCULAR` and `SCROLL` \u2014 the original code used `LV_COORD_MAX` deliberately. Whether text_size matches depends on whether max_w at refresh time equals the full text width.\n\nActually, the dirtiness characteristic: the drawing code previously computed size **fresh each draw** (at draw time, with the current font etc.). Now it reads a cached value computed at **refresh time**. If the label's geometry or the drawing conditions change between refresh and draw without a refresh, the cached value is stale. E.g., if `lv_obj_refr` recomputes layout but `lv_label_refr_text` is optimized out for some style-only changes, the cached size could be stale.\n\nLet me also note: **`label->text_size` is only written in `lv_label_refr_text`, but is it reset/zeroed at construction?** No constructor change in the diff. So on first draw before any refresh, `text_size` is garbage. `draw_main` is invoked on the first render; `lv_label_refr_text` is triggered by the label's refresh mechanism when the label is created (via the constructor calling it). But there's a pathway: if a label is created without text, `lv_label_refr_text` runs with empty text and sets text_size = {0,0}? Possibly. Still, the ordering is not guaranteed for the external `lv_draw_label_iterate_characters` path.\n\nLet me now nail the external-caller defect more concretely: `lv_draw_label_iterate_characters` is a public function in the draw API. Before this change, it computed the size itself from `dsc->text` \u2014 self-contained, correct for any caller. After the change, in the EXPAND branch it relies on `dsc->text_size`, which is a field that only `lv_label`'s `draw_main` populates. Any other caller of `lv_draw_label_iterate_characters` (or `lv_draw_label`) with EXPAND flag set will read an uninitialized `text_size` \u2192 garbage width \u2192 wrong iteration/rendering. This is a genuine API regression.\n\nNow for the `lv_draw_label.h` struct addition: adding `lv_point_t text_size` in the middle of the struct. If anything initializes via aggregate/designated initializers relying on positional layout, this shifts fields. But more importantly, `lv_draw_label`'s descriptor is typically initialized via `lv_draw_label_dsc_init` (which likely memsets). Since I can't verify, I'll note it as a lower-confidence item.\n\nLet me also mention the **stale cache on scroll/offset change.** `label->text_size` doesn't change, but that's fine.\n\nLet me consider the **`lv_label_refr_text` \u2014 the cached size is computed with the current `max_w`, but EXPAND text needs unbounded.** Already covered.\n\nNow let me also consider: is `text_size` ever invalidated correctly? There's `invalid_size_cache` bit in the struct. The new `text_size` is updated in `lv_label_refr_text`, but is `lv_label_refr_text` called on every relevant invalidation? On font size change, style change, width change \u2014 yes probably. But the alignment correction at draw time uses a size that might be for a different `max_w` than the draw-time `txt_coords` width, causing the exact misalignment the original comment warns about.\n\nLet me also flag: **`lv_draw_label.c` `w = dsc->text_size.x` \u2014 but `text_size` may be {0,0} if it's a generic draw descriptor where the caller didn't populate it.** Same as the external caller issue \u2014 this is the read point.\n\nLet me also note the low-probability: if `dsc->text` and `text_size` are inconsistent (someone edits text without refreshing), etc. \u2014 that's the cache-staleness class.\n\nNow, let me also check `draw_main` line 856 \u2014 the replaced code:\n```c\nlv_point_t size = label->text_size;\nif(size.x > lv_area_get_width(&txt_coords)) {\n```\nThe original recomputed with `LV_COORD_MAX`. Now uses wrapped `text_size.x`. Defect as described.\n\nLet me also consider whether there's an even more direct wrong-type issue: `text_size.y` \u2014 the drawing code only reads `.x` in these spots. `lv_label_refr_text` computes with `max_w` so `text_size.y` is the wrapped height. Not used in the diff, so no defect there directly.\n\nNow let me also check: **the `LV_LABEL_LONG_TXT_HINT` block** and dot handling. `lv_label_refr_text` calls `lv_label_revert_dots` before `lv_text_get_size`, then presumably re-applies dots. Fine.\n\nLet me count the items:",
+        "path": "src/draw/lv_draw_label.c",
+        "start_line": 221,
+        "end_line": 221,
+        "observation_id": "09d12034ec29e714",
+        "claimed_path": "lv_draw_label.c",
+        "path_resolution": "basename",
+        "merged_from": []
+      },
+      {
+        "content": "1. **`lv_draw_label.c:221` \u2014 EXPAND branch `w = dsc->text_size.x` uses constrained width, truncating scroll/expand text.** `text_size` was computed in `lv_label_refr_text` with a wrapping `max_w` (object width), not `LV_COORD_MAX` as the original code used. For EXPAND/SCROLL labels, `w` becomes \u2264 object width, so `lv_draw_label_iterate_characters` only iterates/draws text up to the object width \u2014 the full scrollable text is not rendered. Concrete scenario: a `LV_LABEL_LONG_MODE_SCROLL` label with long text and EXPAND flag \u2192 previously the full text was measured/drawn; now only the first object-width chars are drawn, breaking scroll. (Highest severity.)",
+        "path": "src/draw/lv_draw_label.c",
+        "start_line": 221,
+        "end_line": 221,
+        "observation_id": "3d7c921919d4df78",
+        "claimed_path": "lv_draw_label.c",
+        "path_resolution": "basename",
+        "merged_from": []
+      },
+      {
+        "content": "2. **`lv_draw_label.c:221` \u2014 reads `dsc->text_size` that external callers never populate.** `lv_draw_label_iterate_characters` is a public function. Only `lv_label`'s `draw_main` populates `text_size`. Any other caller passing a descriptor with EXPAND/scroll semantics reads uninitialized (or zero-memset) `text_size` \u2192 wrong `w` (garbage or 0). Previously it computed the size from the text itself. Concrete: any non-label caller (e.g. custom widget) invoking `lv_draw_label_iterate_characters` with EXPAND flag \u2192 draws no/garbage characters.",
+        "path": "src/draw/lv_draw_label.c",
+        "start_line": 221,
+        "end_line": 221,
+        "observation_id": "1ddc76ba8f0d860c",
+        "claimed_path": "lv_draw_label.c",
+        "path_resolution": "basename",
+        "merged_from": []
+      },
+      {
+        "content": "3. **`lv_label.c:856` \u2014 center/right misalignment correction now keys on the wrapped width instead of the natural width.** The original condition `size.x > width` used the natural unwrapped width (LV_COORD_MAX measurement). Now `size.x = label->text_size.x`, which is capped at the wrapping width. For a center/right-aligned label whose text wraps to exactly the label's width (text wider than box), `size.x > width` is now false, so the comment-documented misalignment correction (offset / BIDI base-dir shift) is skipped \u2192 text misaligned/truncated.",
+        "path": "src/widgets/label/lv_label.c",
+        "start_line": 856,
+        "end_line": 856,
+        "observation_id": "d266f165460265e9",
+        "claimed_path": "lv_label.c",
+        "path_resolution": "basename",
+        "merged_from": []
+      },
+      {
+        "content": "4. **`lv_label.c:894` (SCROLL_CIRCULAR branch)** \u2014 same stale/constrained-width substitution: the condition to trigger the circular re-draw (`size.x > viewport width`) now uses the wrapped width; for wrapped text `text_size.x` equals the viewport width so the `>` fails and the circular repeat is dropped.",
+        "path": "src/widgets/label/lv_label.c",
+        "start_line": 894,
+        "end_line": 894,
+        "observation_id": "66ab45c1773cd4fb",
+        "claimed_path": "lv_label.c",
+        "path_resolution": "basename",
+        "merged_from": []
+      },
+      {
+        "content": "**1. `src/draw/lv_draw_label.c:221` \u2014 EXPAND branch now reads a width that is no longer the unbounded text width, truncating scroll/expand rendering (highest severity).**\nThe `else` branch is specifically the \"EXPAND is enabled \u2192 not limit the text's width to the object's width\" case, and it previously measured the natural width with `lv_text_get_size(..., LV_COORD_MAX, ...)`. Now `w = dsc->text_size.x`. But `text_size` is populated only in `lv_label_refr_text` (lv_label.c:968) via `lv_text_get_size(..., max_w, flag)` where `max_w` is the *wrapping/object* width \u2014 a constrained value, not `LV_COORD_MAX`. For text that wraps (or is wider than the object), `text_size.x` is capped at the object width, so `w` now equals the object width instead of the full text width. Concrete failure: a `LV_LABEL_LONG_MODE_SCROLL`/EXPAND label whose text exceeds the object width \u2192 `lv_draw_label_iterate_characters` iterates only the first object-width of characters, so the scrollable tail of the text is never drawn.",
+        "path": "src/draw/lv_draw_label.c",
+        "start_line": 221,
+        "end_line": 221,
+        "observation_id": "dba13af93dd38ed5",
+        "claimed_path": "src/draw/lv_draw_label.c",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "**2. `src/draw/lv_draw_label.h:38` + `src/draw/lv_draw_label.c:221` \u2014 `lv_draw_label_iterate_characters` now depends on a descriptor field that only `lv_label`'s `draw_main` populates.**\nThis is a public draw API. Previously the EXPAND branch computed the size from `dsc->text` directly and was self-contained for any caller. Now it reads `dsc->text_size`, which nothing but `lv_label.c:826` (`label_draw_dsc.text_size = label->text_size`) ever sets. Concrete failure: any library or third-party caller that builds its own `lv_draw_label_dsc_t` (e.g. a custom non-label widget, or a future `LV_USE_BIDI` path that invokes the iterator) with the EXPAND flag set \u2192 `dsc->text_size.x` is uninitialized/garbage (or 0 after a memset-based init), so `w` is 0/garbage and characters are misdraw or not drawn. The drawing code is no longer able to derive the width from the state it was given.",
+        "path": "src/draw/lv_draw_label.h",
+        "start_line": 38,
+        "end_line": 38,
+        "observation_id": "3b85dd6f43a6d2de",
+        "claimed_path": "src/draw/lv_draw_label.h",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "**3. `src/widgets/label/lv_label.c:856 \u2014 center/right misalignment correction now keys on the wrapped width instead of the full text width.**\nThe original condition `size.x > lv_area_get_width(&txt_coords)` was computed with `LV_COORD_MAX` \u2014 i.e. the *natural, unwrapped* width. It is now `size.x = label->text_size.x`, which is the width-after-wrapping (capped at the object width). Concrete failure: a center- or right-aligned (non-scroll) label whose text is wider than the box \u2014 the text wraps so `text_size.x` \u2248 the box width \u2014 then `size.x > width` is now **false** where it was previously **true**, so the documented misalignment correction (including the `LV_USE_BIDI` base-dir offset shift) is skipped and the text renders misaligned/off-center exactly in the situation the original comment says the correction exists to fix.",
+        "path": "src/widgets/label/lv_label.c",
+        "start_line": 856,
+        "end_line": 856,
+        "observation_id": "574195e7a594e3d6",
+        "claimed_path": "src/widgets/label/lv_label.c",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "**4. `src/widgets/label/lv_label.c:894 \u2014 SCROLL_CIRCULAR trigger condition degrades to the same constrained-width comparison.**\nThe circular re-draw is gated on `size.x > lv_area_get_width(&txt_coords)`. Previously `size.x` was the `LV_COORD_MAX` natural width; now it is the wrapped `label->text_size.x`. For wrapped text that is wider than the viewport, `text_size.x` equals the viewport width, so `size.x > width` fails and the circular repeat/offset is dropped \u2192 the circular scroll effect silently stops for text that wraps, where it previously continued.",
+        "path": "src/widgets/label/lv_label.c",
+        "start_line": 894,
+        "end_line": 894,
+        "observation_id": "ece11a67c70cd2bf",
+        "claimed_path": "src/widgets/label/lv_label.c",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "**5. `src/widgets/label/lv_label_private.h:53` \u2014 new `text_size` field is never initialized at construction, so the first `draw_main` can read garbage.**\nThe field is added to the struct with no initialization in the constructor (no constructor hunk in the diff). `draw_main` (lv_label.c:826, 856, 894) reads `label->text_size` before any guarantee that `lv_label_refr_text` has run. Concrete failure: a label that draws on the first render pass before its text-refresh has executed (e.g. text set via a path that defers refresh, or a label drawn during an early layout pass) \u2192 `text_size` holds uninitialized memory, `size.x` is garbage, and both the alignment/scroll decisions in `draw_main` and the `text_size` copied into `dsc` (read by item 2) are wrong.\n\n**6. Staleness: `label->text_size` is captured at refresh time with refresh-time `max_w`, but the draw code compares it against draw-time `txt_coords` width.**\nThe original code called `lv_text_get_size` *during draw*, guaranteeing the width matched the drawing geometry. The cached value can be stale with respect to draw-time geometry: between the last `lv_label_refr_text` and `draw_main`, the available drawing area can shrink/grow (parent layout shift, `lv_obj_set_width`, style/letter-space or font change that invalidates layout but not the text cache path), so `text_size.x` no longer corresponds to the `txt_coords` width it is compared against in the four read sites. Concrete failure: after a width/font change that updates geometry without refreshing the cached `text_size` (the `invalid_size_cache` bit is a separate mechanism and nothing in this diff ties `text_size` invalidation to it), center/right and circular corrections fire or don't fire on the wrong premise, producing the exact misalignment the fresh measurement was designed to prevent.\n\n\u2014\n\nI could not validate any of these against the actual repository (the working tree is empty; `lv_draw_label_dsc_init`, `lv_label_refr_text`, the label constructor, and the definition of `max_w` there are all unavailable). The findings for items 1, 3, 4, and 6 depend on `max_w` in `lv_label_refr_text` being a constrained/wrapping width rather than `LV_COORD_MAX`; if in fact `max_w` is always `LV_COORD_MAX` in that function, those specific claims collapse, and only items 2 and 5 (uninitialized-descriptor-state / uninitialized-field defects), which stand on the diff alone, would remain.",
+        "path": "src/widgets/label/lv_label_private.h",
+        "start_line": 53,
+        "end_line": 53,
+        "observation_id": "1e88a0d47c92f9a8",
+        "claimed_path": "src/widgets/label/lv_label_private.h",
+        "path_resolution": "exact",
+        "merged_from": [
+          "2212d851e7be7e1f"
+        ]
+      },
+      {
+        "content": "### 1. `src/draw/lv_draw_label.c:224` \u2014 EXPAND mode uses constrained cached width instead of unconstrained measurement\nThe `else` branch (EXPAND enabled) previously called `lv_text_get_size` with `LV_COORD_MAX` to get unconstrained text width. Now it uses `dsc->text_size.x`, but `text_size` is computed in `lv_label_refr_text` with `max_w` (the object's constrained width).  \n**Failure scenario:** Label with `LV_LABEL_LONG_MODE_SCROLL` and long text. Cached `text_size.x` = object width (clamped). Draw logic thinks text fits, disables scrolling. Text gets clipped instead of scrolling.\n\n---",
+        "path": "src/draw/lv_draw_label.c",
+        "start_line": 224,
+        "end_line": 224,
+        "observation_id": "416c06027f6f9a44",
+        "claimed_path": "src/draw/lv_draw_label.c",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "### 2. `src/widgets/label/lv_label.c:853` \u2014 Scroll alignment uses constrained cached width\nCode checks `if(size.x > lv_area_get_width(&txt_coords))` to decide if scrolling is needed. `size` comes from `label->text_size` (computed with constrained `max_w`).  \n**Failure scenario:** Label in `LV_LABEL_LONG_MODE_SCROLL` with center/right alignment. Text wider than widget. Cached `size.x` == widget width. Condition false \u2192 scroll not triggered. Text renders centered/clipped instead of scrolling.\n\n---",
+        "path": "src/widgets/label/lv_label.c",
+        "start_line": 853,
+        "end_line": 853,
+        "observation_id": "e8ac3860894b849f",
+        "claimed_path": "src/widgets/label/lv_label.c",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "### 3. `src/widgets/label/lv_label.c:891` \u2014 Circular scroll trigger uses constrained cached width\nSame issue: `LV_LABEL_LONG_MODE_SCROLL_CIRCULAR` checks `if(size.x > lv_area_get_width(&txt_coords))` using constrained `text_size`.  \n**Failure scenario:** Circular scroll label with text wider than widget. Cached size clamped to widget width. Circular scroll never activates. Text renders once, stationary.\n\n---",
+        "path": "src/widgets/label/lv_label.c",
+        "start_line": 891,
+        "end_line": 891,
+        "observation_id": "a61a7daf35285bb8",
+        "claimed_path": "src/widgets/label/lv_label.c",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "### 4. `src/widgets/label/lv_label.c:823` \u2014 Draw descriptor gets uninitialized `text_size` on first draw\n`label_draw_dsc.text_size = label->text_size` executes before `lv_label_refr_text` runs (which sets `label->text_size` at line 968).  \n**Failure scenario:** New label created, text set, immediate draw event (before `lv_label_refr_text`). `text_size` contains garbage \u2192 `w` in `lv_draw_label.c:224` is garbage \u2192 layout completely broken (text positioned off-screen, clipped, or overlapping).\n\n---",
+        "path": "src/widgets/label/lv_label.c",
+        "start_line": 823,
+        "end_line": 823,
+        "observation_id": "df3b5dedd1d964c6",
+        "claimed_path": "src/widgets/label/lv_label.c",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "### 5. `src/widgets/label/lv_label.c:853,891` \u2014 `invalid_size_cache` flag added but never checked in draw paths\nThe flag exists in `_lv_label_t` (private.h:53) but draw code at lines 853 and 891 unconditionally uses `label->text_size`.  \n**Failure scenario:** Text/style changed at runtime (e.g., `lv_label_set_text`), `invalid_size_cache=1` set. Next draw event fires before `lv_label_refr_text`. Stale `text_size` used \u2192 incorrect scroll/alignment decisions until refr runs.\n\n---",
+        "path": "src/widgets/label/lv_label.c",
+        "start_line": 853,
+        "end_line": 853,
+        "observation_id": "e91b4a97a8921889",
+        "claimed_path": "src/widgets/label/lv_label.c",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "### 6. `src/draw/lv_draw_label.c:224` \u2014 No `invalid_size_cache` check in draw path\nEven if the flag were checked in label.c, the lower-level `lv_draw_label_iterate_characters` also uses `dsc->text_size.x` directly with no validation.  \n**Failure scenario:** Same as defect 5 but manifests in the draw iterator itself \u2014 character positioning uses stale width.\n\n---",
+        "path": "src/draw/lv_draw_label.c",
+        "start_line": 224,
+        "end_line": 224,
+        "observation_id": "a5dd9a59df74597b",
+        "claimed_path": "src/draw/lv_draw_label.c",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "### 7. `src/widgets/label/lv_label_private.h:53` \u2014 `text_size` not zero-initialized in constructor\nField added to struct but no initialization shown. LVGL objects are typically zeroed on alloc, but not guaranteed for all creation paths.  \n**Failure scenario:** Label created via non-standard path (e.g., manual `lv_obj_create` + type cast) or if allocator doesn't zero. First draw uses uninitialized `text_size` (defect 4 amplified).\n\n---",
+        "path": "src/widgets/label/lv_label_private.h",
+        "start_line": 53,
+        "end_line": 53,
+        "observation_id": "ca3a4b2930c414a7",
+        "claimed_path": "src/widgets/label/lv_label_private.h",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "### 8. `src/widgets/label/lv_label.c:968` \u2014 `text_size` computed with wrong `max_w` for draw-time needs\n`lv_label_refr_text` calls `lv_text_get_size(&size, ..., max_w, flag)` where `max_w` is the object's current width constraint. But draw paths at lines 853/891/224 need `LV_COORD_MAX` (unconstrained).  \n**Failure scenario:** Any label where text exceeds widget width. Cached size is artificially clamped. All scroll/expand logic breaks as in defects 1-3.\n\n---",
+        "path": "src/widgets/label/lv_label.c",
+        "start_line": 968,
+        "end_line": 968,
+        "observation_id": "d6089c3861b2b8f5",
+        "claimed_path": "src/widgets/label/lv_label.c",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "### 9. `src/widgets/label/lv_label.c:853,891` \u2014 Cached size ignores runtime flag changes (bidi, recolor)\n`lv_text_get_size` in `lv_label_refr_text` uses `flag` derived from label state at that time. Draw paths at 853/891 use `label->text_size` but retrieve `base_dir` (bidi) at line 856. If base direction changes between refr and draw, cached size mismatches actual shaping.  \n**Failure scenario:** RTL text label, base_dir changed via style. `lv_label_refr_text` ran with LTR flags. Draw uses LTR-measured size with RTL shaping \u2192 wrong scroll trigger, misaligned text.\n\n---",
+        "path": "src/widgets/label/lv_label.c",
+        "start_line": 853,
+        "end_line": 853,
+        "observation_id": "bf0903897732d3f2",
+        "claimed_path": "src/widgets/label/lv_label.c",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "### 10. `src/widgets/label/lv_label.c:968` \u2014 `recolor` flag changes not reflected in cached size\n`flag` in `lv_label_refr_text` includes `LV_TEXT_FLAG_RECOLOR` when `label->recolor` is set. Recolor changes measured width (color commands parsed). Cache not invalidated on recolor toggle.  \n**Failure scenario:** Label with recolor enabled, text contains `#ff0000 red#` commands. Recolor disabled via style. `text_size` still includes command chars in width. Text positioned incorrectly (gap where commands were).\n\n---",
+        "path": "src/widgets/label/lv_label.c",
+        "start_line": 968,
+        "end_line": 968,
+        "observation_id": "40cedbfde8837e7b",
+        "claimed_path": "src/widgets/label/lv_label.c",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "### 11. `src/widgets/label/lv_label.c:853,891` \u2014 Letter/line space changes not handled\nStyle changes to `letter_space` or `line_space` require re-measurement. `invalid_size_cache` not set/checked for these.  \n**Failure scenario:** Label style updated with larger `letter_space`. `lv_label_refr_text` not yet run. Draw uses old `text_size` \u2192 characters overlap or gaps appear.\n\n---",
+        "path": "src/widgets/label/lv_label.c",
+        "start_line": 853,
+        "end_line": 853,
+        "observation_id": "b196a51e22bbfce8",
+        "claimed_path": "src/widgets/label/lv_label.c",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "### 12. `src/draw/lv_draw_label.c:224` \u2014 `text_size` used for both EXPAND and non-EXPAND paths incorrectly\nThe diff shows only the `else` (EXPAND) branch changed. But `dsc->text_size` is assigned unconditionally in label.c:823. If non-EXPAND path also starts using `text_size` (not shown in diff), it would get constrained size when it needs constrained size \u2014 but the cached size was computed with potentially different `max_w` than current widget width.  \n**Failure scenario:** Widget resized, `lv_label_refr_text` not run. Non-EXPAND draw uses stale `text_size` from old width \u2192 text wraps at wrong width.\n\n---",
+        "path": "src/draw/lv_draw_label.c",
+        "start_line": 224,
+        "end_line": 224,
+        "observation_id": "5e29f3ed137cd770",
+        "claimed_path": "src/draw/lv_draw_label.c",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "### 13. `src/widgets/label/lv_label.c:856` \u2014 Bidi base_dir read at draw time but size cached at refr time\nLine 856: `const lv_base_dir_t base_dir = lv_obj_get_style_base_dir(obj, LV_PART_MAIN);` \u2014 this is draw-time. But `label->text_size` was computed at refr-time with potentially different `base_dir`.  \n**Failure scenario:** Same as defect 9 \u2014 size/shape mismatch for RTL/LTR transitions.",
+        "path": "src/widgets/label/lv_label.c",
+        "start_line": 856,
+        "end_line": 856,
+        "observation_id": "5ebf24833ff84da1",
+        "claimed_path": "src/widgets/label/lv_label.c",
+        "path_resolution": "exact",
+        "merged_from": []
+      }
+    ]
+  },
+  "rundir": "/home/mjarnold/.cache/llm-panel/runs/aacr-up-2bgt4mht-0fd64009cc07/20260828-092019-3782028",
+  "extractor": "3",
+  "unlocated": [
+    {
+      "content": "5. **`lv_label.c` / `lv_label_private.h:53` \u2014 `text_size` is never initialized at construction; first `draw_main` may read garbage.** The struct field is added without any initialization in the constructor/`lv_label_constructor`. If `draw_main` runs before the first `lv_label_refr_text` (e.g. a label whose text is set in a way that doesn't refresh immediately, or layout-triggered first draw), `lab",
+      "observation_id": "235189c4bb380797",
+      "claimed_path": "lv_label.c",
+      "path_resolution": "basename"
+    }
+  ]
+}

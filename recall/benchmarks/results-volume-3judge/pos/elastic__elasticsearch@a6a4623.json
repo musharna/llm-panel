@@ -1,0 +1,394 @@
+{
+  "review": {
+    "comments": [
+      {
+        "content": "- **Medium \u2014 `server/src/test/java/org/elasticsearch/search/fetch/subphase/highlight/HighlightBuilderTests.java:580`**: `randomIntBetween(-100, 0)` can return `-1` or `0`, both now accepted by the updated validation. On either input, `expectThrows` receives no exception and the test fails, making the suite flaky (2/101 sampled values).## Defects",
+        "path": "server/src/test/java/org/elasticsearch/search/fetch/subphase/highlight/HighlightBuilderTests.java",
+        "start_line": 580,
+        "end_line": 580,
+        "observation_id": "dadceaf06af804fb",
+        "claimed_path": "server/src/test/java/org/elasticsearch/search/fetch/subphase/highlight/HighlightBuilderTests.java",
+        "path_resolution": "exact",
+        "merged_from": [
+          "0128c914425cf2ab"
+        ]
+      },
+      {
+        "content": "**1. `server/src/main/java/org/elasticsearch/search/fetch/subphase/highlight/AbstractHighlighterBuilder.java:570` \u2014 `0` is now accepted but is outside the domain every consumer was built for.**\nThe validation was relaxed from `<= 0` (reject) to `< -1` (reject), so `0` passes. `QueryMaxAnalyzedOffset.create(0, index)` keeps `0` (the ternary only substitutes for values `< 0`). Every downstream use then operates with a zero limit: `LimitTokenOffsetAnalyzer(analyzer, 0)` (DefaultHighlighter.wrapAnalyzer, PlainHighlighter.wrapAnalyzer) and `LimitedOffsetsEnum(off, 0)` (CustomFieldHighlighter.highlightOffsetsEnums) can never admit a token (real tokens start at offset \u2265 1), so the field is analyzed into nothing.\nFailure scenario: request with `\"highlight\": {\"max_analyzed_offset\": 0}` against a default index. Before this change: 400 `\"[max_analyzed_offset] must be a positive integer\"`. After: request succeeds, and the field is highlighted with zero tokens \u2192 silently no highlight fragments at all (no error). If the index-level setting is \u2264 0 the same request instead trips the guard with the misleading fetch-time message `The length [N] exceeds the max_analyzed_offset [<index value>]` \u2014 quoting the *index* value, not the user's `0`, and firing after query execution rather than at request validation. Either way a clean request-time 400 was replaced by silent wrong output or a confusing runtime IAE, and nothing in the diff defines a meaning for `0`.",
+        "path": "server/src/main/java/org/elasticsearch/search/fetch/subphase/highlight/AbstractHighlighterBuilder.java",
+        "start_line": 570,
+        "end_line": 570,
+        "observation_id": "cf0d8b5fdfd08dc7",
+        "claimed_path": "server/src/main/java/org/elasticsearch/search/fetch/subphase/highlight/AbstractHighlighterBuilder.java",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "**2. `server/src/main/java/org/elasticsearch/lucene/search/uhighlight/QueryMaxAnalyzedOffset.java:24` \u2014 the `-1` sentinel is resolved to the raw index value with no re-validation; a non-positive index value produces a non-positive limit and simultaneously disables the \"exceeds\" guard.**\n`create` substitutes `indexMaxAnalyzedOffset` for the sentinel without checking what it substitutes. `index.highlight.max_analyzed_offset` is settable to -1 (its minimum) or 0. With the sentinel, the resolved value then flows into `LimitTokenOffsetAnalyzer` / `LimitedOffsetsEnum` as a limit \u2264 0 \u2192 every token excluded, and into the guard as `resolved > maxAnalyzedOffset` \u2192 false, so the loud `The length [...] exceeds the max_analyzed_offset [...]` error never fires.\nFailure scenario: index with `index.highlight.max_analyzed_offset: -1` (or `0`), search with `\"highlight\": {\"max_analyzed_offset\": -1}` \u2014 the documented \"use the index value\" request \u2192 every highlighted field silently returns zero fragments, no error, whereas previously the request was rejected (400) or, with the index value set, failed loudly with the \"exceeds\" message. The one thing I cannot verify from this diff is the *default* of the index setting \u2014 if the default is -1 rather than a large positive number, this defect corrupts the sentinel for default clusters, making it far more severe. That value lives outside the diff and I could not read `IndexSettings` (workspace empty).",
+        "path": "server/src/main/java/org/elasticsearch/lucene/search/uhighlight/QueryMaxAnalyzedOffset.java",
+        "start_line": 24,
+        "end_line": 24,
+        "observation_id": "be0f1396d8606eb7",
+        "claimed_path": "server/src/main/java/org/elasticsearch/lucene/search/uhighlight/QueryMaxAnalyzedOffset.java",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "**3. `server/src/test/java/org/elasticsearch/search/fetch/subphase/highlight/HighlightBuilderTests.java:580` \u2014 `testInvalidMaxAnalyzedOffset` becomes ~2% flaky because its random range was not moved with the validation boundary.**\nThe context line in the hunk still generates `randomIntBetween(-100, 0)`. Under the old rule all of those were invalid; under the new rule `-1` and `0` are valid, so when the random draw lands on either (2 of 101 values) the `expectThrows`-style capture gets no exception \u2192 the test fails with an assertion/exception-mismatch error.\nFailure scenario: any test run whose random seed produces `-1` or `0` \u2192 this unit test fails even though the code under test is behaving per the new spec; intermittently red CI. The diff changed the expected message but not the generator range that feeds it.",
+        "path": "server/src/test/java/org/elasticsearch/search/fetch/subphase/highlight/HighlightBuilderTests.java",
+        "start_line": 580,
+        "end_line": 580,
+        "observation_id": "ab2763e8ba30c024",
+        "claimed_path": "server/src/test/java/org/elasticsearch/search/fetch/subphase/highlight/HighlightBuilderTests.java",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "**4. `rest-api-spec/src/yamlRestTest/resources/rest-api-spec/test/search.highlight/30_max_analyzed_offset.yml:118` \u2014 the section title and expected message were renamed to the new boundary, but the diff does not touch the request payload that exercises it.**\nThe title changed from \"max_analyzed_offset < 0 should FAIL\" to \"< -1 should FAIL\"; the request body between them is unchanged (the hunk shows only the title, the `requires` block, and the tail assertions). The natural payload for the old \"< 0\" test was the boundary value `-1`; with the new validation `-1` is valid, so the request now returns 200 and the section's `- match: { status: 400 }` fails, making the whole YAML test red. If the payload was already \u2264 -2 the test is fine \u2014 but that case is not consistent with the old \"< 0\" title, and nothing in the diff updates the payload, which is exactly the line I cannot see (it is outside the hunks shown). Open the file and check the `max_analyzed_offset` value in that section; if it is `-1` the test breaks.",
+        "path": "rest-api-spec/src/yamlRestTest/resources/rest-api-spec/test/search.highlight/30_max_analyzed_offset.yml",
+        "start_line": 118,
+        "end_line": 118,
+        "observation_id": "4566e6d150c10111",
+        "claimed_path": "rest-api-spec/src/yamlRestTest/resources/rest-api-spec/test/search.highlight/30_max_analyzed_offset.yml",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "**5. `server/src/main/java/org/elasticsearch/search/fetch/subphase/highlight/AbstractHighlighterBuilder.java:567` + `server/src/main/java/org/elasticsearch/lucene/search/uhighlight/QueryMaxAnalyzedOffset.java:16` \u2014 both new comments document a value domain the code contradicts, inviting misuse.**\nThe builder javadoc says a \"negative int (defaulting to index analyzed offset)\" is accepted, but the setter rejects every negative except exactly `-1` \u2014 `-2` produces a 400. The constructor comment says \"If we have a negative value, grab value for the actual maximum from the index\", but the constructor just stores; the substitution happens in `create`, and (per defect 2) it does not actually grab a valid maximum. These are documentation defects with a concrete failure path: a user who reads either comment and passes `-2` (or expects the constructor to clamp) gets a rejected request or a non-positive limit instead of the documented behavior.\n\nI found no further pointable defects in the remaining hunks (the `AnnotatedTextHighlighter` signature change, the test passing `-1` with index value 20, the `CustomUnifiedHighlighter`/`PlainHighlighter` guard rewrites, and the new `HighlighterSearchIT` test are internally consistent with the intended sentinel semantics).",
+        "path": "server/src/main/java/org/elasticsearch/search/fetch/subphase/highlight/AbstractHighlighterBuilder.java",
+        "start_line": 567,
+        "end_line": 567,
+        "observation_id": "6343f9b483f6fca9",
+        "claimed_path": "server/src/main/java/org/elasticsearch/search/fetch/subphase/highlight/AbstractHighlighterBuilder.java",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "### 1. `QueryMaxAnalyzedOffset.java` (new file) \u2014 **DEFECT: Negative values other than -1 silently treated as index max**\n\n**Line 21-22** (in diff):\n```java\npublic static QueryMaxAnalyzedOffset create(final Integer queryMaxAnalyzedOffset, final int indexMaxAnalyzedOffset) {\n    if (queryMaxAnalyzedOffset == null) {\n        return null;\n    }\n    return new QueryMaxAnalyzedOffset(queryMaxAnalyzedOffset < 0 ? indexMaxAnalyzedOffset : queryMaxAnalyzedOffset);\n}\n```\n\n**Failure scenario:** User passes `max_analyzed_offset: -5` (or any negative value other than -1). The code silently treats it as \"use index max\" instead of rejecting it. The validation in `AbstractHighlighterBuilder` only rejects `< -1`, but the error message says \"must be an integer >= -1\" \u2014 so `-2`, `-3`, etc. pass validation but then get interpreted as \"use index max\". This is a silent semantic bug: user expects an error or their explicit negative value to mean something, but it quietly falls back to index setting.\n\n---",
+        "path": "server/src/main/java/org/elasticsearch/lucene/search/uhighlight/QueryMaxAnalyzedOffset.java",
+        "start_line": 21,
+        "end_line": 21,
+        "observation_id": "ed923dd43642ce24",
+        "claimed_path": "QueryMaxAnalyzedOffset.java",
+        "path_resolution": "basename",
+        "merged_from": []
+      },
+      {
+        "content": "### 2. `AbstractHighlighterBuilder.java` \u2014 **DEFECT: Validation allows -2, -3, ... but they don't mean what user thinks**\n\n**Line 568-569** (in diff):\n```java\nif (maxAnalyzedOffset != null && maxAnalyzedOffset < -1) {\n    throw new IllegalArgumentException(\"[\" + MAX_ANALYZED_OFFSET_FIELD + \"] must be an integer >= -1\");\n}\n```\n\n**Failure scenario:** User sets `max_analyzed_offset: -2`. Validation passes (since -2 < -1 is false? Wait, -2 < -1 is TRUE, so it WOULD throw. Let me re-read: `maxAnalyzedOffset < -1` \u2014 so -2, -3, etc. ARE rejected. But -1 passes.\n\nWait, the condition is `< -1`, so -2 < -1 is true \u2192 throws. -1 < -1 is false \u2192 passes. So only -1 passes among negatives. That's correct for the validation.\n\nBut the error message says \"must be an integer >= -1\" which matches. So this validation is actually correct.\n\nHowever, **DEFECT: The Javadoc is wrong/misleading**:\n**Line 563-564** (in diff):\n```java\n/**\n * \"maxAnalyzedOffset\" might be non-negative int, null (unknown), or a negative int (defaulting to index analyzed offset).\n */\n```\n\nThe Javadoc says \"a negative int (defaulting to index analyzed offset)\" \u2014 implying ANY negative int defaults to index. But the validation only allows -1. So -2, -3, etc. are rejected. The Javadoc should say \"or -1 (defaulting to index analyzed offset)\".\n\n---",
+        "path": "server/src/main/java/org/elasticsearch/search/fetch/subphase/highlight/AbstractHighlighterBuilder.java",
+        "start_line": 568,
+        "end_line": 568,
+        "observation_id": "ceec3ebf04d079f4",
+        "claimed_path": "AbstractHighlighterBuilder.java",
+        "path_resolution": "basename",
+        "merged_from": []
+      },
+      {
+        "content": "### 3. `CustomUnifiedHighlighter.java` \u2014 **DEFECT: Null check logic changed incorrectly**\n\n**Line 128-130** (in diff):\n```java\nif ((queryMaxAnalyzedOffset == null || queryMaxAnalyzedOffset.getNotNull() > maxAnalyzedOffset)\n    && (getOffsetSource(field) == OffsetSource.ANALYSIS)\n    && (fieldValueLength > maxAnalyzedOffset)) {\n```\n\nOriginal:\n```java\nif (((queryMaxAnalyzedOffset == null || queryMaxAnalyzedOffset > maxAnalyzedOffset)\n    && (getOffsetSource(field) == OffsetSource.ANALYSIS)\n    && (fieldValueLength > maxAnalyzedOffset))) {\n```\n\n**Problem:** The original had extra parentheses: `(queryMaxAnalyzedOffset == null || queryMaxAnalyzedOffset > maxAnalyzedOffset)` \u2014 this is a single boolean expression. The new version: `(queryMaxAnalyzedOffset == null || queryMaxAnalyzedOffset.getNotNull() > maxAnalyzedOffset)` \u2014 this is also a single boolean expression. The logic is equivalent.\n\nBut wait \u2014 `queryMaxAnalyzedOffset` is now a `QueryMaxAnalyzedOffset` object, not an `Integer`. The `== null` check is fine. The `.getNotNull()` call assumes non-null. Since the `||` short-circuits, if `queryMaxAnalyzedOffset == null` is true, the second part isn't evaluated. So this is **correct**.\n\nHowever, **DEFECT: The `queryMaxAnalyzedOffset` field can never be null at this point** \u2014 look at the constructor (line 94-100 in diff): it receives `QueryMaxAnalyzedOffset queryMaxAnalyzedOffset` and stores it. But `QueryMaxAnalyzedOffset.create()` returns `null` if input is null. So the field CAN be null. The null check is needed. OK, this is fine.\n\n---",
+        "path": "server/src/main/java/org/elasticsearch/lucene/search/uhighlight/CustomUnifiedHighlighter.java",
+        "start_line": 128,
+        "end_line": 128,
+        "observation_id": "b97c155fe0d294ab",
+        "claimed_path": "CustomUnifiedHighlighter.java",
+        "path_resolution": "basename",
+        "merged_from": []
+      },
+      {
+        "content": "### 4. `PlainHighlighter.java` \u2014 **DEFECT: Same logic change, same analysis**\n\n**Line 121-123** (in diff):\n```java\nif ((queryMaxAnalyzedOffset == null || queryMaxAnalyzedOffset.getNotNull() > maxAnalyzedOffset)\n    && (textLength > maxAnalyzedOffset)) {\n```\n\nSame as above \u2014 correct due to short-circuit.\n\n---",
+        "path": "server/src/main/java/org/elasticsearch/search/fetch/subphase/highlight/PlainHighlighter.java",
+        "start_line": 121,
+        "end_line": 121,
+        "observation_id": "0e3c29890a6499c1",
+        "claimed_path": "PlainHighlighter.java",
+        "path_resolution": "basename",
+        "merged_from": []
+      },
+      {
+        "content": "### 5. `DefaultHighlighter.java` \u2014 **DEFECT: wrapAnalyzer signature change breaks subclasses**\n\n**Line 187-192** (in diff):\n```java\nprotected Analyzer wrapAnalyzer(Analyzer analyzer, QueryMaxAnalyzedOffset maxAnalyzedOffset) {\n    if (maxAnalyzedOffset != null) {\n        analyzer = new LimitTokenOffsetAnalyzer(analyzer, maxAnalyzedOffset.getNotNull());\n    }\n    return analyzer;\n}\n```\n\nOriginal:\n```java\nprotected Analyzer wrapAnalyzer(Analyzer analyzer, Integer maxAnalyzedOffset) {\n    if (maxAnalyzedOffset != null) {\n        analyzer = new LimitTokenOffsetAnalyzer(analyzer, maxAnalyzedOffset);\n    }\n    return analyzer;\n}\n```\n\n**Failure scenario:** `AnnotatedTextHighlighter` overrides this method (see its diff). It now takes `QueryMaxAnalyzedOffset`. But what if there are OTHER subclasses of `DefaultHighlighter` in other plugins or user code that override `wrapAnalyzer(Analyzer, Integer)`? They will **no longer override** \u2014 they'll overload instead. The parent's new method will be called, not the child's. This is a **binary compatibility break** for any external plugin extending `DefaultHighlighter`.\n\n---",
+        "path": "server/src/main/java/org/elasticsearch/search/fetch/subphase/highlight/DefaultHighlighter.java",
+        "start_line": 187,
+        "end_line": 187,
+        "observation_id": "5549554c7e91b06b",
+        "claimed_path": "DefaultHighlighter.java",
+        "path_resolution": "basename",
+        "merged_from": []
+      },
+      {
+        "content": "### 6. `AnnotatedTextHighlighter.java` \u2014 **DEFECT: Override matches new signature, but what if parent calls super?**\n\n**Line 53-56** (in diff):\n```java\n@Override\nprotected Analyzer wrapAnalyzer(Analyzer analyzer, QueryMaxAnalyzedOffset maxAnalyzedOffset) {\n    return new AnnotatedHighlighterAnalyzer(super.wrapAnalyzer(analyzer, maxAnalyzedOffset));\n}\n```\n\nThis calls `super.wrapAnalyzer(analyzer, maxAnalyzedOffset)` \u2014 passing `QueryMaxAnalyzedOffset` to parent's method which expects `QueryMaxAnalyzedOffset`. That's fine.\n\nBut **DEFECT: The parent `DefaultHighlighter.wrapAnalyzer` now calls `LimitTokenOffsetAnalyzer(analyzer, maxAnalyzedOffset.getNotNull())`** \u2014 but `AnnotatedTextHighlighter` wraps the result in `AnnotatedHighlighterAnalyzer`. The `LimitTokenOffsetAnalyzer` is applied INSIDE the parent call, then `AnnotatedHighlighterAnalyzer` wraps it. This seems intentional.\n\nHowever, **DEFECT: `AnnotatedHighlighterAnalyzer` constructor takes the wrapped analyzer** \u2014 but does it properly delegate `incrementToken()` and respect the offset limit? Need to check `AnnotatedHighlighterAnalyzer` code (not in diff). If it doesn't delegate correctly, the offset limit is bypassed. Since I can't see that class, I'll note this as a **potential defect requiring verification**.\n\n---",
+        "path": "plugins/mapper-annotated-text/src/main/java/org/elasticsearch/index/mapper/annotatedtext/AnnotatedTextHighlighter.java",
+        "start_line": 53,
+        "end_line": 53,
+        "observation_id": "b0d0936c0d613806",
+        "claimed_path": "AnnotatedTextHighlighter.java",
+        "path_resolution": "basename",
+        "merged_from": []
+      },
+      {
+        "content": "### 7. `CustomFieldHighlighter.java` \u2014 **DEFECT: `LimitedOffsetsEnum` receives int, but what if it's negative?**\n\n**Line 113-114** (in diff):\n```java\nif (queryMaxAnalyzedOffset != null) {\n    off = new LimitedOffsetsEnum(off, queryMaxAnalyzedOffset.getNotNull());\n}\n```\n\n`queryMaxAnalyzedOffset.getNotNull()` returns the stored value, which for `-1` input becomes `indexMaxAnalyzedOffset` (a positive int). So this is fine \u2014 `create()` resolves -1 to index max before storing.\n\nBut **DEFECT: What if `indexMaxAnalyzedOffset` is 0 or negative?** The `create` method doesn't validate `indexMaxAnalyzedOffset`. If index setting is misconfigured to 0 or negative, `getNotNull()` returns that bad value, and `LimitedOffsetsEnum` might misbehave. The index setting validation should ensure it's positive, but that's elsewhere.\n\n---",
+        "path": "server/src/main/java/org/elasticsearch/lucene/search/uhighlight/CustomFieldHighlighter.java",
+        "start_line": 113,
+        "end_line": 113,
+        "observation_id": "27b0818eea26ae78",
+        "claimed_path": "CustomFieldHighlighter.java",
+        "path_resolution": "basename",
+        "merged_from": []
+      },
+      {
+        "content": "### 8. `AnnotatedTextHighlighterTests.java` \u2014 **DEFECT: Test passes -1 but expects index max (20) to be used**\n\n**Line 318-334** (in diff):\n```java\n// Same as before, but force using index maxOffset (20) as queryMaxOffset by passing -1.\nassertHighlightOneDoc(\n    \"text\",\n    new String[] { \"[Long Text exceeds](Long+Text+exceeds) MAX analyzed offset)\" },\n    query,\n    Locale.ROOT,\n    breakIterator,\n    0,\n    new String[] { \"Long Text [exceeds](_hit_term=exceeds) MAX analyzed offset)\" },\n    20,\n    -1\n);\n```\n\nThe test passes `maxAnalyzedOffset=20` (index setting) and `queryMaxAnalyzedOffsetIn=-1`. The helper creates:\n```java\nQueryMaxAnalyzedOffset queryMaxAnalyzedOffset = QueryMaxAnalyzedOffset.create(queryMaxAnalyzedOffsetIn, maxAnalyzedOffset);\n```\nSo `-1` becomes `20`. This is the intended behavior.\n\n**But DEFECT: The test comment says \"force using index maxOffset (20) as queryMaxOffset by passing -1\" \u2014 but the index max is passed as `maxAnalyzedOffset=20` parameter, not read from index settings.** In production, `maxAnalyzedOffset` comes from `indexSettings.getHighlightMaxAnalyzedOffset()`. The test simulates this correctly by passing 20. So the test is valid.\n\n---",
+        "path": "plugins/mapper-annotated-text/src/test/java/org/elasticsearch/index/mapper/annotatedtext/AnnotatedTextHighlighterTests.java",
+        "start_line": 318,
+        "end_line": 318,
+        "observation_id": "f816458accb89e8c",
+        "claimed_path": "AnnotatedTextHighlighterTests.java",
+        "path_resolution": "basename",
+        "merged_from": []
+      },
+      {
+        "content": "### 9. `HighlighterSearchIT.java` \u2014 **DEFECT: Integration test uses -1 to mean \"use index setting\"**\n\n**Line 2648-2649** (in diff):\n```java\n.highlighter(highlight().field(\"field1\").order(\"score\").maxAnalyzedOffset(-1));\n```\n\nThis tests the new -1 feature. The index is created with `index.highlight.max_analyzed_offset = 10`. The query passes -1, which should resolve to 10.\n\n**Potential DEFECT: The test asserts a specific highlighted fragment** \u2014 but the highlighting behavior depends on the analyzer, query, and text. If the analyzer changes, this test could become flaky. But that's a test robustness issue, not a code defect.\n\n---",
+        "path": "server/src/internalClusterTest/java/org/elasticsearch/search/fetch/subphase/highlight/HighlighterSearchIT.java",
+        "start_line": 2648,
+        "end_line": 2648,
+        "observation_id": "c9be640e5e74bd50",
+        "claimed_path": "HighlighterSearchIT.java",
+        "path_resolution": "basename",
+        "merged_from": []
+      },
+      {
+        "content": "### 10. `30_max_analyzed_offset.yml` \u2014 **DEFECT: Test name and error message changed, but what about -1?**\n\n**Line 115, 133** (in diff):\n```yaml\n\"Plain highlighter with max_analyzed_offset < -1 should FAIL\":\n...\n- match: { error.caused_by.reason: \"[max_analyzed_offset] must be an integer >= -1\" }\n```\n\nThe test now expects `-1` to be VALID (since it tests `< -1` should fail). But **DEFECT: There's no test that -1 actually WORKS (uses index setting)** for the plain highlighter. The integration test covers unified highlighter, but not plain highlighter.\n\n---",
+        "path": "rest-api-spec/src/yamlRestTest/resources/rest-api-spec/test/search.highlight/30_max_analyzed_offset.yml",
+        "start_line": 115,
+        "end_line": 115,
+        "observation_id": "48ead3c6560db59c",
+        "claimed_path": "30_max_analyzed_offset.yml",
+        "path_resolution": "basename",
+        "merged_from": []
+      },
+      {
+        "content": "### 11. `CustomUnifiedHighlighterTests.java` \u2014 **DEFECT: Test helper updated to use QueryMaxAnalyzedOffset.create**\n\n**Line 160** (in diff):\n```java\nQueryMaxAnalyzedOffset.create(queryMaxAnalyzedOffset, maxAnalyzedOffset),\n```\n\nThis is correct \u2014 the test helper now mimics production code.\n\n---",
+        "path": "server/src/test/java/org/elasticsearch/lucene/search/uhighlight/CustomUnifiedHighlighterTests.java",
+        "start_line": 160,
+        "end_line": 160,
+        "observation_id": "8d8206a395c15cae",
+        "claimed_path": "CustomUnifiedHighlighterTests.java",
+        "path_resolution": "basename",
+        "merged_from": []
+      },
+      {
+        "content": "### 12. `HighlightBuilderTests.java` \u2014 **DEFECT: Test expects new error message**\n\n**Line 583** (in diff):\n```java\nassertThat(e.getCause().getMessage(), containsString(\"[max_analyzed_offset] must be an integer >= -1\"));\n```\n\nMatches the new validation. Correct.\n\n---\n\n### 13. **OVERARCHING DEFECT: No validation that index-level `max_analyzed_offset` is positive**\n\nThe `QueryMaxAnalyzedOffset.create()` takes `indexMaxAnalyzedOffset` and uses it directly when query value is -1. If the index setting is 0 or negative (misconfigured), the resolved value is 0 or negative, which then gets passed to `LimitTokenOffsetAnalyzer` and `LimitedOffsetsEnum`. These may not handle non-positive values correctly.\n\n**Failure scenario:** Cluster admin sets `index.highlight.max_analyzed_offset: 0` (or negative via some bug). User queries with `max_analyzed_offset: -1`. Resolved value is 0. `LimitTokenOffsetAnalyzer(analyzer, 0)` \u2014 what does it do? Probably allows 0 tokens, breaking highlighting silently.\n\n---\n\n### 14. **DEFECT: `QueryMaxAnalyzedOffset` class is not `final` and has no `equals/hashCode/toString`**\n\n**Line 10-29** (in diff):\n```java\npublic class QueryMaxAnalyzedOffset {\n    private final int queryMaxAnalyzedOffset;\n\n    private QueryMaxAnalyzedOffset(final int queryMaxAnalyzedOffset) {\n        this.queryMaxAnalyzedOffset = queryMaxAnalyzedOffset;\n    }\n    ...\n    public int getNotNull() {\n        return queryMaxAnalyzedOffset;\n    }\n}\n```\n\n- Not `final` \u2014 can be subclassed (minor)\n- No `equals/hashCode` \u2014 if used in collections or as map keys, broken\n- No `toString` \u2014 debugging harder\n- `getNotNull()` name suggests it throws if null, but the field is `int` (primitive), never null. Misleading name.\n\n---\n\n### 15. **DEFECT: `QueryMaxAnalyzedOffset.create()` doesn't validate `indexMaxAnalyzedOffset`**\n\n**Line 21-25** (in diff):\n```java\npublic static QueryMaxAnalyzedOffset create(final Integer queryMaxAnalyzedOffset, final int indexMaxAnalyzedOffset) {\n    if (queryMaxAnalyzedOffset == null) {\n        return null;\n    }\n    return new QueryMaxAnalyzedOffset(queryMaxAnalyzedOffset < 0 ? indexMaxAnalyzedOffset : queryMaxAnalyzedOffset);\n}\n```\n\nIf `queryMaxAnalyzedOffset` is -1 (or any negative), it uses `indexMaxAnalyzedOffset` without checking that it's positive. If index setting is 0 or negative, the returned object holds a non-positive value, which downstream code (`LimitTokenOffsetAnalyzer`, `LimitedOffsetsEnum`) may not handle.\n\n---\n\n### 16. **DEFECT: `DefaultHighlighter.wrapAnalyzer` now calls `maxAnalyzedOffset.getNotNull()` but the parameter name is `maxAnalyzedOffset` (confusing)**\n\n**Line 187-192** (in diff):\n```java\nprotected Analyzer wrapAnalyzer(Analyzer analyzer, QueryMaxAnalyzedOffset maxAnalyzedOffset) {\n    if (maxAnalyzedOffset != null) {\n        analyzer = new LimitTokenOffsetAnalyzer(analyzer, maxAnalyzedOffset.getNotNull());\n    }\n    return analyzer;\n}\n```\n\nThe parameter is named `maxAnalyzedOffset` but it's a `QueryMaxAnalyzedOffset` object. The method calls `.getNotNull()` on it. This is confusing but not a bug.\n\n---\n\n### 17. **DEFECT: `PlainHighlighter.wrapAnalyzer` is `private static` \u2014 can't be overridden, but `DefaultHighlighter`'s is `protected`**\n\n**Line 246-251** (in diff):\n```java\nprivate static Analyzer wrapAnalyzer(Analyzer analyzer, QueryMaxAnalyzedOffset maxAnalyzedOffset) {\n    if (maxAnalyzedOffset != null) {\n        return new LimitTokenOffsetAnalyzer(analyzer, maxAnalyzedOffset.getNotNull());\n    }\n    return analyzer;\n}\n```\n\n`PlainHighlighter` doesn't extend `DefaultHighlighter` (they both implement `Highlighter` interface), so no override issue. But the duplication of logic between `DefaultHighlighter.wrapAnalyzer` and `PlainHighlighter.wrapAnalyzer` is a maintenance risk \u2014 if one is fixed, the other must be too.\n\n---",
+        "path": "server/src/test/java/org/elasticsearch/search/fetch/subphase/highlight/HighlightBuilderTests.java",
+        "start_line": 583,
+        "end_line": 583,
+        "observation_id": "35f9d7a7cef07a2f",
+        "claimed_path": "HighlightBuilderTests.java",
+        "path_resolution": "basename",
+        "merged_from": [
+          "78f8299bbe6bc4a8",
+          "8d9fbea2ac8fff4e",
+          "9246bd621854fd0c",
+          "796632af07fd2a54",
+          "35bde4b40235194e"
+        ]
+      },
+      {
+        "content": "1. **QueryMaxAnalyzedOffset.java:21-22** \u2014 Negative values other than -1 (e.g., -2) are rejected by validation, but Javadoc says \"negative int defaults to index\" \u2014 misleading documentation.",
+        "path": "server/src/main/java/org/elasticsearch/lucene/search/uhighlight/QueryMaxAnalyzedOffset.java",
+        "start_line": 21,
+        "end_line": 21,
+        "observation_id": "e817d6d81d39a5e1",
+        "claimed_path": "QueryMaxAnalyzedOffset.java",
+        "path_resolution": "basename",
+        "merged_from": []
+      },
+      {
+        "content": "2. **AbstractHighlighterBuilder.java:563-564** \u2014 Javadoc claims any negative int defaults to index, but validation only allows -1.",
+        "path": "server/src/main/java/org/elasticsearch/search/fetch/subphase/highlight/AbstractHighlighterBuilder.java",
+        "start_line": 563,
+        "end_line": 563,
+        "observation_id": "72407e6e0b1499a8",
+        "claimed_path": "AbstractHighlighterBuilder.java",
+        "path_resolution": "basename",
+        "merged_from": []
+      },
+      {
+        "content": "3. **DefaultHighlighter.java:187** \u2014 Changing `wrapAnalyzer(Analyzer, Integer)` to `wrapAnalyzer(Analyzer, QueryMaxAnalyzedOffset)` breaks binary compatibility for any external subclass overriding the old signature.",
+        "path": "server/src/main/java/org/elasticsearch/search/fetch/subphase/highlight/DefaultHighlighter.java",
+        "start_line": 187,
+        "end_line": 187,
+        "observation_id": "3f57eeb1675208b4",
+        "claimed_path": "DefaultHighlighter.java",
+        "path_resolution": "basename",
+        "merged_from": []
+      },
+      {
+        "content": "4. **QueryMaxAnalyzedOffset.java:21-25** \u2014 No validation of `indexMaxAnalyzedOffset`; if index setting is 0 or negative, resolved value is 0/negative, causing downstream issues in `LimitTokenOffsetAnalyzer`.",
+        "path": "server/src/main/java/org/elasticsearch/lucene/search/uhighlight/QueryMaxAnalyzedOffset.java",
+        "start_line": 21,
+        "end_line": 21,
+        "observation_id": "f79336fb998ee0a7",
+        "claimed_path": "QueryMaxAnalyzedOffset.java",
+        "path_resolution": "basename",
+        "merged_from": []
+      },
+      {
+        "content": "5. **CustomUnifiedHighlighter.java:128 / PlainHighlighter.java:121** \u2014 Passing `max_analyzed_offset: -1` (resolved to index max) makes `queryMaxAnalyzedOffset.getNotNull() == maxAnalyzedOffset`, so the field value length check (`fieldValueLength > maxAnalyzedOffset`) is skipped, bypassing the safety guard for huge fields.",
+        "path": "server/src/main/java/org/elasticsearch/lucene/search/uhighlight/CustomUnifiedHighlighter.java",
+        "start_line": 128,
+        "end_line": 128,
+        "observation_id": "190dd20ce91140f4",
+        "claimed_path": "CustomUnifiedHighlighter.java",
+        "path_resolution": "basename",
+        "merged_from": []
+      },
+      {
+        "content": "6. **CustomUnifiedHighlighter.java:128 / PlainHighlighter.java:121** \u2014 When query max > index max, analysis uses query max but field value check uses index max, causing confusing \"exceeds max_analyzed_offset\" errors even though query requested higher limit.",
+        "path": "server/src/main/java/org/elasticsearch/lucene/search/uhighlight/CustomUnifiedHighlighter.java",
+        "start_line": 128,
+        "end_line": 128,
+        "observation_id": "747ec8f7f4042ecd",
+        "claimed_path": "CustomUnifiedHighlighter.java",
+        "path_resolution": "basename",
+        "merged_from": []
+      },
+      {
+        "content": "10. **AnnotatedTextHighlighter.java:53-56** \u2014 `AnnotatedHighlighterAnalyzer` wrapping of `LimitTokenOffsetAnalyzer` may not properly enforce offset limit (requires verification of `AnnotatedHighlighterAnalyzer` code).\n\n---\n\nLet me verify defect #5 more carefully. In `CustomUnifiedHighlighter.highlightField()`:\n\n```java\nint fieldValueLength = fieldValue.length();\nif ((queryMaxAnalyzedOffset == null || queryMaxAnalyzedOffset.getNotNull() > maxAnalyzedOffset)\n    && (getOffsetSource(field) == OffsetSource.ANALYSIS)\n    && (fieldValueLength > maxAnalyzedOffset)) {\n    throw new IllegalArgumentException(...);\n}\n```\n\n- `maxAnalyzedOffset` = index setting (e.g., 100)\n- `queryMaxAnalyzedOffset` = resolved query value (null, or user value, or index value if -1)\n\nCase 1: Query omits max_analyzed_offset \u2192 `queryMaxAnalyzedOffset == null` \u2192 condition true \u2192 check uses `maxAnalyzedOffset` (100). Field value 150 > 100 \u2192 throws. \u2713\n\nCase 2: Query sets max_analyzed_offset: 50 \u2192 resolved = 50. `50 > 100` false \u2192 condition false \u2192 no check. Field value 150, analysis limited to 50. \u2713 (query explicitly lowers limit)\n\nCase 3: Query sets max_analyzed_offset: 200 \u2192 resolved = 200. `200 > 100` true \u2192 check uses `maxAnalyzedOffset` (100). Field value 150 > 100 \u2192 throws. **Defect:** User asked for 200, but index limit 100 triggers error.\n\nCase 4: Query sets max_analyzed_offset: -1 \u2192 resolved = index max (100). `100 > 100` false \u2192 condition false \u2192 **no check**. Field value 10000, analysis limited to 100. **Defect:** Safety check bypassed.\n\nBoth case 3 and 4 are defects.\n\n---\n\nI have 10+ distinct defects. Let me format the response###1. `server/src/main/java/org/elasticsearch/lucene/search/uhighlight/QueryMaxAnalyzedOffset.java:21-22` \u2014 **Silent misinterpretation of negative values**\n\n`create()` treats **any** negative `queryMaxAnalyzedOffset` as \"use index max\". Validation in `AbstractHighlighterBuilder` only allows `-1`, but the factory accepts `-2`, `-3`, etc. if validation is bypassed (e.g., internal call).  \n**Failure scenario:** Internal code calls `QueryMaxAnalyzedOffset.create(-5, 100)` \u2192 returns object with value `100`. User intended `-5` to mean something else (or expected error), but it silently becomes \"use index max\".\n\n---",
+        "path": "plugins/mapper-annotated-text/src/main/java/org/elasticsearch/index/mapper/annotatedtext/AnnotatedTextHighlighter.java",
+        "start_line": 53,
+        "end_line": 53,
+        "observation_id": "ba700e3f87c91c93",
+        "claimed_path": "AnnotatedTextHighlighter.java",
+        "path_resolution": "basename",
+        "merged_from": []
+      },
+      {
+        "content": "### 2. `server/src/main/java/org/elasticsearch/search/fetch/subphase/highlight/AbstractHighlighterBuilder.java:563-564` \u2014 **Javadoc contradicts validation**\n\nJavadoc: `\"maxAnalyzedOffset\" might be ... a negative int (defaulting to index analyzed offset)` \u2014 implies **any** negative works.  \nValidation (line 568): `maxAnalyzedOffset < -1` rejects `-2`, `-3`, \u2026  \n**Failure scenario:** User reads Javadoc, tries `max_analyzed_offset: -2`, gets confusing \"must be >= -1\" error.\n\n---",
+        "path": "server/src/main/java/org/elasticsearch/search/fetch/subphase/highlight/AbstractHighlighterBuilder.java",
+        "start_line": 563,
+        "end_line": 563,
+        "observation_id": "5ba03ae815e8e6f4",
+        "claimed_path": "server/src/main/java/org/elasticsearch/search/fetch/subphase/highlight/AbstractHighlighterBuilder.java",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "### 3. `server/src/main/java/org/elasticsearch/search/fetch/subphase/highlight/DefaultHighlighter.java:187` \u2014 **Binary compatibility break for subclasses**\n\n`wrapAnalyzer` signature changed from `(Analyzer, Integer)` to `(Analyzer, QueryMaxAnalyzedOffset)`. Any external plugin subclassing `DefaultHighlighter` and overriding the old method **no longer overrides** \u2014 it overloads. Parent's new method is called instead.  \n**Failure scenario:** Plugin overrides `wrapAnalyzer(Analyzer, Integer)` to add custom analysis. After upgrade, plugin's method is ignored; highlighting uses default wrapping.\n\n---",
+        "path": "server/src/main/java/org/elasticsearch/search/fetch/subphase/highlight/DefaultHighlighter.java",
+        "start_line": 187,
+        "end_line": 187,
+        "observation_id": "c875ad4105ad920c",
+        "claimed_path": "server/src/main/java/org/elasticsearch/search/fetch/subphase/highlight/DefaultHighlighter.java",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "### 4. `server/src/main/java/org/elasticsearch/lucene/search/uhighlight/QueryMaxAnalyzedOffset.java:21-25` \u2014 **No validation of `indexMaxAnalyzedOffset`**\n\nIf index setting `index.highlight.max_analyzed_offset` is misconfigured to `0` or negative, `create(-1, 0)` returns object holding `0`. Downstream `LimitTokenOffsetAnalyzer(analyzer, 0)` and `LimitedOffsetsEnum(off, 0)` receive `0` \u2014 likely breaks highlighting (zero tokens allowed).  \n**Failure scenario:** Admin sets `index.highlight.max_analyzed_offset: 0` (typo). All highlighting with `max_analyzed_offset: -1` produces empty fragments silently.\n\n---",
+        "path": "server/src/main/java/org/elasticsearch/lucene/search/uhighlight/QueryMaxAnalyzedOffset.java",
+        "start_line": 21,
+        "end_line": 21,
+        "observation_id": "8cbe74e0d00d5510",
+        "claimed_path": "server/src/main/java/org/elasticsearch/lucene/search/uhighlight/QueryMaxAnalyzedOffset.java",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "### 5. `server/src/main/java/org/elasticsearch/lucene/search/uhighlight/CustomUnifiedHighlighter.java:128` and `server/src/main/java/org/elasticsearch/search/fetch/subphase/highlight/PlainHighlighter.java:121` \u2014 **`max_analyzed_offset: -1` bypasses field-value length safety check**\n\nCondition: `(queryMaxAnalyzedOffset == null || queryMaxAnalyzedOffset.getNotNull() > maxAnalyzedOffset) && fieldValueLength > maxAnalyzedOffset`  \n- Query omits param \u2192 `null` \u2192 check runs with index max (correct).  \n- Query sets `-1` \u2192 resolved to index max (e.g., `100`) \u2192 `100 > 100` is **false** \u2192 **check skipped entirely**.  \n**Failure scenario:** Index `max_analyzed_offset: 100`. Document field length `10000`. Query uses `max_analyzed_offset: -1`. No exception thrown; highlighter attempts to analyze 10000 chars with 100-char token limit \u2192 OOM or extreme latency.\n\n---",
+        "path": "server/src/main/java/org/elasticsearch/lucene/search/uhighlight/CustomUnifiedHighlighter.java",
+        "start_line": 128,
+        "end_line": 128,
+        "observation_id": "75ff38fe3f2074d9",
+        "claimed_path": "server/src/main/java/org/elasticsearch/lucene/search/uhighlight/CustomUnifiedHighlighter.java",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "### 6. `server/src/main/java/org/elasticsearch/lucene/search/uhighlight/CustomUnifiedHighlighter.java:128` and `server/src/main/java/org/elasticsearch/search/fetch/subphase/highlight/PlainHighlighter.java:121` \u2014 **Query max > index max causes confusing error**\n\nQuery `max_analyzed_offset: 200`, index `max_analyzed_offset: 100`, field length `150`.  \nAnalysis uses query max (`200`) via `wrapAnalyzer`. But check: `200 > 100` true \u2192 uses index max (`100`) for length comparison \u2192 `150 > 100` true \u2192 throws \"length [150] exceeds max_analyzed_offset [100]\".  \n**Failure scenario:** User increases query limit to handle longer text, gets error citing the **lower** index limit they didn't set.\n\n---",
+        "path": "server/src/main/java/org/elasticsearch/lucene/search/uhighlight/CustomUnifiedHighlighter.java",
+        "start_line": 128,
+        "end_line": 128,
+        "observation_id": "468f7251c425f657",
+        "claimed_path": "server/src/main/java/org/elasticsearch/lucene/search/uhighlight/CustomUnifiedHighlighter.java",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "### 9. `plugins/mapper-annotated-text/src/test/java/org/elasticsearch/index/mapper/annotatedtext/AnnotatedTextHighlighterTests.java:85-118` \u2014 **Parameter renamed but not all callers visible in diff**\n\n`queryMaxAnalyzedOffset` \u2192 `queryMaxAnalyzedOffsetIn`. Helper creates `QueryMaxAnalyzedOffset.create(queryMaxAnalyzedOffsetIn, maxAnalyzedOffset)`. Diff shows only one new caller (line 318). If other test methods call `assertHighlightOneDoc`, they may pass old parameter name/order \u2192 compilation error or wrong values.  \n**Failure scenario:** Existing test calls `assertHighlightOneDoc(..., 10, 20)` expecting `(maxAnalyzedOffset=10, queryMaxAnalyzedOffset=20)`. After rename, `20` becomes `queryMaxAnalyzedOffsetIn`, `10` becomes `maxAnalyzedOffset` \u2192 `create(20, 10)` resolves to `20` (not index max). Test passes wrong logic silently.\n\n---",
+        "path": "plugins/mapper-annotated-text/src/test/java/org/elasticsearch/index/mapper/annotatedtext/AnnotatedTextHighlighterTests.java",
+        "start_line": 85,
+        "end_line": 85,
+        "observation_id": "bc0d49faaea09107",
+        "claimed_path": "plugins/mapper-annotated-text/src/test/java/org/elasticsearch/index/mapper/annotatedtext/AnnotatedTextHighlighterTests.java",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "### 10. `plugins/mapper-annotated-text/src/main/java/org/elasticsearch/index/mapper/annotatedtext/AnnotatedTextHighlighter.java:53-56` \u2014 **`AnnotatedHighlighterAnalyzer` may not enforce offset limit**\n\n`wrapAnalyzer` calls `super.wrapAnalyzer(...)` which applies `LimitTokenOffsetAnalyzer`, then wraps result in `AnnotatedHighlighterAnalyzer`. If `AnnotatedHighlighterAnalyzer` creates its own token stream without delegating to wrapped analyzer's `incrementToken()`, the offset limit is bypassed.  \n**Failure scenario:** Annotated text field with huge value. `max_analyzed_offset: 100`. Highlighting processes entire field because `AnnotatedHighlighterAnalyzer` ignores the limit \u2192 OOM.\n\n---",
+        "path": "plugins/mapper-annotated-text/src/main/java/org/elasticsearch/index/mapper/annotatedtext/AnnotatedTextHighlighter.java",
+        "start_line": 53,
+        "end_line": 53,
+        "observation_id": "67341bf3fdb0a614",
+        "claimed_path": "plugins/mapper-annotated-text/src/main/java/org/elasticsearch/index/mapper/annotatedtext/AnnotatedTextHighlighter.java",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "### 11. `server/src/main/java/org/elasticsearch/search/fetch/subphase/highlight/PlainHighlighter.java:246-251` and `DefaultHighlighter.java:187-192` \u2014 **Duplicated `wrapAnalyzer` logic**\n\nBoth classes have nearly identical `private static` / `protected` `wrapAnalyzer` methods. Fix in one won't propagate to the other.  \n**Failure scenario:** Bug fixed in `DefaultHighlighter.wrapAnalyzer` (e.g., null-handling) but `PlainHighlighter.wrapAnalyzer` retains bug \u2192 inconsistent behavior between highlighter types.\n\n---",
+        "path": "server/src/main/java/org/elasticsearch/search/fetch/subphase/highlight/PlainHighlighter.java",
+        "start_line": 246,
+        "end_line": 246,
+        "observation_id": "b6dac75e29574aba",
+        "claimed_path": "server/src/main/java/org/elasticsearch/search/fetch/subphase/highlight/PlainHighlighter.java",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "### 12. `server/src/main/java/org/elasticsearch/lucene/search/uhighlight/CustomFieldHighlighter.java:113-114` \u2014 **`LimitedOffsetsEnum` receives resolved value without validation**\n\n`queryMaxAnalyzedOffset.getNotNull()` returns index max when query is `-1`. If index max is `0`/negative (defect #4), `LimitedOffsetsEnum(off, 0)` created. Behavior of `LimitedOffsetsEnum` with non-positive limit unknown \u2014 likely returns no offsets.  \n**Failure scenario:** Same as #4 but for postings/FVH highlighter path.",
+        "path": "server/src/main/java/org/elasticsearch/lucene/search/uhighlight/CustomFieldHighlighter.java",
+        "start_line": 113,
+        "end_line": 113,
+        "observation_id": "f27e5cd5f6b529e3",
+        "claimed_path": "server/src/main/java/org/elasticsearch/lucene/search/uhighlight/CustomFieldHighlighter.java",
+        "path_resolution": "exact",
+        "merged_from": []
+      }
+    ]
+  },
+  "rundir": "/home/mjarnold/.cache/llm-panel/runs/aacr-up-yg4fxzqx-c0f7b8ec8ca6/20260828-152433-1282921",
+  "extractor": "3",
+  "unlocated": [
+    {
+      "content": "### 18. **DEFECT: REST test `30_max_analyzed_offset.yml` only tests plain highlighter error case, not unified highlighter**\n\nThe test file only has a test for \"Plain highlighter with max_analyzed_offset < -1 should FAIL\". There's no corresponding test for unified highlighter (fvh/postings). The validation is in `AbstractHighlighterBuilder` which both use, so it should work for both, but no test co",
+      "observation_id": "1c5851c6c7b288d8",
+      "claimed_path": "30_max_analyzed_offset.yml",
+      "path_resolution": "basename"
+    },
+    {
+      "content": "7. **QueryMaxAnalyzedOffset.java** \u2014 Class lacks `final`, `equals/hashCode`, `toString`; `getNotNull()` name is misleading (field is primitive int, never null).",
+      "observation_id": "c299194f19e3758c",
+      "claimed_path": "QueryMaxAnalyzedOffset.java",
+      "path_resolution": "basename"
+    },
+    {
+      "content": "8. **30_max_analyzed_offset.yml** \u2014 No test that `max_analyzed_offset: -1` works for plain highlighter (only tests that `< -1` fails).",
+      "observation_id": "402d118d60e9e462",
+      "claimed_path": "30_max_analyzed_offset.yml",
+      "path_resolution": "basename"
+    },
+    {
+      "content": "9. **AnnotatedTextHighlighterTests.java** \u2014 Parameter renamed but diff doesn't show all callers; potential missed updates.",
+      "observation_id": "b30ac714d05412b1",
+      "claimed_path": "AnnotatedTextHighlighterTests.java",
+      "path_resolution": "basename"
+    },
+    {
+      "content": "### 7. `server/src/main/java/org/elasticsearch/lucene/search/uhighlight/QueryMaxAnalyzedOffset.java` \u2014 **Missing `final`, `equals/hashCode/toString`; misleading `getNotNull()` name**\n\n- Class not `final` \u2192 subclassable (though private constructor prevents it, intent unclear).  \n- No `equals/hashCode` \u2192 broken if used in collections/maps.  \n- No `toString` \u2192 debugging harder.  \n- `getNotNull()` sug",
+      "observation_id": "4fd8378991270eb7",
+      "claimed_path": "server/src/main/java/org/elasticsearch/lucene/search/uhighlight/QueryMaxAnalyzedOffset.java",
+      "path_resolution": "exact"
+    },
+    {
+      "content": "### 8. `rest-api-spec/src/yamlRestTest/resources/rest-api-spec/test/search.highlight/30_max_analyzed_offset.yml` \u2014 **No test that `-1` works for plain highlighter**\n\nTest renamed to \"`< -1 should FAIL`\" and only verifies rejection of `-2`. No test that `-1` **succeeds** and uses index setting for plain highlighter. Unified highlighter has IT test (`HighlighterSearchIT.testMaxQueryOffsetDefault`), ",
+      "observation_id": "d61ffd0c7ef59a97",
+      "claimed_path": "rest-api-spec/src/yamlRestTest/resources/rest-api-spec/test/search.highlight/30_max_analyzed_offset.yml",
+      "path_resolution": "exact"
+    }
+  ]
+}
