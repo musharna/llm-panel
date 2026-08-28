@@ -241,8 +241,8 @@ nothing.
   location-based matcher cannot detect that gap about itself, which is why scoring is
   delegated upstream.
 - **A degraded roster costs about half the recall.** The same sample with one judge's quota
-  spent and a 300s timeout scores 5.7% semantic recall against 10.6% — same extractor, so
-  only roster and timeout differ. Two instances returned nothing at 300s purely by hitting
+  spent and a 300s timeout scores 6.5% semantic recall against 12.2% — same extractor
+  (3), so only roster and timeout differ. Two instances returned nothing at 300s purely by hitting
   the cap while holding 20 of the 123 references.
 - **There is no valid-vs-rejected gap to read.** Under extractor 3 the panel matched 12.2%
   of accepted review comments and 11.1% of _rejected_ ones — ratio 1.10, Fisher exact
