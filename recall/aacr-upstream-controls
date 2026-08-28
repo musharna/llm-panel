@@ -376,6 +376,38 @@ with section("5.8 a finding whose FIRST path-shaped token is not a file is reloc
     check("5.8 an unresolvable later path is still withheld", len(r2["review"]["comments"]), 0)
 
 
+with section("5.9 a PLAIN bullet that opens with path:line is a finding (extractor 3)"):
+    # mpv-player/mpv@dbd327d, volume arm 2026-08-28: codex answered in its house style --
+    # "- `misc/random.c:60` -- If `mp_rand_seed(0)` is called before ..." -- with no bold
+    # anywhere, and the whole review parsed to ZERO observations while a trailing
+    # "**NO OTHER DEFECTS FOUND.**" survived as the only one. Extractor 2 admitted numbered,
+    # heading, BOLD-bullet and bold-line forms and nothing else. Measured over the finished
+    # arms: clean lost 13 reviews outright, checkout 12, broad 0. Fails on extractor 2 for
+    # the stated reason: 0 observations.
+    body = ("I traced the call sites.\n"
+            "- `src/app/main.py:10` -- `parse()` dereferences NULL when the list is empty.\n\n"
+            "- `src/app/main.py:12` -- the retry loop never decrements `n`.\n")
+    d = _rundir([{"name": "codex", "status": "ok", "files": {"review": "codex.md"}}],
+                {"codex.md": body})
+    obs, info = ns["read_run"](d)
+    check("5.9 two located bullets are two findings", len(obs), 2)
+    check("5.9 both carry path AND line",
+          sorted((o["location"]["path"], o["location"]["line"]) for o in obs),
+          [("src/app/main.py", 10), ("src/app/main.py", 12)])
+    # POSITIVE CONTROL for the hierarchy rule this must not break: attribute bullets under
+    # a bold header still fold into ONE finding.
+    d2 = _rundir([{"name": "codex", "status": "ok", "files": {"review": "codex.md"}}],
+                 {"codex.md": "**Defect 1: parse() crashes**\n- **File:** `src/app/main.py`\n"
+                              "- **Line:** 10\n- **Failure scenario:** empty list\n"})
+    obs2, _ = ns["read_run"](d2)
+    check("5.9 attribute bullets under a bold header stay ONE finding", len(obs2), 1)
+    # NEGATIVE CONTROL: a bullet that merely mentions a path later is not promoted.
+    d3 = _rundir([{"name": "codex", "status": "ok", "files": {"review": "codex.md"}}],
+                 {"codex.md": "- see the helper in `src/app/main.py:10` for context\n"})
+    obs3, _ = ns["read_run"](d3)
+    check("5.9 a path in mid-sentence does not open a finding", len(obs3), 0)
+
+
 # --- 7. the checkout arm: where the judges stand -------------------------------------------
 import subprocess  # noqa: E402
 
