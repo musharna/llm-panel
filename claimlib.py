@@ -46,7 +46,7 @@ import re
 
 # "2": headings at all six levels are boundaries (were four). Bumped so a result file says
 # which extractor produced it and the span cache does not serve v1 parses as v2.
-EXTRACTOR_VERSION = "2"
+EXTRACTOR_VERSION = "3"
 
 # An explicit ABSTENTION, and why it is a sentinel rather than a phrase list.
 #
@@ -166,6 +166,21 @@ _PATH = (
 # Measured against all 2145 real annotated paths: 2143 before, 2143 after -- zero drift.
 # It converts a silently-wrong path into an honest absence, which is the whole rule here.
 _PATH_LINE = re.compile(r"`?(" + _PATH + r")`?(?::(\d{1,6}))?")
+# A PLAIN bullet whose first token is a `path:line` location is a finding.
+#
+# FINDING_START admits numbered items, headings, BOLD bullets and bold lines. A plain
+# bullet was left out deliberately (a bullet under a bold header is an attribute, not a
+# finding). But the prompt asks for FILE and LINE per item, and codex's house style
+# answers in exactly that shape with no bold at all:
+#     - `misc/random.c:60` -- If `mp_rand_seed(0)` is called before ...
+# Every such review parsed to ZERO observations. Measured 2026-08-28 over the finished
+# arms: clean 13 reviews fully lost (37 located tokens), checkout 12 (45), broad 0 --
+# the loss fell on two arms and not the third, so it biased a published comparison.
+# The rule is structural and hierarchy-independent: a location in first position is the
+# protocol's own marker for "one item", whatever surrounds it. Extractor version 2 -> 3.
+_LOCATED_BULLET = re.compile(
+    r"^[ \t]{0,3}[-*+][ \t]+`?(?:" + _PATH + r")`?:\d{1,6}\b", re.M
+)
 # A diff hunk header names the line the change starts at, and this project's own diff
 # prompt tells judges to take line numbers from exactly here. `@@ -112,6 +112,10 @@` -> 112,
 # reading the NEW-file side, which is what a reviewer is looking at.
@@ -262,9 +277,11 @@ def extract(text, judge="?", run="?"):
         not _in_spans(m.start(), fences) for m in _STRONG.finditer(text)
     )
     pattern = _STRONG if strong_present else FINDING_START
-    starts = [
-        m.start() for m in pattern.finditer(text) if not _in_spans(m.start(), fences)
-    ]
+    starts = sorted(
+        {m.start() for m in pattern.finditer(text) if not _in_spans(m.start(), fences)}
+        | {m.start() for m in _LOCATED_BULLET.finditer(text)
+           if not _in_spans(m.start(), fences)}
+    )
 
     obs = []
     for i, st in enumerate(starts):
