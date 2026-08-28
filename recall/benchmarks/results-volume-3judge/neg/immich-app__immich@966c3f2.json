@@ -1,0 +1,356 @@
+{
+  "review": {
+    "comments": [
+      {
+        "content": "1. **High \u2014 `server/src/repositories/album.repository.ts:167`**  \n   Casting `assets.updatedAt` to `date` discards the time before taking the maximum. For assets updated at `2025-03-26T08:00Z` and `2025-03-26T20:00Z`, the API returns the same date-only value for both; another update later that day does not change `lastModifiedAssetTimestamp`, so mobile freshness checks or album ordering use stale/indistinguishable timestamps.",
+        "path": "server/src/repositories/album.repository.ts",
+        "start_line": 167,
+        "end_line": 167,
+        "observation_id": "d1d02dd9dd9f8f7a",
+        "claimed_path": "server/src/repositories/album.repository.ts",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "2. **Medium \u2014 `server/src/repositories/album.repository.ts:146` and `server/src/repositories/album.repository.ts:156`**  \n   Both album bounds are truncated to UTC calendar dates. For an album whose first and last assets have `localDateTime` values `2025-03-26T10:15Z` and `2025-03-26T22:45Z`, `startDate` and `endDate` become midnight/date-only values instead of those timestamps. Consumers can no longer determine the actual chronological bounds, and same-day albums incorrectly appear to have identical start and end instants.",
+        "path": "server/src/repositories/album.repository.ts",
+        "start_line": 146,
+        "end_line": 146,
+        "observation_id": "7de559ad2b7e1c95",
+        "claimed_path": "server/src/repositories/album.repository.ts",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "1. **`::date` truncation on `startDate`/`endDate` loses time-of-day** (album.repository.ts, the min/max selects ~line 149-163). Previous full timestamp; now truncated to midnight. Regression in data fidelity. Also the `::date` result type is Postgres `date`, not `Date`, flowing into a `Date | null` interface field.\n\n2. **`AT TIME ZONE 'UTC'` causes off-by-one-day dates for non-UTC timezones** \u2014 truncating in UTC shifts the date relative to the user's local date shown elsewhere. Concrete: photo taken 2026-08-27 23:00 EDT (= 2026-08-28 03:00 UTC) shows date 08-28 in album metadata but 08-27 on the photo.\n\n3. **`lastModifiedAssetTimestamp` truncated to a date, losing the actual modification time** \u2014 the field is named \"timestamp\" and previously carried the full `updatedAt`. The mobile app that uses it will now see midnight instead of the true time.\n\nLet me also reconsider the count cast: old used `::int` on the count; new uses `::int` too. Fine.\n\nNow, is there a defect in the **data type / type flow of `lastModifiedAssetTimestamp`**: In the interface it's `Date | null` but now is a `::date` \u2014 so a date object. Same as defect 1 essentially.\n\nLet me also check \u2014 the **`min<any>`/`max<any>`** \u2014 any is fine.\n\nNow think about **whether `getMetadataForIds` is called elsewhere with different expectations** \u2014 I can't verify. Similarly whether `getLastUpdatedAssetForAlbumId` has other callers left behind.\n\nNow, importantly \u2014 let me reconsider the **join direction change for correctness regarding assets that are in multiple albums and the `deletedAt` filter interacting with the count**: unchanged from old.\n\nWait, actually there IS a genuine subtle difference. Let me reconsider `assetCount`. Old: count of `assets.id` joined via album; same as new. Identical.\n\nLet me also reconsider: **the old query's rows keyed by `albums.id as albumId`**, new keys `album_assets.albumsId as albumId`. Same value.\n\nNow, let me reconsider the **`getAll` service change removing `Promise.all` and the parallel individual queries** \u2014 semantics preserved since metadata query returns all albums at once. Fine, improvement.\n\nBut hold on \u2014 is there any difference in the `getMetadataForIds` return regarding the fact that the new query only returns albums that have at least one non-deleted asset? Both old/new same. OK.\n\nLet me also consider: **the `startDate`/`endDate` being the min/max over `localDateTime`** \u2014 but now with UTC re-basing per-row before min/max, the actual minimum timestamp is preserved (min of timestamps re-based to UTC is the same instant's UTC rep). The DATE truncation is the issue, covered.\n\nLet me reconsider one more potential defect: **duplicate count inflation if an asset appears multiple times in `albums_assets_assets`** for the same album (shouldn't by PK). Not it.\n\nNow let me look for defects in the service `getAll`: it still maps over `albums` and uses `albumMetadata[album.id]`. The metadata now includes `lastModifiedAssetTimestamp`. But for albums in the list that have no assets (empty), no metadata row \u2192 `undefined` \u2192 fine.\n\nOK let me also reconsider whether the timezone conversion on `updatedAt` in `lastModifiedAssetTimestamp` matters for ordering \u2014 max on dates fine.\n\nLet me think about the **`::date` on `min` of `localDateTime`** could actually be problematic in a different way: if there's a single asset, min=its date; fine.\n\nNow let me also consider whether the removal of `getLastUpdatedAssetForAlbumId` broke a distinct behavior: the old per-album method ordered by `updatedAt desc` over ALL rows joined \u2014 no `deletedAt` filter! The old `getLastUpdatedAssetForAlbumId` did NOT filter `deletedAt`. The new metadata query DOES filter `assets.deletedAt is null`. So there's a behavior change: for a deleted/soft-deleted asset, the old code would include it in `lastModifiedAssetTimestamp` (and in the loop it'd be considered), while the new excludes it. But actually the metadata query returns no row for albums whose only assets are deleted \u2014 but old `getLastUpdatedAssetForAlbumId` would return the deleted asset's updatedAt. Edge case, low probability. Might be a deliberate improvement (excluding deleted). Probably not worth reporting as a defect since excluding deleted is more correct.\n\nHmm, but it IS a behavioral difference: previously `lastModifiedAssetTimestamp` reflected the last-updated asset even if deleted; now not. Given \"deleted\" semantics, this is arguably a fix, not a defect.\n\nLet me focus and also reconsider the **truncation timezone issue the most severe** and the **`::date` null handling**.\n\nActually \u2014 important null-handling: `min(...::date)` on an album with assets is non-null. Fine.\n\nLet me reconsider whether there could be a **grouping/NULL** issue: `groupBy('album_assets.albumsId')` \u2014 fine.\n\nLet me also reconsider a possible **duplicate album rows** if the same album appears multiple times \u2014 no.\n\nNow, is the `::date` + `AT TIME ZONE` change applied consistently? Yes for all three.\n\nLet me now also double check: could `lastModifiedAssetTimestamp` being a date affect the mobile app's ability to detect \"modified today\"? Covered under defect 3.\n\nLet me reconsider severity ordering:\n1. `AT TIME ZONE 'UTC'` + `::date` off-by-one-day for startDate/endDate (real wrong displayed data for non-UTC timezones) \u2014 most severe.\n2. `lastModifiedAssetTimestamp` loses time-of-day (now a date) \u2014 field meaning violated.\n3. `::date` returns Postgres `date` type not `Date` \u2014 type/serialization mismatch.\n\nAlso possibly:",
+        "path": "server/src/repositories/album.repository.ts",
+        "start_line": 149,
+        "end_line": 149,
+        "observation_id": "d1d34ccd2e6370c0",
+        "claimed_path": "album.repository.ts",
+        "path_resolution": "basename",
+        "merged_from": [
+          "737a587e51cf9eaf",
+          "7ba3e2f8292dcf0e",
+          "c5a7c579c7d13ecf",
+          "2b4c4f420b0a891c",
+          "8b0c82dcef00ee88"
+        ]
+      },
+      {
+        "content": "4. Behavior change: deleted assets no longer counted in lastModifiedAssetTimestamp (low prob, arguably a fix).\n\nNow, I should note the limitation that the source files aren't present to verify surrounding callers (e.g., whether `getLastUpdatedAssetForAlbumId` had other callers, or whether the `Date | null` vs `date` mismatch causes downstream issues, or whether `localDateTime` is `timestamptz`). I should state what I verified (the diff itself) and what I couldn't (live code).\n\nLet me reconsider whether there are more defects I'm missing. The diff is fairly small. Let me go hunk by hunk again:\n\n- album.repository.ts interface: adds field. Fine.\n- getMetadataForIds rewrite: identified 3 defects.\n- asset.repository.ts: removes method. Potential defect only if other callers remain \u2014 unverifiable.\n- album.service.ts getAll + get: identified the masking, the deleted-asset behavior change.\n\nLet me also reconsider: in `getAll`, previously `lastModifiedAssetTimestamp` came from a query WITHOUT deletedAt filter per album; now excludes deleted. Consistency between `getAll` and `get` is now better (both use metadata). Not a defect per se.\n\nAlso: **the new metadata query runs once for all albums, but `getAll` may return albums present in memory** \u2014 if an album has assets but `albums` list includes some whose ids aren't in `ids`... no.\n\nI think the main genuine defects are the timezone/date-truncation ones. Let me also add: the `any` generic doesn't cause runtime defect.\n\nWait, let me reconsider one more: **`startDate`/`endDate`/`lastModifiedAssetTimestamp` casting to `::date` and the interface type `Date | null`** \u2014 when serialized to JSON via the response DTO, a Postgres `date` (kysely returns a JS Date actually \u2014 kysely/Postgres driver returns `Date` objects for `date` columns as well, so serialization may be fine). But the date is at midnight UTC, losing time, and the UTC re-basing. I'll keep the type issue as minor.\n\nLet me also double-check: is `AT TIME ZONE 'UTC'` on a `timestamptz` returning a `timestamp` that, when cast to `::date`, uses the session timezone or UTC? `AT TIME ZONE 'UTC'::text` converts the timestamptz to UTC wall-clock, and the result `timestamp without time zone` cast to date is literally that wall-clock date. So the date is the UTC date. Confirmed off-by-one potential.\n\nI'm fairly confident. Let me also reconsider if the truncation to date is even needed/buggy for the mobile use. Regardless, the change from full timestamp to date is a regression.\n\nLet me write the report. I'll note the missing source files honestly as a limitation for cross-file verification, but the diff is self-contained enough to point at these defects.\n\nLet me get precise line numbers from the diff hunks. The album.repository.ts second hunk header is `@@ -132,18 +133,53 @@`. So new lines start at 133. Let me map:\n\nLine 133: `return (`\n134: `this.db`\n135: `.selectFrom('assets')`\n136: `.innerJoin('albums_assets_assets as album_assets', ...)`\n137: `.select('album_assets.albumsId as albumId')`\n...\nThe startDate select: new line 139 roughly. Let me count precisely.\n\nNew file numbering starting at 133:\n- 133: `    return (`\n- 134: `      this.db`\n- 135: `        .selectFrom('assets')`\n- 136: `        .innerJoin('albums_assets_assets as album_assets', 'album_assets.assetsId', 'assets.id')`\n- 137: `        .select('album_assets.albumsId as albumId')`\n- 138: `        .select((eb) =>`\n- 139: `          eb.fn`\n- 140: `            .min<any>(`\n- 141-143: sql block (startDate) `(assets.localDateTime AT TIME ZONE 'UTC'::text) ::date`\n- 144: `            )`\n- 145: `            .as('startDate'),`\n- 146: `        )`\n- 147: `        .select((eb) =>`\n- 148: `          eb.fn`\n- 149: `            .max<any>(`\n- 150-152: sql block (endDate)\n- 153: `            )`\n- 154: `            .as('endDate'),`\n- 155: `        )`\n- 156: comment `// lastModifiedAssetTimestamp ...`\n- 157: `        .select((eb) =>`\n- 158: `          eb.fn`\n- 159: `            .max<any>(`\n- 160-162: sql (updatedAt ... ::date)\n- ... etc.\n\nThe exact line numbers are approximate due to the multi-line sql template literal strings, but I can point to the region (lines ~138-155 for startDate/endDate, ~157-165 for lastModifiedAssetTimestamp). Given uncertainty, I'll state approximate line numbers from the hunk.\n\nLet me finalize my report with the concrete defects.I attempted to verify these defects against the live source, but the working directory `/tmp/aacr-up-5ua_dhe5` is empty (no `server/` tree exists), so I could only verify against the diff itself, which is self-contained for the changed code. I'll note where cross-file verification (other callers, column types) was not possible. Line numbers are taken from the new-file numbering of the hunk headers.\n\n## Defects (most severe first)",
+        "path": "server/src/repositories/album.repository.ts",
+        "start_line": 133,
+        "end_line": 133,
+        "observation_id": "b480c3ea9e3f2514",
+        "claimed_path": "album.repository.ts",
+        "path_resolution": "basename",
+        "merged_from": [
+          "83463fd477aebda0"
+        ]
+      },
+      {
+        "content": "**1. `startDate`/`endDate` are now truncated to a DATE and re-based to UTC \u2014 off-by-one-day dates for non-UTC users.**\n`server/src/repositories/album.repository.ts` \u2014 the `min`/`max` selects around new lines ~138-155.\nThe old query selected `assets.localDateTime` as a full timestamp. The new query computes `(assets.localDateTime AT TIME ZONE 'UTC'::text)::date` \u2014 both truncating to midnight and forcing the cutover at the UTC clock.\nConcrete failure: a photo captured 2026-08-27 23:00 in a UTC\u22125 zone is stored as a `timestamptz`; `AT TIME ZONE 'UTC'` re-expresses it as 03:00 2026-08-28 and `::date` yields `2026-08-28`. The album's `startDate`/`endDate` now report 08-28 while the photo's own date (as displayed in the app, in local time) is 08-27 \u2014 so album date range can disagree with the individual assets it contains, and can even have its `endDate` after the calendar day of the real assets. The old behavior returned the raw stored timestamp and had no such shift.",
+        "path": "server/src/repositories/album.repository.ts",
+        "start_line": 138,
+        "end_line": 138,
+        "observation_id": "cbbc6925a0211366",
+        "claimed_path": "server/src/repositories/album.repository.ts",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "**2. `lastModifiedAssetTimestamp` is no longer a timestamp \u2014 it is a date (time-of-day zeroed).**\n`server/src/repositories/album.repository.ts` \u2014 `max(... (updatedAt AT TIME ZONE 'UTC'::text) ::date)` at new lines ~157-165.\nThe field is named and typed (`Date`) as a timestamp, and the removed `getLastUpdatedAssetForAlbumId` returned the full `assets.updatedAt`. The replacement casts to `::date`, so the mobile app that \"only uses this\" field will always receive `updatedAt` truncated to midnight of the modification date.\nConcrete failure: an asset's `updatedAt` is 2026-08-28 09:37:14; the album reports `lastModifiedAssetTimestamp = 2026-08-28 00:00:00`. Any consumer that displays \"modified at HH:MM\", sorts by recency within the same day, or compares against a current timestamp to decide \"modified recently\" gets the wrong value (midnight instead of the true update time), so the \"last modified\" indicator is wrong for every album.",
+        "path": "server/src/repositories/album.repository.ts",
+        "start_line": 157,
+        "end_line": 157,
+        "observation_id": "b4e17e299494dab5",
+        "claimed_path": "server/src/repositories/album.repository.ts",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "**3. `startDate`/`endDate`/`lastModifiedAssetTimestamp` return a Postgres `date` value, not a `Date`/timestamp, flowing into a `Date | null` typed interface.**\n`server/src/repositories/album.repository.ts` \u2014 `AlbumAssetCount` interface (new `lastModifiedAssetTimestamp: Date | null`, lines ~15) vs. the new `::date` projections.\nThe min/max are cast to `::date`, a Postgres date-only value (zero time), which is a different runtime value than the full `Date` the old query produced and than the interface promises.\nConcrete failure: any code path that expects a full-`Date` (e.g. formatting a time, or a driver that returns `date` as a bare `'YYYY-MM-DD'` string) receives a truncated/date-only value, producing wrong formatted dates or a serialization mismatch. This is distinct from #1/#2 because even when the timezone is UTC and the day is correct, the value is still a date, not a timestamp.",
+        "path": "server/src/repositories/album.repository.ts",
+        "start_line": 15,
+        "end_line": 15,
+        "observation_id": "1ba51d543bf85a0e",
+        "claimed_path": "server/src/repositories/album.repository.ts",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "**4. Behavior regression: deleted assets no longer contribute to `lastModifiedAssetTimestamp`.**\n`server/src/services/album.service.ts` \u2014 `getAll` (the `lastModifiedAssetTimestamp` select, ~line 68) and `get` (~line 82).\nThe removed `AssetRepository.getLastUpdatedAssetForAlbumId` (shown in the deleted hunk) did **not** filter `assets.deletedAt`, so a soft-deleted asset still set the album's \"last modified\" timestamp. The replacement metadata query adds `.where('assets.deletedAt', 'is', null)`, so deleted assets are now excluded entirely.\nConcrete failure: an album whose most recent mutation was deleting/soft-deleting an asset previously reported that deletion's `updatedAt` as `lastModifiedAssetTimestamp`; now it either reports the timestamp of the last non-deleted asset or falls back to `undefined`. The mobile app's \"last modified\" indicator changes for albums whose only recent activity was a deletion. (This may be an intentional fix, but it is an unannounced behavioral change with an observable downstream effect \u2014 noting it as low-probability.)",
+        "path": "server/src/services/album.service.ts",
+        "start_line": 68,
+        "end_line": 68,
+        "observation_id": "d0449ad837d669e3",
+        "claimed_path": "server/src/services/album.service.ts",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "**5. Removal of `getLastUpdatedAssetForAlbumId` \u2014 unverified that all call sites were migrated.**\n`server/src/repositories/asset.repository.ts` \u2014 removed method at hunk `@@ -728,17 +728,6 @@`.\nWithin this diff the service and test mock are updated consistently, and the diff shows the service no longer calls it. I could not verify (empty working tree) that no *other* caller of `getLastUpdatedAssetForAlbumId` remains in `server/src`. If any does, it is a compile error. This is flagged as needing verification rather than a confirmed defect.\n\n## Notes on items I checked and rejected (not defects)\n- Missing-row-for-empty-albums: the old query also used inner joins from `albums`, so albums with no assets produced no row there too \u2014 behavior is unchanged, and the service's `?? 0` / `?? undefined` fallbacks keep the observable result identical. Not a defect.\n- `assetCount` semantics and `deletedAt` filtering are unchanged between old and new. Not a defect.\n- The `Promise.all` \u2192 flat-map change in `getAll` preserves semantics (metadata now covers all albums in one query). Not a defect.\n\nTo be fully exhaustive on cross-file impact (#5) and to confirm `localDateTime`'s actual column type (which determines whether defect #1 is a guaranteed day-shift or only a date-truncation), the live `server/` source would be needed \u2014 it is not present in this workspace.",
+        "path": "server/src/repositories/asset.repository.ts",
+        "start_line": 728,
+        "end_line": 728,
+        "observation_id": "553ceba65f24f0a8",
+        "claimed_path": "server/src/repositories/asset.repository.ts",
+        "path_resolution": "exact",
+        "merged_from": [
+          "63cf8daa1c5c6d9a"
+        ]
+      },
+      {
+        "content": "### 1. `server/src/repositories/album.repository.ts:15` (interface) + `server/src/repositories/album.repository.ts:149-157` (query)\n\n**Defect: Timezone conversion corrupts dates when session timezone \u2260 UTC**\n\nThe new query uses:\n```sql\n(\"assets\".\"localDateTime\" AT TIME ZONE 'UTC'::text)::date\n```\n\n`AT TIME ZONE 'UTC'` treats the input timestamp *as if it were in UTC* and converts it to the **session timezone**, then `::date` extracts the date in that session timezone. If the database session timezone is not UTC (e.g., `America/New_York`), a UTC midnight asset becomes the previous calendar day.\n\n**Concrete failure**: Asset `localDateTime = '2024-06-15 00:00:00'` (UTC). Session timezone = `America/Los_Angeles` (UTC-7).  \n`AT TIME ZONE 'UTC'` \u2192 `2024-06-15 00:00:00+00` \u2192 converted to session TZ \u2192 `2024-06-14 17:00:00-07` \u2192 `::date` \u2192 **`2024-06-14`** (wrong; should be `2024-06-15`).\n\nAffects `startDate`, `endDate`, and `lastModifiedAssetTimestamp`.\n\n---",
+        "path": "server/src/repositories/album.repository.ts",
+        "start_line": 15,
+        "end_line": 15,
+        "observation_id": "179d4f07e779fa93",
+        "claimed_path": "server/src/repositories/album.repository.ts",
+        "path_resolution": "exact",
+        "merged_from": [
+          "c969a8936c15f4c8"
+        ]
+      },
+      {
+        "content": "### 2. `server/src/repositories/album.repository.ts:15` (interface) + `server/src/repositories/album.repository.ts:149-157` (query)\n\n**Defect: Type mismatch \u2014 query returns PostgreSQL `date` (string), interface expects `Date | null`**\n\nThe `::date` cast produces a PostgreSQL `date` type. Most Node Postgres drivers return this as a string `'YYYY-MM-DD'`, not a `Date` object. The interface declares `Date | null`. Code consuming `albumMetadata[album.id]?.startDate?.getTime()` will crash with `TypeError: getTime is not a function`.\n\n**Concrete failure**: Mobile app calls `album.startDate.getTime()` \u2192 `TypeError`.\n\n---",
+        "path": "server/src/repositories/album.repository.ts",
+        "start_line": 15,
+        "end_line": 15,
+        "observation_id": "66ff917222c8237a",
+        "claimed_path": "server/src/repositories/album.repository.ts",
+        "path_resolution": "exact",
+        "merged_from": [
+          "5d1fe059480c32b4"
+        ]
+      },
+      {
+        "content": "### 3. `server/src/repositories/album.repository.ts:163-165` (WHERE clause)\n\n**Defect: Albums with zero assets disappear from results entirely**\n\nBoth old and new queries use `INNER JOIN`, so albums with no assets return zero rows. The service handles this with `??` fallbacks, but **any other caller of `getMetadataForIds` cannot distinguish \"album has 0 assets\" from \"album doesn't exist\"**.\n\n**Concrete failure**: Caller passes `['album-1', 'album-2']` where `album-2` exists but has 0 assets. Result array contains only `album-1`'s metadata. Caller assumes `album-2` was not found/deleted.\n\n---",
+        "path": "server/src/repositories/album.repository.ts",
+        "start_line": 163,
+        "end_line": 163,
+        "observation_id": "922924842a9e9738",
+        "claimed_path": "server/src/repositories/album.repository.ts",
+        "path_resolution": "exact",
+        "merged_from": [
+          "0179039c3b1c29ca"
+        ]
+      },
+      {
+        "content": "### 4. `server/src/repositories/album.repository.ts:163` (WHERE clause change)\n\n**Defect: Filter moved from `albums.id` to `album_assets.albumsId` \u2014 exposes broken foreign keys**\n\nOld: `.where('albums.id', 'in', ids)` \u2014 filters on the albums table (PK, guaranteed to exist).  \nNew: `.where('album_assets.albumsId', 'in', ids)` \u2014 filters on the join table.\n\nIf a stale `albums_assets_assets` row references a non-existent album (broken FK, no constraint or constraint disabled), the new query **returns a row for that non-existent album** with aggregated asset data. The old query would not.\n\n**Concrete failure**: Orphaned `album_assets` row for `albumId='deleted-album'`. Caller requests metadata for `['deleted-album']`. New query returns fabricated metadata; old query returns empty.\n\n---",
+        "path": "server/src/repositories/album.repository.ts",
+        "start_line": 163,
+        "end_line": 163,
+        "observation_id": "3f4d403daff59e0c",
+        "claimed_path": "server/src/repositories/album.repository.ts",
+        "path_resolution": "exact",
+        "merged_from": [
+          "4b772d2fd5f8c32a"
+        ]
+      },
+      {
+        "content": "### 5. `server/src/services/album.service.ts:77` (array destructuring)\n\n**Defect: Fragile assumption that first result row matches requested album**\n\n```ts\nconst [albumMetadataForIds] = await this.albumRepository.getMetadataForIds([album.id]);\n```\n\nIf the query ever returns rows in non-deterministic order (parallel execution, no `ORDER BY`), and a bug causes multiple rows (e.g., duplicate `album_assets` entries), the wrong album's metadata is used.\n\n**Concrete failure**: Duplicate `album_assets` rows for same album (data corruption). Query returns 2 rows. Destructuring picks the first arbitrarily. `assetCount` could be half the true value.\n\n---",
+        "path": "server/src/services/album.service.ts",
+        "start_line": 77,
+        "end_line": 77,
+        "observation_id": "1ecf7aec315c5509",
+        "claimed_path": "server/src/services/album.service.ts",
+        "path_resolution": "exact",
+        "merged_from": [
+          "145d3a1da083b9c7"
+        ]
+      },
+      {
+        "content": "### 6. `server/src/repositories/asset.repository.ts:728-744` (method removal)\n\n**Defect: `getLastUpdatedAssetForAlbumId` removed \u2014 breaks any external caller not in this diff**\n\nThe method is `public` and removed entirely. If any other service, controller, job, or test calls it, they will crash at runtime with `TypeError: getLastUpdatedAssetForAlbumId is not a function`.\n\n**Concrete failure**: A background sync job calls `assetRepository.getLastUpdatedAssetForAlbumId(albumId)` \u2192 runtime crash.\n\n---",
+        "path": "server/src/repositories/asset.repository.ts",
+        "start_line": 728,
+        "end_line": 728,
+        "observation_id": "d8b9a6a7c2d5b076",
+        "claimed_path": "server/src/repositories/asset.repository.ts",
+        "path_resolution": "exact",
+        "merged_from": [
+          "1b9a242742b0391a"
+        ]
+      },
+      {
+        "content": "### 7. `server/src/repositories/album.repository.ts:152-157` (lastModifiedAssetTimestamp)\n\n**Defect: `lastModifiedAssetTimestamp` uses `assets.updatedAt` (DB update time), not asset creation time**\n\nThe field is named `lastModifiedAssetTimestamp` and the comment says \"only used in mobile app\". But it aggregates `MAX(assets.updatedAt)` \u2014 the latest *database row update*, not the latest asset `localDateTime` (capture time). A metadata edit (tag, description) updates `updatedAt`, making the album appear \"recently modified\" even though no new photos were added.\n\n**Concrete failure**: User adds photo to album on Jan 1. On Jun 1, user edits a tag on an old photo. Mobile app shows album as \"modified Jun 1\" \u2014 misleading.\n\n---",
+        "path": "server/src/repositories/album.repository.ts",
+        "start_line": 152,
+        "end_line": 152,
+        "observation_id": "12ddd99ec15e7418",
+        "claimed_path": "server/src/repositories/album.repository.ts",
+        "path_resolution": "exact",
+        "merged_from": [
+          "4d072e3e42bec877"
+        ]
+      },
+      {
+        "content": "### 8. `server/src/repositories/album.repository.ts:144-146` (SELECT clause)\n\n**Defect: `min<any>`/`max<any>` with `any` cast disables type safety on critical date logic**\n\nThe `.min<any>(sql`...`)` and `.max<any>(sql`...`)` casts silence TypeScript. If the SQL expression type changes (e.g., `localDateTime` column type altered), the error is only caught at runtime.\n\n**Concrete failure**: Migration changes `localDateTime` to `timestamptz`. Query returns `timestamptz`, `::date` cast behaves differently. TypeScript compiles; runtime produces wrong dates.\n\n---",
+        "path": "server/src/repositories/album.repository.ts",
+        "start_line": 144,
+        "end_line": 144,
+        "observation_id": "55179d6715bd2599",
+        "claimed_path": "server/src/repositories/album.repository.ts",
+        "path_resolution": "exact",
+        "merged_from": [
+          "03d31cd1def285c3"
+        ]
+      },
+      {
+        "content": "### 9. `server/src/test/repositories/asset.repository.mock.ts:24` (mock removal)\n\n**Defect: Mock removed but tests may still reference it**\n\nIf any test file imports the mock and calls `getLastUpdatedAssetForAlbumId`, it will now get `undefined` (vitest auto-mock) instead of a controlled mock, causing flaky/false-passing tests.\n\n**Concrete failure**: Test expects `getLastUpdatedAssetForAlbumId.mockResolvedValue(asset)`. Now receives `undefined` \u2192 test passes incorrectly or crashes unpredictably.\n\n---",
+        "path": "server/test/repositories/asset.repository.mock.ts",
+        "start_line": 24,
+        "end_line": 24,
+        "observation_id": "e961e53c96ef7205",
+        "claimed_path": "server/src/test/repositories/asset.repository.mock.ts",
+        "path_resolution": "basename",
+        "merged_from": [
+          "26280d208aec3873"
+        ]
+      },
+      {
+        "content": "### 10. `server/src/repositories/album.repository.ts:133-175` (query restructuring)\n\n**Defect: Query now starts from `assets` table \u2014 potential performance regression on large asset tables**\n\nOld query started from `albums` (small) \u2192 joined to assets. New query starts from `assets` (potentially millions of rows) \u2192 joins to album_assets. Without a perfect index on `assets.deletedAt` + `album_assets.assetsId`, this scans the full assets table.\n\n**Concrete failure**: 5M assets, 100 albums. Old query: index scan on `albums.id IN (...)` \u2192 nested loop join. New query: sequential scan on `assets` filtering `deletedAt IS NULL` \u2192 hash join. 100\u00d7 slower.\n\n---",
+        "path": "server/src/repositories/album.repository.ts",
+        "start_line": 133,
+        "end_line": 133,
+        "observation_id": "fc5e74575e452638",
+        "claimed_path": "server/src/repositories/album.repository.ts",
+        "path_resolution": "exact",
+        "merged_from": [
+          "116d88a62eb60c2a"
+        ]
+      },
+      {
+        "content": "### 11. `server/src/services/album.service.ts:65-66` (getMany return)\n\n**Defect: `sharedLinks: undefined` explicitly set but `mapAlbumWithoutAssets` may already include it**\n\nIf `mapAlbumWithoutAssets(album)` returns an object with `sharedLinks` property, the spread `...mapAlbumWithoutAssets(album)` includes it, then `sharedLinks: undefined` overwrites it. This is redundant but not a bug. However, if `mapAlbumWithoutAssets` returns `sharedLinks: null` or an array, the explicit `undefined` changes the API contract (null vs undefined).\n\n**Concrete failure**: Client expects `sharedLinks: null` for \"no links\", receives `undefined` \u2192 JSON serialization difference (`null` included, `undefined` omitted).\n\n---",
+        "path": "server/src/services/album.service.ts",
+        "start_line": 65,
+        "end_line": 65,
+        "observation_id": "c7fd5afef60e96fd",
+        "claimed_path": "server/src/services/album.service.ts",
+        "path_resolution": "exact",
+        "merged_from": [
+          "15e2197d2e1a9a17"
+        ]
+      },
+      {
+        "content": "### 12. `server/src/repositories/album.repository.ts:12` (interface addition)\n\n**Defect: `lastModifiedAssetTimestamp` added to interface but never documented as nullable in practice**\n\nThe query returns `MAX(...)::date` which is `NULL` for albums with no assets (but those albums are excluded by INNER JOIN \u2014 see defect #3). For albums with assets, it's never null. The `| null` in the interface suggests it can be null for valid albums, which is misleading.\n\n**Concrete failure**: Consumer writes `if (album.lastModifiedAssetTimestamp === null) handleEmptyAlbum();` \u2014 branch never executes for real albums, only for missing albums (which aren't in the result).\n\n---",
+        "path": "server/src/repositories/album.repository.ts",
+        "start_line": 12,
+        "end_line": 12,
+        "observation_id": "9ce31eb33255f758",
+        "claimed_path": "server/src/repositories/album.repository.ts",
+        "path_resolution": "exact",
+        "merged_from": [
+          "9edbe5902c727e93"
+        ]
+      },
+      {
+        "content": "### 13. `server/src/repositories/album.repository.ts:152-157` (lastModifiedAssetTimestamp query)\n\n**Defect: Same timezone bug as #1 applies to `updatedAt` \u2014 but `updatedAt` is likely `timestamptz` already**\n\nIf `assets.updatedAt` is `timestamptz` (common), `AT TIME ZONE 'UTC'` on a `timestamptz` **converts from session timezone to UTC**, the opposite of the intended logic. This doubles the error.\n\n**Concrete failure**: `updatedAt = '2024-06-15 00:00:00+00'` (timestamptz). Session TZ = `America/Los_Angeles`. `AT TIME ZONE 'UTC'` \u2192 converts from session TZ to UTC \u2192 `2024-06-15 07:00:00+00` \u2192 `::date` \u2192 `2024-06-15`. But if session TZ was `UTC`, result is `2024-06-15`. Behavior depends on session TZ unpredictably.\n\n---",
+        "path": "server/src/repositories/album.repository.ts",
+        "start_line": 152,
+        "end_line": 152,
+        "observation_id": "2f937271a15d5905",
+        "claimed_path": "server/src/repositories/album.repository.ts",
+        "path_resolution": "exact",
+        "merged_from": [
+          "d723f343ef93a9ac"
+        ]
+      },
+      {
+        "content": "### 14. `server/src/services/album.service.ts:58-70` (getMany optimization)\n\n**Defect: Removed `Promise.all` parallelism \u2014 but replaced N+1 queries with single query, so this is actually a fix, not a defect. Skip.**\n\n---",
+        "path": "server/src/services/album.service.ts",
+        "start_line": 58,
+        "end_line": 58,
+        "observation_id": "476e4d3a4e6691ce",
+        "claimed_path": "server/src/services/album.service.ts",
+        "path_resolution": "exact",
+        "merged_from": [
+          "e32e3d138130ac7b"
+        ]
+      },
+      {
+        "content": "### 15. `server/src/repositories/album.repository.ts:133-175` (query)\n\n**Defect: No `ORDER BY` on the query \u2014 result order is non-deterministic**\n\nThe query has `GROUP BY album_assets.albumsId` but no `ORDER BY`. Postgres returns groups in arbitrary order (often insertion order, but not guaranteed). The `getMany` service builds a map by `albumId`, so order doesn't matter there. But `get` uses array destructuring (defect #5), which depends on order.\n\n**Concrete failure**: Same as #5 \u2014 if multiple albums requested and order shifts, `get` picks wrong metadata.\n\n---",
+        "path": "server/src/repositories/album.repository.ts",
+        "start_line": 133,
+        "end_line": 133,
+        "observation_id": "ea8a624638658ba1",
+        "claimed_path": "server/src/repositories/album.repository.ts",
+        "path_resolution": "exact",
+        "merged_from": [
+          "cef59ad9d74dbbcb"
+        ]
+      },
+      {
+        "content": "### 16. `server/src/repositories/album.repository.ts:149-157` (date extraction)\n\n**Defect: `::date` cast truncates time component \u2014 `startDate`/`endDate` lose time-of-day**\n\nOld query: `MIN(assets.localDateTime)` / `MAX(assets.localDateTime)` \u2014 full timestamp preserved.  \nNew query: `MIN(...::date)` / `MAX(...::date)` \u2014 only date kept.\n\nIf the service or API consumer uses the time component (e.g., for sorting albums by precise time), it's now lost.\n\n**Concrete failure**: Two albums on same day. Old: sorted by exact first photo time. New: both have same `startDate` \u2192 unstable sort order.\n\n---",
+        "path": "server/src/repositories/album.repository.ts",
+        "start_line": 149,
+        "end_line": 149,
+        "observation_id": "839d99185297894c",
+        "claimed_path": "server/src/repositories/album.repository.ts",
+        "path_resolution": "exact",
+        "merged_from": [
+          "d14bde1eecd69b71"
+        ]
+      },
+      {
+        "content": "### 17. `server/src/repositories/album.repository.ts:149-157` (SQL template literal)\n\n**Defect: Raw SQL template with double-quoted identifiers \u2014 breaks if table/column names change**\n\n```sql\n(\"assets\".\"localDateTime\" AT TIME ZONE 'UTC'::text)::date\n```\n\nHardcoded `\"assets\".\"localDateTime\"` bypasses Kysely's type-safe query builder. A rename migration (`localDateTime` \u2192 `capturedAt`) compiles but fails at runtime.\n\n**Concrete failure**: Column renamed via migration. TypeScript compiles (raw SQL string). Runtime: `column \"localDateTime\" does not exist`.\n\n---",
+        "path": "server/src/repositories/album.repository.ts",
+        "start_line": 149,
+        "end_line": 149,
+        "observation_id": "a7fd581f8f8319ff",
+        "claimed_path": "server/src/repositories/album.repository.ts",
+        "path_resolution": "exact",
+        "merged_from": [
+          "f46ec6bf65cc539e"
+        ]
+      },
+      {
+        "content": "### 18. `server/src/services/album.service.ts:75-78` (get method)\n\n**Defect: `getMetadataForIds([album.id])` called but result not validated for existence**\n\n```ts\nconst [albumMetadataForIds] = await this.albumRepository.getMetadataForIds([album.id]);\n// ...\nlastModifiedAssetTimestamp: albumMetadataForIds?.lastModifiedAssetTimestamp ?? undefined,\n```\n\nIf album has 0 assets, `albumMetadataForIds` is `undefined`. The `?? undefined` is redundant. But if the album *was deleted* between `findOrFail` and this call (race condition), `findOrFail` would have thrown. However, if `findOrFail` doesn't check `deletedAt` (soft delete), and the album is soft-deleted but has assets, metadata returns \u2014 but `findOrFail` might not find it. Inconsistent.\n\n**Concrete failure**: Soft-deleted album with assets. `findOrFail` throws (if it checks deletedAt). Metadata query would return data. Inconsistent state.\n\n---",
+        "path": "server/src/services/album.service.ts",
+        "start_line": 75,
+        "end_line": 75,
+        "observation_id": "d7e79da12cf28078",
+        "claimed_path": "server/src/services/album.service.ts",
+        "path_resolution": "exact",
+        "merged_from": [
+          "3dd0c11f250439fc"
+        ]
+      },
+      {
+        "content": "### 19. `server/src/repositories/album.repository.ts:133-175` (query)\n\n**Defect: `assetCount` uses `sql<number>` template \u2014 bypasses Kysely's count handling**\n\nOld: `eb.fn.count('assets.id')` with `::int` cast in SQL template.  \nNew: `sql<number>`\\`${eb.fn.count('assets.id')}::int\\`.as('assetCount')`.\n\nThe `sql<number>` assertion tells TypeScript \"trust me, this is a number\". If the query returns `bigint` (Postgres `count` returns `bigint`), the `::int` cast truncates values > 2^31-1.\n\n**Concrete failure**: Album with 3 billion assets (unlikely but possible in aggregate). `::int` overflows \u2192 negative count.\n\n---",
+        "path": "server/src/repositories/album.repository.ts",
+        "start_line": 133,
+        "end_line": 133,
+        "observation_id": "33131addf0274746",
+        "claimed_path": "server/src/repositories/album.repository.ts",
+        "path_resolution": "exact",
+        "merged_from": [
+          "2c0c1cae29df6466"
+        ]
+      },
+      {
+        "content": "### 20. `server/test/repositories/asset.repository.mock.ts:24` (mock removal)\n\n**Defect: Mock removal not accompanied by test updates \u2014 tests using this mock now have incomplete mocks**\n\nVitest's `Mocked<RepositoryInterface<...>>` will have `getLastUpdatedAssetForAlbumId` as `undefined` (not a mock function). Tests calling it get `TypeError: ... is not a function` or silent `undefined` return.\n\n**Concrete failure**: Integration test calls `assetRepository.getLastUpdatedAssetForAlbumId()` \u2192 crashes. CI passes if test not run; fails mysteriously when run.",
+        "path": "server/test/repositories/asset.repository.mock.ts",
+        "start_line": 24,
+        "end_line": 24,
+        "observation_id": "e8ce753fe3210264",
+        "claimed_path": "server/test/repositories/asset.repository.mock.ts",
+        "path_resolution": "exact",
+        "merged_from": [
+          "2cff7bb69e700162"
+        ]
+      }
+    ]
+  },
+  "rundir": "/home/user/.cache/llm-panel/runs/aacr-up-5ua_dhe5-330668a15849/20260828-143917-1222738",
+  "extractor": "3",
+  "unlocated": [
+    {
+      "content": "**Hunk 1 & 2: `album.repository.ts` \u2014 `getMetadataForIds`**\n\nThe key change: the query was rewritten from joining `albums` \u2192 `albums_assets_assets` \u2192 `assets`, to starting from `assets` \u2192 `albums_assets_assets`.\n\nDefect 1: **The original query returned rows for albums even when an album has NO assets** (because it started from `albums`). The new query starts from `assets`, so **an album with zero ",
+      "observation_id": "28edb82ce5c42d60",
+      "claimed_path": "album.repository.ts",
+      "path_resolution": "basename"
+    }
+  ]
+}

@@ -1,0 +1,171 @@
+{
+  "review": {
+    "comments": [
+      {
+        "content": "- **High \u2014 `api/types.go:614`**: Values larger than `math.MaxInt` overflow when converted from `uint` to `int`. For example, on amd64, `OLLAMA_CONTEXT_LENGTH=9223372036854775808` passes validation but makes `DefaultOptions().NumCtx == -9223372036854775808`, so model loading receives a negative context length instead of the requested positive value.",
+        "path": "api/types.go",
+        "start_line": 614,
+        "end_line": 614,
+        "observation_id": "51713e050f9b9080",
+        "claimed_path": "api/types.go",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "- **Medium \u2014 `envconfig/config.go:265`**: The variable is advertised as a maximum, but it is only a default. With `OLLAMA_CONTEXT_LENGTH=4096`, a model or API request specifying `num_ctx=8192` overrides `DefaultOptions` and allocates 8192 tokens, violating the advertised cap and potentially exhausting memory.",
+        "path": "envconfig/config.go",
+        "start_line": 265,
+        "end_line": 265,
+        "observation_id": "6b8ebfbe35e56939",
+        "claimed_path": "envconfig/config.go",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "- **Medium \u2014 `api/types.go:614`**: Invalid zero or negative configuration is re-evaluated and warned about every time `DefaultOptions` is called. For a server started with `OLLAMA_CONTEXT_LENGTH=0`, every inference request produces another warning; sustained traffic can flood logs and consume substantial disk or logging bandwidth.",
+        "path": "api/types.go",
+        "start_line": 614,
+        "end_line": 614,
+        "observation_id": "225ee2b72a9e4fa3",
+        "claimed_path": "api/types.go",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "- **Low \u2014 `envconfig/config.go:171`**: On 32-bit builds, `Uint` parses up to 64 bits and narrows the result to `uint` before validation. For example, `OLLAMA_CONTEXT_LENGTH=4294967297` wraps to `1`, passes `CheckContextLength`, and yields a one-token context rather than rejecting or defaulting the out-of-range value.",
+        "path": "envconfig/config.go",
+        "start_line": 171,
+        "end_line": 171,
+        "observation_id": "ccdb3c024afa145c",
+        "claimed_path": "envconfig/config.go",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "- **Low \u2014 `envconfig/config.go:193`**: For `OLLAMA_CONTEXT_LENGTH=0`, the warning says the value \u201cis less than 0,\u201d although the supplied value equals zero. This gives operators a factually incorrect diagnosis for the configuration that triggered the fallback.## Defects",
+        "path": "envconfig/config.go",
+        "start_line": 193,
+        "end_line": 193,
+        "observation_id": "f2d2f23f4e1e894f",
+        "claimed_path": "envconfig/config.go",
+        "path_resolution": "exact",
+        "merged_from": [
+          "ec45ca589a6107a4"
+        ]
+      },
+      {
+        "content": "**1. `api/types.go:613` \u2014 unchecked `uint`\u2192`int` conversion; the sanitizer is bypassed by overflow.**\n`envconfig.ContextLength()` returns `uint` (config.go:171), and `DefaultOptions()` casts it straight to `int` for `NumCtx`. There is no upper bound anywhere in the chain, and `CheckContextLength` validated only that the *uint* is positive.\n- Failure scenario: `OLLAMA_CONTEXT_LENGTH=18446744073709551615` (ParseUint accepts it) \u2192 the uint is positive so the sanitizer passes it \u2192 `int(...)` wraps to **-1**. `OLLAMA_CONTEXT_LENGTH=9223372036854775808` wraps to a large negative. Any value \u2265 2^63 on 64-bit builds silently becomes a negative `NumCtx`, so every model that loads with default options gets a corrupted context (negative or semantically-meaningless-as-configured) flowing into KV-cache sizing/layer estimation \u2014 and even non-overflowing absurd values (e.g. 2^40) pass through untouched and drive multi-terabyte KV allocations, i.e. a server OOM instead of a config error. On 32-bit builds the corruption happens even earlier: `uint(n)` truncates at 2^32 (e.g. `4294967296` \u2192 0 \u2192 silently re-defaulted with a bogus warning, see item 2).",
+        "path": "api/types.go",
+        "start_line": 613,
+        "end_line": 613,
+        "observation_id": "2997b798cdd52f83",
+        "claimed_path": "api/types.go",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "**2. `envconfig/config.go:190-193` \u2014 the warning is factually false and the case it describes is unreachable.**\n`CheckContextLength(ctxLength uint)` can only ever receive `0` or a positive value \u2014 a `uint` cannot be negative, and any negative string (\"-1\") is rejected by `Uint`'s ParseUint before this function is reached. Yet the branch that fires is `ctxLength <= 0` and the message says \"context length is less than 0\".\n- Failure scenario: operator sets `OLLAMA_CONTEXT_LENGTH=0` \u2192 log claims \"context length is less than 0\" (impossible condition); operator sets `-1` \u2192 no warning at all, silently 2048. In both cases the operator is misled about which input was rejected and what the actual value was.",
+        "path": "envconfig/config.go",
+        "start_line": 190,
+        "end_line": 190,
+        "observation_id": "d560777f703d51ba",
+        "claimed_path": "envconfig/config.go",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "**3. `envconfig/config.go:171` + `config_test.go:277` \u2014 all unparseable inputs are silently swallowed with no diagnostic.**\nAny string that isn't a clean decimal unsigned \u2014 `\"abc\"`, `\"8k\"`, `\"4096M\"`, `\"+2048\"`, `\"0x1000\"`, `\"1e4\"` \u2014 fails ParseUint inside `Uint` and quietly returns the 2048 default. The diff's own tests pin this silence (`config_test.go`: \"-1\"\u21922048; `api/types_test.go` \"negative context length uses default\"), and the only logging that exists (the `slog.Warn` in `CheckContextLength`) fires exclusively for a *successfully parsed* `0`.\n- Failure scenario: operator typoes `OLLAMA_CONTEXT_LENGTH=4096M` (intending 4096) \u2192 every default-options request runs with 2048 with zero log output; the misconfiguration is undetectable except by diffing runtime behavior, and the warning channel that could catch it never fires.",
+        "path": "envconfig/config.go",
+        "start_line": 171,
+        "end_line": 171,
+        "observation_id": "32c325d6e00039f8",
+        "claimed_path": "envconfig/config.go",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "**4. `llm/memory_test.go:20` \u2014 ambient-env sensitivity is neutralized in exactly one test; the rest of the suite is left exposed.**\nThe very existence of this hunk proves that paths building `DefaultOptions()` (and downstream memory/layer estimation) now vary with ambient `OLLAMA_CONTEXT_LENGTH` \u2014 the test fails without the pin. The PR pins just this one test; every other test anywhere in the repo that reaches the same DefaultOptions-dependence remains subject to the process environment.\n- Failure scenario: CI or a developer machine has `OLLAMA_CONTEXT_LENGTH=8192` (plausible, since the PR adds it to `AsMap`, i.e. it becomes a documented var) \u2192 previously-green tests that derive memory/layer expectations from default options fail nondeterministically, while the one patched test stays green and the cause is invisible. I can't enumerate the affected sibling tests from here (checkout dir is empty), but the failure mode is demonstrated by the diff itself.",
+        "path": "llm/memory_test.go",
+        "start_line": 20,
+        "end_line": 20,
+        "observation_id": "1a40d9de455222ff",
+        "claimed_path": "llm/memory_test.go",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "**5. `envconfig/config.go:193` vs `config.go:171` \u2014 the \"default\" constant 2048 is duplicated and can diverge.**\n`Uint(\"OLLAMA_CONTEXT_LENGTH\", 2048)` carries one copy of the default; `CheckContextLength` hardcodes a second literal `return 2048` (and `slog.Warn(..., \"default\", 2048)` a third), with identical literals in both test files.\n- Failure scenario: a later change bumps the default in the `Uint` call (say to 4096) \u2192 an unset env still yields 4096, but `OLLAMA_CONTEXT_LENGTH=0` yields the stale literal 2048 while logging \"default 2048\" \u2014 two different \"defaults\" depending on whether the variable happens to be present as `0`. Latent, but the duplication is already behaviorally paired with item 2's wrong message.\n\nThat's everything I can point at: items 1\u20133 and 5 are provable from the diff text alone; item 4's failure mode is provable from the diff (the hunk's necessity), though the full scope of affected sibling tests is unverifiable here because the repository is not present in the working directory.",
+        "path": "envconfig/config.go",
+        "start_line": 193,
+        "end_line": 193,
+        "observation_id": "03abf5740f2fed06",
+        "claimed_path": "envconfig/config.go",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "**Defect 1 (Critical) \u2014 envconfig/config.go:190-198**  \n`CheckContextLength` validates only `ctxLength <= 0` on a `uint` parameter. Since `uint` cannot be negative, this catches only `0`. It accepts arbitrarily large values (up to `^uint(0)` \u2248 1.8e19).  \n**Failure scenario:** `OLLAMA_CONTEXT_LENGTH=18446744073709551615` \u2192 `ParseUint` succeeds \u2192 `CheckContextLength` returns it unchanged \u2192 `DefaultOptions().NumCtx` becomes 1.8e19 \u2192 model load tries to allocate exabytes of KV cache \u2192 OOM crash.",
+        "path": "envconfig/config.go",
+        "start_line": 190,
+        "end_line": 190,
+        "observation_id": "324398f44c35d6e9",
+        "claimed_path": "envconfig/config.go",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "**Defect 2 (High) \u2014 envconfig/config.go:170**  \n`ContextLength` has no upper bound. Any value that `ParseUint` accepts (0 \u2026 2^64-1) passes through.  \n**Failure scenario:** `OLLAMA_CONTEXT_LENGTH=1000000000` (1B) \u2192 accepted \u2192 GPU memory allocation for context exceeds VRAM \u2192 OOM or silent fallback to CPU with catastrophic latency.",
+        "path": "envconfig/config.go",
+        "start_line": 170,
+        "end_line": 170,
+        "observation_id": "9b7ee26d2b9fae0b",
+        "claimed_path": "envconfig/config.go",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "**Defect 3 (Medium) \u2014 envconfig/config.go:190-198**  \n`CheckContextLength` warning message says `\"context length is less than 0\"` but the parameter is `uint` \u2014 it can never be less than 0. Misleading diagnostics waste debugging time when 0 is passed.  \n**Failure scenario:** User sets `OLLAMA_CONTEXT_LENGTH=0` \u2192 log shows \"less than 0\" \u2192 user searches for negative-value bug that cannot exist.",
+        "path": "envconfig/config.go",
+        "start_line": 190,
+        "end_line": 190,
+        "observation_id": "0979b112533ceccd",
+        "claimed_path": "envconfig/config.go",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "**Defect 4 (Low) \u2014 envconfig/config.go:190**  \n`CheckContextLength` uses `slog.Warn` but the diff does not show `log/slog` import. If the file lacks this import, the package fails to compile.  \n**Failure scenario:** Fresh clone \u2192 `go build` \u2192 `undefined: slog` compile error.",
+        "path": "envconfig/config.go",
+        "start_line": 190,
+        "end_line": 190,
+        "observation_id": "29edc74cc981da20",
+        "claimed_path": "envconfig/config.go",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "**Defect 5 (Low) \u2014 api/types.go:614**  \n`NumCtx: int(envconfig.ContextLength())` converts `uint` to `int`. On 32-bit platforms, values > 2^31-1 overflow to negative.  \n**Failure scenario:** 32-bit build, `OLLAMA_CONTEXT_LENGTH=3000000000` \u2192 `NumCtx` becomes -1294967296 \u2192 downstream code treats negative context as invalid or wraps \u2192 undefined behaviour.",
+        "path": "api/types.go",
+        "start_line": 614,
+        "end_line": 614,
+        "observation_id": "c1d265eb0c11bae1",
+        "claimed_path": "api/types.go",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "**Defect 6 (Low) \u2014 api/types.go:13**  \nNew import `\"github.com/ollama/ollama/envconfig\"` appended at end of import block instead of sorted position. Violates `goimports`/`gofumpt` style; CI lint step (if present) will fail.  \n**Failure scenario:** CI runs `gofumpt -l .` \u2192 flags unsorted imports \u2192 merge blocked.",
+        "path": "api/types.go",
+        "start_line": 13,
+        "end_line": 13,
+        "observation_id": "1a5f8b3c69703bb6",
+        "claimed_path": "api/types.go",
+        "path_resolution": "exact",
+        "merged_from": []
+      }
+    ]
+  },
+  "rundir": "/home/user/.cache/llm-panel/runs/aacr-up-q8f9rau7-7d402b61a976/20260828-145237-1241067",
+  "extractor": "3",
+  "unlocated": []
+}

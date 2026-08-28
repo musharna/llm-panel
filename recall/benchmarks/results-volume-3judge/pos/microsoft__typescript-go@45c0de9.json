@@ -1,0 +1,24 @@
+{
+  "review": {
+    "comments": [
+      {
+        "content": "- **Critical \u2014 `internal/ls/diagnostics.go:45`**: `toLSPDiagnostics` passes `nil` instead of `l.converters`. Input: request diagnostics for `const x: string = 1`; the semantic diagnostic has a source-file range, so `toLSPDiagnostic` dereferences the nil converter while translating that range, panicking the language-server request instead of returning the diagnostic.**Defect 1 \u2014 Missing required `Kind` field on `FullDocumentDiagnosticReport` (removed line, old file ~line 34)**\n\nThe old code explicitly set `Kind: lsproto.StringLiteralFull{}`. The new code omits it entirely. Per the LSP specification (`DocumentDiagnosticReport`), `kind` is a required discriminator field that must be `\"full\"` or `\"unchanged\"`. With this field removed, the zero value of whatever type `Kind` is will be serialized. If `StringLiteralFull` is a type whose zero value does not serialize to the JSON string `\"full\"` (e.g., it's a type alias or struct without a custom `MarshalJSON` that handles zero-value correctly), clients will receive a diagnostic report without the required kind discriminator, and clients will fail to interpret the response correctly.\n\n**Failure scenario:** LSP client receives `{\"relatedDocuments\":{...}, \"items\":[...]}` (no `\"kind\"` field or `\"kind\":null`). Client cannot determine whether this is a full or unchanged report \u2192 client discards or misinterprets the diagnostics.\n\n---\n\n**Defect 2 \u2014 Nil `converters` passed to `toLSPDiagnostic` (new file, `toLSPDiagnostics` function, the `toLSPDiagnostic(diag, nil)` line)**\n\nThe old code always passed `l.converters` (a non-nil `*Converters`) to `toLSPDiagnostic`. The new `toLSPDiagnostics` helper hardcodes `nil`. The comment says \"converters can be nil if not needed,\" but this is an assertion, not a guard. If `toLSPDiagnostic` dereferences `converters` anywhere in its body \u2014 which is highly likely since converters are typically used to format diagnostic message arguments (spans, symbol names, etc.) \u2014 this will cause a **nil pointer dereference panic** at runtime for every single diagnostic that passes through this code path.\n\n**Failure scenario:** Any file with diagnostics (semantic, suggestion, or declaration) \u2192 `toLSPDiagnostics` is called \u2192 `toLSPDiagnostic(diag, nil)` \u2192 nil pointer dereference inside `toLSPDiagnostic` when it accesses `converters.FormatMessage(...)` or equivalent \u2192 **service panics**, returning an error response or crashing the LSP server.\n\n---\n\nThose are the two defects I can concretely point to in this diff. Both are severity-high:\n\n1. **Defect 1** produces a spec-violating response that will cause client-side misbehavior (silent or error).\n2. **Defect 2** produces a runtime panic on every file that has non-syntax diagnostics (the overwhelmingly common case \u2014 most files compile without syntax errors, hitting the `else` branch).",
+        "path": "internal/ls/diagnostics.go",
+        "start_line": 45,
+        "end_line": 45,
+        "observation_id": "553eb69a462b902e",
+        "claimed_path": "internal/ls/diagnostics.go",
+        "path_resolution": "exact",
+        "merged_from": [
+          "460c5880c620919a",
+          "70d5992d08c5a29a",
+          "13fbb5edc8da859c",
+          "6280b0d030751d32"
+        ]
+      }
+    ]
+  },
+  "rundir": "/home/user/.cache/llm-panel/runs/aacr-up-25aai_3c-365cb7cf3b67/20260828-114507-641301",
+  "extractor": "3",
+  "unlocated": []
+}

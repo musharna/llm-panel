@@ -1,0 +1,69 @@
+{
+  "review": {
+    "comments": [
+      {
+        "content": "- **Build-blocking \u2014 `src/Mod/TechDraw/App/DrawViewPart.cpp:1503`**: All three new definitions (`isCosmeticVertex` at 1503, `isCosmeticEdge` at 1514, and `isCenterLine` at 1524) take only `std::string`, but their declarations in `DrawViewPart.h:244` are `static` functions taking both `App::DocumentObject*` and `std::string`. Compiling this translation unit fails with \u201cno declaration matches\u201d for each definition; callers using the declared signatures would also have no matching implementation to link against.",
+        "path": "src/Mod/TechDraw/App/DrawViewPart.cpp",
+        "start_line": 1503,
+        "end_line": 1503,
+        "observation_id": "47530245656421da",
+        "claimed_path": "src/Mod/TechDraw/App/DrawViewPart.cpp",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "**1. DrawViewPart.h:242 vs DrawViewPart.cpp:1502 \u2014 `isCosmeticVertex` declaration and definition do not match (compile-breaking).**\nHeader declares `static bool isCosmeticVertex(App::DocumentObject* owner, std::string element)`; the definition is `bool DrawViewPart::isCosmeticVertex(std::string element)` \u2014 one parameter vs two. Failure scenario: compiling DrawViewPart.cpp, the qualified-id matches no declaration in the class \u2192 hard error (\"no declaration matches\u2026\"), the TechDraw App module cannot build, and every call site of the new API fails regardless of which shape it uses (a 2-arg call has no definition; a 1-arg call has no declaration).",
+        "path": "src/Mod/TechDraw/App/DrawViewPart.h",
+        "start_line": 242,
+        "end_line": 242,
+        "observation_id": "b568b75ae29365de",
+        "claimed_path": "DrawViewPart.h",
+        "path_resolution": "basename",
+        "merged_from": []
+      },
+      {
+        "content": "**2. DrawViewPart.h:243 vs DrawViewPart.cpp:1513 \u2014 same mismatch for `isCosmeticEdge`.**\nDeclaration takes `(App::DocumentObject*, std::string)`, definition takes `(std::string)`. Same compile failure as item 1, independently blocking the build.",
+        "path": "src/Mod/TechDraw/App/DrawViewPart.h",
+        "start_line": 243,
+        "end_line": 243,
+        "observation_id": "951ea90bcfcd035c",
+        "claimed_path": "DrawViewPart.h",
+        "path_resolution": "basename",
+        "merged_from": []
+      },
+      {
+        "content": "**3. DrawViewPart.h:244 vs DrawViewPart.cpp:1523 \u2014 same mismatch for `isCenterLine`.**\nDeclaration takes `(App::DocumentObject*, std::string)`, definition takes `(std::string)`. Same compile failure, third independent instance.",
+        "path": "src/Mod/TechDraw/App/DrawViewPart.h",
+        "start_line": 244,
+        "end_line": 244,
+        "observation_id": "f0fa7c3e67cdd833",
+        "claimed_path": "DrawViewPart.h",
+        "path_resolution": "basename",
+        "merged_from": []
+      },
+      {
+        "content": "**4. DrawViewPart.h:242-244 vs DrawViewPart.cpp:1505, 1515, 1525 \u2014 declared `static` but bodies depend on `this`.**\nThe three declarations are `static`, yet the bodies call `getProjVertexByIndex(vertexIndex)` / `getEdge(element)` as unqualified member calls. A static member function has no `this`, so even if the parameter lists were reconciled, the bodies are ill-formed (\"call to non-static member function without an object argument\"). The patch embeds two incompatible designs \u2014 the old owner-carrying static API in the header and a new instance method in the .cpp \u2014 and contains no variant that compiles. Note the declared `owner` parameter is used by nothing in the patch; if anyone ever finished the header-side API, a caller passing a view different from the one whose state was inspected would silently get an answer about the wrong object.",
+        "path": "src/Mod/TechDraw/App/DrawViewPart.h",
+        "start_line": 242,
+        "end_line": 242,
+        "observation_id": "c0fad1ee618215bc",
+        "claimed_path": "DrawViewPart.h",
+        "path_resolution": "basename",
+        "merged_from": []
+      },
+      {
+        "content": "**5. DrawUtil.h:252-254 / DrawUtil.cpp:1855-1888 \u2014 unconditional removal of three exported public static functions with zero call-site migration in the diff.**\n`DrawUtil` is a `TechDrawExport` class and these were public API. Failure scenario: any translation unit outside these four files that still calls `DrawUtil::isCosmeticVertex(...)`, `isCosmeticEdge(...)`, or `isCenterLine(...)` (e.g. TechDrawGui selection/dimension code) fails to compile with \"no member named\u2026\". I can point at the removal but not at the specific broken callers: the diff contains no call-site updates, and the rest of the repository is not present here, so I cannot confirm which TUs reference the removed symbols \u2014 if none exist, this item is moot.\n\nNothing else in the hunks is defective on its own merits: the moved bodies preserve the old logic (`getIndexFromName` \u2192 `getProjVertexByIndex`, source-type + `getCosmetic()` checks) exactly. One thing I could not check: whether the region of DrawViewPart.h the new declarations land in (between `progressValueChanged` and `public Q_SLOTS:`) is actually `public:` \u2014 the hunk context shows no access label, so I can't rule out the replacement API being non-public; that would be an additional defect if so.",
+        "path": "src/Mod/TechDraw/App/DrawUtil.h",
+        "start_line": 252,
+        "end_line": 252,
+        "observation_id": "6f66ae32398174ac",
+        "claimed_path": "DrawUtil.h",
+        "path_resolution": "basename",
+        "merged_from": []
+      }
+    ]
+  },
+  "rundir": "/home/user/.cache/llm-panel/runs/aacr-up-zustv0a0-3f078b09172f/20260828-151507-1269888",
+  "extractor": "3",
+  "unlocated": []
+}

@@ -220,6 +220,11 @@ nothing.
   (McNemar on the paired references, p = 0.0005). Figures are extractor-3 re-measurements
   (2026-08-28); extractor 2 silently dropped plain `- path:line` bullets, and the loss fell
   on the `defect` arms, not `broad`.
+  A volume-matched control settles what that gain is: the `defect` prompt told only to be
+  exhaustive scores **25.2%** (31/123, vs broad p = 1.0) — but with 392 findings at 7.9%
+  precision to broad's 243 at 13.2%. Verbosity alone buys the recall; the broad prompt's
+  content buys efficiency and a different set of hits (more human-authored references).
+  See `recall/benchmarks/results-volume-3judge/README.md`.
   An earlier version of this bullet split recall by a DEFECT/IMPROVEMENT classifier I
   wrote; that split was circular and is withdrawn — on the benchmark's own `category`
   field the `defect` prompt recalls both classes at the same rate. The default stays

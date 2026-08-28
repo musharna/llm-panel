@@ -29,6 +29,12 @@ bullets matched rejected comments at the same rate as accepted ones.
 Restated: broad 26.0% vs defect 12.2% = **2.13×** recall, decomposing to findings ×2.67 ·
 precision ×0.80 — still exactly volume. The broad arm's own numbers did not move.
 
+**Volume-matched control (`../results-volume-3judge`, same day):** the `defect` prompt told
+to be exhaustive reaches 25.2% (31/123; vs broad p = 1.0) with 392 findings at 7.9%
+precision. Broad's pooled recall is reproducible by verbosity alone; its content shows up
+as efficiency (243 findings, 13.2%) and in *which* references it hits (human-authored: 10
+vs 5).
+
 Everything is held equal except the prompt: same seed-42 sample, same three judges at
 **full roster** (54/54 positive, 27/27 negative, zero degraded), same 900s timeout, same
 extractor, same upstream evaluator, same judge model. `judge failures during scoring: 0` on

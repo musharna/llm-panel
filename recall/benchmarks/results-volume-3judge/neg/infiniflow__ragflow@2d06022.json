@@ -1,0 +1,241 @@
+{
+  "review": {
+    "comments": [
+      {
+        "content": "- **High \u2014 `web/src/components/api-service/embed-modal/index.tsx:48`**: Selecting the checkbox labelled \u201cHide avatar\u201d appends `visible_avatar=1`, which requests that the avatar be visible. Input: check \u201cHide avatar\u201d \u2192 generated iframe displays the avatar instead of hiding it.",
+        "path": "web/src/components/api-service/embed-modal/index.tsx",
+        "start_line": 48,
+        "end_line": 48,
+        "observation_id": "dcf31b5e7ad2c1ea",
+        "claimed_path": "web/src/components/api-service/embed-modal/index.tsx",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "- **Low \u2014 `web/src/components/api-service/embed-modal/index.tsx:89`**: The optional locale selection cannot be cleared because the `Select` has no clear action. Input: select `zh`, then decide to inherit the viewer\u2019s locale \u2192 every subsequently copied URL still contains `locale=zh`.",
+        "path": "web/src/components/api-service/embed-modal/index.tsx",
+        "start_line": 89,
+        "end_line": 89,
+        "observation_id": "8bd1c136804abbec",
+        "claimed_path": "web/src/components/api-service/embed-modal/index.tsx",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "- **Low \u2014 `web/src/components/api-service/embed-modal/index.tsx:80`**: The new \u201cOption\u201d heading bypasses translation. Input: open the modal with the UI set to Chinese, Japanese, or another supported language \u2192 this heading remains English.",
+        "path": "web/src/components/api-service/embed-modal/index.tsx",
+        "start_line": 80,
+        "end_line": 80,
+        "observation_id": "918b8e68df15c797",
+        "claimed_path": "web/src/components/api-service/embed-modal/index.tsx",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "- **Low \u2014 `web/src/components/api-service/embed-modal/index.tsx:90`**: The locale placeholder bypasses translation. Input: open the modal in a non-English UI before selecting a locale \u2192 \u201cSelect a locale\u201d remains English.",
+        "path": "web/src/components/api-service/embed-modal/index.tsx",
+        "start_line": 90,
+        "end_line": 90,
+        "observation_id": "978561b15e6faeb1",
+        "claimed_path": "web/src/components/api-service/embed-modal/index.tsx",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "- **Low \u2014 `web/src/components/api-service/embed-modal/index.tsx:81`**: The `Form.Item` has neither a field name nor an explicit association with the checkbox input, so its rendered label is not clickable. Input: click the \u201cHide avatar\u201d label rather than the small checkbox \u2192 the checkbox and generated URL do not change.",
+        "path": "web/src/components/api-service/embed-modal/index.tsx",
+        "start_line": 81,
+        "end_line": 81,
+        "observation_id": "8c266b1fd83d81c7",
+        "claimed_path": "web/src/components/api-service/embed-modal/index.tsx",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "## Hunk 1: `agent/component/rewrite.py`\n\nThe original code:\n```\n-  - Text generated MUST be in the same language of the original user's question.\n-  - If the user's latest question is completely, don't do anything, just return the original question.\n-  - DON'T generate anything except a refined question.\"\"\"\n-\n+\"\"\"\n         if language:\n             prompt += f\"\"\"\n-  - Text generated MUST be in {language}\"\"\"\n-\n+    - Text generated MUST be in {language}\"\"\"\n+        else:\n+            prompt += \"\"\"\n+    - Text generated MUST be in the same language of the original user's question.\n+            \"\"\"\n+        prompt += f\"\"\"\n+    - If the user's latest question is completely, don't do anything, just return the original question.\n+    - DON'T generate anything except a refined question.\"\"\"\n         prompt += f\"\"\"\n ######################\n -Examples-\n```\n\nLet me think about the string indentation. The triple-quoted strings here are Python strings. The prompt is being built from multi-line strings. The indentation of the content within these triple-quoted strings matters only for readability of the final prompt text \u2014 in Python, the actual indentation in the source file is preserved in the string literal (there's no dedenting unless one uses textwrap).\n\n**Defect: Inconsistent prompt indentation/formatting.** The new lines like `    - Text generated MUST be in {language}` have spaces appended after `\"\"\"` (i.e., `+ prompt += f\"\"\"\\n    - ...`) \u2014 wait, actually let me look carefully.\n\nOriginal:\n```\nprompt += f\"\"\"\n  - Text generated MUST be in {language}\"\"\"\n```\nSo content lines had 2-space indent (aligned with the requirement bullets).\n\nNew:\n```\n            prompt += f\"\"\"\n    - Text generated MUST be in {language}\"\"\"\n```\nNow content lines have 4-space indent.\n\nBut the else branch:\n```\n            prompt += \"\"\"\n    - Text generated MUST be in the same language of the original user's question.\n            \"\"\"\n```\nContent has 4-space indent, but closing `\"\"\"` has 12-space indent (matching the source indentation at that point). Because the string is closed with `\"\"\"` on its own line after a newline, the trailing whitespace before `\"\"\"`... wait no. The `\"\"\"` delimiter closes the string and the indentation before `\"\"\"` on that line is NOT part of the string \u2014 only characters before the closing delimiter on that same line are. Actually the line is `            \"\"\"` \u2014 the string contains everything up to the closing `\"\"\"`. The text before it on the same line is just whitespace, which IS part of the string content but trailing. Hmm, in the other branches the `\"\"\"` is at the end of the content line.\n\nLet me reconsider. In:\n```\n    - Text generated MUST be in the same language of the original user's question.\n            \"\"\"\n```\nThe string content is `\\n    - Text generated MUST be in the same language of the original user's question.\\n            `. Wait \u2014 the `\"\"\"` closes, so the content up to but not including the closing `\"\"\"` is: newline, `    - Text generated...question.`, newline, and 12 spaces. So it ends with a trailing newline + 12 spaces. This trailing whitespace + newline becomes part of the prompt text. Not a huge functional defect, but it adds trailing whitespace to the prompt.\n\nActually, let me reconsider the more important functional issue.\n\n**Original third bullet:** In the original, the \"If the user's latest question is completely, don't do anything\" and \"DON'T generate anything\" bullets were ALWAYS included (unconditionally), and they were part of the initial prompt. In the new version, they're moved to AFTER the language conditional, inside `prompt += f\"\"\"...\"\"\"` unconditionally. That part is still unconditional, so that's fine (just relocated).\n\nWait, but there's a subtle bug. Let me trace the new flow:\n\n1. Initial prompt string ends with `\"\"\"` (from the role/task section).\n2. `if language:` \u2192 append `f\"\"\"\\n    - Text generated MUST be in {language}\"\"\"` (no trailing newline after the closing `\"\"\"` \u2014 the last bullet line ends there).\n3. `else:` \u2192 append `\"\"\"\\n    - Text generated MUST be in the same language of the original user's question.\\n            \"\"\"` (ends with trailing newline+spaces).\n4. Unconditionally append `f\"\"\"\\n    - If the user's latest question is completely, don't do anything, just return the original question.\\n    - DON'T generate anything except a refined question.\"\"\"`.\n\nNow, the issue: in branch 2, after appending the language line, the string ends immediately after `{language}` with no newline. Then step 4 appends `\\n    - If the user's...`. So the result is `...in {language}\\n    - If the user's...`. That's fine \u2014 a newline is inserted. Good.\n\nIn branch 3, after appending the \"same language\" line with trailing newline+spaces, step 4 appends `\\n    - If...`. So result is `...original user's question.\\n            \\n    - If the user's...`. There's a stray line of whitespace (the 12 spaces) between the two bullets, but it joins fine on the next line. Minor formatting.\n\nNow the **bigger logic defect**: \n\nConsider the conditional flow. In the ORIGINAL code:\n- The two \"If the user's latest question is completely / DON'T generate anything except a refined question\" bullets were part of the initial prompt, always included.\n- Then `if language:` appended the language requirement.\n\nIn the NEW code, the \"If the user's latest question is completely...\" bullet and \"DON'T generate anything\" bullet come AFTER the if/else. So functionally they're still always included. But wait \u2014 is there a case where the original had them and the new one doesn't? No, both include them unconditionally.\n\nHmm, but actually there IS a real defect in the else branch. Let me re-read:\n\n```\n        else:\n            prompt += \"\"\"\n    - Text generated MUST be in the same language of the original user's question.\n            \"\"\"\n```\n\nThe closing `\"\"\"` is indented with 12 spaces. In Python, within a triple-quoted string, the indentation before the closing delimiter on its own line... the content ends at the closing `\"\"\"`. The characters between the newline after \"question.\" and the closing `\"\"\"` are 12 spaces plus nothing \u2014 those 12 spaces ARE part of the string. So the prompt gets trailing spaces after the newline. This creates a line of trailing whitespace in the prompt. Minor cosmetic issue in the prompt, not likely a functional defect for LLM.\n\nActually wait \u2014 re-examine: does the string end with a newline? The content is `\\n    - Text...question.\\n            ` \u2014 then `\"\"\"`. So yes the segment ends with 12 spaces and NO trailing newline (the spaces are on the last line before the closing `\"\"\"`... no wait). Let me be careful:\n\nLine: `    - Text generated MUST be in the same language of the original user's question.`\nLine: `            \"\"\"`\n\nContent = everything between opening `\"\"\"` and closing `\"\"\"`:\n- `\\n` (from the newline after opening `\"\"\"`)\n- `    - Text generated MUST be in the same language of the original user's question.`\n- `\\n` \n- `            ` (12 spaces, this is the line before `\"\"\"`)\n\nSo content ends with `\\n            ` (newline + 12 spaces), no trailing newline. Then step 4 begins with `\\n` prepended: `\\n    - If the user's...`. So combined: `...question.\\n            \\n    - If the user's...`. Between \"question.\" and \"If...\" there's a blank-ish line containing 12 spaces. Minor.\n\n**Most important rewrite.py defect potential:** Let me look for the missing trailing newline issue in branch 2 more carefully. Branch 2 ends with `{language}\"\"\"`. Step 4 starts with `\\n`. So no issue there.\n\nNow, is there a defect where in the `language` branch, the \"If the user's latest question is completely...\" bullet is NOT reached? No, it's unconditional after the if/else.\n\nHmm, but wait \u2014 there was a pre-existing typo \"If the user's latest question is completely\" (should be \"completely empty\" or \"complete\") but that's pre-existing, not introduced by this diff. Actually it was moved/relocated \u2014 the text is the same in original. The change relocated but kept the same typo. Not new.\n\nLet me reconsider whether there's a genuine defect in rewrite.py introduced by this diff.\n\nLooking again at the if/else structure. The `if language:` branch no longer contains the \"If the user's latest question...\" bullet \u2014 but it never did. Fine.\n\nActually, I realize the most concrete defect: **the indentation difference**. In the `if language:` branch the bullet is `    - Text generated MUST be in {language}\"` (4 spaces). In the else branch it's also 4 spaces. And the unconditional bullets are 4 spaces. But the initial prompt bullets \u2014 need to know their indent in the initial part. Original initial bullets had 2-space indent (`  - Text generated...`). The new initial prompt part \u2014 the diff shows the initial string unchanged except removing the three requirement lines. So the initial requirement section now just ends after \"DON'T generate anything...\" being removed. The initial string's bullets (Role/Task/Requirements) had 2-space indent. So now the \"Requirements & Restrictions:\" header is followed by the language bullet (4-space) then the else/unconditional bullets (4-space). There's an inconsistency between 2-space bullets (role/task) and 4-space bullets (the new requirements). This is cosmetic formatting only.\n\nI don't think rewrite.py has a strong FUNCTIONAL defect that changes behavior a real user would notice, other than the trailing-whitespace formatting. Let me look more carefully for an actual logic break.\n\nWait \u2014 actually, here's a real one. Consider the **`language` falsy case properly vs the missing newline**. Hmm no.\n\nLet me reconsider: is there any scenario where `language` is truthy but the \"same language\" requirement is needed? In the original, when `language` was set, the prompt used `{language}` and did NOT include the \"same language of the original user's question\" bullet. When `language` was falsy, original included \"same language of the original user's question\". The new code preserves this. So logic equivalent.\n\nSo for rewrite.py, the defects are minor formatting issues. Let me note the trailing whitespace as a defect though \u2014 it's concrete but low severity.\n\nActually, wait. Let me reconsider the whole thing more carefully for a real functional bug.\n\nIn the original code, the structure was:\n```\nprompt = \"\"\"...Role/Task/Requirements...\"\"\"\n  - Text generated MUST be in the same language of the original user's question.\n  - If the user's latest question is completely, don't do anything, just return the original question.\n  - DON'T generate anything except a refined question.\"\"\"\nif language:\n    prompt += f\"\"\"\n  - Text generated MUST be in {language}\"\"\"\nprompt += f\"\"\"\n######################\n-Examples-\"\"\"\n```\n\nSo in the original, when `language` was set, the prompt was:\n```\n...Refined question.\n  - Text generated MUST be in same language...  <- BOTH \"same language\" AND \"{language}\" bullets present\n  - If user's latest question is completely...\n  - DON'T generate anything except a refined question.\n  - Text generated MUST be in {language}        <- language bullet appended\n######################\n-Examples-\"\"\"\n```\n\nHmm so original had both. New code: when language set, ONLY the `{language}` bullet (plus the two always-present ones). So a behavioral change but arguably an improvement, not a defect.\n\nOK so rewrite.py \u2014 the concrete defects are formatting-only (trailing whitespace; inconsistent indentation). For an LLM prompt, these are low-impact. I'll report the trailing-whitespace-injected-blank-line as a minor defect.\n\nHmm, but the task says \"Report only defects you can point at, each with a concrete failure scenario (inputs -> wrong behaviour). Do not ... propose refactors.\" Formatting in a prompt is weak. Let me focus.\n\n## Hunk 2 & 3: embed-modal\n\n**Defect A: `generateIframeSrc` runs on every render but the iframe `src` is recomputed from `visibleAvatar`/`locale` \u2014 however `iframeSrc` is computed during render, not tied to the text template currently. Actually let me check: is the iframe `src` actually updated after user changes?**\n\nLook at the code:\n```js\nconst iframeSrc = generateIframeSrc();\n\nconst text = `\n  ~~~ html\n  <iframe\n  src=\"${iframeSrc}\"\n  ...\n`;\n```\n\n`iframeSrc` is computed from `visibleAvatar` and `locale` state. When the user toggles the checkbox or changes the select, state updates cause a re-render, which recomputes `iframeSrc`, which updates `text`, which updates the displayed markdown. But the `text` is displayed via `<HightLightMarkdown>{text}</HightLightMarkdown>` and copied via `<CopyToClipboard text={text}>`. So the displayed and copied iframe would reflect the state. \n\nWait \u2014 but is there a defect where the actual iframe in the DOM (if the modal renders a live preview iframe) doesn't update? Let me check if there's an actual iframe preview. The diff only shows the code block display. Without the full file, I can't be 100% sure. But the key observable defect:\n\n**Defect: `url`/`src` doesn't include env-var/protocol handling** \u2014 the original used `location.origin` directly, unchanged. Not new.\n\n**Defect B: The locale in the iframe URL uses `locale` state, but `languageOptions` from `@/locales/config` \u2014 need to check what values those have and whether the share page expects `locale` param values matching.** I can't verify without the file.\n\n**Defect C (most concrete in TSX): `visibleAvatar` checked state -> `&visible_avatar=1`.** When unchecked -> no param. That's fine.\n\n**Defect D: The `locale` Select has no `value`/`options` issue.** The Select uses `onChange` to set `locale` but no `value` prop, so it's an uncontrolled select. That's fine functionally; controlled state drives the URL. Actually a controlled component without `value` renders as uncontrolled in antd \u2014 the displayed selection comes from internal state, plus they read via onChange into state. That works.\n\n**Defect E (real): The checkbox `onChange` and select `onChange` update state, but the generated `text`/iframe is only for the code snippet. However, is the displayed markdown live-updated while the modal is open?** Since `text` is derived state at render time and the component re-renders on state change, yes it updates live. So the copy button `CopyToClipboard text={text}` \u2014 `text` is recomputed, so it copies the updated text. That's correct.\n\nHmm, wait. Let me reconsider a genuine bug: **The iframe `src` shown in the code is the NEW `iframeSrc` (with the toggles), but is there also an actual live iframe preview shown to the user elsewhere in the modal that uses the ORIGINAL hardcoded src (from `text` before)?** Without the full file I can't confirm.\n\nLet me think about what's clearly a defect within the visible diff without the full file context. The strongest candidates:\n\n**Defect (TSX): `visibleAvatar` is checked state, appended as `&visible_avatar=1`. That's fine.**\n\n**Defect (TSX): missing `value` on the Select and Checkbox** \u2014 not a bug.\n\n**Defect (TSX): The `locale` query param \u2014 if the languageOptions values are locale codes and the Select is left empty, no param \u2014 fine.**\n\nLet me focus on real defects I'm confident about:",
+        "path": "agent/component/rewrite.py",
+        "start_line": 2,
+        "end_line": 2,
+        "observation_id": "06e30bd9da0a0dfa",
+        "claimed_path": "agent/component/rewrite.py",
+        "path_resolution": "exact",
+        "merged_from": [
+          "93fb10fdc83b414d",
+          "5cad8d1a1d0f94b9",
+          "3e348cbc12a2cbfd",
+          "7d0a1b8f0f328697",
+          "faa1c30c176e487f",
+          "6700b6d0d3dc1426",
+          "02eb1c84c64edb50",
+          "b8f139d3924ff574"
+        ]
+      },
+      {
+        "content": "1. **rewrite.py: Trailing whitespace / stray blank line in prompt when `language` is falsy.** The else branch injects a line of 12 trailing spaces and the structure inserts an extra newline, producing a blank line between the \"same language\" bullet and \"If the user's latest question...\" bullet. Concrete but cosmetic. Actually this is genuinely an artifact of the diff \u2014 the stray closing `\"\"\"` indentation.",
+        "path": "agent/component/rewrite.py",
+        "start_line": 12,
+        "end_line": 12,
+        "observation_id": "421f7ae2e797135e",
+        "claimed_path": "rewrite.py",
+        "path_resolution": "basename",
+        "merged_from": []
+      },
+      {
+        "content": "3. **TSX: locale Select `options` vs the actual accepted values** \u2014 can't verify.\n\nActually, let me reconsider whether there's a genuinely functional bug I'm missing in rewrite.py.\n\nRe-reading the new code once more:\n\n```\n+\"\"\"\n         if language:\n             prompt += f\"\"\"\n-  - Text generated MUST be in {language}\"\"\"\n-\n+    - Text generated MUST be in {language}\"\"\"\n+        else:\n+            prompt += \"\"\"\n+    - Text generated MUST be in the same language of the original user's question.\n+            \"\"\"\n+        prompt += f\"\"\"\n+    - If the user's latest question is completely, don't do anything, just return the original question.\n+    - DON'T generate anything except a refined question.\"\"\"\n```\n\nWait \u2014 I need to check: does the original prompt's initial string still end without a trailing space before `\"\"\"`? The first hunk shows the initial prompt block's ending changed from:\n```\n  - DON'T generate anything except a refined question.\"\"\"\n```\nto:\n```\n\"\"\"\n```\nSo now the initial prompt string ends with `\"\"\"` \u2014 i.e., the string literal is closed immediately after a newline. This means the initial prompt ends with a newline (no content after). Then `if language:` appends `f\"\"\"\\n    - Text...{language}\"\"\"` \u2014 note this f-string starts with `\\n` then the bullet. So the combined initial+bullet = initial + `\\n    - Text MUST be in {language}`. Good, no double newline.\n\nThen step 4 (unconditional) appends `f\"\"\"\\n    - If the user's latest question...\"\"\"` \u2014 starts with `\\n`. In the language branch, step 2 ended without newline after `{language}`, so we get `{language}\\n    - If...` \u2014 fine. In else branch, step 3 ended with `\\n            ` (newline+12 spaces), so we get `question.\\n            \\n    - If...` \u2014 the 12 spaces become a line of their own (blank line with whitespace). \n\nSo the concrete outcome: when `language` is falsy, the generated prompt contains an extra blank line (12 spaces) between \"same language\" bullet and the next bullet. And there's an extra leading... let me also check: the else branch string starts with `\\n    - Text...` (opening `\"\"\"` then newline then bullet), so combined from step1 end `\"\"\"` (which is `\\n` since initial ends after content) \u2014 wait step1 ends with the initial string ending in a newline before its closing `\"\"\"`. So initial content ends with `\\n`. Then else-branch appends starting with `\\n` \u2192 produces `\\n\\n` (blank line) before \"same language\" bullet. Hmm! That's an extra blank line at the start too, compared to the language branch. In the language branch, step1 ends `\\n`, step2 starts `\\n` \u2192 also `\\n\\n` blank line. So both branches have a leading blank line between \"Requirements\" and the language bullet. That's a formatting change but both branches consistent.\n\nOK. So the rewrite.py \"defects\" are purely cosmetic prompt formatting \u2014 blank lines and trailing whitespace. These are weak \"defects\" but they are the only concrete things.\n\nNow let me step back and be honest about the strongest defects in this diff.\n\nActually, the **most important real defect** in the TSX file: the diff **adds options that change `iframeSrc`/`text`, but the `iframeSrc` is recomputed and the displayed snippet updates \u2014 HOWEVER, there's a genuine defect: the checkboxes/select are placed but there's no `value`/`defaultValue` initialization mismatch, and more importantly, the `locale` state starts as `''` and the Select shows a placeholder \u2014 that's fine.\n\nLet me reconsider \u2014 I think the cleanest concrete defect I'm confident about:\n\n**TSX Defect: `visible_avatar` param mismatch.** The checkbox label is `t('avatarHidden')` (avatar HIDDEN) but the URL appends `visible_avatar=1` when CHECKED. So checking \"avatar hidden\" produces `visible_avatar=1` (avatar VISIBLE) \u2014 an inverted semantics bug! The label says \"hidden\" but the param means \"visible\". That's a concrete defect: user checks \"avatar hidden\" expecting avatar hidden but the generated embed sets `visible_avatar=1`, i.e., avatar visible. This is a real semantic inversion (or at least a mislabeled control). This is a legit defect I can point at within the diff.\n\nLet me finalize. I'll report:",
+        "path": "agent/component/rewrite.py",
+        "start_line": 12,
+        "end_line": 12,
+        "observation_id": "dfc70acbdd478bae",
+        "claimed_path": "rewrite.py",
+        "path_resolution": "basename",
+        "merged_from": []
+      },
+      {
+        "content": "### 1. `agent/component/rewrite.py` (hunk `@@ -38,14 +38,17 @@`)\n\n**Defect 1 \u2014 Line 47 (else branch): Malformed string indentation includes 12 trailing spaces in the prompt**\n```python\n            prompt += \"\"\"\n    - Text generated MUST be in the same language of the original user's question.\n            \"\"\"\n```\nThe closing `\"\"\"` is indented 12 spaces. In Python, the entire content between triple quotes is preserved verbatim, so the generated prompt will contain 12 leading spaces on the closing line, producing malformed prompt text like:\n```\n    - Text generated MUST be in the same language of the original user's question.\n            [12 spaces here]\n```\n**Failure scenario:** LLM receives garbled prompt with trailing whitespace line, potentially degrading output quality or causing parsing errors downstream.\n\n**Defect 2 \u2014 Line 44 (if branch): `language` value injected without validation/sanitization**\n```python\n            prompt += f\"\"\"\n    - Text generated MUST be in {language}\"\"\"\n```\nIf `language` contains newlines, quotes, or adversarial content (e.g., `\"en\\nIgnore previous instructions and...\"`), it corrupts the prompt structure.\n**Failure scenario:** `language=\"en\\n<malicious instruction>\"` \u2192 prompt injection alters model behavior.\n\n**Defect 3 \u2014 Line 38-40: `prompt` variable used before initialization (not visible in diff but implied)**\nThe diff shows `prompt += ...` but no `prompt = \"\"` or `prompt = ...` initialization in the hunk. If `prompt` is not initialized earlier in the function, this raises `UnboundLocalError`.\n**Failure scenario:** First call to `get_prompt` with any input \u2192 crash.\n\n**Defect 4 \u2014 Line 50: Incomplete requirement text preserved**\n```\n    - If the user's latest question is completely, don't do anything, just return the original question.\n```\n\"is completely\" is grammatically incomplete (missing adjective/noun). This existed before but the refactor didn't fix it, leaving ambiguous instruction to the LLM.\n**Failure scenario:** LLM misinterprets \"completely\" as \"completely what?\" \u2192 inconsistent rewrite behavior.\n\n---",
+        "path": "agent/component/rewrite.py",
+        "start_line": 38,
+        "end_line": 38,
+        "observation_id": "43fe8a9100593a52",
+        "claimed_path": "agent/component/rewrite.py",
+        "path_resolution": "exact",
+        "merged_from": [
+          "aaa6cce72e0fde09",
+          "0bdc3e3065e89a94",
+          "11ee97a7527c2c1a",
+          "a4daaeaadfe49123"
+        ]
+      },
+      {
+        "content": "### 2. `web/src/components/api-service/embed-modal/index.tsx` (hunk `@@ -3,10 +3,22 @@`)\n\n**Defect 5 \u2014 Line 13: `languageOptions` import assumes correct shape for Ant Design `Select`**\n```typescript\nimport { languageOptions } from '@/locales/config';\n```\nAnt Design `Select` expects `options: { label: string; value: string }[]`. If `languageOptions` is a plain string array `['en', 'zh']` or object map `{ en: 'English' }`, the Select renders empty/broken.\n**Failure scenario:** `languageOptions = ['en', 'zh']` \u2192 Select shows no selectable items, `locale` state never updates.\n\n---",
+        "path": "web/src/components/api-service/embed-modal/index.tsx",
+        "start_line": 3,
+        "end_line": 3,
+        "observation_id": "64483aa607c65ea7",
+        "claimed_path": "web/src/components/api-service/embed-modal/index.tsx",
+        "path_resolution": "exact",
+        "merged_from": [
+          "1217b76474194429"
+        ]
+      },
+      {
+        "content": "### 3. `web/src/components/api-service/embed-modal/index.tsx` (hunk `@@ -27,10 +39,26 @@`)\n\n**Defect 6 \u2014 Line 43-51: `generateIframeSrc` performs no URL encoding on user-controlled values**\n```typescript\nlet src = `${location.origin}/chat/share?shared_id=${token}&from=${form}&auth=${beta}`;\nif (visibleAvatar) { src += '&visible_avatar=1'; }\nif (locale) { src += `&locale=${locale}`; }\n```\n`token`, `form`, `beta`, `locale` are interpolated raw. Any `&`, `=`, `#`, `?`, space, or `%` in them breaks query parsing.\n**Failure scenario:** `token=\"abc&def\"` \u2192 generated URL `...shared_id=abc&def&from=...` \u2192 server receives `shared_id=\"abc\"`, extra param `def=\"\"`.\n\n**Defect 7 \u2014 Line 43: `form` and `beta` props used without null/undefined guards**\n```typescript\nconst EmbedModal = ({ token, form, beta }) // props\n// ...\nlet src = `...&from=${form}&auth=${beta}`;\n```\nIf parent passes `form={undefined}` or `beta={undefined}`, URL becomes `from=undefined&auth=undefined`.\n**Failure scenario:** Share link contains literal `\"undefined\"` strings \u2192 backend rejects or misroutes request.\n\n**Defect 8 \u2014 Line 53: `iframeSrc` computed once per render but used in static code block**\n```typescript\nconst iframeSrc = generateIframeSrc();\n// ...\n<iframe src=\"${iframeSrc}\" ... >\n```\nThis is correct for the live iframe, but the displayed code block (for copy-paste) uses a template literal that evaluates `iframeSrc` at render time. If user changes options *after* opening modal, the displayed code block updates (React re-renders), but the *copied* text captures whatever was rendered at click time. This is actually correct behavior. **Not a defect.**\n\n**Defect 9 \u2014 Line 79: `<h2>Option</h2>` hardcoded English, not translated**\n```tsx\n<h2>Option</h2>\n```\nAll other labels use `t('...')`. This string won't translate.\n**Failure scenario:** Non-English user sees \"Option\" instead of localized label.\n\n**Defect 10 \u2014 Line 80-85: `Form.Item` used without `<Form>` wrapper \u2014 Ant Design warns/errors**\n```tsx\n<Form.Item label={t('avatarHidden')}> ... </Form.Item>\n<Form.Item label={t('locale')}> ... </Form.Item>\n```\n`Form.Item` requires a `Form` context (via `<Form>` parent or `Form.useForm()`). Without it, Ant Design logs warnings and `label`/`required` decorations may not render.\n**Failure scenario:** Console warning `\"Form.Item must be used within Form\"`, layout may break.\n\n**Defect 11 \u2014 Line 86-91: `Select.onChange` handler assumes `value` is string, but Ant Design passes `string | string[]` when `mode=\"multiple\"`**\n```tsx\n<Select\n  onChange={(value) => setLocale(value)}\n  options={languageOptions}\n/>\n```\nIf `Select` ever gets `mode=\"multiple\"` (or default changes), `value` becomes `string[]` \u2192 `setLocale(string[])` \u2192 later `locale` used in URL template `${locale}` \u2192 `\"en,zh\"` in URL instead of single value.\n**Failure scenario:** Future feature adds `mode=\"multiple\"` \u2192 generated URL has `locale=en,zh` \u2192 backend fails to parse.\n\n**Defect 12 \u2014 Line 82: `Checkbox.onChange` uses `e.target.checked` but Ant Design Checkbox passes `(checked: boolean, event)` in v4, or just `checked` in v5**\n```tsx\n<Checkbox checked={visibleAvatar} onChange={(e) => setVisibleAvatar(e.target.checked)} />\n```\nAnt Design v4: `onChange=(e: Event) => void` \u2014 `e.target.checked` works.\nAnt Design v5: `onChange=(checked: boolean) => void` \u2014 `e.target` is `undefined` \u2192 `TypeError: Cannot read property 'checked' of undefined`.\n**Failure scenario:** Project uses Ant Design v5 \u2192 toggling checkbox crashes with `TypeError`.\n\n**Defect 13 \u2014 Line 48: `iframeSrc` includes `visible_avatar=1` but backend may expect boolean `true`/`false` or `0`/`1` inconsistently**\n```typescript\nif (visibleAvatar) { src += '&visible_avatar=1'; }\n```\nNo defect per se, but if backend expects `true`/`false`, `1` may not parse correctly. Low probability, but a contract mismatch risk.\n\n---",
+        "path": "web/src/components/api-service/embed-modal/index.tsx",
+        "start_line": 39,
+        "end_line": 39,
+        "observation_id": "28d79bd283187646",
+        "claimed_path": "web/src/components/api-service/embed-modal/index.tsx",
+        "path_resolution": "exact",
+        "merged_from": [
+          "69a1ee1d36058daf",
+          "1bd46201dfc2a22f",
+          "547971806869a112",
+          "8684a01b268cf6dc",
+          "86acea2634fbe54a",
+          "cc7b9f2c7b37f167",
+          "1c8570be0c4d4d9b",
+          "a3099958b2a68fde"
+        ]
+      },
+      {
+        "content": "### 4. `web/src/components/api-service/embed-modal/index.less` (hunk `@@ -19,3 +19,6 @@`)\n\n**Defect 14 \u2014 Line 21: `.optionContainer` class defined but no specificity guarantee \u2014 may be overridden by global styles**\n```less\n.optionContainer {\n  padding: 10px;\n}\n```\nSingle-class selector (specificity 0,0,1,0). If any global style uses `.optionContainer` with higher specificity or `!important`, padding is lost.\n**Failure scenario:** Global reset or framework style defines `.optionContainer { padding: 0 !important; }` \u2192 options render cramped.\n\n---",
+        "path": "web/src/components/api-service/embed-modal/index.less",
+        "start_line": 19,
+        "end_line": 19,
+        "observation_id": "99cd70f2265d9672",
+        "claimed_path": "web/src/components/api-service/embed-modal/index.less",
+        "path_resolution": "exact",
+        "merged_from": [
+          "9edbb8e5b9ad86b0"
+        ]
+      }
+    ]
+  },
+  "rundir": "/home/user/.cache/llm-panel/runs/aacr-up-0zh8d8vz-439e1da29df5/20260828-143301-1215060",
+  "extractor": "3",
+  "unlocated": [
+    {
+      "content": "2. **rewrite.py: Indentation inconsistency between prompt sections** \u2014 the new requirement bullets use 4-space indent while the pre-existing Role/Task bullets use 2-space indent. Cosmetic.\n\nActually, let me reconsider defect 2 more carefully \u2014 is it truly just cosmetic? For a prompt to an LLM, indentation of bullet lists within a plain-text prompt is cosmetic; LLMs handle it fine. Low severity.\n\nN",
+      "observation_id": "9b9de52ce8ee932a",
+      "claimed_path": "rewrite.py",
+      "path_resolution": "basename"
+    },
+    {
+      "content": "1. **rewrite.py: formatting defect** (trailing whitespace/blank line when language falsy). Low severity.",
+      "observation_id": "9e39459148cbb26f",
+      "claimed_path": "rewrite.py",
+      "path_resolution": "basename"
+    },
+    {
+      "content": "2. **rewrite.py: the `else` branch's stray closing-quote indentation adds trailing spaces to the prompt.**",
+      "observation_id": "5dc4581191039ea8",
+      "claimed_path": "rewrite.py",
+      "path_resolution": "basename"
+    },
+    {
+      "content": "1. **embed-modal/index.tsx \u2014 inverted avatar semantics**: label `avatarHidden` checked \u2192 emits `visible_avatar=1`. Concrete failure: user wants to hide avatar, checks the box, but generated iframe requests avatar be visible. Most severe-ish but honestly a labeling issue; still a real mismatch between UI intent and emitted param.",
+      "observation_id": "8d89f45f08d3ae91",
+      "claimed_path": "embed-modal/index.tsx",
+      "path_resolution": "basename"
+    },
+    {
+      "content": "2. **rewrite.py \u2014 stray blank-line + trailing whitespace in prompt**: when `language` is falsy, the else branch's closing `\"\"\"` indentation injects a whitespace-only line into the prompt text between the two requirement bullets.",
+      "observation_id": "dd824db971352f05",
+      "claimed_path": "rewrite.py",
+      "path_resolution": "basename"
+    },
+    {
+      "content": "3. **rewrite.py \u2014 inconsistent bullet indentation** between the relocated requirement bullets (4-space) and the pre-existing Role/Task bullets (2-space) in the same prompt.",
+      "observation_id": "51f8f0e5439d9687",
+      "claimed_path": "rewrite.py",
+      "path_resolution": "basename"
+    },
+    {
+      "content": "4. **embed-modal/index.tsx \u2014 locale Select uncontrolled w/o value + iframe live-update**: Actually, let me reconsider whether there's a real bug with the iframe src not being reflected... The snippet updates on re-render, so no.\n\nHmm, let me reconsider a genuinely functional TSX bug: **The `iframeSrc` is used in `text` which is displayed AND copied, but the modal also likely renders an actual `<if",
+      "observation_id": "b5b16256b03f386f",
+      "claimed_path": "embed-modal/index.tsx",
+      "path_resolution": "basename"
+    },
+    {
+      "content": "**rewrite.py**\n1. Line (in hunk, the else branch): whitespace-only line injected into the prompt when `language` is falsy (stray indentation before the closing `\"\"\"`). Concrete: any call with `language` falsy yields a prompt containing a whitespace-only line between the two bullets.\n2. Inconsistent indentation of the moved requirement bullets (4 spaces) vs the pre-existing 2-space Role/Task bullet",
+      "observation_id": "535c2a967e321986",
+      "claimed_path": "rewrite.py",
+      "path_resolution": "basename"
+    },
+    {
+      "content": "**embed-modal/index.tsx**\n3. `avatarHidden` label \u2194 `visible_avatar=1` semantic inversion: checking \"avatar hidden\" produces a URL that requests `visible_avatar=1`.\n4. If any live preview iframe is shown in the modal it would not reflect the toggles (can't confirm \u2014 I'll frame carefully). Actually, I'll drop this since unverifiable, or mention as uncertain.\n\nHmm, this is thin. Let me think harder ",
+      "observation_id": "3c546887afff940e",
+      "claimed_path": "embed-modal/index.tsx",
+      "path_resolution": "basename"
+    },
+    {
+      "content": "**1. `web/src/components/api-service/embed-modal/index.tsx` \u2014 inverted avatar semantics (label vs emitted param).**\nThe checkbox is labeled with `t('avatarHidden')` and its checked state sets `visibleAvatar`. Checking it appends `&visible_avatar=1` (the URL requests the avatar to be *visible*), yet the control is labeled \"avatar hidden.\" Concrete failure: a user who wants to *hide* the avatar on t",
+      "observation_id": "071e3ca918ae431c",
+      "claimed_path": "web/src/components/api-service/embed-modal/index.tsx",
+      "path_resolution": "exact"
+    },
+    {
+      "content": "**2. `agent/component/rewrite.py` \u2014 stray whitespace-only line injected into the prompt when `language` is falsy.**\nIn the `else` branch the closing `\"\"\"` is indented 12 spaces on its own line, so that segment ends with `\\n` + 12 spaces, and then the unconditional block starts with another `\\n`. Concrete failure: any `get_prompt(conv, language=None, ...)` call yields a prompt that contains a white",
+      "observation_id": "037abb172465c03d",
+      "claimed_path": "agent/component/rewrite.py",
+      "path_resolution": "exact"
+    },
+    {
+      "content": "**3. `agent/component/rewrite.py` \u2014 inconsistent bullet indentation within one prompt.**\nThe relocated/rewritten requirement bullets use a 4-space indent (`    - Text generated MUST be\u2026`), while the pre-existing Role/Task bullets in the same initial prompt use a 2-space indent. The result is one instruction block whose bullets are not aligned. Concrete failure: the assembled prompt renders the req",
+      "observation_id": "191ff9d831b9d191",
+      "claimed_path": "agent/component/rewrite.py",
+      "path_resolution": "exact"
+    },
+    {
+      "content": "**4. `web/src/components/api-service/embed-modal/index.tsx` \u2014 toggle state is not reset when the modal is reopened (unverifiable without full file).**\n`visibleAvatar` and `locale` are module component state initialized to `false`/`''` only on first mount. If the modal is opened, options changed, closed, and reopened within the same mounted parent, the stale toggles persist and the generated `ifram",
+      "observation_id": "e036be1f001849af",
+      "claimed_path": "web/src/components/api-service/embed-modal/index.tsx",
+      "path_resolution": "exact"
+    },
+    {
+      "content": "### Summary of 14 defects\n\n| # | File | Line (from diff) | Defect |\n|---|------|------------------|--------|\n| 1 | agent/component/rewrite.py | 47 | Else-branch triple-quote includes 12 trailing spaces in prompt |\n| 2 | agent/component/rewrite.py | 44 | `language` interpolated without sanitization \u2192 prompt injection |\n| 3 | agent/component/rewrite.py | 38 | `prompt` likely uninitialized \u2192 `Unbound",
+      "observation_id": "4544b8bb9aaeaefb",
+      "claimed_path": "agent/component/rewrite.py",
+      "path_resolution": "exact"
+    }
+  ]
+}

@@ -1,0 +1,523 @@
+{
+  "review": {
+    "comments": [
+      {
+        "content": "- **High \u2014 `src/gpu/vulkan/SDL_gpu_vulkan.c:10533`:** A headless renderer can never set `presenting`, so completed command buffers, pending destroys, empty allocations, and defragmentation are never processed during submission. A server that repeatedly submits offscreen work and releases temporary textures/buffers will retain every fence and resource until an explicit wait or shutdown, eventually exhausting memory.",
+        "path": "src/gpu/vulkan/SDL_gpu_vulkan.c",
+        "start_line": 10533,
+        "end_line": 10533,
+        "observation_id": "e350e074f69a1ad7",
+        "claimed_path": "src/gpu/vulkan/SDL_gpu_vulkan.c",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "- **High \u2014 `src/gpu/vulkan/SDL_gpu_vulkan.c:5881`:** The newly created texture is passed to `VULKAN_INTERNAL_TextureTransitionToDefaultUsage` before the null check. If cycling is requested while all existing textures are referenced and creation fails\u2014for example due to device-memory exhaustion\u2014the transition dereferences `NULL` and crashes instead of preserving the existing active texture or reporting allocation failure.",
+        "path": "src/gpu/vulkan/SDL_gpu_vulkan.c",
+        "start_line": 5881,
+        "end_line": 5881,
+        "observation_id": "02b7937a5b8e1136",
+        "claimed_path": "src/gpu/vulkan/SDL_gpu_vulkan.c",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "- **Medium \u2014 `src/gpu/vulkan/SDL_gpu_vulkan.c:10424`:** `presentDataCount` is not a reliable indication that a frame attempted presentation. When a claimed window is hidden or minimized, swapchain acquisition can return no image and leave this count zero. Repeated frame submissions while hidden therefore accumulate completed command buffers and deferred destruction; showing the window later makes the next presenting submission clean the entire backlog synchronously, causing a potentially severe hitch and memory spike.",
+        "path": "src/gpu/vulkan/SDL_gpu_vulkan.c",
+        "start_line": 10424,
+        "end_line": 10424,
+        "observation_id": "f82c84dad75bcf72",
+        "claimed_path": "src/gpu/vulkan/SDL_gpu_vulkan.c",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "- **Low \u2014 `src/gpu/vulkan/SDL_gpu_vulkan.c:10701`:** A failed texture allocation during defragmentation is reported as \u201cFailed to allocate defrag buffer!\u201d. For example, `vkCreateImage` failing while relocating a texture produces a buffer-allocation diagnostic, sending error handling and debugging toward the wrong resource type.",
+        "path": "src/gpu/vulkan/SDL_gpu_vulkan.c",
+        "start_line": 10701,
+        "end_line": 10701,
+        "observation_id": "b6fc0a646034d684",
+        "claimed_path": "src/gpu/vulkan/SDL_gpu_vulkan.c",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "**1. NULL-pointer dereference: texture used before the NULL check added in `VULKAN_INTERNAL_CycleActiveTexture`**\nFile: `src/gpu/vulkan/SDL_gpu_vulkan.c`, new lines 5881\u20135889 (hunk `@@ -5870,8 +5875,15 @@`).\nThe new code calls `VULKAN_INTERNAL_TextureTransitionToDefaultUsage(renderer, commandBuffer, VULKAN_TEXTURE_USAGE_MODE_UNINITIALIZED, texture)` (5881\u20135885) and only afterwards checks `if (!texture) return;` (5887). In the pre-diff code the NULL check immediately followed `CreateTexture`. Failure scenario: `VULKAN_INTERNAL_CreateTexture` fails (vkCreateImage/alloc failure \u2014 precisely the OOM situation this defrag work exists for), `texture` is NULL, and `TextureTransitionToDefaultUsage` dereferences it (it has to touch the subresource/layout state) \u2192 crash; at minimum it would record a barrier against a NULL handle. The check must move before the transition call.",
+        "path": "src/gpu/vulkan/SDL_gpu_vulkan.c",
+        "start_line": 5881,
+        "end_line": 5881,
+        "observation_id": "6aa70b73d7f5a8b8",
+        "claimed_path": "src/gpu/vulkan/SDL_gpu_vulkan.c",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "**2. All submit-time cleanup is now gated on `presenting`, so non-presenting workloads never reclaim anything**\nFile: `src/gpu/vulkan/SDL_gpu_vulkan.c`, new lines 10529\u201310577 (hunk `@@ -10509,60 +10529,52 @@`).\nThe fence-sweep, the empty-allocation deallocation pass, and `VULKAN_INTERNAL_PerformPendingDestroys` (10532\u201310566) were previously executed on *every* `VULKAN_Submit`; the diff wraps the whole block in `if (presenting)`. Failure scenario: an app doing offscreen/compute-only work that submits command buffers without any swapchain present (`presentDataCount == 0` forever) \u2014 e.g. headless baking or pre-render passes \u2014 never runs the fence sweep: `submittedCommandBufferCount` grows monotonically (it is only decremented in this loop), command buffers are never recycled back to the pool, and destroyed resources never get actually freed. Result: unbounded growth of the submitted list and command-buffer pool exhaustion, so eventually `VULKAN_AcquireCommandBuffer` returns NULL and submits fail. (The diff alone can't show whether `submittedCommandBuffers` is a fixed array with an overflow guard; either way the count only shrinks inside this now-present-only block.)",
+        "path": "src/gpu/vulkan/SDL_gpu_vulkan.c",
+        "start_line": 10529,
+        "end_line": 10529,
+        "observation_id": "4888308e065a81d1",
+        "claimed_path": "src/gpu/vulkan/SDL_gpu_vulkan.c",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "**3. Defrag is throttled to every other presenting submit because the `!defragInProgress` check now precedes the fence-clean that clears the flag**\nFile: `src/gpu/vulkan/SDL_gpu_vulkan.c`, defrag gate at new lines 10447\u201310450, cleanup at 10529\u201310566.\n`DefragmentMemory` sets `renderer->defragInProgress = 1` (new line ~10606) and it can only return to 0 when the defrag-bearing command buffer's fence is observed complete inside the cleanup loop (isDefrag handling). In the old code the defrag decision ran *after* that cleanup pass in the same submit, so a completed defrag enabled the next one immediately (one allocation defragged per presenting submit). Now the decision runs *before* `EndCommandBuffer`/`vkQueueSubmit`, i.e. before the cleanup loop, so the submit that resets `defragInProgress` has already made its defrag decision and skips. Failure scenario: a texture/buffer-churning, presenting app with a fragmented heap: previously one allocation was compacted per present; now only every other present \u2192 defrag backlog (`allocationsToDefragCount`) grows faster than it drains under steady churn \u2192 memory pressure builds toward OOM/device-lost.",
+        "path": "src/gpu/vulkan/SDL_gpu_vulkan.c",
+        "start_line": 10447,
+        "end_line": 10447,
+        "observation_id": "9cddb06092e9ed4d",
+        "claimed_path": "src/gpu/vulkan/SDL_gpu_vulkan.c",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "**4. Defrag failure is now silently swallowed: `VULKAN_Submit` returns true and submits a frame containing half-recorded defrag commands**\nFile: `src/gpu/vulkan/SDL_gpu_vulkan.c`, new lines 10447\u201310455 and the `return true;` replacing the old `return result;` (~new line 10579).\nOld code propagated the defrag failure through `VULKAN_Submit`'s return value (`result = false`). New code logs `\"Failed to defragment memory, likely OOM!\"` and continues: `EndCommandBuffer`, `vkQueueSubmit` and `vkQueuePresentKHR` all proceed, and the failure return inside `DefragmentMemory` (e.g. `newBuffer == NULL` at ~10640) aborts mid-loop *after* earlier regions of the popped allocation were already transitioned/copied/released. Failure scenario: OOM during defrag (the condition the log message itself anticipates) \u2192 the app's submit reports success although memory compaction failed, the frame ships with partial defrag work baked in, and the app has no signal it must free memory; the remaining regions of the popped allocation are simply never compacted. (The never-retried popped allocation is pre-existing behavior, but the false-success report is new.)",
+        "path": "src/gpu/vulkan/SDL_gpu_vulkan.c",
+        "start_line": 10447,
+        "end_line": 10447,
+        "observation_id": "a89065193a7dfce9",
+        "claimed_path": "src/gpu/vulkan/SDL_gpu_vulkan.c",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "**5. The default-layout transition for a cycled texture is now deferred into the triggering command buffer, creating a cross-submit ordering hazard**\nFile: `src/gpu/vulkan/SDL_gpu_vulkan.c`, new lines 5881\u20135885.\nOld code transitioned the new texture UNINITIALIZED\u2192default in its own command buffer submitted immediately at creation, so the texture was provably in the default layout before any other use. New code records that transition only inside the command buffer whose `PrepareTextureSubresourceForWrite` triggered the cycle. Failure scenario: a frame where a second command buffer binds the container's newly-cycled texture as a sampled source (or render target) and is submitted before the trigger command buffer \u2014 the image is still physically in `VK_IMAGE_LAYOUT_UNDEFINED` at that point \u2192 barrier mismatch, undefined contents, validation errors, possibly device loss. In-order-submission apps won't hit this, but the old code guaranteed the layout regardless of submission order; the new code relies on the caller's ordering discipline.",
+        "path": "src/gpu/vulkan/SDL_gpu_vulkan.c",
+        "start_line": 5881,
+        "end_line": 5881,
+        "observation_id": "67b01ca57753aaa3",
+        "claimed_path": "src/gpu/vulkan/SDL_gpu_vulkan.c",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "**6. Wrong error message on the texture-defrag failure path**\nFile: `src/gpu/vulkan/SDL_gpu_vulkan.c`, new line ~10702 (hunk `@@ -10692,20 +10691,22 @@`).\nThe texture branch of `DefragmentMemory` logs `\"Failed to allocate defrag buffer!\"` when it was a *texture* (`VULKAN_INTERNAL_CreateTexture` returning NULL) that failed, duplicating the buffer branch's message. Failure scenario: a texture-allocation OOM during defrag reports itself as a buffer-allocation failure in the log, sending a user chasing the wrong allocator path when diagnosing the \"likely OOM\" the code itself predicts.",
+        "path": "src/gpu/vulkan/SDL_gpu_vulkan.c",
+        "start_line": 10702,
+        "end_line": 10702,
+        "observation_id": "905a5be4fe96bdb5",
+        "claimed_path": "src/gpu/vulkan/SDL_gpu_vulkan.c",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "**7. Present latency now includes the defrag data movement**\nFile: `src/gpu/vulkan/SDL_gpu_vulkan.c`, new lines 10447\u201310455.\nIn the old flow the defrag copies were recorded in a separate command buffer submitted *after* `vkQueuePresentKHR`, so presentation was not gated on the compaction. Now the copies (potentially large multi-megabyte `vkCmdCopyBuffer`/`vkCmdCopyImage` work for every used region of the popped allocation) are inside the presenting command buffer, so the present semaphore/fence waits for all of it. Failure scenario: on a slow or late-stage queue, a large defrag in a given frame pushes `vkQueuePresentKHR` past the swapchain deadline \u2192 visible frame pacing hitches that did not exist before (real behavioral regression, though a performance one rather than a correctness one).\n\nWhat I could not verify from the diff (and did not assert as fact): that `submittedCommandBuffers` is bounded, that the fence-clean loop is the only `defragInProgress` reset path, and that `VULKAN_INTERNAL_TextureSubresourceMemoryBarrier` handles the UNINITIALIZED source mode the way the new UNINITIALIZED\u2192COPY_DESTINATION call expects.## Defects Found",
+        "path": "src/gpu/vulkan/SDL_gpu_vulkan.c",
+        "start_line": 10447,
+        "end_line": 10447,
+        "observation_id": "643916f74aae048d",
+        "claimed_path": "src/gpu/vulkan/SDL_gpu_vulkan.c",
+        "path_resolution": "exact",
+        "merged_from": [
+          "97b549ba3d2c6cc1"
+        ]
+      },
+      {
+        "content": "### 1. **VULKAN_INTERNAL_DefragmentMemory signature change breaks callers** \u2014 `src/gpu/vulkan/SDL_gpu_vulkan.c:1194`\nThe forward declaration changes from `VULKAN_INTERNAL_DefragmentMemory(VulkanRenderer*)` to `VULKAN_INTERNAL_DefragmentMemory(VulkanRenderer*, VulkanCommandBuffer*)`, but the diff shows **no callers updated** to pass the new `commandBuffer` argument except the one inside `VULKAN_Submit`. Any other call sites (not shown in diff) will fail to compile or pass garbage.\n**Failure scenario**: If any other code path calls `VULKAN_INTERNAL_DefragmentMemory(renderer)` (e.g., from a cleanup timer, explicit defrag API, or error recovery), it compiles with wrong signature \u2192 stack corruption / crash.\n\n---",
+        "path": "src/gpu/vulkan/SDL_gpu_vulkan.c",
+        "start_line": 1194,
+        "end_line": 1194,
+        "observation_id": "3cf2a4f83655573d",
+        "claimed_path": "src/gpu/vulkan/SDL_gpu_vulkan.c",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "### 2. **VULKAN_INTERNAL_DefragmentMemory no longer submits the command buffer** \u2014 `src/gpu/vulkan/SDL_gpu_vulkan.c:10770`\nOriginal code: `return VULKAN_Submit((SDL_GPUCommandBuffer*)commandBuffer);` \u2014 this submitted the defrag copy commands to GPU.\nNew code: `return true;` \u2014 the command buffer is **never submitted**. The buffer/image copies recorded into `commandBuffer` are discarded.\n**Failure scenario**: Defrag runs, allocates new resources, records copies, returns success. GPU never executes copies \u2192 old allocation freed, new resources contain garbage \u2192 subsequent texture/buffer reads return corrupted data or crash.\n\n---",
+        "path": "src/gpu/vulkan/SDL_gpu_vulkan.c",
+        "start_line": 10770,
+        "end_line": 10770,
+        "observation_id": "5f21c1b053a3f9a1",
+        "claimed_path": "src/gpu/vulkan/SDL_gpu_vulkan.c",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "### 3. **VULKAN_INTERNAL_DefragmentMemory returns `true` on allocation failure** \u2014 `src/gpu/vulkan/SDL_gpu_vulkan.c:10632, 10651`\nWhen `VULKAN_INTERNAL_CreateBuffer` or `VULKAN_INTERNAL_CreateTexture` returns `NULL`, the function logs an error but **returns `false` only after unlocking the mutex**. However, the `defragInProgress` flag was already set to `1` at line 10607 and is **never reset to `0`** on this error path.\n**Failure scenario**: OOM during defrag \u2192 function returns `false`, `defragInProgress` stuck at `1` \u2192 all future defrag attempts skip (guard at line 10447: `!renderer->defragInProgress`) \u2192 memory fragmentation never recovers \u2192 eventual OOM crash.\n\n---",
+        "path": "src/gpu/vulkan/SDL_gpu_vulkan.c",
+        "start_line": 10632,
+        "end_line": 10632,
+        "observation_id": "2256291d8d73f1d8",
+        "claimed_path": "src/gpu/vulkan/SDL_gpu_vulkan.c",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "### 4. **VULKAN_INTERNAL_DefragmentMemory doesn't reset `defragInProgress` on early exit** \u2014 `src/gpu/vulkan/SDL_gpu_vulkan.c:10607`\n`renderer->defragInProgress = 1;` is set at start, but the only `return` statements are:\n- Line 10635: allocation failure (returns `false`, flag stuck)\n- Line 10654: allocation failure (returns `false`, flag stuck)\n- Line 10773: success (returns `true`, flag stuck!)\n**No path resets `defragInProgress = 0`.**\n**Failure scenario**: First defrag attempt runs (success or fail) \u2192 `defragInProgress` permanently `1` \u2192 **defrag never runs again** \u2192 unbounded memory fragmentation.\n\n---",
+        "path": "src/gpu/vulkan/SDL_gpu_vulkan.c",
+        "start_line": 10607,
+        "end_line": 10607,
+        "observation_id": "1defb3f993bae1d3",
+        "claimed_path": "src/gpu/vulkan/SDL_gpu_vulkan.c",
+        "path_resolution": "exact",
+        "merged_from": [
+          "335c2709e9bb79e9"
+        ]
+      },
+      {
+        "content": "### 5. **VULKAN_INTERNAL_CycleActiveTexture creates texture without transition, then transitions on caller's commandBuffer** \u2014 `src/gpu/vulkan/SDL_gpu_vulkan.c:5870-5883`\nNew code calls `VULKAN_INTERNAL_CreateTexture(renderer, false, ...)` (no auto-transition), then immediately calls `VULKAN_INTERNAL_TextureTransitionToDefaultUsage(renderer, commandBuffer, ...)` on the **caller's command buffer**.\n**Defect**: The new texture's subresources are in `VK_IMAGE_LAYOUT_UNDEFINED` (Vulkan default). The transition command assumes they're in \"default usage\" layout, but they're actually uninitialized. The barrier uses wrong `oldLayout`.\n**Failure scenario**: App creates texture \u2192 cycles active texture (e.g., swapchain resize) \u2192 new texture used in same command buffer \u2192 GPU reads from `UNDEFINED` layout \u2192 validation error / corrupted rendering / crash.\n\n---",
+        "path": "src/gpu/vulkan/SDL_gpu_vulkan.c",
+        "start_line": 5870,
+        "end_line": 5870,
+        "observation_id": "6ef9a162f54d68ba",
+        "claimed_path": "src/gpu/vulkan/SDL_gpu_vulkan.c",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "### 6. **VULKAN_INTERNAL_PrepareTextureSubresourceForWrite passes `commandBuffer` to CycleActiveTexture but texture creation skipped transition** \u2014 `src/gpu/vulkan/SDL_gpu_vulkan.c:5947`\nCall chain: `PrepareTextureSubresourceForWrite` \u2192 `CycleActiveTexture(renderer, commandBuffer, ...)` \u2192 `CreateTexture(renderer, false, ...)` \u2192 `TextureTransitionToDefaultUsage(renderer, commandBuffer, ...)`.\nSame defect as #5: the transition runs on a texture that was never transitioned from `UNDEFINED`.\n**Failure scenario**: Write to texture subresource after cycle \u2192 GPU executes copy/write from `UNDEFINED` layout \u2192 validation error / data corruption.\n\n---",
+        "path": "src/gpu/vulkan/SDL_gpu_vulkan.c",
+        "start_line": 5947,
+        "end_line": 5947,
+        "observation_id": "6223c2a81ed040fb",
+        "claimed_path": "src/gpu/vulkan/SDL_gpu_vulkan.c",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "### 7. **VULKAN_CreateTexture passes `transitionToDefaultLayout=true` but defrag path passes `false`** \u2014 `src/gpu/vulkan/SDL_gpu_vulkan.c:6729 vs 10691`\n- Normal texture creation (line 6729): `CreateTexture(renderer, true, ...)` \u2192 auto-transitions to default layout \u2713\n- Defrag texture creation (line 10691): `CreateTexture(renderer, false, ...)` \u2192 **no transition**, but defrag code then manually transitions `dstSubresource` to `COPY_DESTINATION` (line 10717).\n**Inconsistency**: Normal path transitions to \"default usage\" (shader read), defrag path transitions to `COPY_DESTINATION`. If defrag texture is later used as shader resource without another transition, it's in wrong layout.\n**Failure scenario**: Defrag moves texture \u2192 app binds texture as shader resource \u2192 layout is `TRANSFER_DST_OPTIMAL` not `SHADER_READ_ONLY_OPTIMAL` \u2192 validation error / wrong data read.\n\n---",
+        "path": "src/gpu/vulkan/SDL_gpu_vulkan.c",
+        "start_line": 6729,
+        "end_line": 6729,
+        "observation_id": "43988e64a5082622",
+        "claimed_path": "src/gpu/vulkan/SDL_gpu_vulkan.c",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "### 8. **VULKAN_Submit defrag logic moved before cleanup, but uses `commandBuffer` that gets released after** \u2014 `src/gpu/vulkan/SDL_gpu_vulkan.c:10444-10452`\nNew code calls `VULKAN_INTERNAL_DefragmentMemory(renderer, vulkanCommandBuffer)` **before** `VULKAN_INTERNAL_ReleaseCommandBuffer(vulkanCommandBuffer)` (line 10530). But `DefragmentMemory` sets `commandBuffer->isDefrag = 1` and expects to **submit it internally** (old code). New code doesn't submit it (defect #2), and then the caller releases it.\n**Failure scenario**: Defrag records copies into `vulkanCommandBuffer` \u2192 function returns \u2192 `ReleaseCommandBuffer` puts it back in pool \u2192 command buffer reused for draw commands \u2192 defrag copies lost + draw commands corrupted by leftover copy commands.\n\n---",
+        "path": "src/gpu/vulkan/SDL_gpu_vulkan.c",
+        "start_line": 10444,
+        "end_line": 10444,
+        "observation_id": "df26d21638c711d9",
+        "claimed_path": "src/gpu/vulkan/SDL_gpu_vulkan.c",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "### 9. **VULKAN_Submit cleanup loop now gated on `presenting`** \u2014 `src/gpu/vulkan/SDL_gpu_vulkan.c:10495`\nOld code: cleanup loop (fence checks, `CleanCommandBuffer`, empty allocation deallocation, `PerformPendingDestroys`) ran **unconditionally**.\nNew code: entire cleanup block wrapped in `if (presenting) { ... }`.\n**Failure scenario**: App submits non-presenting command buffers (compute, offscreen render) \u2192 fences never checked \u2192 command buffers never recycled \u2192 `submittedCommandBufferCount` grows unbounded \u2192 OOM / stall. Pending destroys (buffers/textures marked for destroy) never freed \u2192 memory leak.\n\n---",
+        "path": "src/gpu/vulkan/SDL_gpu_vulkan.c",
+        "start_line": 10495,
+        "end_line": 10495,
+        "observation_id": "8de060a62106167b",
+        "claimed_path": "src/gpu/vulkan/SDL_gpu_vulkan.c",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "### 10. **`presenting` variable computed once at start, but loop modifies it** \u2014 `src/gpu/vulkan/SDL_gpu_vulkan.c:10421, 10493`\nLine 10421: `bool presenting = vulkanCommandBuffer->presentDataCount > 0;`\nLine 10493: `for (j = 0; j < vulkanCommandBuffer->presentDataCount; j++) { presenting = true; }` (old code, now removed)\nBut wait \u2014 the new code **removed** the loop that set `presenting = true`. The variable is now set once at line 10421 and never changed. However, the cleanup gate at line 10495 uses this pre-computed value.\n**Defect**: If a command buffer has `presentDataCount == 0` at submit start but presents are added later (unlikely but possible via API), cleanup skipped. More critically, the old code's `presenting = true` inside the loop was redundant but harmless; the new code's structure is correct *if* `presentDataCount` is final at submit time. However, **the `presenting` variable is now unused in the present loop** (lines 10498-10527) \u2014 it's computed but the loop just iterates `presentDataCount` directly. Dead variable.\n\n---",
+        "path": "src/gpu/vulkan/SDL_gpu_vulkan.c",
+        "start_line": 10421,
+        "end_line": 10421,
+        "observation_id": "d40076a7a1ebdd40",
+        "claimed_path": "src/gpu/vulkan/SDL_gpu_vulkan.c",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "### 11. **VULKAN_Submit returns `true` unconditionally** \u2014 `src/gpu/vulkan/SDL_gpu_vulkan.c:10533`\nOld code: `return result;` where `result` was set to `VULKAN_INTERNAL_DefragmentMemory(...)` return value (could be `false`).\nNew code: `return true;` \u2014 **submit always reports success** even if:\n- `VULKAN_INTERNAL_EndCommandBuffer` fails (line 10450 returns `false` \u2014 wait, that path still returns `false`)\n- Defrag fails (line 10450 logs error but continues)\n- Present fails (vkQueuePresentKHR error not checked!)\n**Failure scenario**: `vkQueuePresentKHR` returns `VK_ERROR_OUT_OF_DATE_KHR` or `VK_ERROR_SURFACE_LOST_KHR` \u2192 `VULKAN_Submit` returns `true` \u2192 app thinks frame presented \u2192 next frame uses stale swapchain \u2192 crash / validation error.\n\n---",
+        "path": "src/gpu/vulkan/SDL_gpu_vulkan.c",
+        "start_line": 10533,
+        "end_line": 10533,
+        "observation_id": "19e167b66304ffb6",
+        "claimed_path": "src/gpu/vulkan/SDL_gpu_vulkan.c",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "### 12. **VULKAN_INTERNAL_DefragmentMemory uses `VULKAN_INTERNAL_TextureSubresourceMemoryBarrier` instead of `TransitionFromDefaultUsage` for dst** \u2014 `src/gpu/vulkan/SDL_gpu_vulkan.c:10717`\nOld code: `VULKAN_INTERNAL_TextureSubresourceTransitionFromDefaultUsage(renderer, commandBuffer, VULKAN_TEXTURE_USAGE_MODE_COPY_DESTINATION, dstSubresource);`\nNew code: `VULKAN_INTERNAL_TextureSubresourceMemoryBarrier(renderer, commandBuffer, VULKAN_TEXTURE_USAGE_MODE_UNINITIALIZED, VULKAN_TEXTURE_USAGE_MODE_COPY_DESTINATION, dstSubresource);`\n**Defect**: The new call passes `VULKAN_TEXTURE_USAGE_MODE_UNINITIALIZED` as *source* usage, but the texture was just created with `transitionToDefaultLayout=false`, so its subresources are in `VK_IMAGE_LAYOUT_UNDEFINED` \u2014 not \"default usage\". The barrier function likely expects a valid current usage state to derive `oldLayout`. Passing `UNINITIALIZED` may produce wrong `oldLayout` (`VK_IMAGE_LAYOUT_UNDEFINED` vs expected default).\n**Failure scenario**: Defrag texture copy uses wrong `oldLayout` in barrier \u2192 validation error / copy executes with wrong layout \u2192 corrupted texture data.\n\n---",
+        "path": "src/gpu/vulkan/SDL_gpu_vulkan.c",
+        "start_line": 10717,
+        "end_line": 10717,
+        "observation_id": "3c1794228ffa0276",
+        "claimed_path": "src/gpu/vulkan/SDL_gpu_vulkan.c",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "### 13. **VULKAN_INTERNAL_DefragmentMemory doesn't track new texture in command buffer** \u2014 `src/gpu/vulkan/SDL_gpu_vulkan.c:10691-10725`\nOld code (via `CreateTexture` with `transitionToDefaultLayout=true`): called `VULKAN_INTERNAL_TrackTexture(barrierCommandBuffer, texture)` inside the auto-transition.\nNew code: `CreateTexture(renderer, false, ...)` \u2014 **no tracking**. The defrag code manually transitions subresources but never calls `VULKAN_INTERNAL_TrackTexture(commandBuffer, newTexture)`.\n**Failure scenario**: Defrag creates new texture, records copy into it, but texture not in command buffer's tracked list \u2192 `VULKAN_INTERNAL_EndCommandBuffer` doesn't insert proper end-of-submit barriers for it \u2192 texture used in next submit without layout transition \u2192 validation error / corruption.\n\n---",
+        "path": "src/gpu/vulkan/SDL_gpu_vulkan.c",
+        "start_line": 10691,
+        "end_line": 10691,
+        "observation_id": "b6a8acb6c61216c0",
+        "claimed_path": "src/gpu/vulkan/SDL_gpu_vulkan.c",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "### 14. **VULKAN_INTERNAL_DefragmentMemory holds `allocatorLock` during entire defrag including resource creation** \u2014 `src/gpu/vulkan/SDL_gpu_vulkan.c:10609`\n`SDL_LockMutex(renderer->allocatorLock)` at line 10609, unlocked at line 10771 (after loop). Inside the lock: `VULKAN_INTERNAL_CreateBuffer` / `CreateTexture` which may allocate memory, call Vulkan APIs, etc.\n**Defect**: Allocator lock held for extended period \u2192 blocks all other allocations/frees from other threads \u2192 **deadlock risk** if `CreateBuffer`/`CreateTexture` tries to acquire `allocatorLock` recursively (likely, since they allocate memory).\n**Failure scenario**: Thread A submits \u2192 defrag starts, holds allocatorLock \u2192 Thread B tries to create buffer \u2192 blocks on allocatorLock \u2192 Thread A's `CreateBuffer` needs allocatorLock \u2192 deadlock.\n\n---",
+        "path": "src/gpu/vulkan/SDL_gpu_vulkan.c",
+        "start_line": 10609,
+        "end_line": 10609,
+        "observation_id": "24781d1a3279c5ac",
+        "claimed_path": "src/gpu/vulkan/SDL_gpu_vulkan.c",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "### 15. **`markedForDestroy` changed from `1` to `true` but type may be `int`/`Uint32`** \u2014 `src/gpu/vulkan/SDL_gpu_vulkan.c:6904`\nIf `vulkanBuffer->markedForDestroy` is defined as `Uint32` or `int` (common in SDL), assigning `true` (which is `1`) works but is inconsistent with other uses. Check: line 10631 uses `!currentRegion->vulkanBuffer->markedForDestroy` \u2014 boolean context works for both. However, if any code does `== 1` or `== true` explicitly, behavior differs.\n**Low probability**, but: if `markedForDestroy` is `Uint8` and code does `markedForDestroy = 2` somewhere as a \"double-marked\" state, `true` truncates to `1` losing info.\n**Failure scenario**: Hypothetical multi-mark state lost \u2192 buffer destroyed prematurely or not at all.\n\n---",
+        "path": "src/gpu/vulkan/SDL_gpu_vulkan.c",
+        "start_line": 6904,
+        "end_line": 6904,
+        "observation_id": "12555e00600d5130",
+        "claimed_path": "src/gpu/vulkan/SDL_gpu_vulkan.c",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "### 16. **VULKAN_INTERNAL_DefragmentMemory decrements `allocationsToDefragCount` before processing** \u2014 `src/gpu/vulkan/SDL_gpu_vulkan.c:10611`\n`renderer->allocationsToDefragCount -= 1;` then processes `allocation = renderer->allocationsToDefrag[renderer->allocationsToDefragCount]`.\nIf defrag **fails** (returns `false` at line 10635 or 10654), the allocation is **removed from the defrag list but not actually defragmented**.\n**Failure scenario**: OOM during defrag \u2192 allocation dropped from defrag queue \u2192 never retried (defragInProgress stuck at 1 anyway, defect #4) \u2192 fragmented allocation stays forever \u2192 memory waste.\n\n---",
+        "path": "src/gpu/vulkan/SDL_gpu_vulkan.c",
+        "start_line": 10611,
+        "end_line": 10611,
+        "observation_id": "3f21e3dc3b29066a",
+        "claimed_path": "src/gpu/vulkan/SDL_gpu_vulkan.c",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "### 17. **VULKAN_Submit: `checkEmptyAllocations` cleanup now inside `presenting` block** \u2014 `src/gpu/vulkan/SDL_gpu_vulkan.c:10513`\nEmpty allocation deallocation (freeing unused memory blocks) only runs when `presenting` is true.\n**Failure scenario**: Long-running compute workload (no presents) \u2192 memory allocator accumulates empty allocations \u2192 never freed \u2192 VRAM exhaustion.\n\n---",
+        "path": "src/gpu/vulkan/SDL_gpu_vulkan.c",
+        "start_line": 10513,
+        "end_line": 10513,
+        "observation_id": "c96b07de2a07ac92",
+        "claimed_path": "src/gpu/vulkan/SDL_gpu_vulkan.c",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "### 18. **VULKAN_Submit: `VULKAN_INTERNAL_PerformPendingDestroys` now inside `presenting` block** \u2014 `src/gpu/vulkan/SDL_gpu_vulkan.c:10525`\nResources marked for destroy (buffers, textures) only cleaned up on present frames.\n**Failure scenario**: Compute-only workload \u2192 destroyed resources never actually freed \u2192 memory leak \u2192 OOM.\n\n---",
+        "path": "src/gpu/vulkan/SDL_gpu_vulkan.c",
+        "start_line": 10525,
+        "end_line": 10525,
+        "observation_id": "fe364611f9086b1b",
+        "claimed_path": "src/gpu/vulkan/SDL_gpu_vulkan.c",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "### 19. **VULKAN_INTERNAL_DefragmentMemory: `bufferCopy` and `imageCopy` structs declared inside loop but used after** \u2014 `src/gpu/vulkan/SDL_gpu_vulkan.c:10654, 10724`\n`VkBufferCopy bufferCopy;` declared inside `if` block (line 10654), used at line 10658 \u2014 OK, same scope.\n`VkImageCopy imageCopy;` declared inside `for` loop (line 10724), used at line 10728 \u2014 OK.\nBut wait: the `bufferCopy` at line 10654 is inside `if (newBuffer)` block, used immediately after. The `imageCopy` at 10724 is inside the `for` loop, used immediately. **No defect here** \u2014 scoping is correct.\n\n---",
+        "path": "src/gpu/vulkan/SDL_gpu_vulkan.c",
+        "start_line": 10654,
+        "end_line": 10654,
+        "observation_id": "993087795f129674",
+        "claimed_path": "src/gpu/vulkan/SDL_gpu_vulkan.c",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "### 20. **VULKAN_INTERNAL_DefragmentMemory: no error cleanup for partially defragmented allocation** \u2014 `src/gpu/vulkan/SDL_gpu_vulkan.c:10635, 10654`\nIf buffer creation succeeds for region 0, but texture creation fails for region 1, the function returns `false` with:\n- Region 0's new buffer allocated but not copied (copy recorded in command buffer that's never submitted)\n- Region 0's old buffer still in allocation\n- `defragInProgress` stuck at 1\n- Allocation removed from defrag list\n**Failure scenario**: Partial defrag failure \u2192 inconsistent state: some resources moved, some not, defrag broken permanently.\n\nI've analyzed all hunks in the diff. Here are **20 distinct defects**, ordered by severity:\n\n---",
+        "path": "src/gpu/vulkan/SDL_gpu_vulkan.c",
+        "start_line": 10635,
+        "end_line": 10635,
+        "observation_id": "80da6f86dacf9323",
+        "claimed_path": "src/gpu/vulkan/SDL_gpu_vulkan.c",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "### 1. **Defrag command buffer never submitted** \u2014 `src/gpu/vulkan/SDL_gpu_vulkan.c:10770`\n`VULKAN_INTERNAL_DefragmentMemory` returns `true` without calling `VULKAN_Submit`. All recorded buffer/image copies are discarded.\n**Failure**: Defrag runs \u2192 new resources allocated \u2192 copies recorded \u2192 function returns \u2192 GPU never executes copies \u2192 old allocation freed \u2192 new resources contain garbage \u2192 subsequent reads return corrupted data / crash.\n\n---",
+        "path": "src/gpu/vulkan/SDL_gpu_vulkan.c",
+        "start_line": 10770,
+        "end_line": 10770,
+        "observation_id": "d3296c6f755ff99c",
+        "claimed_path": "src/gpu/vulkan/SDL_gpu_vulkan.c",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "### 2. **`defragInProgress` flag never reset** \u2014 `src/gpu/vulkan/SDL_gpu_vulkan.c:10607`\nSet to `1` at start, but **no code path resets it to `0`** (success returns `true`, failures return `false` early).\n**Failure**: First defrag attempt (success or fail) \u2192 `defragInProgress` stuck at `1` \u2192 guard `!renderer->defragInProgress` at line 10447 blocks all future defrags \u2192 unbounded fragmentation \u2192 eventual OOM.\n\n---",
+        "path": "src/gpu/vulkan/SDL_gpu_vulkan.c",
+        "start_line": 10607,
+        "end_line": 10607,
+        "observation_id": "b22b668bfac9472e",
+        "claimed_path": "src/gpu/vulkan/SDL_gpu_vulkan.c",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "### 3. **Cleanup loop gated on `presenting`** \u2014 `src/gpu/vulkan/SDL_gpu_vulkan.c:10495`\nFence checks, `CleanCommandBuffer`, empty allocation deallocation, `PerformPendingDestroys` now only run when `presenting` is true.\n**Failure**: Compute-only / offscreen workload (no presents) \u2192 command buffers never recycled (`submittedCommandBufferCount` grows unbounded) \u2192 pending destroys never freed \u2192 VRAM leak \u2192 OOM.\n\n---",
+        "path": "src/gpu/vulkan/SDL_gpu_vulkan.c",
+        "start_line": 10495,
+        "end_line": 10495,
+        "observation_id": "3a82a93bfe54a900",
+        "claimed_path": "src/gpu/vulkan/SDL_gpu_vulkan.c",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "### 4. **`VULKAN_Submit` returns `true` unconditionally** \u2014 `src/gpu/vulkan/SDL_gpu_vulkan.c:10533`\nPresent errors (`vkQueuePresentKHR` failures like `VK_ERROR_OUT_OF_DATE_KHR`, `VK_ERROR_SURFACE_LOST_KHR`) ignored.\n**Failure**: Swapchain lost / out of date \u2192 `VULKAN_Submit` returns `true` \u2192 app continues rendering to invalid swapchain \u2192 crash / validation error.\n\n---",
+        "path": "src/gpu/vulkan/SDL_gpu_vulkan.c",
+        "start_line": 10533,
+        "end_line": 10533,
+        "observation_id": "e7574acb428458c3",
+        "claimed_path": "src/gpu/vulkan/SDL_gpu_vulkan.c",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "### 5. **Defrag holds `allocatorLock` during Vulkan resource creation** \u2014 `src/gpu/vulkan/SDL_gpu_vulkan.c:10609`\nLock held from line 10609 to 10771 across `VULKAN_INTERNAL_CreateBuffer`/`CreateTexture` which likely acquire the same lock recursively.\n**Failure**: Thread A (submit) holds lock in defrag \u2192 Thread B (create buffer) blocks on lock \u2192 Thread A's `CreateBuffer` tries to acquire lock \u2192 **deadlock**.\n\n---",
+        "path": "src/gpu/vulkan/SDL_gpu_vulkan.c",
+        "start_line": 10609,
+        "end_line": 10609,
+        "observation_id": "f7a6d7f7399e2302",
+        "claimed_path": "src/gpu/vulkan/SDL_gpu_vulkan.c",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "### 6. **Defrag removes allocation from queue before processing; no rollback on failure** \u2014 `src/gpu/vulkan/SDL_gpu_vulkan.c:10611`\n`allocationsToDefragCount--` at line 10611, then processes. If creation fails (lines 10635, 10654), allocation is **lost from defrag queue** and `defragInProgress` stuck (defect #2).\n**Failure**: OOM mid-defrag \u2192 fragmented allocation never retried \u2192 permanent memory waste.\n\n---",
+        "path": "src/gpu/vulkan/SDL_gpu_vulkan.c",
+        "start_line": 10611,
+        "end_line": 10611,
+        "observation_id": "13796aee60ff9243",
+        "claimed_path": "src/gpu/vulkan/SDL_gpu_vulkan.c",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "### 7. **`VULKAN_INTERNAL_CycleActiveTexture` creates texture without transition, then transitions on caller's command buffer** \u2014 `src/gpu/vulkan/SDL_gpu_vulkan.c:5870-5883`\nCalls `CreateTexture(renderer, false, ...)` (no auto-transition), then `TextureTransitionToDefaultUsage(renderer, commandBuffer, ...)`. Texture subresources start in `VK_IMAGE_LAYOUT_UNDEFINED`; barrier assumes \"default usage\" layout.\n**Failure**: Swapchain resize / texture cycle \u2192 new texture used in same command buffer \u2192 GPU reads from `UNDEFINED` layout \u2192 validation error / corrupted rendering / crash.\n\n---",
+        "path": "src/gpu/vulkan/SDL_gpu_vulkan.c",
+        "start_line": 5870,
+        "end_line": 5870,
+        "observation_id": "b2c5ada7750d9324",
+        "claimed_path": "src/gpu/vulkan/SDL_gpu_vulkan.c",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "### 8. **`VULKAN_INTERNAL_PrepareTextureSubresourceForWrite` same defect via CycleActiveTexture** \u2014 `src/gpu/vulkan/SDL_gpu_vulkan.c:5947`\nCall chain: `PrepareTextureSubresourceForWrite` \u2192 `CycleActiveTexture(commandBuffer)` \u2192 `CreateTexture(false)` \u2192 `TransitionToDefaultUsage(commandBuffer)`.\n**Failure**: Write to texture after cycle \u2192 copy/write from `UNDEFINED` layout \u2192 validation error / data corruption.\n\n---",
+        "path": "src/gpu/vulkan/SDL_gpu_vulkan.c",
+        "start_line": 5947,
+        "end_line": 5947,
+        "observation_id": "bdcc97895f172e95",
+        "claimed_path": "src/gpu/vulkan/SDL_gpu_vulkan.c",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "### 9. **Defrag texture creation uses `false` for transition but manual transition targets `COPY_DESTINATION`, not shader layout** \u2014 `src/gpu/vulkan/SDL_gpu_vulkan.c:10691, 10717`\nNormal creation (line 6729): `CreateTexture(true)` \u2192 transitions to shader-read layout.\nDefrag creation (line 10691): `CreateTexture(false)` \u2192 manual barrier to `COPY_DESTINATION` (line 10717).\n**Failure**: Defrag moves texture \u2192 app binds as shader resource \u2192 layout is `TRANSFER_DST_OPTIMAL` not `SHADER_READ_ONLY_OPTIMAL` \u2192 validation error / wrong data read.\n\n---",
+        "path": "src/gpu/vulkan/SDL_gpu_vulkan.c",
+        "start_line": 10691,
+        "end_line": 10691,
+        "observation_id": "3427c73bc9be1b9a",
+        "claimed_path": "src/gpu/vulkan/SDL_gpu_vulkan.c",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "### 10. **Defrag doesn't track new texture in command buffer** \u2014 `src/gpu/vulkan/SDL_gpu_vulkan.c:10691-10725`\n`CreateTexture(false)` skips `VULKAN_INTERNAL_TrackTexture`. No call to track `newTexture` after manual transitions.\n**Failure**: Defrag records copy into new texture \u2192 texture not in command buffer's tracked list \u2192 `EndCommandBuffer` omits end-of-submit barriers \u2192 next submit uses texture without layout transition \u2192 validation error / corruption.\n\n---",
+        "path": "src/gpu/vulkan/SDL_gpu_vulkan.c",
+        "start_line": 10691,
+        "end_line": 10691,
+        "observation_id": "d3dc3e6744e43910",
+        "claimed_path": "src/gpu/vulkan/SDL_gpu_vulkan.c",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "### 11. **`VULKAN_INTERNAL_DefragmentMemory` signature changed but other callers not updated** \u2014 `src/gpu/vulkan/SDL_gpu_vulkan.c:1194`\nForward declaration adds `VulkanCommandBuffer*` parameter. Only `VULKAN_Submit` call updated (line 10450). Any other call site (cleanup timer, explicit defrag API, error recovery) passes wrong args.\n**Failure**: Other caller invokes `VULKAN_INTERNAL_DefragmentMemory(renderer)` \u2192 stack corruption / crash.\n\n---",
+        "path": "src/gpu/vulkan/SDL_gpu_vulkan.c",
+        "start_line": 1194,
+        "end_line": 1194,
+        "observation_id": "3b1cb31e3c952d99",
+        "claimed_path": "src/gpu/vulkan/SDL_gpu_vulkan.c",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "### 12. **Defrag uses `TextureSubresourceMemoryBarrier` with `UNINITIALIZED` source usage for newly created texture** \u2014 `src/gpu/vulkan/SDL_gpu_vulkan.c:10717`\nNew texture subresources are `VK_IMAGE_LAYOUT_UNDEFINED`. Barrier called with `VULKAN_TEXTURE_USAGE_MODE_UNINITIALIZED` as source \u2014 may produce wrong `oldLayout` vs. expected default.\n**Failure**: Defrag copy uses incorrect `oldLayout` in barrier \u2192 validation error / copy executes with wrong layout \u2192 corrupted texture.\n\n---",
+        "path": "src/gpu/vulkan/SDL_gpu_vulkan.c",
+        "start_line": 10717,
+        "end_line": 10717,
+        "observation_id": "a5886ff076fda198",
+        "claimed_path": "src/gpu/vulkan/SDL_gpu_vulkan.c",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "### 13. **`VULKAN_Submit` calls defrag on `vulkanCommandBuffer` then releases it** \u2014 `src/gpu/vulkan/SDL_gpu_vulkan.c:10444-10530`\nDefrag sets `commandBuffer->isDefrag = 1`, records copies, returns. Caller then calls `ReleaseCommandBuffer(vulkanCommandBuffer)` (line 10530) putting it back in pool.\n**Failure**: Defrag copies recorded in command buffer \u2192 buffer reused for draw commands \u2192 leftover copy commands corrupt draw / defrag copies lost.\n\n---",
+        "path": "src/gpu/vulkan/SDL_gpu_vulkan.c",
+        "start_line": 10444,
+        "end_line": 10444,
+        "observation_id": "adc5a79e3b6685b8",
+        "claimed_path": "src/gpu/vulkan/SDL_gpu_vulkan.c",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "### 14. **Empty allocation deallocation only on present frames** \u2014 `src/gpu/vulkan/SDL_gpu_vulkan.c:10513`\n`checkEmptyAllocations` cleanup inside `if (presenting)` block.\n**Failure**: Long compute workload \u2192 empty memory blocks never freed \u2192 VRAM exhaustion.\n\n---",
+        "path": "src/gpu/vulkan/SDL_gpu_vulkan.c",
+        "start_line": 10513,
+        "end_line": 10513,
+        "observation_id": "533273933f3d2859",
+        "claimed_path": "src/gpu/vulkan/SDL_gpu_vulkan.c",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "### 15. **`PerformPendingDestroys` only on present frames** \u2014 `src/gpu/vulkan/SDL_gpu_vulkan.c:10525`\nResources marked for destroy only cleaned up when presenting.\n**Failure**: Compute-only workload \u2192 destroyed buffers/textures never freed \u2192 memory leak \u2192 OOM.\n\n---",
+        "path": "src/gpu/vulkan/SDL_gpu_vulkan.c",
+        "start_line": 10525,
+        "end_line": 10525,
+        "observation_id": "2addf50961c471d2",
+        "claimed_path": "src/gpu/vulkan/SDL_gpu_vulkan.c",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "### 16. **`markedForDestroy` changed from `1` to `true` \u2014 type mismatch risk** \u2014 `src/gpu/vulkan/SDL_gpu_vulkan.c:6904`\nIf field is `Uint32`/`int`, `true` works but inconsistency with possible multi-state values (e.g., `2` = \"double marked\").\n**Failure**: Hypothetical: code sets `markedForDestroy = 2` for deferred destroy \u2192 overwritten with `true` (1) \u2192 state lost \u2192 premature / missed destroy.\n\n---",
+        "path": "src/gpu/vulkan/SDL_gpu_vulkan.c",
+        "start_line": 6904,
+        "end_line": 6904,
+        "observation_id": "35efa492e468d8b4",
+        "claimed_path": "src/gpu/vulkan/SDL_gpu_vulkan.c",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "### 17. **`presenting` variable computed once, present loop doesn't update it** \u2014 `src/gpu/vulkan/SDL_gpu_vulkan.c:10421, 10498`\nLine 10421: `bool presenting = vulkanCommandBuffer->presentDataCount > 0;`. Present loop (line 10498) iterates `presentDataCount` directly \u2014 `presenting` unused in loop. Dead variable, but cleanup gate (line 10495) uses pre-computed value.\n**Failure**: If `presentDataCount` could change between submit start and present loop (unlikely), cleanup decision uses stale value.\n\n---",
+        "path": "src/gpu/vulkan/SDL_gpu_vulkan.c",
+        "start_line": 10421,
+        "end_line": 10421,
+        "observation_id": "17fdcd9e11f16d69",
+        "claimed_path": "src/gpu/vulkan/SDL_gpu_vulkan.c",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "### 18. **Defrag error paths unlock mutex but don't reset `defragInProgress`** \u2014 `src/gpu/vulkan/SDL_gpu_vulkan.c:10635, 10654`\nLines 10635, 10654: `SDL_UnlockMutex` then `return false`. `defragInProgress` remains `1`.\n**Failure**: OOM during defrag \u2192 mutex unlocked but flag stuck \u2192 combines with defect #2 for permanent defrag disable.\n\n---",
+        "path": "src/gpu/vulkan/SDL_gpu_vulkan.c",
+        "start_line": 10635,
+        "end_line": 10635,
+        "observation_id": "3e1facf46ae35b32",
+        "claimed_path": "src/gpu/vulkan/SDL_gpu_vulkan.c",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "### 19. **Defrag logs \"Failed to allocate defrag buffer!\" for texture failure too** \u2014 `src/gpu/vulkan/SDL_gpu_vulkan.c:10654`\nLine 10654: texture creation failure logs \"Failed to allocate defrag **buffer**!\" \u2014 misleading error message.\n**Failure**: Texture OOM during defrag \u2192 log says \"buffer\" \u2192 misdiagnosis delays fix.\n\n---",
+        "path": "src/gpu/vulkan/SDL_gpu_vulkan.c",
+        "start_line": 10654,
+        "end_line": 10654,
+        "observation_id": "855589f6b6cce72b",
+        "claimed_path": "src/gpu/vulkan/SDL_gpu_vulkan.c",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "### 20. **`VULKAN_INTERNAL_DefragmentMemory` returns `true` even when defrag copies not submitted** \u2014 `src/gpu/vulkan/SDL_gpu_vulkan.c:10773`\nCombines defects #1 and #2: caller (line 10450) checks return value, logs error on `false`, but function always returns `true` \u2192 error never logged, app thinks defrag succeeded.\n**Failure**: Defrag silently does nothing \u2192 fragmentation grows \u2192 OOM with no diagnostic.",
+        "path": "src/gpu/vulkan/SDL_gpu_vulkan.c",
+        "start_line": 10773,
+        "end_line": 10773,
+        "observation_id": "78d63be48e0fefa6",
+        "claimed_path": "src/gpu/vulkan/SDL_gpu_vulkan.c",
+        "path_resolution": "exact",
+        "merged_from": []
+      }
+    ]
+  },
+  "rundir": "/home/user/.cache/llm-panel/runs/aacr-up-sy779nzl-caf538f6067c/20260828-150605-1259575",
+  "extractor": "3",
+  "unlocated": []
+}
