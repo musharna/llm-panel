@@ -1,0 +1,296 @@
+{
+  "review": {
+    "comments": [
+      {
+        "content": "1. **High \u2014 `src/Mod/Part/Gui/Command.cpp:1974`**  \n   The first selected curve is assigned to `curve2`, leaving `curve1` null. Input: select `Edge1` from one object and `Edge1` from another, then create a ruled surface. The second selection overwrites `curve2`; `curve1` remains null, so the command rejects/fails instead of creating the surface.",
+        "path": "src/Mod/Part/Gui/Command.cpp",
+        "start_line": 1974,
+        "end_line": 1974,
+        "observation_id": "d331f38b4a8c1f55",
+        "claimed_path": "src/Mod/Part/Gui/Command.cpp",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "2. **Medium \u2014 `src/Mod/Part/App/PartFeature.cpp:1333`**  \n   `simplificationPriority` contains `TopAbs_SHELL` twice and omits `TopAbs_EDGE`. Input: resolve a linked/grouped subobject represented as a compound containing exactly one edge. `NeedSubElement` should unwrap it to an edge, but returns the compound; consumers requiring an edge, such as extrusion/revolution axis handling, reject the valid selection.",
+        "path": "src/Mod/Part/App/PartFeature.cpp",
+        "start_line": 1333,
+        "end_line": 1333,
+        "observation_id": "0775d5fe9c7a4e8e",
+        "claimed_path": "src/Mod/Part/App/PartFeature.cpp",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "3. **Medium \u2014 `src/Mod/PartDesign/App/FeatureSketchBased.cpp:730`**  \n   This calls `getShape()` instead of `getTopoShape()`. `getShape()` forcibly adds `NoElementMap`, and wrapping its `TopoDS_Shape` back into `TopoShape` cannot restore the tag, hasher, or mapped-element history. Input: create an up-to-shape Pad/Pocket using mapped faces, then alter upstream geometry. The limiting faces lack stable provenance, so downstream face references can fail or resolve to the wrong face after recomputation.",
+        "path": "src/Mod/PartDesign/App/FeatureSketchBased.cpp",
+        "start_line": 730,
+        "end_line": 730,
+        "observation_id": "1fdd7c4f4edc6e70",
+        "claimed_path": "src/Mod/PartDesign/App/FeatureSketchBased.cpp",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "4. **Low \u2014 `src/Mod/Part/Gui/TaskSweep.cpp:301`**  \n   The loop ignores `it` and resolves `subnames[0]` on every iteration. Input: provide a sweep path selection containing a valid first edge and a later invalid/stale or non-edge subname. Validation checks the first edge repeatedly, accepts the selection, and only fails later while creating/recomputing the sweep instead of rejecting the invalid path.",
+        "path": "src/Mod/Part/Gui/TaskSweep.cpp",
+        "start_line": 301,
+        "end_line": 301,
+        "observation_id": "85750a15efd46d81",
+        "claimed_path": "src/Mod/Part/Gui/TaskSweep.cpp",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "**1. `simplifyCompound` duplicates `TopAbs_SHELL` and omits `TopAbs_EDGE` (and the `DontSimplifyCompound` logic).**\n\nIn `PartFeature.cpp`, the new `simplifyCompound`:\n```cpp\nstd::array<TopAbs_ShapeEnum, 7> simplificationPriority = {  \n                                        TopAbs_SOLID,\n                                        TopAbs_COMPSOLID,\n                                        TopAbs_FACE,\n                                        TopAbs_SHELL,\n                                        TopAbs_SHELL,   // <-- duplicated\n                                        TopAbs_WIRE,\n                                        TopAbs_VERTEX};\n```\nCompare to the original code which had `TopAbs_EDGE`:\n```cpp\nelse if (shape.countSubShapes(TopAbs_EDGE) == 1)\n    shape = shape.getSubTopoShape(TopAbs_EDGE, 1);\n```\nThe original sequence was: SOLID, COMPSOLID, FACE, SHELL, EDGE, WIRE, VERTEX. The new one dropped `TopAbs_EDGE` and duplicated `TopAbs_SHELL`. This is a real behavioral regression: a compound that contains exactly one EDGE (and no SOLID/COMPSOLID/FACE/SHELL) will no longer be simplified to that edge \u2014 it stays a compound. This affects callers in `getTopoShape` that rely on NeedSubElement giving back a single sub-shape. Concrete failure: having a shape with exactly one edge where one previously got an EDGE back, now gets a COMPOUND. This is line in the diff for PartFeature.cpp `simplifyCompound`. The diff hunk header is `@@ -1300,50 +1298,48 @@` around line ~1305. The array itself is around line ~1303-1309.",
+        "path": "src/Mod/Part/App/PartFeature.cpp",
+        "start_line": 1305,
+        "end_line": 1305,
+        "observation_id": "e151ff3c3f8c0072",
+        "claimed_path": "PartFeature.cpp",
+        "path_resolution": "basename",
+        "merged_from": []
+      },
+      {
+        "content": "**3. `Mirroring.cpp` GUI bug \u2014 uses `sSubName` instead of `subString`.**\n\nIn `src/Mod/Part/Gui/Mirroring.cpp`:\n```cpp\nif (subString.length() > 0){\n    shape = Part::Feature::getTopoShape(pObj,\n                                        sSubName,   // <-- sSubName, but subString was checked!\n                                        ...\n```\nThe condition checks `subString.length() > 0` but passes `sSubName` to getTopoShape. The original passed `subString.c_str()`. So if `subString` is non-empty but `sSubName` is different (or empty/null), the shape will be wrong. This looks like a copy-paste error \u2014 introduced variable `sSubName`. Concrete failure: the selection filter for the mirror plane checks subString has length but calls getTopoShape with sSubName, which may be null or refer to a different element, leading to wrong shape or null \u2192 mirroring plane selection broken. This is a clear defect. Line in Mirroring.cpp hunk `@@ -100,7 +100,14 @@` around line 107.",
+        "path": "src/Mod/Part/Gui/Mirroring.cpp",
+        "start_line": 107,
+        "end_line": 107,
+        "observation_id": "7563618a42271a04",
+        "claimed_path": "Mirroring.cpp",
+        "path_resolution": "basename",
+        "merged_from": []
+      },
+      {
+        "content": "**4. `Command.cpp` `CmdPartRuledSurface` \u2014 `curve2` assigned twice, `curve1` never assigned.**\n\n```cpp\nif (!subnames1.empty()) {\n    curve2 = Part::Feature::getTopoShape(docobj1, subnames1[0], ...).getShape();  // <-- curve2, should be curve1\n    link1 = subnames1[0];\n}\nif (subnames1.size() == 2) {\n    curve2 = ... subnames1[1] ...;  // curve2 again\n    link2 = subnames1[1];\n}\n```\nOriginal code: first one was `curve1 = ... subnames1[0]`, second `curve2 = ... subnames1[1]`. The new code changed the first to `curve2` \u2014 so `curve1` is never assigned when subnames1 has elements, and when there are two subnames, curve2 gets overwritten with the second. This is a real regression: the first curve is lost. Concrete failure: creating a Ruled Surface with two sketches/edges \u2014 the first curve (curve1) is never set (stays default/uninitialized), leading to wrong geometry or the ruled surface using the wrong curve. Line in Command.cpp hunk `@@ -1972,11 +1971,24 @@`.\n\nLet me double check the original: `curve1 = ... subnames1[0]` and `curve2 = ... subnames1[1]`. New: `curve2 = ... subnames1[0]` then `curve2 = ...subnames1[1]`. Yes \u2014 first assignment changed from curve1 to curve2. Defect.",
+        "path": "src/Mod/Part/Gui/Command.cpp",
+        "start_line": 1971,
+        "end_line": 1971,
+        "observation_id": "eb400385c0d05c14",
+        "claimed_path": "Command.cpp",
+        "path_resolution": "basename",
+        "merged_from": []
+      },
+      {
+        "content": "**5. `TaskSweep.cpp` \u2014 loop uses `subnames[0]` for every iteration.**\n\n```cpp\nfor (std::vector<std::string>::const_iterator it = subnames.begin(); it != subnames.end(); ++it) {\n    subShapes.push_back(Part::Feature::getTopoShape(docobj, subnames[0].c_str(), ...));\n}\n```\nWait, this is pre-existing behavior \u2014 the original also used `subnames[0].c_str()`. Let me check the diff: original was `subnames[0].c_str()` too. So this is pre-existing, not introduced. Not a defect introduced by this diff (though it is a latent bug, it's not new). I should focus on defects introduced/regressions. Actually the instructions say \"Review this pull request diff for REAL DEFECTS\" \u2014 defects in the diff. The pre-existing loop bug isn't part of what the change does. I'll skip or mention it's pre-existing. Given the guidance to be exhaustive but report only defects, I'll note this is pre-existing and not caused by the diff \u2014 actually it's unchanged. Skip.\n\n**6. `AppPartPy.cpp` `NoElementMap` flag omission / behavior.** Original call had `noElementMap` param. New code maps it to `Feature::NoElementMap`. Looks consistent.\n\n**7. Default `getShape` / `getTopoShape` options change \u2014 `getShape` defaults to `ResolveLink | Transform` but NOT `NeedSubElement`.** Original `getShape` default `needSubElement=false`, matches. But the top-level default for getShape: `options = ResolveLink | Transform` \u2014 the getShape implementation ORs in NoElementMap. Original default resolveLink=true, transform=true, noElementMap deleted (it was hardcoded `getTopoShape(...,noElementMap=true)`). OK.\n\n**8. `MeasureClient.cpp` `PartMeasureTypeCb` and `getShapeFromStrings` ok.\n\n**9. `getShapeFromStrings` returns `{}` when `!obj`** \u2014 pre-existing.\n\n**10. In `AppPartPy.cpp`, the `retType==2` maps to ResolveLink.** Original passed `resolveLink = retType==2`. Same. OK.\n\n**11. `Measurement.cpp` `findType` / `planesAreParallel`** \u2014 added Transform to flags. Original getShape(.., true) = needSubElement=true, resolveLink=true, transform=true defaults. New flags: NeedSubElement | ResolveLink | Transform. Matches. OK.\n\n**12. `DontSimplifyCompound` handling** \u2014 In `getTopoShape`, the simplify condition: `if (options & NeedSubElement && !(options & DontSimplifyCompound) && shape.shapeType(true) == TopAbs_COMPOUND)`. But note original code simplified only when `needSubElement` \u2014 the condition checks `shape.shapeType(true) == TopAbs_COMPOUND`. Hmm the new one also added `!(options & DontSimplifyCompound)`. OK that's used by FeatureHole.\n\nWait \u2014 but in the original, the `_getTopoShape` had `noElementMap` field removal but the extraction of subelement. Let me not go too deep.\n\n**13. `simplifyCompound` priority array size 7 but only 6 unique entries (SHELL duplicated).** Combined with #1.\n\n**14. `getCameraAlignmentDirection`** \u2014 now uses `NeedSubElement | ResolveLink | Transform`. Original `getTopoShape(this, subname, true)` = needSubElement=true, resolveLink=true(default), transform=true(default). Matches. OK.\n\n**15. `Command.cpp` hasShapesInSelection** \u2014 original had transform=false, resolveLink=true, needSubElement=false. New: `ResolveLink` only. Matches (no transform, no NeedSubElement). OK.\n\n**16. In `FeatureExtrusion.cpp fetchAxisLink`, the else branch still calls `Feature::getShape(linked)` (no options) \u2014 meaning needSubElement=false. That was unchanged. Both branches fine.\n\n**17. `PartFeatures.cpp RuledSurface`** \u2014 NeedSubElement|ResolveLink|Transform. Original getTopoShape(link->getValue(), subs.front().c_str(), true) = needSubElement, and defaults resolveLink=true transform=true. Matches. OK.\n\n**18. `DlgExtrusion.cpp` EdgeSelection** \u2014 matches.\n\nNow the biggest real behavioral changes: \n\n**A. The simplifyCompound drop of EDGE (`TopAbs_EDGE` removed) and SHELL duplicated.** Real regression: For a COMPOUND containing exactly one EDGE, original returned the EDGE; new returns the compound. Losing the EDGE case means behavior differs. Actually wait \u2014 is dropping EDGE truly impactful? Many extractions (e.g. in getTopoShape with NeedSubElement) rely on returning single sub-shapes. If a compound with one edge is no longer simplified to the edge, callers expecting a TopAbs_EDGE get a compound. E.g., `Attacher`, `fetchAxisLink`, etc. that do `TopoDS::Edge(...)`. Concrete failure: revolve/extrude axis given a compound with a single edge now crashes or misbehaves. This is a solid defect.\n\nActually, hold on \u2014 let me reconsider the duplicate. `countSubShapes` for SHELL checks ==1; duplicated SHELL just no-ops the second. The real defect is the loss of EDGE. So the array should be SOLID, COMPSOLID, FACE, SHELL, EDGE, WIRE, VERTEX. The author typo'd SHELL twice, dropping EDGE. Definite defect.\n\n**B. `Command.cpp` curve1->curve2.** Definite defect.\n\n**C. `Mirroring.cpp` sSubName vs subString.** Definite defect.\n\nLet me also check **the `getShape` implementation changing the default noElementMap**. Original getShape: `getTopoShape(obj,subname,needSubElement,pmat,powner,resolveLink,transform,true)` \u2014 hardcoded noElementMap=true. New: `getTopoShape(obj,subname,pmat,powner, options | NoElementMap)`. When getShape is called with default options = ResolveLink|Transform, adds NoElementMap. Consistent.\n\nBut wait \u2014 there are calls to `getShape(obj, subName, nullptr, nullptr, NeedSubElement|ResolveLink|Transform)` in the diff (MeasureClient, TaskCheckGeometry, FeatureBlendCurve, FeatureSketchBased, etc.). Those pass options without NoElementMap, but getShape always ORs in NoElementMap. Fine.\n\nHowever `getShape(obj, subName, pmat, nullptr, NeedSubElement|ResolveLink|Transform)` in MeasureClient `getShapeFromStrings` passes `mat` as pmat. OK.\n\n**D. `_getTopoShape` flags in the recursive call.** The recursive call changed:\n```cpp\nshape = _getTopoShape(owner, sub.c_str(), nullptr, &subObj, nextHiddens, nextLink, Feature::NeedSubElement);\n```\nOriginal: `_getTopoShape(owner, sub.c_str(), true, 0, &subObj, false, false, nextHiddens, nextLink)` = needSubElement=true, pmat=0, powner=&subObj, resolveLink=false, noElementMap=false. New passes `Feature::NeedSubElement` only \u2014 no ResolveLink, no NoElementMap. Matches original (resolveLink=false, noElementMap=false). OK.\n\n**E. `FeatureSketchBased.cpp getUpToShapeFromLinkSubList`** \u2014 the inner branch changed from `getTopoShape(ref, subString.c_str(), true)` to `getShape(...)`. `getShape` always adds NoElementMap and returns `.getShape()`, but `getTopoShape` returns TopoShape. The original made a `TopoShape shape`, then `face = shape` and `face.makeElementFace()`. Using getShape discards the element map, but that might be fine. Actually being a changed function its worth noting but the behavior is equivalent-ish. Not clearly a defect.\n\n**F. `FeatureHole.cpp`** uses `DontSimplifyCompound`, meaning holes with single-sub-shape compound profiles aren't simplified. That's intentional.\n\n**G. Potential bug: `getTopoShape` when `pmat` provided.** New code:\n```cpp\nif (pmat) topMat = *pmat;\nif (options & Transform) obj->getSubObject(nullptr, nullptr, &topMat);\nif ((pmat || options & Transform) && !shape.isNull()) shape.transformShape(topMat, false, true);\nif (pmat) *pmat = topMat * mat;\n```\nOriginal:\n```cpp\nif (pmat || transform) {\n    if (pmat) topMat = *pmat;\n    if (transform) obj->getSubObject(nullptr, nullptr, &topMat);\n    if (!shape.isNull()) shape.transformShape(topMat, false, true);\n    if (pmat) *pmat = topMat * mat;\n}\n```\nEquivalent. OK.\n\nBut note: in the earlier part of getTopoShape, the special-case block:\n```cpp\nif (options & NeedSubElement && (!pmat || *pmat == Base::Matrix4D()) && ...)\n```\nIn new code, `pmat` default null so `!pmat` true. Same as original `needSubElement && (!pmat || ...)`. OK.\n\nNow let me also verify the **exportObject ExportOCAF2** change:\n```cpp\nauto shape = Part::Feature::getTopoShape(parentObj, sub, nullptr, &obj, Part::Feature::Transform * (!sub));\n```\nOriginal: `getTopoShape(parentObj, sub, false, nullptr, &obj, false, !sub)` = needSubElement=false, pmat=nullptr, powner=&obj, resolveLink=false, transform=!sub, noElementMap=false (default). New: `getTopoShape(parentObj, sub, nullptr, &obj, Transform * (!sub))` = options = Transform if !sub else 0. So resolveLink is NOT set (matches resolveLink=false), transform = !sub (matches). NeedSubElement not set (default, matches). OK. Fine.\n\nWait \u2014 there's a subtle precedence issue here: `Part::Feature::Transform * (!sub)` \u2014 Transform is 4, times boolean. If !sub is false \u2192 0. If true \u2192 4. OK. Fine.\n\nLet me now focus on confirming the three strong defects and list more.\n\n**H. `TaskCheckGeometry.cpp`** uses getShape with NeedSubElement|ResolveLink|Transform. Original `getShape(sel.pObject, sel.SubName, true)` = needSubElement=true, resolveLink=true, transform=true. Matches.\n\n**I. `DrawGuiUtil.cpp getProjDirFromFace`** \u2014 getShape with NeedSubElement|ResolveLink|Transform. Original `getShape(obj, faceName, true)` matches. OK.\n\n**J. The biggest one for defaults: `getTopoShape` default options = `ResolveLink | Transform`.** But many old callers that are NOT in this diff but call getTopoShape with the old signature would fail to compile \u2014 but that's outside the diff scope (they'd have been updated). Not reportable here.\n\nNow, is there a **global default behavior change**? Old default for getTopoShape: needSubElement=false, resolveLink=true, transform=true, noElementMap=false. New default options = ResolveLink | Transform. Same. getShape old default: needSubElement=false, resolveLink=true, transform=true, and hardcoded noElementMap=true. New: options default = ResolveLink|Transform, OR NoElementMap \u2192 same. Good.\n\nNow the **`getShape` in `FeatureSketchBased.cpp`** that returns plain TopoDS_Shape assigned to `TopoShape face`: `TopoShape face = shape;` where shape is TopoDS_Shape. Actually:\n```cpp\nauto shape = Part::Feature::getShape(...);  // TopoDS_Shape\nTopoShape face = shape;  // construct\nface = face.makeElementFace();\n```\ngetShape returns a shape with the element map stripped (NoElementMap). makeElementFace works. Probably ok. Minor \u2014 original used TopoShape. Not clearly a defect.\n\nNow let me also check **`TaskSweep` loop bug** \u2014 pre-existing, skipped.\n\nLet me reconsider **`getShapeFromStrings`** returning `{}` for !obj \u2014 pre-existing.\n\nLet me look at **`PartFeature.cpp` line 544 `getElementSource`**: \n```cpp\nshape = Part::Feature::getTopoShape(obj, nullptr, nullptr, &owner);\n```\nOriginal: `getTopoShape(obj, 0, false, 0, &owner)` = needSubElement=false, resolveLink=true(default), transform=true(default). New: default options = ResolveLink|Transform. Matches. OK.\n\nAlright, I also want to double-check a potential issue with the new `getShape` signature at **`PartFeature.cpp` line 856-858**: `getShape(obj, subname, pmat, powner, options | NoElementMap)`. Fine.\n\nNow let me reconsider whether there are more introduced defects.\n\n**K. `Mirroring.cpp` App version (FeatureMirroring.cpp)** uses `subStrings[0]` \u2014 consistent. OK.\n\n**L. In `Command.cpp`, the `curve1` never assigned** \u2014 but also note default `curve1` and `curve2` \u2014 the original assigned curve1 = subnames1[0]. Now not assigned at all. **curve1 uninitialized** \u2192 undefined behavior possibly, or remains whatever earlier value (0-initialized?). Let me check the surrounding context in the file if available. Not available. But it's a clear defect regardless: the first-selection curve is lost.\n\n**M. `simplifyCompound` \u2014 new function extracted but the EDGE loss.** Also note: the original logic preserved the FIRST matching in the fixed order; new order SHELL twice \u2014 if a compound has exactly 1 SHELL, returns shell (same). No other ordering change except EDGE dropped. Defect confirmed.\n\nLet me also double check **`NeedSubElement * (!sub.empty())`** in FeatureSketchBased `getTopoShapeVerifiedFace`:\n```cpp\n(Part::Feature::NeedSubElement * (!sub.empty()))\n    | Part::Feature::ResolveLink | Part::Feature::Transform);\n```\nOriginal: `getTopoShape(obj, sub.c_str(), !sub.empty())` = needSubElement = !sub.empty(), resolveLink=true, transform=true. New matches. OK.\n\n**N. `DlgExtrusion.cpp`** fine.\n\n**O. `FeatureExtrude.cpp`** fine.\n\nLet me now also consider **`TaskSweep`** again more carefully \u2014 pre-existing, skip.\n\nNow let me reconsider the **`AppPartPy.cpp`** \u2014 there's a potential subtle issue: the options combination. Actually wait, re-examine:\n```cpp\n(Feature::ResolveLink * resolveLink) | \n(Feature::NeedSubElement * Base::asBoolean(needSubElement) | \n(Feature::Transform * Base::asBoolean(transform)) | \n(Feature::NoElementMap * Base::asBoolean(noElementMap)));\n```\n\nLet me count parens. `(A) | (B | (C) | (D))`? Let's parse: \n- `Feature::ResolveLink * resolveLink` \n- `|` \n- `Feature::NeedSubElement * Base::asBoolean(needSubElement)` \n- `|` \n- `(Feature::Transform * Base::asBoolean(transform))` \n- `|` \n- `(Feature::NoElementMap * Base::asBoolean(noElementMap))`\n\nThe open paren after `| (` and closing at end. So the whole thing is `(ResolveLink*resolveLink) | (NeedSubElement*b1) | (Transform*b2) | (NoElementMap*b3)`. That's correct OR of all. Because `*` binds tighter than `|`, and the outer paren encloses all. This computes the OR correctly. No bug here. Good, rule out.\n\nNow, is there a subtle issue that `resolveLink` boolean `retType==2` and combined with the options semantics? The retType in AppPartPy \u2014 retType 0 returns... whatever. Fine.\n\nLet me also check **`Measurement.cpp` findType** \u2014 returns Invalid on null. Fine.\n\nLet me now also examine whether the **`simplifyCompound` array should include EDGE** \u2014 yes confirmed.\n\nNow, one more potential defect: **`PartFeature.h` comment for getShape `transform` doc** references parameters that no longer exist in the same form, but that's doc, skip.\n\nLet me consider **the `DontSimplifyCompound` in FeatureHole getProfileShape** \u2014 with DontSimplifyCompound, the compound is not simplified. getProfileShape makes a compound of shapes then the hole uses it. Intentional for multi-profile holes. Not a defect.\n\nNow let me reconsider: is there anything about **`PartFeatures.cpp`** fine.\n\nLet me check whether there's a **double-application of transform** regression somewhere. In `getTopoShape`, transformation handling seems preserved. In MeasureClient `getLocatedShape`:\n```cpp\nPart::TopoShape shape = Part::Feature::getTopoShape(obj, subject.getElementName(), mat, nullptr);\n```\nOriginal: `getTopoShape(obj, subject.getElementName(), false, mat, nullptr, true)` = needSubElement=false, pmat=mat, resolveLink=true, transform=true(default). New: default options = ResolveLink|Transform, pmat=mat. Matches \u2014 transform=true default. OK.\n\nHmm, wait: original passed `true` as 6th arg (resolveLink=true). New default includes ResolveLink. Same.\n\nBut one important consideration: `getLocatedShape` \u2014 the original had `transform=true`; in new default transform=true. OK.\n\nNow \u2014 is there a scenario where defaults create the defect? Let me look at the **`hasShapesInSelection`** \u2014 passes `ResolveLink` only, no NeedSubElement, no Transform. Original was transform=false. New no Transform flag \u2192 transform false. Matches. OK.\n\nAlright. So the strong reportable defects:",
+        "path": "src/Mod/Part/Gui/TaskSweep.cpp",
+        "start_line": 544,
+        "end_line": 544,
+        "observation_id": "2f567c47f7b75c1e",
+        "claimed_path": "TaskSweep.cpp",
+        "path_resolution": "basename",
+        "merged_from": []
+      },
+      {
+        "content": "2. **Command.cpp CmdPartRuledSurface \u2014 curve1 assignment changed to curve2** \u2014 first of two profiles/curves lost, and with 2 subnames curve2 overwritten. Part/Gui/Command.cpp line ~1974.",
+        "path": "src/Mod/Part/Gui/Command.cpp",
+        "start_line": 1974,
+        "end_line": 1974,
+        "observation_id": "a7f5b20c5c795860",
+        "claimed_path": "Command.cpp",
+        "path_resolution": "basename",
+        "merged_from": []
+      },
+      {
+        "content": "3. **Mirroring.cpp GUI \u2014 `sSubName` used instead of `subString`** \u2014 wrong sub-element passed / potential null \u2192 mirror plane selection broken. Part/Gui/Mirroring.cpp.\n\nAre there more? Let me scan again for less obvious ones.\n\n**P. `FeatureSketchBased.cpp` `getProfileShape`** \u2014 changed signature to accept subShapeOptions, default = NeedSubElement|ResolveLink|Transform. FeatureHole passes DontSimplifyCompound too. But there might be OTHER callers of getProfileShape that relied on the implicit compound simplification. In the old code, getProfileShape internals called getTopoShape with needSubElement=true, which simplified compounds. Now with DontSimplifyCompound for holes. Other callers use the default (which simplifies). OK.\n\n**Q. The `simplifyCompound` EDGE issue** also: the missing EDGE means `getTopoShape` with NeedSubElement won't collapse single-edge compounds. This affects e.g. `Attacher::extractSubShape`, `fetchAxisLink` (Extrusion/Revolution), `Mirroring` \u2014 anywhere a compound-with-single-edge was expected to yield an edge (like `TopoDS::Edge` casts). Real defect.\n\n**R. Another subtle one: precedence of `NeedSubElement * (!sub.empty())`** fine.\n\n**S. `Command.cpp` \u2014 in the second branch `if (subnames2.size() == 1)` assigns `curve2` and `link2`. But if subnames1 was size 1 (single curve), curve1 never set \u2014 the `link1` IS set but `curve1` not. Then later the ruled surface code uses both curve1 and curve2. If subnames1.size()==1 and subnames2.size()==1, then curve2 gets overwritten by the second selection's curve \u2014 and curve1 stays unset. This is the same defect as #2.\n\nNow, is there a defect where **`curve1` is used but never initialized**? That yields undefined/garbage geometry. Yes.\n\nLet me also check **`TaskSweep`** again \u2014 pre-existing.\n\n**T. Is there a defect in the `else` fallback in FeatureExtrusion/Revolution fetchAxisLink?** No.\n\n**U. `FeatureProjectOnSurface`** fine.\n\n**V. Let me reconsider `_getTopoShape` hunk at line 1183** \u2014 new call passes `Feature::NeedSubElement` but the previous also had the compound-simplification behavior applied later at the getTopoShape level. Fine.\n\n**W. Could `getShape` returning a void/empty shape when options include ResolveLink but obj null guard?** The guard `if (!obj || !obj->getNameInDocument())` returns `{}`. Fine.\n\n**X. One more: `simplifyCompound` \u2014 `TopAbs_SHELL` duplicate.** Already covered in #1.\n\n**Y. `PartDesign/FeatureSketchBased.cpp` \u2014 `getTopoShapeSupportFace` and `getUpToFaceFromLinkSub`** \u2014 pass NeedSubElement|ResolveLink|Transform. Original: `getTopoShape(ref, \"...\", true)` \u2192 needSubElement, defaults resolveLink/transform true. Matches.\n\nWait \u2014 original `getTopoShapeSupportFace`: `getTopoShape(ref, ..., true)` \u2192 needSubElement=true. New flags include NeedSubElement \u2192 matches. But interestingly the new `getUpToFaceFromLinkSub` passes `subs[0].c_str()` always (even if subs empty, passes nullptr). Original `subs.size() ? subs[0] : nullptr`. New `subs.empty() ? nullptr : subs[0]`. Same. OK.\n\n**Z. In `getUpToShapeFromLinkSubList`, the change from `getTopoShape` to `getShape`** \u2014 `getShape` strips element map. Then `face.makeElementFace()`. Might be intended. Not clearly a defect.\n\nLet me also check **`DrawGuiUtil`** \u2014 fine.\n\nNow let me also double-check there isn't a **missing `Transform` flag** somewhere causing wrong behavior. In FeatureSketchBased `getUpToShapeFromLinkSubList` inner branch: getShape with NeedSubElement|ResolveLink|Transform. Original getTopoShape(ref, subString, true) = needSubElement + defaults resolveLink+transform. Same.\n\nOK, I think I have three strong defects plus maybe a couple more subtle ones. Let me look more carefully for additional ones to be exhaustive.\n\n**AA. `Command.cpp` \u2014 the first `curve2` inside `if (!subnames1.empty())`.** Even with a single subname1, this assigns `curve2` (wrong var) rather than `curve1`. Definite.\n\nLet me also double-check: the exportObject `Transform * (!sub)` \u2014 if `sub` is a char*, `!sub` is false when sub non-null. So Transform not applied when sub is given. Matches original `transform = !sub`. OK.\n\nLet me reconsider whether the **`simplifyCompound` being applied in `getTopoShape` for ALL needSubElement callers changes prior behavior for the EDGE-compound case** \u2014 yes. That's the regression.\n\nAlso, I realize there might be a **defect in `simplifyCompound` ordering** where the priority list removed the `TopAbs_EDGE` \u2014 but let me also note: the original had `TopAbs_EDGE` between SHELL and WIRE. New omits it. So if a compound has exactly 1 edge: original returned EDGE; new returns the compound unchanged. Concrete: e.g., a Draft/Part feature that's a single wire/edge compound \u2014 attachments requiring an edge sub-shape now get a compound. Definite.\n\nI should also examine whether there might be a **crash** in simplifyCompound because `countSubShapes` for TopAbs_SHELL duplicates \u2014 no.\n\nNow, let me also flag a **possible compile/logic issue in AppPartPy with `AsBoolean` and OR precedence** \u2014 ruled out.\n\nLet me reconsider **`getShapeFromStrings` returning `{}`** \u2014 pre-existing (it was already `return {};` before within the diff context). Not new.\n\nNow, one more: **`PartMeasureTypeCb`** uses `Feature::NeedSubElement | Feature::ResolveLink | Feature::Transform`. Original `getShape(ob, subName, true)` = needSubElement, defaults resolveLink+transform. Same. OK.\n\nLet me now think about whether the **change of default noElementMap** affects any call site that DIDN'T specify it. Old getShape always noElementMap=true (final arg). New getShape always ORs NoElementMap. Same. OK.\n\nNow \u2014 a potentially important one: **`getCameraAlignmentDirection`** original had needSubElement=true + defaults; new NeedSubElement|ResolveLink|Transform. Same.\n\nAlright. Let me also look at whether the **`DontSimplifyCompound`** is passed through getProfileShape default from header (default = NeedSubElement|ResolveLink|Transform). Good.\n\nNow, a subtle one: **In `FeatureSketchBased::getProfileShape`, when subs are used (else branch), the new code passes `subShapeOptions` to each getTopoShape. The default includes Transform & ResolveLink.** Original passed needSubElement=true + defaults. Same for default. For hole with DontSimplifyCompound, the compound isn't simplified. Hmm, but then `makeElementCompound(shapes)` builds compound of multiple profile shapes, then hole processes the compound. With DontSimplifyCompound, a single-profile compound stays compound. That's intended for holes. Fine.\n\nI think the main fresh defects are the three. Let me reconsider if there are additional real ones hiding:\n\n- **The `Mirroring.cpp` uses `sSubName`** \u2014 this is a real bug (mixed variable). Let me verify by re-reading the hunk:\n```cpp\nif (subString.length() > 0){\n    shape = Part::Feature::getTopoShape(pObj,\n                                        sSubName,\n                                        nullptr,\n                                        nullptr,\n                                        Part::Feature::NeedSubElement\n                                            | Part::Feature::ResolveLink\n                                            | Part::Feature::Transform).getShape();                            \n    if (strstr(subString.c_str(), \"Face\")){\n```\nYes \u2014 condition uses `subString.length()`, call uses `sSubName`. Note `sSubName` is the SelectionFilterGate parameter (the GUI subname), while `subString` is a local derived from it possibly. Let me think \u2014 in the gate, the parameters are typically `(pObj, sSubName)`. `subString` might be `subString = sSubName` or derived. If `sSubName != subString` (e.g., subString is a cleaned-up/different string), passing `sSubName` could pass the raw full subname or null. In many filters, sSubName is like \"Face1\" and subString is derived. Hmm. Regardless, the original passed `subString.c_str()` and now passes `sSubName` \u2014 if they differ, behavior changes. This inconsistency (checking one, using the other) is at minimum a real potential defect; the two variables may differ. I'll report it as a defect: uses `sSubName` while the guard tested `subString`, inconsistent \u2192 wrong/empty sub-element can be passed.\n\nActually, let me reconsider the relationship. In Mirroring.cpp the original used `subString`. `subString` is likely a member or a parameter of the gate's allow function. Given `sSubName` is the standard gate param name, `subString` may be a separate variable. The risk is real. Report as medium confidence.\n\nLet me also re-examine **TaskSweep** loop using `subnames[0]` for each iteration \u2014 I'll note it's pre-existing, not introduced, so out of scope.\n\nLet me also reconsider **`ExportOCAF2`** once more \u2014 it removed the `noElementMap` handling? Original last arg was `!sub` as transform; noElementMap default false. New Transform*(!sub). No NoElementMap. Same. OK.\n\nNow, is there a **regression where `getTopoShape` no longer simplifies compounds for non-NeedSubElement?** Original only simplified when `needSubElement` true. Same. OK.\n\nLet me finalize. I want to also double check potential **NULL TOPO cast / bug in FeatureExtrusion fetchAxisLink** \u2014 no.\n\nActually, let me reconsider the **`Command.cpp`** more: the function's variables `curve1`/`curve2`. Let me think about the ruled surface command flow: it can select from docobj1 (two subnames) or from two docobjs. When `subnames1.size()==2`, first subname \u2192 curve1 (now wrongly curve2), second \u2192 curve2. Then line 2008 branch: if subnames2... So actually:\n- Original: subnames1.size()==2: curve1=subnames1[0], curve2=subnames1[1].\n- New: subnames1.size()==2: curve2=subnames1[0] (WRONG var), then curve2=subnames1[1]. So curve1 NEVER set, curve2 = second element. Result: ruled surface built from curve1 (unset/garbage) and curve2 (second). Broken.\n\nDefect confirmed. This is the most severe functional defect (a command actively broken).\n\nRanking:",
+        "path": "src/Mod/Part/Gui/Mirroring.cpp",
+        "start_line": 1183,
+        "end_line": 1183,
+        "observation_id": "52876e2729dcc5e8",
+        "claimed_path": "Mirroring.cpp",
+        "path_resolution": "basename",
+        "merged_from": []
+      },
+      {
+        "content": "3. Mirroring.cpp sSubName/subString mix.\n\nAlso, are there any additional minor ones? Let me look at the **`getShape` in FeatureSketchBased** and whether removing element map breaks makeElementFace. Marginal.\n\nAlso, I should double check **`simplifyCompound` array size** = 7 elements: SOLID, COMPSOLID, FACE, SHELL, SHELL, WIRE, VERTEX = 7 entries. intended 7 unique but 2 SHELL. So EDGE is missing entirely. Combined with it being an 7-element array, they intended 7 distinct types (SOLID, COMPSOLID, FACE, SHELL, EDGE, WIRE, VERTEX). The typo replaced EDGE with a duplicate SHELL. Defect.\n\nLet me also verify there's not an issue where `DontSimplifyCompound` = 16 but the enum array... no.\n\nI think I should report these. Let me also reconsider whether **the removal of `TopAbs_EDGE`** doesn't matter because EDGE profiles are rarely in single-edge compounds that need simplification... but there are real cases (attachments to single edges, axes). It's a genuine regression with concrete failure.\n\nLet me also consider one more: **`AppPartPy.cpp`** \u2014 the previous code used `retType==2` and default transform boolean false etc. Wait original: `getTopoShape(obj,subname,Base::asBoolean(needSubElement), &mat,&subObj,retType==2,Base::asBoolean(transform),Base::asBoolean(noElementMap))`. So resolveLink = retType==2, transform = asBoolean(transform), noElementMap = asBoolean(noElementMap). New maps identically. OK.\n\nNow let me also flag a potential additional minor: **`getTopoShape` default options includes ResolveLink but the smoke for callers that expected no ResolveLink** \u2014 not in this diff.\n\nLet me settle on the final answer with the three (plus mention of the pre-existing TaskSweep as explicitly pre-existing/non-diff). Actually, the task says report every defect in the diff. TaskSweep's `subnames[0]` in loop is unchanged by this diff (both old and new use subnames[0]), so not a defect introduced. I'll skip per \"Do not restate what the change does.\"\n\nHmm, but wait \u2014 I want to be thorough. Let me reconsider the Mirroring GUI one more time and also check whether `Mirroring.cpp`'s other hunk uses sSubName correctly. Only one hunk. The App-side Mirroring (FeatureMirroring.cpp) uses `subStrings[0]` correctly.\n\nLet me reconsider whether there are defects in the **argument reordering** that dropped a parameter. E.g., `Feature::getTopoShape(parentObj, sub, nullptr, &obj, ...)` \u2014 original had `&obj` as 5th param (powner). New: 4th param = &obj (powner). Correct positional mapping: (obj, subname, pmat, powner, options). Original: (obj, subname, needSubElement, pmat, powner, resolveLink, transform, noElementMap). So original powner was 5th; new powner 4th (after pmat). In ExportOCAF2, original `(parentObj, sub, false, nullptr, &obj, false, !sub)` \u2192 pmat=nullptr, powner=&obj. New `(parentObj, sub, nullptr, &obj, ...)` \u2192 pmat=nullptr, powner=&obj. Correct.\n\nAll conversions look positionally correct EXCEPT the two bugs found (curve var, sSubName) and the EDGE drop.\n\nLet me also reconsider **`PartFeature.cpp` line 544** hunk and **line 785** \u2014 use getTopoShape(obj, nullptr, nullptr, &owner) \u2014 pmat=null\u2282 default options ResolveLink|Transform. Original getTopoShape(obj, 0, false, 0, &owner) = defaults resolveLink=true transform=true. Same.\n\nOK. Final: three defects. Let me also consider whether I should report the **pre-existing TaskSweep** loop \u2014 since the instructions emphasize exhaustive and \"go through every hunk\", but also \"each item must be a defect with a concrete failure scenario\" and \"Do not restate what the change does.\" The TaskSweep bug is not introduced; restating it would arguably be out of scope and it exists in the changed hunk. It's a genuine defect present in the diff's context lines (unchanged). I'll mention it as a peripheral note but clearly mark pre-existing \u2014 actually the instructions say report only defects. I'll include it as a low-priority item clearly labeled as pre-existing-but-visible-in-hunk. Given \"be exhaustive,\" I'll include it briefly.\n\nAlso let me reconsider `getUpToShapeFromLinkSubList` changing getTopoShape\u2192getShape which strips element map; the original TopoShape retained an element map which `makeElementFace` may rely on for proper face construction. Marginal; getShape resets elementMap so `face.makeElementFace()` may fail to map. Actually could be a real subtle defect: getShape calls getTopoShape with NoElementMap \u2192 resets element map \u2192 makeElementFace may produce face without element mapping \u2192 downstream ShapeBinder / pad may not properly map. But it's speculative. I'll mention as low-confidence.\n\nI'll now write the review. Line numbers from hunk headers:\n\n- Command.cpp: heading `@@ -1972,11 +1971,24 @@`, first assignment at new line ~1974-1982 (the `curve2 = getTopoShape(...subnames1[0])`).\n- PartFeature.cpp simplifyCompound array: heading `@@ -1300,50 +1298,48 @@` around new lines ~1301-1309.\n- Mirroring.cpp: heading `@@ -100,7 +100,14 @@`, sSubName line ~107.\n- TaskSweep.cpp: heading `@@ -298,7 +298,13 @@`, loop at ~302.\n\nFor PartFeature.h lines, the GetShapeOptions enum line ~55-64.\n\nLet me produce the final report.\n\nActually, let me reconsider the severity ordering and make sure the Command.cpp defect is genuinely present (could the author have intended curve2? No \u2014 the first subname of the first object must set curve1; the original set curve1 for subnames1[0]). Confirmed defect.\n\nLet me write it up.The working directory is empty (no source files present), so I cannot cross-check against the live repo. The following defects are identified directly from the diff's content, which is self-consistent enough to establish them.\n\n## Defects (most severe first)",
+        "path": "src/Mod/Part/Gui/Mirroring.cpp",
+        "start_line": 544,
+        "end_line": 544,
+        "observation_id": "96acc7e3c756920d",
+        "claimed_path": "Mirroring.cpp",
+        "path_resolution": "basename",
+        "merged_from": [
+          "305951dc2deadb54"
+        ]
+      },
+      {
+        "content": "### 1. `src/Mod/Part/Gui/Command.cpp` \u2014 `CmdPartRuledSurface`: first curve lost (`curve1` reassigned to `curve2`)\nHunk `@@ -1972,11 +1971,24 @@`.\n\nThe first assignment, which originally was\n```cpp\ncurve1 = Part::Feature::getTopoShape(docobj1, subnames1[0].c_str(), ...).getShape();\nlink1 = subnames1[0];\n```\nis now\n```cpp\ncurve2 = Part::Feature::getTopoShape(docobj1, subnames1[0].c_str(), ...).getShape();\nlink1 = subnames1[0];\n```\nSo `curve1` is never assigned, and the second conditional (`subnames1.size() == 2`) also writes `curve2` (with `subnames1[1]`).\n\n**Failure scenario:** With two selected profiles from the first object, `curve1` is left at its default/zero-initialized value and `curve2` holds only the second profile \u2192 the Ruled Surface is built from a garbage first curve plus the second curve, producing a broken surface. With a single profile from the first object, the sole curve goes into `curve2` instead of `curve1`, so `curve1` is still unset. This is a functional regression of the command.",
+        "path": "src/Mod/Part/Gui/Command.cpp",
+        "start_line": 1971,
+        "end_line": 1971,
+        "observation_id": "c5fc235c975bf0fb",
+        "claimed_path": "src/Mod/Part/Gui/Command.cpp",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "### 2. `src/Mod/Part/App/PartFeature.cpp` \u2014 `simplifyCompound` drops `TopAbs_EDGE` (and duplicates `TopAbs_SHELL`)\nHunk `@@ -1300,50 +1298,48 @@`, the new array (new lines ~1301\u20131309):\n```cpp\nstd::array<TopAbs_ShapeEnum, 7> simplificationPriority = {\n    TopAbs_SOLID,\n    TopAbs_COMPSOLID,\n    TopAbs_FACE,\n    TopAbs_SHELL,\n    TopAbs_SHELL,   // duplicate \u2014 should be EDGE\n    TopAbs_WIRE,\n    TopAbs_VERTEX};\n```\nThe removed original logic had `TopAbs_EDGE` between `SHELL` and `WIRE`. The 7-entry array now contains two `SHELL` entries and no `EDGE`.\n\n**Failure scenario:** Any `getTopoShape(..., NeedSubElement)` call on a `COMPOUND` containing exactly one `EDGE` (and no SOLID/COMPSOLID/FACE/SHELL) previously collapsed to that single `EDGE`; now it returns the raw compound. Call sites that then `TopoDS::Edge(...)` or rely on `shapeType() == TopAbs_EDGE` (e.g. axis/extrusion edge extraction in `FeatureExtrusion::fetchAxisLink`, `FeatureRevolution::fetchAxisLink`, `Attacher::extractSubShape`) receive a compound instead of the edge \u2192 wrong shape type, broken/crashing downstream geometry. This is a behavioral regression across every `NeedSubElement` caller in the diff.",
+        "path": "src/Mod/Part/App/PartFeature.cpp",
+        "start_line": 1301,
+        "end_line": 1301,
+        "observation_id": "5be19e801b97937d",
+        "claimed_path": "src/Mod/Part/App/PartFeature.cpp",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "### 3. `src/Mod/Part/Gui/Mirroring.cpp` \u2014 `MirrorPlaneSelection`: guarded on `subString` but passes `sSubName`\nHunk `@@ -100,7 +100,14 @@`:\n```cpp\nif (subString.length() > 0){\n    shape = Part::Feature::getTopoShape(pObj,\n                                        sSubName,   // <-- should be subString\n                                        ...\n```\nThe guard tests `subString.length() > 0`, but the shape is fetched with `sSubName`, a different variable (the original passed `subString.c_str()`). The two strings are not guaranteed to be identical.\n\n**Failure scenario:** When `subString` and `sSubName` differ (the gate is entered with a valid derived `subString` but an empty/different raw `sSubName`), `getTopoShape` is called with an empty or wrong sub-name \u2192 null/garbage shape or failure to fetch the actual mirror-plane face \u2192 the mirror-plane selection filter in the GUI silently rejects valid selections or uses the wrong face.",
+        "path": "src/Mod/Part/Gui/Mirroring.cpp",
+        "start_line": 100,
+        "end_line": 100,
+        "observation_id": "2f7e18b1637b23b2",
+        "claimed_path": "src/Mod/Part/Gui/Mirroring.cpp",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "### 4. `src/Mod/Part/Gui/TaskSweep.cpp` \u2014 loop body indexes `subnames[0]` for every iteration (visible in hunk)\nHunk `@@ -298,7 +298,13 @@` (line ~302). The for-loop iterates `it` over `subnames` but each `push_back` uses `subnames[0].c_str()`:\n```cpp\nfor (std::vector<std::string>::const_iterator it = subnames.begin(); it != subnames.end(); ++it) {\n    subShapes.push_back(Part::Feature::getTopoShape(docobj, subnames[0].c_str(), ...));\n}\n```\nNote: this mis-indexing predates the diff (the old line also used `subnames[0]`), so it is not introduced here, but the changed hunk carries it forward: multi-profile sweeps push the same first profile repeatedly, yielding duplicate/incomplete sections. I flag it because it is a genuine defect present in the diff body, though pre-existing.",
+        "path": "src/Mod/Part/Gui/TaskSweep.cpp",
+        "start_line": 302,
+        "end_line": 302,
+        "observation_id": "483a81f592ac84d4",
+        "claimed_path": "src/Mod/Part/Gui/TaskSweep.cpp",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "### 5. `src/Mod/PartDesign/App/FeatureSketchBased.cpp` \u2014 `getUpToShapeFromLinkSubList`: `getTopoShape` \u2192 `getShape` strips the element map before `makeElementFace`\nHunk `@@ -687,7 +711,15 @@`:\n```cpp\nauto shape = Part::Feature::getShape(ref, subString.c_str(), nullptr, nullptr, NeedSubElement | ResolveLink | Transform);\nTopoShape face = shape;\n```\nPreviously this was `getTopoShape(...)` (kept the element map). `getShape` unconditionally forces `NoElementMap` (per its implementation), resetting the element map, then `face.makeElementFace()` builds a face without mapped elements.\n\n**Failure scenario:** An \"up to face\" reference built from a linked sub-shape now produces a face with no element mapping, so downstream shape-binder/boolean mapping or recompute reporting on that face is lost or mis-mapped. (Lower confidence \u2014 depends on whether callers need the element map, but the change demonstrably alters what is returned.)",
+        "path": "src/Mod/PartDesign/App/FeatureSketchBased.cpp",
+        "start_line": 711,
+        "end_line": 711,
+        "observation_id": "66fada0b56d4a93c",
+        "claimed_path": "src/Mod/PartDesign/App/FeatureSketchBased.cpp",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "### 1. **PartFeature.cpp:1323** \u2014 `simplifyCompound` misses `TopAbs_EDGE`, duplicates `TopAbs_SHELL`\n\n**Failure scenario**: A compound shape containing exactly one Edge (and no Solid, CompSolid, Face, or Shell) is passed to `getTopoShape` with `NeedSubElement` set. Old code would extract the Edge; new code skips Edge (not in priority array) and returns the compound unchanged (or extracts Wire/Vertex if present).\n\n```cpp\nstd::array<TopAbs_ShapeEnum, 7> simplificationPriority = {  \n    TopAbs_SOLID,\n    TopAbs_COMPSOLID,\n    TopAbs_FACE,\n    TopAbs_SHELL,\n    TopAbs_SHELL,  // duplicate\n    TopAbs_WIRE,\n    TopAbs_VERTEX};  // TopAbs_EDGE missing!\n```\n\n---",
+        "path": "src/Mod/Part/App/PartFeature.cpp",
+        "start_line": 1323,
+        "end_line": 1323,
+        "observation_id": "aa2ff2712244e37c",
+        "claimed_path": "PartFeature.cpp",
+        "path_resolution": "basename",
+        "merged_from": []
+      },
+      {
+        "content": "### 2. **src/Mod/Part/Gui/Command.cpp:1972** \u2014 Wrong variable assignment (`curve2` instead of `curve1`)\n\n**Failure scenario**: Creating a RuledSurface with exactly one sub-element in `subnames1`. The first block assigns to `curve2` (should be `curve1`), leaving `curve1` uninitialized. Subsequent code using `curve1` reads garbage.\n\n```cpp\nif (!subnames1.empty()) {\n    curve2 = Part::Feature::getTopoShape(docobj1,  // BUG: should be curve1\n```\n\n---",
+        "path": "src/Mod/Part/Gui/Command.cpp",
+        "start_line": 1972,
+        "end_line": 1972,
+        "observation_id": "8e8ca2bbb4d801e7",
+        "claimed_path": "src/Mod/Part/Gui/Command.cpp",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "### 3. **src/Mod/Part/Gui/Mirroring.cpp:103** \u2014 Uses undeclared variable `sSubName` instead of parameter `subString`\n\n**Failure scenario**: User selects a sub-element for mirror plane. The `accept` method parameter is `subString`, but the call passes `sSubName` (likely a different member variable or uninitialized). Retrieves wrong shape or crashes.\n\n```cpp\nbool accept(..., const char* subString) {\n    ...\n    shape = Part::Feature::getTopoShape(pObj, sSubName, ...  // BUG: should be subString\n```\n\n---",
+        "path": "src/Mod/Part/Gui/Mirroring.cpp",
+        "start_line": 103,
+        "end_line": 103,
+        "observation_id": "c9c4bfb95770ab92",
+        "claimed_path": "src/Mod/Part/Gui/Mirroring.cpp",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "### 4. **src/Mod/PartDesign/App/FeatureSketchBased.cpp:711** \u2014 Calls `getShape` (forces `NoElementMap`) instead of `getTopoShape`\n\n**Failure scenario**: In `getUpToShapeFromLinkSubList`, a sub-shape is retrieved by name via `getShape`, which forces `NoElementMap` flag. This resets the element map (`shape.resetElementMap(); shape.Tag = 0;`). The subsequent `face.makeElementFace()` relies on element tags to find the correct face \u2014 fails or returns wrong face.\n\n```cpp\n// Old: getTopoShape (noElementMap=false)\nauto shape = Part::Feature::getTopoShape(ref, subString.c_str(), true);\n// New: getShape (forces NoElementMap=true via getShape implementation)\nauto shape = Part::Feature::getShape(ref, subString.c_str(), ...);\nTopoShape face = shape;\nface = face.makeElementFace();  // element map cleared \u2192 fails\n```\n\n---",
+        "path": "src/Mod/PartDesign/App/FeatureSketchBased.cpp",
+        "start_line": 711,
+        "end_line": 711,
+        "observation_id": "7074c0b77a5c35e6",
+        "claimed_path": "src/Mod/PartDesign/App/FeatureSketchBased.cpp",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "### 5. **src/Mod/Surface/App/Blending/FeatureBlendCurve.cpp:141** \u2014 Calls `getShape` (forces `NoElementMap`) instead of `getTopoShape`\n\n**Failure scenario**: Similar to #4. `getShape` forces `NoElementMap`, clearing element tags. If downstream code (not shown in diff) depends on element mapping for the blend curve, it will fail.\n\n```cpp\n// Old: getTopoShape(...).getShape() \u2014 preserves element map\naxEdge = Feature::getTopoShape(linked, ..., true).getShape();\n// New: getShape \u2014 forces NoElementMap\naxEdge = Part::Feature::getShape(linked, ..., NeedSubElement | ResolveLink | Transform);\n```\n\n---",
+        "path": "src/Mod/Surface/App/Blending/FeatureBlendCurve.cpp",
+        "start_line": 141,
+        "end_line": 141,
+        "observation_id": "b824cfc08eb345f6",
+        "claimed_path": "src/Mod/Surface/App/Blending/FeatureBlendCurve.cpp",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "### 6. **src/Mod/Part/App/AppPartPy.cpp:2295** \u2014 Misleading parentheses in options bitmask (maintenance hazard)\n\n**Failure scenario**: While functionally correct due to `|` associativity, the parentheses structure `(A) | (B | (C) | (D))` suggests the author intended `(A) | (B) | (C) | (D)`. A future maintainer \"fixing\" the parentheses to match the visual grouping could change behavior if operator precedence were different (e.g., if `*` had lower precedence than `|`).\n\n```cpp\n(Feature::ResolveLink * resolveLink) | \n(Feature::NeedSubElement * Base::asBoolean(needSubElement) | \n(Feature::Transform * Base::asBoolean(transform)) | \n(Feature::NoElementMap * Base::asBoolean(noElementMap))))\n```\n\n---",
+        "path": "src/Mod/Part/App/AppPartPy.cpp",
+        "start_line": 2295,
+        "end_line": 2295,
+        "observation_id": "baf784c9031642e2",
+        "claimed_path": "src/Mod/Part/App/AppPartPy.cpp",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "### 7. **src/Mod/Part/Gui/TaskSweep.cpp:298** \u2014 Pre-existing bug preserved: loop uses `subnames[0]` instead of `*it`\n\n**Failure scenario**: Multiple sub-elements selected for sweep. Only the first sub-element (`subnames[0]`) is processed repeatedly, ignoring the rest.\n\n```cpp\nfor (auto it = subnames.begin(); it != subnames.end(); ++it) {\n    subShapes.push_back(Part::Feature::getTopoShape(docobj, subnames[0].c_str(), ...));  // BUG: should be *it\n}\n```\n(Not introduced by this diff, but not fixed either.)\n\n---",
+        "path": "src/Mod/Part/Gui/TaskSweep.cpp",
+        "start_line": 298,
+        "end_line": 298,
+        "observation_id": "b3c343d1e86abcbe",
+        "claimed_path": "src/Mod/Part/Gui/TaskSweep.cpp",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "### 8. **src/Mod/Part/App/FeatureExtrusion.cpp:263** \u2014 `getShape` default options include `Transform`, but caller may not want it\n\n**Failure scenario**: `calculateShapeNormal` calls `getShape(shapeLink.getValue(), nullptr, &mat, &docobj)` relying on default `options = ResolveLink | Transform`. The `Transform` flag causes `obj->getSubObject(nullptr, nullptr, &topMat)` to overwrite `topMat` with the object's placement, then `shape.transformShape(topMat)` applies it. But the caller also receives `*pmat = topMat * mat` and may apply it again, double-transforming the normal.\n\n```cpp\n// New getShape default: options = ResolveLink | Transform\nTopoDS_Shape sh = Feature::getShape(shapeLink.getValue(), nullptr, &mat, &docobj);\n// shape already transformed by object placement via Transform flag\n// *pmat also includes object placement \u2192 caller may double-apply\n```\n\nOld code had `transform=true` default too, so this is pre-existing, but the new explicit flag structure makes it easier to accidentally enable.\n\n---",
+        "path": "src/Mod/Part/App/FeatureExtrusion.cpp",
+        "start_line": 263,
+        "end_line": 263,
+        "observation_id": "a47f21c89b81a235",
+        "claimed_path": "src/Mod/Part/App/FeatureExtrusion.cpp",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "### 9. **src/Mod/Part/App/ExportOCAF2.cpp:385** \u2014 Obscure `Transform * (!sub)` expression\n\n**Failure scenario**: While `Transform(4) * bool` works (0 or 4), it relies on implicit bool\u2192int conversion and enum values being powers of two. If `Transform` enum value changes (e.g., to 8), the multiplication still works but the intent is opaque. A maintainer might \"simplify\" to `Transform & (!sub)` which would break (bitwise AND with bool).\n\n```cpp\nPart::Feature::Transform * (!sub)  // returns 0 or 4\n```\n\n---",
+        "path": "src/Mod/Import/App/ExportOCAF2.cpp",
+        "start_line": 385,
+        "end_line": 385,
+        "observation_id": "d823f466d26b28f2",
+        "claimed_path": "src/Mod/Part/App/ExportOCAF2.cpp",
+        "path_resolution": "basename",
+        "merged_from": []
+      },
+      {
+        "content": "### 10. **src/Mod/PartDesign/App/FeatureSketchBased.cpp:207** \u2014 Same obscure multiplication pattern\n\n**Failure scenario**: Same as #9. `(NeedSubElement * (!sub.empty()))` works but is fragile to enum changes and misleading visually.\n\n```cpp\n(Part::Feature::NeedSubElement * (!sub.empty()))\n```\n\n---\n\nThese are all concrete defects with specific failure scenarios. The most severe are #1 (logic error in shape simplification), #2 and #3 (typos causing wrong variable use), and #4 (API mismatch breaking element mapping).",
+        "path": "src/Mod/PartDesign/App/FeatureSketchBased.cpp",
+        "start_line": 207,
+        "end_line": 207,
+        "observation_id": "01b5946d9251e7b2",
+        "claimed_path": "src/Mod/PartDesign/App/FeatureSketchBased.cpp",
+        "path_resolution": "exact",
+        "merged_from": []
+      }
+    ]
+  },
+  "rundir": "/home/user/.cache/llm-panel/runs/aacr-up-1ma210st-4daf28138635/20260829-002428-2203596",
+  "extractor": "3",
+  "unlocated": [
+    {
+      "content": "**2. `AppPartPy.cpp` operator precedence bug.**\n\n```cpp\n(Feature::ResolveLink * resolveLink) | \n(Feature::NeedSubElement * Base::asBoolean(needSubElement) | \n(Feature::Transform * Base::asBoolean(transform)) | \n(Feature::NoElementMap * Base::asBoolean(noElementMap)));\n```\n`|` has lower precedence than `*`, but the parenthesis grouping: `(A) | (B | C | D)`. Actually A = ResolveLink*resolveLink, the",
+      "observation_id": "125b3e14de496da2",
+      "claimed_path": "AppPartPy.cpp",
+      "path_resolution": "basename"
+    },
+    {
+      "content": "1. **simplifyCompound drops TopAbs_EDGE** (and duplicates SHELL) \u2014 behavioral regression in needSubElement path. PartFeature.cpp, the array line.",
+      "observation_id": "2f4ecaa99df4cc05",
+      "claimed_path": "PartFeature.cpp",
+      "path_resolution": "basename"
+    },
+    {
+      "content": "1. Command.cpp curve1/curve2 (broken Ruled Surface command \u2014 functional).\n2. simplifyCompound drops EDGE (behavioral regression affecting many call sites).",
+      "observation_id": "ff02701a24455fdb",
+      "claimed_path": "Command.cpp",
+      "path_resolution": "basename"
+    },
+    {
+      "content": "## Also reviewed and ruled NOT defects\n- `AppPartPy.cpp` flag expression: `*` binds tighter than `|`, and the parenthesis structure yields `(ResolveLink*r) | (NeedSubElement*n) | (Transform*t) | (NoElementMap*m)` \u2014 correctly OR'd, no precedence error.\n- The remaining `getShape`/`getTopoShape` call-site conversions (ExportOCAF2, Measurement, Attacher, Extrusion/Revolution axes, ProjectOnSurface, Me",
+      "observation_id": "c4568471b4c18d73",
+      "claimed_path": "AppPartPy.cpp",
+      "path_resolution": "basename"
+    }
+  ]
+}

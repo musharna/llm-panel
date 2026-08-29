@@ -1,0 +1,275 @@
+{
+  "review": {
+    "comments": [
+      {
+        "content": "- **High \u2014 Defect / missing validation:** [`CertificateTool.java:432`](x-pack/plugin/security/cli/src/main/java/org/elasticsearch/xpack/security/cli/CertificateTool.java#L432), [`HttpCertificateCommand.java:961`](x-pack/plugin/security/cli/src/main/java/org/elasticsearch/xpack/security/cli/HttpCertificateCommand.java#L961) \u2014 CA key usages are validated only as recognized names. A user can generate a CA with `digitalSignature` but without `keyCertSign`, violating RFC 5280. Certificates signed by that CA can then fail path validation with errors such as \u201ckeyCertSign bit is not set.\u201d Both CA-generation paths should require `keyCertSign` whenever a KeyUsage extension is present.",
+        "path": "x-pack/plugin/security/cli/src/main/java/org/elasticsearch/xpack/security/cli/CertificateTool.java",
+        "start_line": 432,
+        "end_line": 432,
+        "observation_id": "0f30d43c4507f25c",
+        "claimed_path": "CertificateTool.java",
+        "path_resolution": "basename",
+        "merged_from": []
+      },
+      {
+        "content": "- **High \u2014 Defect / missing validation:** [`HttpCertificateCommand.java:1042`](x-pack/plugin/security/cli/src/main/java/org/elasticsearch/xpack/security/cli/HttpCertificateCommand.java#L1042) \u2014 The same unrestricted list is offered for HTTP end-entity certificates. Selecting `keyCertSign` produces a certificate with `basicConstraints CA:false` but `keyUsage keyCertSign`, another RFC 5280-invalid combination that strict clients may reject. Likewise, `encipherOnly` and `decipherOnly` should require `keyAgreement`. Validation needs to account for whether the certificate is a CA or an end entity, not merely whether each name exists.",
+        "path": "x-pack/plugin/security/cli/src/main/java/org/elasticsearch/xpack/security/cli/HttpCertificateCommand.java",
+        "start_line": 1042,
+        "end_line": 1042,
+        "observation_id": "dcf14cf8416bb8b2",
+        "claimed_path": "HttpCertificateCommand.java",
+        "path_resolution": "basename",
+        "merged_from": []
+      },
+      {
+        "content": "- **Medium \u2014 Test defect / flaky test:** [`HttpCertificateCommandTests.java:384`](x-pack/plugin/security/cli/src/test/java/org/elasticsearch/xpack/security/cli/HttpCertificateCommandTests.java#L384) \u2014 `randomSubsetOf` can return an empty list. The test then submits an empty response, which `tryReadInput` interprets as accepting `DEFAULT_CA_KEY_USAGE`, but later asserts that the generated certificate has the empty list. That random branch fails even though the command behaved as designed; use a non-empty subset or update the expected value when the generated input is empty.\n\n- **Medium \u2014 Validation/CLI defect:** [`CertificateTool.java:281`](x-pack/plugin/security/cli/src/main/java/org/elasticsearch/xpack/security/cli/CertificateTool.java#L281) \u2014 `--ca-keyusage` is made unavailable with external-CA options but not with `--self-signed`. Consequently, `cert --self-signed --ca-keyusage ...` accepts an option that is never consumed because the self-signed certificate path does not generate a CA. The combination should be rejected rather than silently ignoring the requested restriction.",
+        "path": "x-pack/plugin/security/cli/src/test/java/org/elasticsearch/xpack/security/cli/HttpCertificateCommandTests.java",
+        "start_line": 384,
+        "end_line": 384,
+        "observation_id": "9d0c21fc0e421ef2",
+        "claimed_path": "HttpCertificateCommandTests.java",
+        "path_resolution": "basename",
+        "merged_from": [
+          "2f8b24e341c1781f"
+        ]
+      },
+      {
+        "content": "- **Low \u2014 Documentation defect:** [`certutil.md:19`](docs/reference/elasticsearch/command-line-tools/certutil.md#L19), [`certutil.md:102`](docs/reference/elasticsearch/command-line-tools/certutil.md#L102) \u2014 The `cert` synopsis permits `--ca-keyusage` alongside `--ca` and `--ca-cert`, while the parser explicitly rejects those combinations. The option description only says it is incompatible with `csr` and `http`, so users following the reference can construct a rejected command. Document its incompatibility with existing-CA and self-signed modes and group it with generated-CA options.",
+        "path": "docs/reference/elasticsearch/command-line-tools/certutil.md",
+        "start_line": 19,
+        "end_line": 19,
+        "observation_id": "57a435097a2875cd",
+        "claimed_path": "certutil.md",
+        "path_resolution": "basename",
+        "merged_from": []
+      },
+      {
+        "content": "- **Low \u2014 Maintainability / duplicated state:** [`CertificateTool.java:114`](x-pack/plugin/security/cli/src/main/java/org/elasticsearch/xpack/security/cli/CertificateTool.java#L114), [`HttpCertificateCommand.java:102`](x-pack/plugin/security/cli/src/main/java/org/elasticsearch/xpack/security/cli/HttpCertificateCommand.java#L102) \u2014 The default CA key usage is independently defined in two classes, while auto-configuration imports one of those definitions. A later update can silently make `ca`, `http`, and auto-configuration generate different CA profiles. This default should have one shared owner.**1. `readKeyUsage` permits blank/duplicate entries inconsistently vs `buildKeyUsage` \u2014 but more importantly, `getCaKeyUsage` in CertificateTool does NOT validate the input, while `buildKeyUsage` does.**\n\nLet me trace through:\n\n- `CertificateTool.getCaKeyUsage(options)` (line ~333) parses the comma-separated string into `List.of(Strings.splitStringByCommaToArray(rawCaKeyUsage))` and returns it. Note: it does NOT trim whitespace, and it does NOT validate. Then `CertGenUtils.buildKeyUsage(getCaKeyUsage(options))` is called which validates via `findKeyUsageByName` using `keyUsageName.trim()`. So invalid entries throw `IllegalArgumentException(\"Unknown keyUsage: ...\")`. The `--ca-keyusage` CLI option in `CertificateAuthorityCommand` is NOT a documented validated CLI parse \u2014 but wait, is it validated at parse time? No, only at `buildKeyUsage` time which throws. So a user passing an invalid value gets an ugly exception deep in generation rather than a friendly CLI error. Minor.\n\nBut there's a subtler bug: **the `getCaKeyUsage` empty-string handling**. `Strings.isNullOrEmpty(rawCaKeyUsage)` \u2014 but `List.of(Strings.splitStringByCommaToArray(\"\"))`. If input is \"keyCertSign,,cRLSign\", split produces empty strings, and `buildKeyUsage` \u2192 `findKeyUsageByName(\"\")` \u2192 `KEY_USAGE_MAPPINGS.get(\"\")` = null \u2192 throws IAE. OK. But the empty-string \u2192 DEFAULT case: passing `--ca-keyusage \"\"` returns DEFAULT. Fine.\n\n**2. `AutoConfigureNode` passes `Set.of()` for extendedKeyUsages for the CA certs.** This is fine since those are CA certs. Actually let me check \u2014 for the transport CA and HTTP CA, it passes `null, Set.of()`. Extended key usages being empty is fine.\n\n**3. The `KEY_USAGE_BITS` map is a plain `Map.of(...)` (mutable) not wrapped in unmodifiableMap, while `KEY_USAGE_MAPPINGS` is wrapped.** Inconsistency \u2014 KEY_USAGE_BITS is a public mutable map. Minor defensive concern, not a real bug since nobody mutates it. Worth noting as a minor item but the docs call `KEY_USAGE_BITS` public. Actually `Map.of` returns immutable in practice, but it's not guaranteed by contract. Minor.\n\n**4. Duplicated state**: `DEFAULT_CA_KEY_USAGE = List.of(\"keyCertSign\", \"cRLSign\")` is declared in **two** places \u2014 `CertificateTool` (line ~114) and `HttpCertificateCommand` (line ~102). These must always be identical, and they are. But this is duplicated state \u2014 if one changes, drift. Also the test `HttpCertificateCommandTests` references `CertificateTool.DEFAULT_CA_KEY_USAGE`? No, it references `HttpCertificateCommand.DEFAULT_CA_KEY_USAGE`. But there are two named almost identically in different classes. This is a \"duplicated state\" concern worth raising. Also, the default is repeated as a special-case in `getCaKeyUsage` and DEFAULT constants.\n\nActually more concrete: it's duplicated state with a real drift risk. And `buildKeyUsage` for the CA in `CertificateTool.generateCA` and `HttpCertificateCommand.createNewCA` both use it.\n\n**5. `getCaKeyUsage` when `caKeyUsageSpec` is null (NPE).** `getCaKeyUsage` is called from `generateCA` which is in `CertificateCommand`. But `caKeyUsageSpec` is only set when `acceptCertificateAuthorityKeyUsage()` is called. Look at `acceptsCertificateAuthority()`:\n```\nfinal void acceptsCertificateAuthority() {\n    ...\n    acceptsCertificateAuthorityName();\n    acceptCertificateAuthorityKeyUsage();\n}\n```\nAnd `CertificateAuthorityCommand` constructor calls `acceptCertificateGenerationOptions(); acceptsCertificateAuthorityName(); acceptCertificateAuthorityKeyUsage();` \u2014 so it's set there.\n\nBut wait \u2014 are there OTHER subclasses of `CertificateCommand` that call `generateCA` but never call `acceptCertificateAuthorityKeyUsage()`? `generateCA` is a method of `CertificateCommand` (defined around line 429 in the diff, `CAInfo generateCA(...)`). If a subclass doesn't set `caKeyUsageSpec`, then `getCaKeyUsage` calls `options.has(caKeyUsageSpec)` with a null OptionSpec. Let me check which subclasses call generateCA. I don't have the full file. The diff shows `CertificateAuthorityCommand` calls `acceptCertificateAuthorityKeyUsage()`. But `generateCA` is also used to generate a CA in other flows (e.g., `cert` with `--ca` pointing to a file). Hmm, but if caKeyUsageSpec is null and `generateCA` is invoked from a command path that didn't call `acceptCertificateAuthorityKeyUsage()`, then `getCaKeyUsage` \u2192 `options.has(caKeyUsageSpec)` throws NPE. This is a **potential NPE** \u2014 a real defect. I'd want to check all callers of `acceptsCertificateAuthority` and `generateCA`. I can't verify against the repo. I'll flag it as a risk: `caKeyUsageSpec` can be null and `getCaKeyUsage` dereferences it unconditionally.\n\nActually, let me reconsider \u2014 `generateCA` is defined at line ~429 as `CAInfo generateCA(...)`. Is it only called by CertificateAuthorityCommand? In CertificateTool, the `cert` and `csr` commands can also generate a CA if `--ca` is not provided... Actually in original code, `generateCA` for the `cert` command when generating a new CA. So different command flows may call `generateCA` but via `acceptsCertificateAuthority()`. Let me check: `acceptsCertificateAuthority()` calls `acceptCertificateAuthorityKeyUsage()`. Which subclasses call `acceptsCertificateAuthority()`? The `cert` command and `csr` command presumably. But the diff only shows `CertificateAuthorityCommand` explicitly calling `acceptCertificateAuthorityKeyUsage()`. Hmm, but `acceptsCertificateAuthority()` also calls it. If `cert`/`csr` command only call `acceptsCertificateAuthority()`, it's covered. But if some command calls `generateCA` without either, NPE. I can't verify. I'll flag as a possible NPE requiring verification of all `generateCA` callers.\n\n**6. Security: the keyUsage extension added to CSR AND cert, but the \"digitalSignature, keyEncipherment\" default for HTTP cert**. TLS server certs commonly need digitalSignature and keyEncipherment for RSA. But for ECDSA keys, keyEncipherment isn't applicable (ECDH uses keyAgreement, ECDSA uses digitalSignature). The http command default hardcoded to digitalSignature+keyEncipherment regardless of key type. That could cause problems for ECDSA. Minor but worth raising \u2014 actually the http cert defaults to RSA key size. Probably fine.\n\n**7. In `AutoConfigureNode`, the HTTP cert gets `buildKeyUsage(DEFAULT_CERT_KEY_USAGE)` (digitalSignature, keyEncipherment) \u2014 matches default. But transport certs get `null` keyUsage (no key usage extension).** Inconsistency but intentional.\n\n**8. Documentation claims default is `keyCertSign,cRLSign` and that \"This parameter cannot be used with the `csr` or `http` parameters\"` \u2014 the `--ca-keyusage` for `ca` mode and `cert` mode. Consistent with `availableUnless(caPkcs12PathSpec)` and `availableUnless(caCertPathSpec)`. OK.\n\n**9. Bug in `getCaKeyUsage`: whitespace not trimmed for the DEFAULT check only.** Actually `Strings.isNullOrEmpty(rawCaKeyUsage)` \u2014 if user passes `--ca-keyusage \" \"` (space), it's not empty, split gives `[\" \"]`, `findKeyUsageByName(\" \")` \u2192 trim \u2192 \"\" \u2192 not in map \u2192 throws IAE. Whereas `--ca-keyusage \"\"` gives DEFAULT. Inconsistent handling of blank-ish. Minor.\n\n**10. IMPORTANT \u2014 possible real defect: the change to `CertificateTool` \u2014 the `generateCertificateAndKey` change at line ~967 removes `false, days, null` and replaces with `days`.** Let me look:\n```\n@@ -933,9 +967,7 @@ private static CertificateAndKey generateCertificateAndKey(\n                     keyPair,\n                     null,\n                     null,\n-                    false,\n-                    days,\n-                    null\n+                    days\n                 );\n```\nSo it previously called the overload with `(principal, sanList, keyPair, caCert=null, caPrivKey=null, false, days, null)`. Now it calls a 3-arg... wait the replacement is `days` alone as the last arg \u2014 but the method signature from the diff that remains: earlier the removal deleted overloads. The remaining overload is `generateSignedCertificate(principal, subjectAltNames, keyPair, caCert, caPrivKey, isCa, days, signatureAlgorithm, keyUsage, extendedKeyUsages)`. But this call has only 3 args `(X500Principal, GeneralNames, KeyPair, ...days)`. Let me look at the full context.\n\nActually there are overloads: `generateSignedCertificate(principal, subjectAltNames, keyPair, caCert, caPrivKey, days)` (6-arg, line ~176 in diff) which passes `isCa=false, days, null, null, Set.of()`. So the call `generateSignedCertificate(principal-holder?, ...)`. Actually the 6-arg overload takes `(X500Principal principal, GeneralNames subjectAltNames, KeyPair keyPair, X509Certificate caCert, PrivateKey caPrivKey, int days)`. \n\nThe diff hunk at 933 shows args: `principal?, keyPair, null, null, days`. Let me count from the diff context \u2014 the changed call has lines `keyPair, null, null, days`. Hmm the removed lines included `false,` and `null` so original was `(a, b, keyPair, null, null, false, days, null)` = 8 args. New is `(a, b, keyPair, null, null, days)` = 6 args matching the 6-arg overload. Fine, consistent.\n\n**11. The `HttpCertificateCommand` `readKeyUsage` case-sensitivity and the fact that it trims but `buildKeyUsage` also trims.** OK.\n\n**12. Real concern: `KEY_USAGE_MAPPINGS` is a `TreeMap` \u2014 good for deterministic ordering in the printed lists. But `KEY_USAGE_BITS` is a plain `Map.of` (unordered). The test asserts `KEY_USAGE_BITS.keySet()` containsInAnyOrder MAPPINGS \u2014 fine.\n\n**13. Defect: Empty key usage for CA in `AutoConfigureNode` transport CA uses `Set.of()` for extendedKeyUsage but the CA also \u2014 fine.\n\n**14. Real defect: In `CertificateTool`, `getCaKeyUsage` returns DEFAULT when `--ca-keyusage \"\"`. But `--ca-keyusage` uses `.withRequiredArg()`. If the user passes `--ca-keyusage` with no argument, the arg parser would error. Fine.\n\n**15. Real issue: `buildKeyUsage` in CSR (generateCSR) adds keyUsage as critical. For CSRs this is fine.\n\nLet me focus on the strongest findings:\n\n### Strongest findings\n\n**A. (mutable public map / contract) KEY_USAGE_BITS is public and not unmodifiable-wrapped**, unlike KEY_USAGE_MAPPINGS. It's `Map.of` which is immutable in practice but the type contract allows modification. This is \"duplicated/unclear\" \u2014 minor.\n\n**B. Duplicated default constant `DEFAULT_CA_KEY_USAGE` in two classes (CertificateTool and HttpCertificateCommand)** with identical value \u2014 drift risk. \"duplicated state.\"\n\n**C. Potential NPE: `getCaKeyUsage` dereferences `caKeyUsageSpec` unconditionally; if any command calls `generateCA` without having called `acceptCertificateAuthorityKeyUsage()`, NPE.** Need to verify callers. Real defect risk.\n\n**D. Behavioral inconsistency / minor: `--ca-keyusage` value not validated at parse time; invalid value surfaces as deep IllegalArgumentException in generation.** And blank handling inconsistent (`\"\"` \u2192 default, `\" \"` \u2192 IAE).\n\n**E. Missing validation/defensive check: In `getCaKeyUsage`, entries are not trimmed before `isNullOrEmpty` check \u2014 actually the bigger issue is the code split produces entries that may be empty strings for input like \"a,,b\" \u2014 but buildKeyUsage will trim and reject empty. OK covered.\n\n**F. Real defect candidate: `readKeyUsage` in HttpCertificateCommand allows empty input meaning \"keep default\", but if user enters a value, resolved via isValidKeyUsage which trims. But it does NOT preserve whitespace-trimmed duplicates \u2014 it adds trimmed values. Then buildKeyUsage dedups via bitwise OR. Fine.\n\n**G. The duplication between `KEY_USAGE_MAPPINGS` (name\u2192int value) and `KEY_USAGE_BITS` (name\u2192bit index) plus the manual list in the javadoc** \u2014 two parallel maps that must stay in sync with each other and with the BouncyCastle KeyUsage constants, plus the doc comment manually lists indices. Occurs in a test asserting they're in sync (keySet equality) but not that the VALUES correspond \u2014 the test only checks keySet equality between the two maps, and separately that buildKeyUsage sets the right bits per MAPPINGS. Actually the test `testBuildKeyUsage` checks `KEY_USAGE_BITS.keySet()` == `KEY_USAGE_MAPPINGS.keySet()`. But it does NOT verify the bit positions in KEY_USAGE_BITS match the BouncyCastle KeyUsage integer constants \u2014 the values are hardcoded (0..8) and could drift from BouncyCastle constant values. `assertExpectedKeyUsage` uses KEY_USAGE_BITS to index the boolean[]. If those hardcoded indices were wrong, the test would pass/fail based on wrong indexing but still be internally consistent and not detect a drift from the actual KeyUsage semantics. This is a real maintainability/abstraction concern: two parallel mappings that can drift, only partially tested.\n\nHmm, let me think about which are genuine \"defects with failure scenarios.\"\n\n**Real defect: `KEY_USAGE_BITS` and `KEY_USAGE_MAPPINGS` both exist \u2014 redundant/duplicated state.** The `KEY_USAGE_MAPPINGS` maps name\u2192KeyUsage integer value (from BouncyCastle). `KEY_USAGE_BITS` maps name\u2192bit index (0-8 hardcoded). These are actually the SAME information \u2014 KeyUsage bit index == the bit position; the BouncyCastle constant value for single bit is `1 << index`. So `KEY_USAGE_BITS.get(name)` should equal integers that are powers of two matching MAPPINGS. If they drift, `assertExpectedKeyUsage` uses wrong index. This is genuinely duplicated/two-sources-of-truth with a test that doesn't catch value drift. Real maintainability issue.\n\nActually wait \u2014 there's a subtle correctness issue in `assertExpectedKeyUsage`. It computes expected bits via `expectedKeyUsage.stream().map(KEY_USAGE_BITS::get)`. If a name maps to index i, it expects bit i set. But `buildKeyUsage` ORs the KeyUsage integer VALUES (not bit indices). KeyUsage.digitalSignature constant is a single bit at position 0, keyCertSign at position 5, etc. These match the indices. As long as MAPPINGS values are single-bit constants, index == log2(value). They are. So consistent. The redundancy is the concern.\n\n**Another real issue: `isValidKeyUsage(null)`:** `findKeyUsageByName(null)` returns null \u2192 `isValidKeyUsage(null)` returns false. And `buildKeyUsage` handles null list/set. Fine.\n\nLet me reconsider the highest-severity real defect. I think the potential NPE in `getCaKeyUsage` (caKeyUsageSpec null) is the most concrete potential crash \u2014 but I can't verify whether all generateCA callers call acceptCertificateAuthorityKeyUsage. Let me look more carefully at the code flow given.\n\n`CertificateCommand.generateCA` (line ~429) \u2014 it's a method that uses `getCaKeyUsage(options)`. Subclasses: `CertificateAuthorityCommand`, and presumably `cert` and `csr` commands. The `acceptsCertificateAuthority()` method (line ~250) calls `acceptCertificateAuthorityKeyUsage()`. If `cert`/`csr` call `acceptsCertificateAuthority()`, then caKeyUsageSpec is set for them. Only `CertificateAuthorityCommand`'s constructor was shown to ALSO call `acceptCertificateAuthorityKeyUsage()` (redundantly, since it may also call acceptsCertificateAuthority? No \u2014 CertificateAuthorityCommand calls acceptCertificateGenerationOptions + acceptsCertificateAuthorityName + acceptCertificateAuthorityKeyUsage, per the diff at line 981). It does NOT call acceptsCertificateAuthority(). So caKeyUsageSpec IS set in CertificateAuthorityCommand. Good.\n\nBut does `generateCA` get invoked by commands that call neither `acceptsCertificateAuthority()` nor `acceptCertificateAuthorityKeyUsage()`? I can't determine from the diff. I'll note it needs verification.\n\nHmm, but actually the redundant call in CertificateAuthorityCommand: it calls `acceptCertificateAuthorityKeyUsage()` directly. But `acceptCertificateAuthorityKeyUsage` uses `caPkcs12PathSpec` and `caCertPathSpec` \u2014 are those set for CertificateAuthorityCommand? Those are null initially (they're set by acceptCertificateGenerationOptions or specific accept methods). The check `if (caPkcs12PathSpec != null)` guards. Fine.\n\nLet me also reconsider: **the `getCaKeyUsage` returns a mutable List.of \u2014 but List.of is immutable. Fine.\n\nLet me also note: In `CertificateTool.generateCACertificate` via `CertGenUtils.generateCACertificate(x500Principal, keyPair, days, caKeyUsage)` \u2014 this passes keyUsage but the `generateCACertificate` wrapper calls generateSignedCertificate with `Set.of()` for extendedKeyUsage. Fine for CA.\n\nNow, another subtle real issue: **`HttpCertificateCommand.DEFAULT_CA_KEY_USAGE` and `DEFAULT_CERT_KEY_USAGE` \u2014 the CA default includes keyCertSign,cRLSign. But in `createNewCA`, the code calls `generateSignedCertificate(... true (isCa), ..., buildKeyUsage(keyUsage), Set.of())`. Wait \u2014 the default cert key usage for HTTP certs includes `keyEncipherment`. For a TLS server RSA cert that's fine.\n\nLet me also check: **default CA key usage `keyCertSign,cRLSign` but NOT `digitalSignature`.** Some CA implementations want keyCertSign. Fine.\n\n**Real issue worth raising: duplicate constant across classes (B) and redundant maps (KEY_USAGE_BITS vs KEY_USAGE_MAPPINGS) (G).** These are the \"duplicated state\" category.\n\nLet me also flag: **the diff adds the keyUsage extension as CRITICAL (isCritical=true).** Per RFC 5280 keyUsage SHOULD be critical. That's fine and intentional.\n\nLet me think about whether there's an actual wrong-result bug with the CSR flow in AutoConfigureNode. In AutoConfigureNode HTTP cert generation (line ~473), it uses `buildKeyUsage(DEFAULT_CERT_KEY_USAGE)` = digitalSignature,keyEncipherment and `Set.of(serverAuth)`. But the HTTP cert in AutoConfigure is signed directly (not CSR). Fine.\n\nNow let me reconsider **defect: In `CertificateTool.getCaKeyUsage`, the case where user passes `--ca-keyusage` that is valid but the value is not validated until deep call \u2192 IllegalArgumentException during `generateCA`, thrown out to the CLI as a generic error.** This is a \"missing validation\" (should validate at option parse or in getCaKeyUsage). Concrete scenario: `elasticsearch-certutil ca --ca-keyusage bogus` \u2192 exception deep in generation with \"Unknown keyUsage: bogus\" rather than a clean CLI error. Minor-moderate.\n\nAlso: **`getCaKeyUsage` returns DEFAULT on empty string but doesn't normalize/trim the individual entries, so a trailing comma `keyCertSign,` produces `[\"keyCertSign\",\"\"]` \u2192 buildKeyUsage throws IAE.** It's a user-input validation gap; the offending entry is reported as \"Unknown keyUsage: \" (empty). Slightly confusing error. Minor.\n\nLet me also check the test `testBuildKeyUsage` \u2014 the duplicate test asserts digitalSignature twice but never asserts nonRepudiation... Actually it asserts digitalSignature (twice), and keyEncipherment. It DOESN'T assert nonRepudiation despite including it in input. But keyCertSign not in input list. The test is sloppy but not a product defect. Skip or minor mention.\n\nLet me decide final list by severity:\n\n1. **(Potential NPE \u2014 real defect risk)** `CertificateTool.getCaKeyUsage` dereferences `caKeyUsageSpec` (line ~333) without null check. If any command path invokes `generateCA` without `acceptCertificateAuthorityKeyUsage()` having been called, NPE. Need verification that all callers set it. I'll flag.\n\n2. **(Duplicated state / drift risk)** `DEFAULT_CA_KEY_USAGE` declared identically in both `CertificateTool` (line ~114) and `HttpCertificateCommand` (line ~102) \u2014 two sources of truth that must stay in sync; also the \"keyCertSign,cRLSign\" default is re-derived in the doc and special-cased again in `getCaKeyUsage`. \n\n3. **(Duplicated/parallel state)** `KEY_USAGE_MAPPINGS` (name\u2192BouncyCastle int value) and `KEY_USAGE_BITS` (name\u2192hardcoded bit index 0..8) encode overlapping info; the test only checks keySet equality, NOT that bit indices are consistent with the MAPPINGS values, so a drift between the hardcoded 0-8 indices and the actual single-bit BouncyCastle constants wouldn't be caught. Also `KEY_USAGE_BITS` is a public mutable `Map.of` not wrapped in unmodifiableMap unlike MAPPINGS. Line ~95-115 in CertGenUtils.",
+        "path": "x-pack/plugin/security/cli/src/main/java/org/elasticsearch/xpack/security/cli/CertificateTool.java",
+        "start_line": 114,
+        "end_line": 114,
+        "observation_id": "3fa2cd5be9f067c7",
+        "claimed_path": "CertificateTool.java",
+        "path_resolution": "basename",
+        "merged_from": [
+          "e59b36a84ca709e6",
+          "34ef1943f6c1dbe2",
+          "3cc666c50cc9cf9c",
+          "b3e636544aac66c8",
+          "c7e91dc5519c69ba"
+        ]
+      },
+      {
+        "content": "4. **(Missing validation / unclear error)** `--ca-keyusage` CLI value is not validated at parse time; invalid values throw `IllegalArgumentException` deep inside `generateCA`, and edge inputs like a trailing comma / whitespace-only produce confusing \"Unknown keyUsage: \" errors or inconsistent default handling (\"\" \u2192 default, \" \" \u2192 error). CertificateTool.getCaKeyUsage ~331-340.\n\nLet me pick line numbers from hunk headers.\n\n- getCaKeyUsage: in CertificateTool.java, the hunk header `@@ -309,6 +330,18 @@` \u2192 new lines 330-347. `final List<String> getCaKeyUsage(OptionSet options)` at new line ~333. caKeyUsageSpec deref at ~334-340.\n\n- DEFAULT_CA_KEY_USAGE in CertificateTool: hunk `@@ -110,6 +111,7 @@` \u2192 new line ~114.\n- DEFAULT_CA_KEY_USAGE in HttpCertificateCommand: hunk `@@ -95,7 +99,8 @@` \u2192 new line ~102.\n\n- KEY_USAGE_MAPPINGS/KEY_USAGE_BITS: CertGenUtils hunk `@@ -73,14 +78,78 @@` \u2192 new lines ~82-148. KEY_USAGE_BITS ~ line 112-146 (the docblock then map). I'll cite ~131-148.\n\n- getCaKeyUsage / --ca-keyusage parse validation.\n\nLet me finalize. I'll present severity-ordered. Actually let me reconsider #1's validity more. Is there a command that calls generateCA but not acceptCertificateAuthorityKeyUsage? The `cert` command. In CertificateTool, the `cert` subcommand handles generating a CA if `--ca`/`--ca-cert` not provided \u2014 via `generateCA`? In the original, when you run `cert` without `--ca`, it generates a new CA. That path calls `generateCA`. Does the `cert` command call `acceptsCertificateAuthority()`? The `cert` command accepts `--ca`, `--ca-cert`, `--ca-key`, `--ca-pass`, `--ca-dn`... If cert uses `acceptsCertificateAuthority()`, then it calls both `acceptsCertificateAuthorityName` and `acceptCertificateAuthorityKeyUsage`, so spec is set. But \u2014 the cert command also accepts `--ca-dn` which is \"This parameter cannot be used with the csr or http parameters\" and cert CAN use ca-dn. So cert likely uses acceptsCertificateAuthorityName (which acceptsCertificateAuthority invokes). If the cert command calls `acceptsCertificateAuthority()`, caKeyUsageSpec is set there.\n\nActually, `acceptsCertificateAuthority()` at line ~250 calls `acceptCertificateAuthorityKeyUsage()`. So any command calling `acceptsCertificateAuthority()` is covered. The risk is only a command that calls `generateCA` directly without `acceptsCertificateAuthority()`. CertificateAuthorityCommand calls acceptCertificateAuthorityKeyUsage explicitly \u2014 covered. So probably all covered. I'll downgrade #1 to a note: it's fragile because `getCaKeyUsage` assumes the spec was set, and the null-guard is absent \u2014 defensive concern.\n\nActually, is there any caller where caKeyUsageSpec could be null? `getCaKeyUsage` could be safely written with a null check. Since I can't verify all callers, I'll present it as a defensive/missing-null-check concern (mild), noting it would NPE if a subclass uses generateCA without enabling the option.\n\nLet me reconsider severity ordering and finalize. I'll present:\n\n1. Duplicated default `DEFAULT_CA_KEY_USAGE` across two classes \u2014 drift risk (real, since these must match).\n2. Redundant two-source-of-truth key-usage maps (`KEY_USAGE_MAPPINGS` vs `KEY_USAGE_BITS`) with a test that won't catch value drift, and `KEY_USAGE_BITS` public & not unmodifiable-wrapped.\n3. Missing CLI validation for `--ca-keyusage` with an inconsistent/confusing error path (blank vs whitespace vs trailing comma).\n4. Potential NPE / missing null guard in `getCaKeyUsage` if any subclass calls `generateCA` without `acceptCertificateAuthorityKeyUsage()`.\n5. Minor: unused/parity \u2014 actually let me also mention that `readKeyUsage` / user-provided defaults validation.\n\nLet me also reconsider: is there a genuine wrong-behavior security issue? The default cert key usage digitalSignature+keyEncipherment regardless of key type (RSA in this tool, so fine). The CA default keyCertSign+cRLSign. For `AutoConfigureNode`, transport CA/cert get null keyUsage (no extension) \u2014 leaving transport certs without keyUsage whereas HTTP gets it. Inconsistent but not a defect.\n\nOne more: **HttpCertificateCommand default HTTP cert key usage includes `keyEncipherment`, but the CSR test `verifyCertificationRequest` asserts `KeyUsage.digitalSignature | KeyUsage.keyEncipherment`.** For ECDSA this would be a problem, but the tool uses RSA. Fine.\n\nAnother: `readKeyUsage` default input blank keeps default. But if user enters \"\" via readText, `Strings.isEmpty` \u2192 default retained. Fine.\n\nNow let me also point out a concrete subtle thing: in `getCaKeyUsage`, the empty\u2192default branch returns `DEFAULT_CA_KEY_USAGE`, but the non-empty branch returns a NEW list. Not a defect.\n\nI think my strongest, most defensible items are the duplicated constant, the redundant maps, and the missing validation. The NPE is speculative given available context \u2014 I'll frame it as such honestly.\n\nLet me write the review.\n\nLine numbers:\n- CertificateTool.java: DEFAULT_CA_KEY_USAGE at line 114 (hunk @@ -110,6 +111,7 @@ \u2192 +1 to existing... new line 114). getCaKeyUsage at 333 (hunk @@ -309,6 +330,18 @@ \u2192 new 330..347).\n- HttpCertificateCommand.java: DEFAULT_CA_KEY_USAGE and DEFAULT_CERT_KEY_USAGE at lines 102-103 (hunk @@ -95,7 +99,8 @@).\n- CertGenUtils.java: KEY_USAGE_MAPPINGS ~82-111, KEY_USAGE_BITS ~112-148 (hunk @@ -73,14 +78,78 @@).\n\nLet me write the final answer.I have no files in the working directory to verify against, so my review is based purely on the diff. I was not able to confirm the identity of all callers of `CertificateTool.generateCA` or `getCaKeyUsage`, so one item below is flagged as requiring that check.\n\n## 1. Duplicated default constant across two classes (duplicated state \u2014 drift risk)",
+        "path": "x-pack/plugin/security/cli/src/main/java/org/elasticsearch/xpack/security/cli/CertificateTool.java",
+        "start_line": 330,
+        "end_line": 330,
+        "observation_id": "dac01ae32f1350d9",
+        "claimed_path": "CertificateTool.java",
+        "path_resolution": "basename",
+        "merged_from": [
+          "7e5b85fdd382674c",
+          "15870de454c4119b",
+          "7c32796236804295",
+          "59ddce310d240845",
+          "66fbff99d896003e",
+          "06e453acf8cf2453"
+        ]
+      },
+      {
+        "content": "- `CertificateTool.java:114` \u2014 `static final List<String> DEFAULT_CA_KEY_USAGE = List.of(\"keyCertSign\", \"cRLSign\");`",
+        "path": "x-pack/plugin/security/cli/src/main/java/org/elasticsearch/xpack/security/cli/CertificateTool.java",
+        "start_line": 114,
+        "end_line": 114,
+        "observation_id": "62e30b044adca33a",
+        "claimed_path": "CertificateTool.java",
+        "path_resolution": "basename",
+        "merged_from": []
+      },
+      {
+        "content": "- `HttpCertificateCommand.java:102` \u2014 `static final List<String> DEFAULT_CA_KEY_USAGE = List.of(\"keyCertSign\", \"cRLSign\");`\n\nThe same default value now lives in two classes and must always match. Both `CertGenUtils.KEY_USAGE_MAPPINGS` and the docs' stated default (`keyCertSign,cRLSign`) are yet more copies of the same fact. If someone changes one (e.g. adds `digitalSignature` to the http-created CA but forgets `CertificateTool`), generated CAs silently diverge between the two tools with no test tying them together. Worth consolidating to one source (e.g. shared constant in `CertGenUtils` or `CertificateTool`).\n\n## 2. Two parallel \"key usage\" maps that can drift, only partially guarded (duplicated state / abstraction that will not hold)",
+        "path": "x-pack/plugin/security/cli/src/main/java/org/elasticsearch/xpack/security/cli/HttpCertificateCommand.java",
+        "start_line": 102,
+        "end_line": 102,
+        "observation_id": "ebace690944ad174",
+        "claimed_path": "HttpCertificateCommand.java",
+        "path_resolution": "basename",
+        "merged_from": [
+          "13fcb1cfbfba8ac9"
+        ]
+      },
+      {
+        "content": "- `CertGenUtils.java:82\u2013111` \u2014 `KEY_USAGE_MAPPINGS` (name \u2192 BouncyCastle `KeyUsage` integer value)",
+        "path": "x-pack/plugin/security/cli/src/main/java/org/elasticsearch/xpack/security/cli/CertGenUtils.java",
+        "start_line": 82,
+        "end_line": 82,
+        "observation_id": "e01af8c0bfd76664",
+        "claimed_path": "CertGenUtils.java",
+        "path_resolution": "basename",
+        "merged_from": []
+      },
+      {
+        "content": "- `CertGenUtils.java:112\u2013148` \u2014 `KEY_USAGE_BITS` (name \u2192 hardcoded bit index 0\u20138)\n\n`KEY_USAGE_BITS`'s hardcoded 0\u20138 indices encode exactly the information already present in `KEY_USAGE_MAPPINGS` (a single-bit BouncyCastle constant whose bit position equals the index), so it is redundant state that must stay consistent with the values in the other map. The one thing keeping them honest, `CertGenUtilsTests.testBuildKeyUsage`, only asserts `KEY_USAGE_BITS.keySet()` equals `KEY_USAGE_MAPPINGS.keySet()` \u2014 it does **not** assert that a name's bit index matches `log2` of its mapped value. If the hardcoded indices were changed to disagree with the BouncyCastle constants, `assertExpectedKeyUsage` would index the wrong bits yet still pass consistently (self-consistent but wrong against real X.509 semantics), so the drift wouldn't be caught. Consider deriving one map from the other and asserting the value correspondence.\n\nAlso a smaller point: `KEY_USAGE_BITS` is a public field built from a plain mutable `Map.of(...)` and is **not** wrapped in `Collections.unmodifiableMap`, unlike `KEY_USAGE_MAPPINGS`. `Map.of` happens to be immutable today but nothing in the type guarantees that invariant, so a future caller could mutate it. (This is a defensive/consistency nit, not a current failure.)\n\n## 3. `--ca-keyusage` is not validated at option-parse time, and blank handling is inconsistent (missing validation / unclear error)",
+        "path": "x-pack/plugin/security/cli/src/main/java/org/elasticsearch/xpack/security/cli/CertGenUtils.java",
+        "start_line": 112,
+        "end_line": 112,
+        "observation_id": "bce8115efa7696ea",
+        "claimed_path": "CertGenUtils.java",
+        "path_resolution": "basename",
+        "merged_from": [
+          "b0127305772c3043"
+        ]
+      },
+      {
+        "content": "- `CertificateTool.java:333\u2013340` \u2014 `getCaKeyUsage`\n\nThe value is only ever validated inside `CertGenUtils.buildKeyUsage`, which falls out of `generateCA` deep in generation with a raw `IllegalArgumentException(\"Unknown keyUsage: ...\")`. A user typo (`elasticsearch-certutil ca --ca-keyusage digitalSgnature`) surfaces as an internal exception rather than a friendly CLI error, and the failure happens after key generation has already begun. Concrete scenario: `--ca-keyusage \"keyCertSign,\"` (trailing comma) \u2192 `splitStringByCommaToArray` yields `[\"keyCertSign\",\"\"]` \u2192 `buildKeyUsage` throws \"Unknown keyUsage: \" (blank message) while a whitespace-only value `\" \"` throws with the name shown. Meanwhile `--ca-keyusage \"\"` is silently treated as *default* (returns `DEFAULT_CA_KEY_USAGE`) \u2014 three different behaviors for \"blank-ish\" input. Validation (and trimming) should happen in `getCaKeyUsage` itself, giving one consistent, early, well-messaged error path.\n\n## 4. `getCaKeyUsage` dereferences `caKeyUsageSpec` without a null guard (defensive / potential NPE)",
+        "path": "x-pack/plugin/security/cli/src/main/java/org/elasticsearch/xpack/security/cli/CertificateTool.java",
+        "start_line": 333,
+        "end_line": 333,
+        "observation_id": "cd447fc83797c7e3",
+        "claimed_path": "CertificateTool.java",
+        "path_resolution": "basename",
+        "merged_from": [
+          "65aed8b18279332c"
+        ]
+      },
+      {
+        "content": "- `CertificateTool.java:333\u2013340` \u2014 `options.has(caKeyUsageSpec)` and `caKeyUsageSpec.value(options)`\n\n`caKeyUsageSpec` is only assigned inside `acceptCertificateAuthorityKeyUsage()`. Every caller I can see in the diff (`CertificateAuthorityCommand`, and `acceptsCertificateAuthority()`) does set it, so there is no current crash. But `generateCA`/`getCaKeyUsage` are methods on the base `CertificateCommand`, and the field is not `final` (declared `OptionSpec<String> caKeyUsageSpec;` on line ~207, left mutable and nullable). Any future or as-yet-unseen subclass that calls `generateCA` without also calling `acceptCertificateAuthorityKeyUsage()` will NPE on `options.has(null)`. This is exactly the kind of structure that should either be `final` and always-populated via the constructor, or guarded. I could not verify every `generateCA` caller against the repo (working directory is empty), so this needs confirmation \u2014 but the lack of a guard is the concern.\n\n---\n\nMinor, likely not worth blocking on: the `testBuildKeyUsage` \"duplicates and whitespaces are ignored\" case includes `nonRepudiation` in its input but never asserts that it's set, so the \"whitespace trimming\" claim for that entry goes unchecked (only `digitalSignature` \u2014 twice \u2014 and `keyEncipherment` are asserted). Lines `CertGenUtilsTests.java` (~249\u2013258 in the new file).",
+        "path": "x-pack/plugin/security/cli/src/main/java/org/elasticsearch/xpack/security/cli/CertificateTool.java",
+        "start_line": 333,
+        "end_line": 333,
+        "observation_id": "f32d0719b2288a6d",
+        "claimed_path": "CertificateTool.java",
+        "path_resolution": "basename",
+        "merged_from": []
+      },
+      {
+        "content": "### 1. **CertGenUtils.java:272-305** \u2014 KeyUsage extension marked critical for all certificates\n**Type: Potential interoperability issue**\n\n```java\nif (keyUsage != null) {\n    // as per RFC 5280 (section 4.2.1.3), if the key usage is present, then it SHOULD be marked as critical.\n    final boolean isCritical = true;\n    builder.addExtension(Extension.keyUsage, isCritical, keyUsage);\n}\n```\n\nRFC 5280 says keyUsage **SHOULD** be critical (not MUST). Some legacy TLS implementations reject certificates with critical extensions they don't recognize. While keyUsage is standard, marking it critical on end-entity certificates (especially HTTP server certs) could break compatibility with older clients. Consider making criticality configurable or only critical for CA certificates (where it's more important).\n\n---",
+        "path": "x-pack/plugin/security/cli/src/main/java/org/elasticsearch/xpack/security/cli/CertGenUtils.java",
+        "start_line": 272,
+        "end_line": 272,
+        "observation_id": "b9e4b8911ffd8483",
+        "claimed_path": "CertGenUtils.java",
+        "path_resolution": "basename",
+        "merged_from": [
+          "3cd2f65b89f87578"
+        ]
+      },
+      {
+        "content": "### 2. **CertGenUtils.java:347-350** \u2014 KeyUsage added to CSR as critical\n**Type: Standards deviation**\n\n```java\nif (keyUsage != null) {\n    extGen.addExtension(Extension.keyUsage, true, keyUsage);  // critical = true\n}\n```\n\nCSRs don't typically carry keyUsage extensions \u2014 the CA sets keyUsage when issuing the cert. Including it in the CSR is harmless but non-standard. More critically, marking it **critical in a CSR** is wrong: criticality only applies to certificates (RFC 5280 \u00a74.2). A CSR attribute's criticality is ignored by CAs. Change `true` \u2192 `false` here.\n\n---",
+        "path": "x-pack/plugin/security/cli/src/main/java/org/elasticsearch/xpack/security/cli/CertGenUtils.java",
+        "start_line": 347,
+        "end_line": 347,
+        "observation_id": "b3cfec750bd510dc",
+        "claimed_path": "CertGenUtils.java",
+        "path_resolution": "basename",
+        "merged_from": [
+          "63aea952d1c3103a"
+        ]
+      },
+      {
+        "content": "### 3. **CertificateTool.java:330-342** \u2014 No way to omit keyUsage for generated CA\n**Type: Missing feature / UX gap**\n\n```java\nfinal List<String> getCaKeyUsage(OptionSet options) {\n    if (options.has(caKeyUsageSpec)) {\n        String rawCaKeyUsage = caKeyUsageSpec.value(options);\n        if (Strings.isNullOrEmpty(rawCaKeyUsage)) {\n            return DEFAULT_CA_KEY_USAGE;  // empty string \u2192 default\n        }\n        return List.of(Strings.splitStringByCommaToArray(rawCaKeyUsage));\n    } else {\n        return DEFAULT_CA_KEY_USAGE;  // not provided \u2192 default\n    }\n}\n```\n\nUsers cannot generate a CA **without** a keyUsage extension \u2014 both \"option omitted\" and \"empty value\" yield the default. To get no keyUsage, they'd need a special sentinel (e.g., `--ca-keyusage=none`). Since RFC 5280 recommends keyUsage for CAs, this may be intentional, but it should be documented.\n\n---",
+        "path": "x-pack/plugin/security/cli/src/main/java/org/elasticsearch/xpack/security/cli/CertificateTool.java",
+        "start_line": 330,
+        "end_line": 330,
+        "observation_id": "e8dad046e3d6c716",
+        "claimed_path": "CertificateTool.java",
+        "path_resolution": "basename",
+        "merged_from": [
+          "1d7ca5ed7bcb1e64"
+        ]
+      },
+      {
+        "content": "### 4. **AutoConfigureNode.java:417, 432** \u2014 Transport certificates get no keyUsage\n**Type: Inconsistent defaults / potential security weakening**\n\n```java\n// Transport CA cert (line 417)\nSIGNATURE_ALGORITHM,\nnull,                    // keyUsage = null\nSet.of()                 // extendedKeyUsages\n\n// Transport cert (line 432)\nSIGNATURE_ALGORITHM,\nnull,                    // keyUsage = null\nSet.of()\n```\n\nHTTP certificates get `digitalSignature,keyEncipherment` (line 476), but transport certificates get **no keyUsage at all**. Transport certs are used for inter-node TLS \u2014 they should have at minimum `keyEncipherment` or `keyAgreement`. This regresses from the prior behavior (no keyUsage either) but now stands out since HTTP certs get proper keyUsage. Either add appropriate defaults or document why transport certs are excluded.\n\n---",
+        "path": "x-pack/plugin/security/cli/src/main/java/org/elasticsearch/xpack/security/cli/AutoConfigureNode.java",
+        "start_line": 417,
+        "end_line": 417,
+        "observation_id": "5fd9597303e2b89f",
+        "claimed_path": "AutoConfigureNode.java",
+        "path_resolution": "basename",
+        "merged_from": [
+          "6e6daae031547437"
+        ]
+      },
+      {
+        "content": "### 5. **CertGenUtils.java:78-108** \u2014 Duplicate mapping structures\n**Type: Code smell / maintenance burden**\n\nTwo separate maps encode the same information:\n- `KEY_USAGE_MAPPINGS: Map<String, Integer>` \u2192 KeyUsage constant values (bitmasks)\n- `KEY_USAGE_BITS: Map<String, Integer>` \u2192 bit indices (0-8)\n\n`buildKeyUsage()` uses `KEY_USAGE_MAPPINGS` (bitmask OR), but `assertExpectedKeyUsage()` in tests uses `KEY_USAGE_BITS` (bit index). They must stay in sync manually. Derive one from the other, or use a single source of truth (e.g., an enum).\n\n---",
+        "path": "x-pack/plugin/security/cli/src/main/java/org/elasticsearch/xpack/security/cli/CertGenUtils.java",
+        "start_line": 78,
+        "end_line": 78,
+        "observation_id": "c204c3ad30f8fcb3",
+        "claimed_path": "CertGenUtils.java",
+        "path_resolution": "basename",
+        "merged_from": [
+          "22561885c4e5d324"
+        ]
+      },
+      {
+        "content": "### 6. **CertGenUtilsTests.java:181, 184** \u2014 Duplicate assertion in test\n**Type: Test defect (harmless but sloppy)**\n\n```java\nassertThat(keyUsage.hasUsages(KEY_USAGE_MAPPINGS.get(\"digitalSignature\")), is(true));\nassertThat(keyUsage.hasUsages(KEY_USAGE_MAPPINGS.get(\"nonRepudiation\")), is(true));\nassertThat(keyUsage.hasUsages(KEY_USAGE_MAPPINGS.get(\"digitalSignature\")), is(true));  // DUPLICATE\nassertThat(keyUsage.hasUsages(KEY_USAGE_MAPPINGS.get(\"keyEncipherment\")), is(true));\n```\n\nLine 184 repeats line 181. Remove the duplicate.\n\n---",
+        "path": "x-pack/plugin/security/cli/src/test/java/org/elasticsearch/xpack/security/cli/CertGenUtilsTests.java",
+        "start_line": 181,
+        "end_line": 181,
+        "observation_id": "999733bee9e85bb8",
+        "claimed_path": "CertGenUtilsTests.java",
+        "path_resolution": "basename",
+        "merged_from": [
+          "22c4d15134386352"
+        ]
+      },
+      {
+        "content": "### 7. **HttpCertificateCommand.java:1080-1100** \u2014 `tryReadInput` behavior change affects all callers\n**Type: Risk of unintended side effects**\n\nThe method now handles `Collection<?>` defaults by comma-joining them. Since this is `private static`, it only affects callers within this class. I verified there's only one caller (`readKeyUsage` and `readKeySize` which uses `Period`). But if future code reuses this helper for other types, the `instanceof Collection` branch could trigger unexpectedly. Add a comment restricting use to known types, or extract a dedicated `readKeyUsage` helper.\n\n---",
+        "path": "x-pack/plugin/security/cli/src/main/java/org/elasticsearch/xpack/security/cli/HttpCertificateCommand.java",
+        "start_line": 1080,
+        "end_line": 1080,
+        "observation_id": "1e0f2a3a144dee13",
+        "claimed_path": "HttpCertificateCommand.java",
+        "path_resolution": "basename",
+        "merged_from": [
+          "3ec4661c3e587b8a"
+        ]
+      },
+      {
+        "content": "### 8. **CertificateTool.java:278-295** \u2014 `--ca-keyusage` unavailable with existing CA but validation is silent\n**Type: UX / confusing error**\n\n```java\nif (caPkcs12PathSpec != null) {\n    builder = builder.availableUnless(caPkcs12PathSpec);\n}\nif (caCertPathSpec != null) {\n    builder = builder.availableUnless(caCertPathSpec);\n}\n```\n\nIf a user runs `--ca-keyusage foo --ca-cert existing.pem`, the option parser will reject it, but the error message won't explain *why* (just \"option not allowed\"). Consider adding a custom validation with a clear message: \"`--ca-keyusage` cannot be used with an existing CA (`--ca-cert`/`--ca-pkcs12`)\".\n\n---",
+        "path": "x-pack/plugin/security/cli/src/main/java/org/elasticsearch/xpack/security/cli/CertificateTool.java",
+        "start_line": 278,
+        "end_line": 278,
+        "observation_id": "789710f769ecc6ce",
+        "claimed_path": "CertificateTool.java",
+        "path_resolution": "basename",
+        "merged_from": [
+          "ede8a20600d58deb"
+        ]
+      },
+      {
+        "content": "### 10. **CertGenUtils.java:147-150** \u2014 Overload explosion\n**Type: Maintainability concern**\n\nThe class now has 5+ overloads of `generateSignedCertificate` with varying parameters. This is error-prone for callers. Consider consolidating with a builder pattern or a single method taking a parameter object. At minimum, deprecate the old overloads with `@Deprecated` and clear migration guidance.\n\n---",
+        "path": "x-pack/plugin/security/cli/src/main/java/org/elasticsearch/xpack/security/cli/CertGenUtils.java",
+        "start_line": 147,
+        "end_line": 147,
+        "observation_id": "ea15b52a1bab3d4d",
+        "claimed_path": "CertGenUtils.java",
+        "path_resolution": "basename",
+        "merged_from": [
+          "15f742e9a2f12dbb"
+        ]
+      },
+      {
+        "content": "### Summary of severity ordering:\n| # | File:Line | Severity | Category |\n|---|-----------|----------|----------|\n| 1 | CertGenUtils.java:272 | Medium | Interop risk |\n| 2 | CertGenUtils.java:347 | Medium | Standards violation |\n| 3 | CertificateTool.java:330 | Low | UX gap |\n| 4 | AutoConfigureNode.java:417 | Medium | Inconsistent security defaults |\n| 5 | CertGenUtils.java:78 | Low | Code quality |\n| 6 | CertGenUtilsTests.java:181 | Trivial | Test hygiene |\n| 7 | HttpCertificateCommand.java:1080 | Low | Refactor risk |\n| 8 | CertificateTool.java:278 | Low | UX |\n| 9 | certutil.md | Low | Docs |\n| 10 | CertGenUtils.java:147 | Low | Maintainability |\n\nNo critical defects (crashes, data loss, security holes). The main risks are interop (critical keyUsage on end-entity certs) and inconsistent defaults for transport vs HTTP certs.",
+        "path": "x-pack/plugin/security/cli/src/main/java/org/elasticsearch/xpack/security/cli/CertGenUtils.java",
+        "start_line": 272,
+        "end_line": 272,
+        "observation_id": "4411e5d529a7e597",
+        "claimed_path": "CertGenUtils.java",
+        "path_resolution": "basename",
+        "merged_from": []
+      }
+    ]
+  },
+  "rundir": "/home/user/.cache/llm-panel/runs/aacr-up-vzra6mdz-c45f52ed01ac/20260829-020527-2545910",
+  "extractor": "3",
+  "unlocated": [
+    {
+      "content": "### 9. **Docs: certutil.md** \u2014 Missing documentation for `cert` command's `--ca-keyusage`\n**Type: Documentation gap**\n\nThe diff shows `--ca-keyusage` documented under the `ca` command syntax (line 16), but the `cert` command syntax (line 19) also includes it. However, the descriptive text (lines 99-104) only explains it for CA generation. Add a note that for `cert`, it only applies when generating",
+      "observation_id": "4231e46673d1f644",
+      "claimed_path": "certutil.md",
+      "path_resolution": "basename"
+    }
+  ]
+}

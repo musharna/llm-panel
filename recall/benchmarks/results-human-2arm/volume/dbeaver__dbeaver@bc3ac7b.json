@@ -1,0 +1,162 @@
+{
+  "review": {
+    "comments": [
+      {
+        "content": "1. **High \u2014 `DBNPathBase.java:364`**  \n   `folder.resolve(str)` accepts the node\u2019s display name as an unrestricted path. A stream-backed node named `../../config.ini` or `/tmp/output` is dropped into `/data/import` \u2192 the content is written outside `/data/import`, potentially replacing an unrelated file.",
+        "path": "plugins/org.jkiss.dbeaver.model/src/org/jkiss/dbeaver/model/navigator/fs/DBNPathBase.java",
+        "start_line": 364,
+        "end_line": 364,
+        "observation_id": "49f940006f798941",
+        "claimed_path": "DBNPathBase.java",
+        "path_resolution": "basename",
+        "merged_from": []
+      },
+      {
+        "content": "2. **High \u2014 `DBNPathBase.java:369`**  \n   `Files.copy` writes directly to the destination with `REPLACE_EXISTING` and provides no rollback. An existing destination contains valid data, and the source stream throws after several kilobytes because a remote resource disconnects \u2192 the operation reports failure, but the valid destination has already been replaced by partial content. The same failure leaves a truncated file when the destination did not previously exist.",
+        "path": "plugins/org.jkiss.dbeaver.model/src/org/jkiss/dbeaver/model/navigator/fs/DBNPathBase.java",
+        "start_line": 369,
+        "end_line": 369,
+        "observation_id": "b3189383da371a30",
+        "claimed_path": "DBNPathBase.java",
+        "path_resolution": "basename",
+        "merged_from": []
+      },
+      {
+        "content": "3. **Medium \u2014 `DBNPathBase.java:293`**  \n   The acquired `InputStream` is never closed; `Files.copy(InputStream, ...)` does not close its input. Repeatedly dropping stream-backed files \u2192 file descriptors or remote-resource handles accumulate until subsequent opens fail with resource-exhaustion errors; providers that lock open content can also prevent later deletion or renaming.",
+        "path": "plugins/org.jkiss.dbeaver.model/src/org/jkiss/dbeaver/model/navigator/fs/DBNPathBase.java",
+        "start_line": 293,
+        "end_line": 293,
+        "observation_id": "fe7bf2ea627fe56a",
+        "claimed_path": "DBNPathBase.java",
+        "path_resolution": "basename",
+        "merged_from": []
+      },
+      {
+        "content": "4. **Medium \u2014 `DBNResource.java:428`**  \n   A content-read failure is converted into an unchecked `RuntimeException`. An `IFile` becomes unavailable or out of sync and `getContents()` throws `CoreException` during a drop \u2192 the exception bypasses the checked `IOException`/`DBException` handling expected by the drop operation and can escape as an uncaught UI error.",
+        "path": "plugins/org.jkiss.dbeaver.model.rcp/src/org/jkiss/dbeaver/model/navigator/DBNResource.java",
+        "start_line": 428,
+        "end_line": 428,
+        "observation_id": "d644cc55470c7351",
+        "claimed_path": "DBNResource.java",
+        "path_resolution": "basename",
+        "merged_from": []
+      },
+      {
+        "content": "5. **Low \u2014 `DBNPathBase.java:366`**  \n   `Files.exists(targetFile)` follows symbolic links, so it returns false for a dangling link and omits `REPLACE_EXISTING`. A destination name is a dangling symlink and a stream-backed file with that name is dropped \u2192 `Files.copy` encounters the existing link and throws `FileAlreadyExistsException` instead of replacing it as it does for other existing destinations.",
+        "path": "plugins/org.jkiss.dbeaver.model/src/org/jkiss/dbeaver/model/navigator/fs/DBNPathBase.java",
+        "start_line": 366,
+        "end_line": 366,
+        "observation_id": "38475cfc7e22d25f",
+        "claimed_path": "DBNPathBase.java",
+        "path_resolution": "basename",
+        "merged_from": []
+      },
+      {
+        "content": "**1. The obtained InputStream is never closed \u2014 every stream-copy leaks a handle.**\n`DBNPathBase.java:293` (`InputStream adapter = node.getAdapter(InputStream.class)`) \u2192 `DBNPathBase.java:296` (`copyInputStream(...)`). `Files.copy(InputStream, ...)` does not close the source stream, the `finally` at line 298 only calls `monitor.worked(1)`, and the stream from `DBNResource.java:425` (`file.getContents()`) is a live file stream. Scenario: a user drags files from the navigator onto a folder; every file whose Path adapter is null goes through this path, and every such drop leaves an open stream + file descriptor. Repeated multi-file drops accumulate handles until \"too many open files\" or workspace file-locking failures appear. There is also no close anywhere in the new branch.",
+        "path": "plugins/org.jkiss.dbeaver.model/src/org/jkiss/dbeaver/model/navigator/fs/DBNPathBase.java",
+        "start_line": 293,
+        "end_line": 293,
+        "observation_id": "76aaca231f3fdeb5",
+        "claimed_path": "DBNPathBase.java",
+        "path_resolution": "basename",
+        "merged_from": []
+      },
+      {
+        "content": "**2. Silent data loss: two dropped files with the same display name overwrite each other.**\n`DBNPathBase.java:366-367` \u2014 the target name is `node.getNodeDisplayName()` (line 363-364, sourced from line 295) and `copyInputStream` unconditionally uses `StandardCopyOption.REPLACE_EXISTING` when the target exists. Scenario: user drags `a/config.txt` and `b/config.txt` (or any two files whose display names collide) into one folder \u2014 both have display name \"config.txt\" \u2014 the second copy silently clobbers the first; there is no uniquification, no prompt, no error. Data from the first file is lost without any signal.",
+        "path": "plugins/org.jkiss.dbeaver.model/src/org/jkiss/dbeaver/model/navigator/fs/DBNPathBase.java",
+        "start_line": 366,
+        "end_line": 366,
+        "observation_id": "a1224b11cf7cc4b8",
+        "claimed_path": "DBNPathBase.java",
+        "path_resolution": "basename",
+        "merged_from": []
+      },
+      {
+        "content": "**3. `getAdapter` throws `RuntimeException` instead of returning null, aborting the whole multi-file drop.**\n`DBNResource.java:428` (`throw new RuntimeException(e)`). The Eclipse `getAdapter` contract is to return null when adaptation fails; the new call site at `DBNPathBase.java:293` (inside a bare `try { ... } finally`, no catch) will not handle it. Scenario: a multi-file drop where one node is a workspace `IFile` whose location is null (e.g., its project is missing/closed on disk \u2014 precisely the case where Path adapter returns null and the node reaches this branch) \u2014 `file.getContents()` throws `CoreException` \u2192 the unchecked exception propagates out of `dropNodes`, aborting every remaining file in the drop. Before this change, such nodes were skipped via the null-Path `continue` and the rest of the drop completed; now one broken node fails the entire operation.",
+        "path": "plugins/org.jkiss.dbeaver.model.rcp/src/org/jkiss/dbeaver/model/navigator/DBNResource.java",
+        "start_line": 428,
+        "end_line": 428,
+        "observation_id": "0371e8d8a7304ef1",
+        "claimed_path": "DBNResource.java",
+        "path_resolution": "basename",
+        "merged_from": []
+      },
+      {
+        "content": "**4. Failed copy destroys the pre-existing destination file (truncate-then-fail).**\n`DBNPathBase.java:366-369` \u2014 `REPLACE_EXISTING` + direct `Files.copy` to the final path, no temp-file strategy. Scenario: target file exists, the source is larger than the remaining disk space or the write fails midway (permission change, network drop) \u2014 `Files.copy` has already truncated/overwritten the destination; the drop (or move) fails with `IOException` and the previously-good destination file is left corrupt or truncated, not the old content. The old content is unrecoverable even though the operation reported failure.",
+        "path": "plugins/org.jkiss.dbeaver.model/src/org/jkiss/dbeaver/model/navigator/fs/DBNPathBase.java",
+        "start_line": 366,
+        "end_line": 366,
+        "observation_id": "e8a8cc99dbf797d5",
+        "claimed_path": "DBNPathBase.java",
+        "path_resolution": "basename",
+        "merged_from": []
+      },
+      {
+        "content": "**5. Exceptions from the new stream branch are uncaught at branch level, unlike every other branch in `dropNodes`.**\n`DBNPathBase.java:292-300` \u2014 the whole new branch has only `try/finally`; the adjacent normal path (visible at the hunk's `try {` after line 315) has per-node error handling. Scenario: mid-loop `IOException` (disk full, `FileAlreadyExistsException`, source unreadable) from `copyInputStream` at line 296 escapes the loop for all remaining nodes: a 10-file drop where file 3 fails leaves files 1\u20132 copied and 4\u201310 silently not attempted, with the exception surfacing from `dropNodes` instead of a per-file error.",
+        "path": "plugins/org.jkiss.dbeaver.model/src/org/jkiss/dbeaver/model/navigator/fs/DBNPathBase.java",
+        "start_line": 292,
+        "end_line": 292,
+        "observation_id": "14f427cdca243588",
+        "claimed_path": "DBNPathBase.java",
+        "path_resolution": "basename",
+        "merged_from": []
+      },
+      {
+        "content": "**6. `Files.exists` \u2192 `Files.notExists` flips \"existence undeterminable\" from graceful skip to hard abort.**\n`DBNPathBase.java:303` \u2014 `Files.exists` returns false both when the path is absent and when existence cannot be determined (e.g., IO error, permission denied on a parent); `Files.notExists` returns false in that undeterminable case, so the guard's old semantics (`!Files.exists`) no longer hold. Scenario: a drop source whose stat fails transiently (permission denial, flaky network share) previously fell into the skip-with-debug-log path; now it falls through into the copy/move code, which throws and aborts the drop with an exception where it previously continued silently.",
+        "path": "plugins/org.jkiss.dbeaver.model/src/org/jkiss/dbeaver/model/navigator/fs/DBNPathBase.java",
+        "start_line": 303,
+        "end_line": 303,
+        "observation_id": "f0dfa667d89395b0",
+        "claimed_path": "DBNPathBase.java",
+        "path_resolution": "basename",
+        "merged_from": []
+      },
+      {
+        "content": "**7. Unvalidated display name used as a target path component.**\n`DBNPathBase.java:363-364` (`folder.resolve(str)`) with `str` coming from `node.getNodeDisplayName()` (line 295). A UI display name is not a filesystem name: it can contain path separators (`/`), characters illegal on the target OS (e.g. `:` on Windows), or be empty. Scenario: dropping a node whose display name contains `:` or `/` onto a Windows target throws `InvalidPathException` (unchecked, escapes \u2014 see #5); an empty display name resolves to the folder itself and fails with `FileAlreadyExistsException`. Additionally the copy renames the file to its display name, which may differ from the real file name.",
+        "path": "plugins/org.jkiss.dbeaver.model/src/org/jkiss/dbeaver/model/navigator/fs/DBNPathBase.java",
+        "start_line": 363,
+        "end_line": 363,
+        "observation_id": "e98fe59230f551ce",
+        "claimed_path": "DBNPathBase.java",
+        "path_resolution": "basename",
+        "merged_from": []
+      },
+      {
+        "content": "**8. Silent no-op when neither adapter is available.**\n`DBNPathBase.java:290-302` \u2014 a node with a null Path adapter and a null InputStream adapter (e.g., a directory-type resource with no location, any non-IFile node) falls through the whole branch doing nothing, with no log, no error, no feedback \u2014 and `monitor.worked(1)` is still counted as if work was done. Previously the same node produced at least the debug log \"Resource ... doesn't not exists\". Scenario: a drop set containing one such node appears to succeed; the node is silently never copied and the user gets no indication.",
+        "path": "plugins/org.jkiss.dbeaver.model/src/org/jkiss/dbeaver/model/navigator/fs/DBNPathBase.java",
+        "start_line": 290,
+        "end_line": 290,
+        "observation_id": "b1fa66782b18d02c",
+        "claimed_path": "DBNPathBase.java",
+        "path_resolution": "basename",
+        "merged_from": []
+      },
+      {
+        "content": "**9. Error log omits the exception, losing the diagnostic.**\n`DBNResource.java:427` \u2014 `log.error(\"Error get file content\")` passes no exception argument, so the stack trace and `CoreException` cause of the failure are not recorded in the log (they survive only inside the thrown `RuntimeException`). Scenario: any failure to read file content leaves the log with a bare message and no way to see which resource or what underlying cause failed.",
+        "path": "plugins/org.jkiss.dbeaver.model.rcp/src/org/jkiss/dbeaver/model/navigator/DBNResource.java",
+        "start_line": 427,
+        "end_line": 427,
+        "observation_id": "53d70bcc9e7959c0",
+        "claimed_path": "DBNResource.java",
+        "path_resolution": "basename",
+        "merged_from": []
+      }
+    ]
+  },
+  "rundir": "/home/user/.cache/llm-panel/runs/aacr-up-cyrwyi9l-0a87dae8c8d7/20260829-155319-4124568",
+  "extractor": "3",
+  "unlocated": [
+    {
+      "content": "### DBNResource.java\n\n**1. Line 427: Exception stack trace not logged**  \n`log.error(\"Error get file content\");` \u2014 missing `e` argument.  \nFailure: When `file.getContents()` throws `CoreException`, logs show only \"Error get file content\" with no cause, making debugging impossible.\n\n**2. Line 428: Checked exception wrapped in unchecked `RuntimeException`**  \n`throw new RuntimeException(e);` \u2014 calle",
+      "observation_id": "c2645051e28eec7c",
+      "claimed_path": "DBNResource.java",
+      "path_resolution": "basename"
+    },
+    {
+      "content": "### DBNPathBase.java\n\n**3. Line 297\u2013300 (hunk starting at line 287): NullPointerException when node has neither Path nor InputStream adapter**  \n```java\nif (resource == null) {\n    ...\n    InputStream adapter = node.getAdapter(InputStream.class);\n    if (adapter != null) { ... }\n    // continue is INSIDE the if-block\n}\nif (Files.notExists(resource)) { ... }  // NPE here when adapter == null\n```\nFa",
+      "observation_id": "24190c9159ea4750",
+      "claimed_path": "DBNPathBase.java",
+      "path_resolution": "basename"
+    }
+  ]
+}

@@ -1,0 +1,141 @@
+{
+  "review": {
+    "comments": [
+      {
+        "content": "1. **High \u2014 Real defect (race / graph corruption): `graphrag/entity_resolution.py:115`.** Separate resolution components can still be adjacent in `graph`. Their merge tasks mutate shared NetworkX adjacency structures concurrently and `_merge_graph_nodes` yields while iterating neighbors at `extractor.py:220`. One task can remove or add an edge to a node while another iterates that node, causing `RuntimeError: dictionary changed size during iteration`, recreating an already-merged node, or losing a rewired edge. Merge components serially or calculate all rewrites before mutating the graph.",
+        "path": "graphrag/entity_resolution.py",
+        "start_line": 115,
+        "end_line": 115,
+        "observation_id": "148f8d7e7cf25c87",
+        "claimed_path": "graphrag/entity_resolution.py",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "2. **Medium \u2014 Real defect (wrong merged metadata): `graphrag/general/extractor.py:204`.** The replacement fixes `source_id` but removes merging of node-level `keywords` entirely. If duplicate A has `[\"bank\"]` and duplicate B has `[\"finance\"]`, the merged entity retains only A\u2019s keywords, producing incomplete metadata and potentially missing keyword-based retrieval.",
+        "path": "graphrag/general/extractor.py",
+        "start_line": 204,
+        "end_line": 204,
+        "observation_id": "f14c6f5a36c161ab",
+        "claimed_path": "graphrag/general/extractor.py",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "3. **Low \u2014 Performance defect / dead abstraction: `graphrag/utils.py:442`.** Awaiting `run_sync` inside the loop completes each deletion before starting the next, so the nursery provides no concurrency. With 1,000 edges and a 100 ms store call, this takes roughly 100 seconds rather than allowing bounded parallel deletion. Start worker tasks in the nursery, binding each iteration\u2019s endpoint values explicitly.\n\n4. **Low \u2014 Defensive/refactor concern (nondeterministic output): `graphrag/general/extractor.py:217-219`.** Converting sets directly to lists gives process-dependent ordering for edge keywords and source IDs. Identical graphs can serialize or index differently across runs, causing flaky snapshots and unnecessary downstream updates. Use a deterministic ordering such as `sorted(set(...))`, as the node-level `source_id` path already does.\n\nI checked for surrounding source and tests, but the provided workspace is empty; this review is therefore limited to the supplied diff.",
+        "path": "graphrag/utils.py",
+        "start_line": 442,
+        "end_line": 442,
+        "observation_id": "d639862ae278e7bf",
+        "claimed_path": "graphrag/utils.py",
+        "path_resolution": "exact",
+        "merged_from": [
+          "7307dfadff48502c"
+        ]
+      },
+      {
+        "content": "**1. graphrag/utils.py:439 \u2014 crash: IndentationError, module won't import**\nThe replacement line is indented 17 spaces while its enclosing `for` block body is 16 (the removed line and the surrounding context are at 16). Python treats this as `IndentationError: unexpected indent`, so `graphrag/utils.py` fails at parse/import time and every import of this module crashes. This must be fixed before anything else; the PR as written cannot run at all.",
+        "path": "graphrag/utils.py",
+        "start_line": 439,
+        "end_line": 439,
+        "observation_id": "23b6c24087937a7a",
+        "claimed_path": "graphrag/utils.py",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "**2. graphrag/general/extractor.py:204 \u2014 wrong result: node `\"keywords\"` merging silently dropped**\nThe old loop `for attr in [\"keywords\", \"source_id\"]` covered both attributes; the replacement only handles `\"source_id\"`. When two nodes are merged, `node1`'s `keywords` are now discarded and the merged node keeps only `node0`'s keywords, where previously both were combined. Note the edge branch (extractor.py:216-219) still merges `keywords` \u2014 so node and edge merging are now inconsistent, and the keyword loss is silent (no error, just incomplete data). Concrete scenario: resolving an \"Apple\" node into a \"Apple Inc.\" node loses every keyword that only existed on the source node.",
+        "path": "graphrag/general/extractor.py",
+        "start_line": 204,
+        "end_line": 204,
+        "observation_id": "ec7273b882ac4d1a",
+        "claimed_path": "graphrag/general/extractor.py",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "**3. graphrag/utils.py:439 \u2014 performance regression + dead structure: nursery is now a no-op and deletes are serialized**\nEven with the indentation fixed, the body of `async with trio.open_nursery()` no longer calls `nursery.start_soon` \u2014 it awaits each delete inline, so the deletes run strictly sequentially and the nursery spawns nothing and is exited immediately. The surrounding `async with trio.open_nursery() as nursery:` block is now misleading dead structure, and for a large `change.removed_edges` set the index deletes go from concurrent to one-at-a-time. If the intent was to keep concurrency while fixing the closure bug, the correct shape is `nursery.start_soon(trio.to_thread.run_sync, ..., from_node, to_node)` (passing args, not a closure).",
+        "path": "graphrag/utils.py",
+        "start_line": 439,
+        "end_line": 439,
+        "observation_id": "fec94f91c2caa188",
+        "claimed_path": "graphrag/utils.py",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "**4. graphrag/general/extractor.py:204, 216 \u2014 missing validation: relies on keys existing and being lists, in a code path that never executed before**\nThe old statements (`sorted(set(x.extend(...)))`) always raised `TypeError` because `list.extend` returns `None`, so this merge branch could never have run successfully. Now it does run, and it does `node0_attrs[\"source_id\"].extend(node1_attrs[\"source_id\"])` with no guards: any node/edge whose attributes dict lacks the `keywords`/`source_id` key (e.g., entities ingested by a different pipeline stage, or with `source_id` stored as a single string rather than a list) will raise `KeyError`/`AttributeError` mid-merge, partial state already mutated (description merged, weights added) with no rollback. Worth a `get(attr, [])`-style guard plus a type check, and this latent brittleness argues for merging through a helper used by both the node and edge branches.\n\n**Not raised:** entity_resolution.py:114 is a genuine fix (`nx.connected_components` yields plain `set`s, which have no `.nodes`), and the edge-branch changes at extractor.py:216-219 correctly fix the `extend`-returns-`None` bug for both attributes.",
+        "path": "graphrag/general/extractor.py",
+        "start_line": 204,
+        "end_line": 204,
+        "observation_id": "31ced4187d165329",
+        "claimed_path": "graphrag/general/extractor.py",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "**graphrag/entity_resolution.py:114** \u2014 **BUG FIX (crash in original)**\n`nx.connected_components()` yields `set` of node IDs, not subgraphs. The original `sub_connect_graph.nodes` would raise `AttributeError: 'set' object has no attribute 'nodes'`. The fix `list(sub_connect_graph)` is correct.\n\n---",
+        "path": "graphrag/entity_resolution.py",
+        "start_line": 114,
+        "end_line": 114,
+        "observation_id": "c5bd776287e330ef",
+        "claimed_path": "graphrag/entity_resolution.py",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "**graphrag/general/extractor.py:204-207** \u2014 **REGRESSION (wrong results)**\nNode merging now only handles `\"source_id\"` and silently drops `\"keywords\"` merging. The original loop intended to merge both (though it was buggy \u2014 see below). If keywords should be merged during entity resolution, they no longer are.\n\n---",
+        "path": "graphrag/general/extractor.py",
+        "start_line": 204,
+        "end_line": 204,
+        "observation_id": "a424153d8fbd7b97",
+        "claimed_path": "graphrag/general/extractor.py",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "**graphrag/general/extractor.py:204-207** \u2014 **ORIGINAL BUG (crash)**\nThe original code `node0_attrs[attr].extend(...)` returns `None`, so `set(None)` raises `TypeError`. This would have crashed on every node merge for both `keywords` and `source_id`. The new code fixes this for `source_id` but omits `keywords` entirely.\n\n---",
+        "path": "graphrag/general/extractor.py",
+        "start_line": 204,
+        "end_line": 204,
+        "observation_id": "e18e25e11ccd5867",
+        "claimed_path": "graphrag/general/extractor.py",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "**graphrag/general/extractor.py:215-218** \u2014 **BUG FIX (crash in original)**\nEdge merging had the same `.extend() \u2192 set(None)` bug. The new code correctly separates `extend()` from `set()` conversion for both `keywords` and `source_id`.\n\n---",
+        "path": "graphrag/general/extractor.py",
+        "start_line": 215,
+        "end_line": 215,
+        "observation_id": "38ca22c191968793",
+        "claimed_path": "graphrag/general/extractor.py",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "**graphrag/utils.py:442-444** \u2014 **DEAD CODE + LOST PARALLELISM**\n`async with trio.open_nursery() as nursery:` opens a nursery but the loop uses `await trio.to_thread.run_sync(...)` sequentially. The nursery context manager does nothing \u2014 zero tasks are started in it. This either:\n- Should use `nursery.start_soon` (with proper closure binding) for parallel deletes, OR\n- Should remove the nursery entirely since it adds overhead with no benefit.\n\n---",
+        "path": "graphrag/utils.py",
+        "start_line": 442,
+        "end_line": 442,
+        "observation_id": "1bd123a7270f108d",
+        "claimed_path": "graphrag/utils.py",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "**graphrag/utils.py:444** \u2014 **FRAGILE CLOSURE**\n`lambda: settings.docStoreConn.delete(...)` captures `from_node`/`to_node` by reference. Since it's `await`ed immediately in the loop it *happens* to work, but it's a latent bug if the call is ever deferred. Use `functools.partial` or a local function with explicit args.",
+        "path": "graphrag/utils.py",
+        "start_line": 444,
+        "end_line": 444,
+        "observation_id": "fd6fa6472e363273",
+        "claimed_path": "graphrag/utils.py",
+        "path_resolution": "exact",
+        "merged_from": []
+      }
+    ]
+  },
+  "rundir": "/home/user/.cache/llm-panel/runs/aacr-up-zppw2hf8-e2c11ea2a7df/20260829-114654-3707430",
+  "extractor": "3",
+  "unlocated": []
+}

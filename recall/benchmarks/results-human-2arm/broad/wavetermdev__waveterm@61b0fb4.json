@@ -1,0 +1,363 @@
+{
+  "review": {
+    "comments": [
+      {
+        "content": "1. **High \u2014 Functional defect** \u2014 `pkg/wshutil/wshproxy.go:202`: The `Command_AuthenticateToken` branch is empty and falls through to \u201cconnection not authenticated.\u201d Remote `wsh token` clients connect through this proxy, so every remote token exchange fails and the shell starts without the returned environment or initialization script.",
+        "path": "pkg/wshutil/wshproxy.go",
+        "start_line": 202,
+        "end_line": 202,
+        "observation_id": "4a63c577036c4706",
+        "claimed_path": "pkg/wshutil/wshproxy.go",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "2. **High \u2014 Security defect** \u2014 `pkg/blockcontroller/blockcontroller.go:365`, `pkg/shellexec/shellexec.go:324`, `pkg/shellexec/shellexec.go:406`, `pkg/shellexec/shellexec.go:487`: The one-time authentication capability is written to block logs, including the complete packed token at debug level. Anyone able to read or tail those logs during the five-minute validity window can redeem the token first, authenticate as that block, and obtain its JWT/environment.",
+        "path": "pkg/blockcontroller/blockcontroller.go",
+        "start_line": 365,
+        "end_line": 365,
+        "observation_id": "88bf181c0e8b2b89",
+        "claimed_path": "pkg/blockcontroller/blockcontroller.go",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "3. **High \u2014 Security defect** \u2014 `pkg/util/shellutil/shellutil.go:60` (also lines 116, 144, and 156): Every shell passes the packed bearer token as a command-line argument. On systems where process arguments are observable, another process can copy and redeem it before `wsh token` does. Pass the token over stdin or another non-argv channel.",
+        "path": "pkg/util/shellutil/shellutil.go",
+        "start_line": 60,
+        "end_line": 60,
+        "observation_id": "98dbfeba53026528",
+        "claimed_path": "pkg/util/shellutil/shellutil.go",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "4. **Medium \u2014 Functional defect** \u2014 `cmd/wsh/cmd/wshcmd-connserver.go:253`: `InstallRcFiles` failures are logged and ignored even though `StartRemoteShellProc` no longer installs these files itself. On a new machine with a read-only/full home directory, the connection is reported ready, but the subsequently launched shell cannot run the startup file that performs the token exchange.",
+        "path": "cmd/wsh/cmd/wshcmd-connserver.go",
+        "start_line": 253,
+        "end_line": 253,
+        "observation_id": "c6e8077aff01a7ef",
+        "claimed_path": "cmd/wsh/cmd/wshcmd-connserver.go",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "5. **Medium \u2014 Protocol defect** \u2014 `pkg/remote/conncontroller/conncontroller.go:339`: Any status line other than `NEED-JWT` is treated as success; the code never verifies `HAVE-JWT`. A warning, blank line, or future status value causes the controller to retain a connserver that may still be waiting for its JWT, after which RPC traffic hangs or corrupts the stream.",
+        "path": "pkg/remote/conncontroller/conncontroller.go",
+        "start_line": 339,
+        "end_line": 339,
+        "observation_id": "9abb37e111a4b338",
+        "claimed_path": "pkg/remote/conncontroller/conncontroller.go",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "6. **Medium \u2014 Reliability defect** \u2014 `pkg/remote/conncontroller/conncontroller.go:333` and `cmd/wsh/cmd/wshcmd-connserver.go:253`: The three-second status timeout now includes synchronous RC-file installation. A slow or network-mounted home directory can exceed that timeout even though the connserver is healthy, causing remote setup to fail repeatedly.",
+        "path": "pkg/remote/conncontroller/conncontroller.go",
+        "start_line": 333,
+        "end_line": 333,
+        "observation_id": "0411d125b0ff7e7b",
+        "claimed_path": "pkg/remote/conncontroller/conncontroller.go",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "7. **Low \u2014 Missing defensive check** \u2014 `pkg/shellexec/shellexec.go:324` and `pkg/shellexec/shellexec.go:483`: `CommandOptsType.SwapToken` is declared optional (`omitempty`) but both exported startup functions dereference it unconditionally. Any caller using zero/default command options will panic instead of returning an error or starting without token integration.\n\n8. **Low \u2014 Dead/misleading state** \u2014 `pkg/util/shellutil/tokenswap.go:23`: `TokenSwapEntry.JwtToken` is never populated or read; the JWT is instead stored inside `Env`. Keeping two apparent locations for the same value invites future callers to populate the ineffective field and silently omit the JWT from the exchanged environment.",
+        "path": "pkg/shellexec/shellexec.go",
+        "start_line": 324,
+        "end_line": 324,
+        "observation_id": "0144612ef09f3910",
+        "claimed_path": "pkg/shellexec/shellexec.go",
+        "path_resolution": "exact",
+        "merged_from": [
+          "aec6463d5661bce8"
+        ]
+      },
+      {
+        "content": "**1. Remote (ssh) shells can never complete the token swap \u2014 the feature is broken end-to-end for the case it exists for.**\n- File: `pkg/shellexec/shellexec.go:413` + `pkg/wshutil/wshproxy.go:148-170` + `pkg/wshutil/wshproxy.go:202-204`\n- Kind: wrong results (functional break)\n\nThe swap entry is registered with `shellutil.AddTokenSwapEntry(cmdOpts.SwapToken)` in `StartRemoteShellProc` \u2014 which runs in the **app** process (pkg/shellexec/shellexec.go:413). The remote shell's rc then runs `wsh token`, which connects to the **remote connserver's** domain socket (the `SockName` put in the token at pkg/blockcontroller/blockcontroller.go:410). The connserver is a different process on a different machine, with its own empty `tokenSwapMap`. The diff contains no mechanism that transfers the `TokenSwapEntry` (or its env/context) from the app process to the connserver. The only connserver-side handling of `authenticatetoken` is:\n- `handleAuthenticateTokenCommand` (wshproxy.go:161-163) doing `GetAndRemoveTokenSwapEntry` against the **local** map \u2192 \"no token entry found\", or\n- the **empty** `if origMsg.Command == wshrpc.Command_AuthenticateToken { }` block in `HandleClientProxyAuth` (wshproxy.go:202-204), which falls through to \"connection not authenticated\".\n\nNeither can resolve the entry. Making this worse, `StartRemoteShellProc` now injects `WAVETERM_SWAPTOKEN` into the remote command line **instead of** `WAVETERM_JWT` (shellexec.go:411) \u2014 the remote shell's JWT now arrives *only* through the swap eval. So on every remote block the `wsh token` call fails (stderr is suppressed by `2>/dev/null` in the rc files), the shell silently loses the swapped env (`TERM_PROGRAM`, `WAVETERM_BLOCKID/TABID/WORKSPACEID/CLIENTID`, and `WAVETERM_JWT`), and remote wsh integration degrades to the no-JWT path. The empty `if` in `HandleClientProxyAuth` looks like the intended (unfinished) forwarding stub \u2014 verify which handler serves the remote domain socket and either implement transport of the entry or remove the dead branch.\n\n**2. The swap credential is logged in at least five places.**\n- Files/lines: `pkg/blockcontroller/blockcontroller.go:364` (blocklogger.Infof the token), `pkg/shellexec/shellexec.go:330` (`conn.Infof ... swaptoken: %s`), `pkg/shellexec/shellexec.go:410` (`conn.Debugf ... packed swaptoken %s` \u2014 full packed token incl. sockname+RpcContext), `cmd/wsh/cmd/wshcmd-root.go:164` (`log.Printf(\"# sending authenticate token command, token: %s\")`), `pkg/wshutil/wshproxy.go:149` (`log.Printf(\"got AUTHENTICATETOKEN command %v\", msg.Data)` \u2014 dumps the whole message).\n- Kind: security (secret hygiene)\n\nThe packed token + RpcContext is the credential that lets a same-machine process open the block's route and receive the block's **live JWT** (the response env contains `WAVETERM_JWT`). The block log is user-visible UI output and conn logs persist. One-time use and 5-minute expiry narrow but don't remove the exposure (log \u2192 race the shell's consumption). Logging a bearer credential at Info/Debug level defeats the purpose of having a short-lived one-time token.\n\n**3. WSL branch sets `swapToken.Env[JWT]` but never `SockName`/`RpcContext`, so the WSL swap token is dead.**\n- File: `pkg/blockcontroller/blockcontroller.go:382`\n- Kind: dead code / inconsistent behavior\n\nThe WSL branch populates `swapToken.Env[WAVETERM_JWT]` but never sets `SockName` or `RpcContext`, and `StartWslShellProc` is untouched by this PR (no `WAVETERM_SWAPTOKEN` injection, no auth handling). Result: WSL shells get none of the swapped env (`TERM_PROGRAM`, `WAVETERM_BLOCKID`, \u2026) while local and ssh shells get it via the eval; the set line is dead. Either wire the WSL path up or drop the line \u2014 an inconsistency that will confuse anyone debugging why WSL blocks lack the block env.\n\n**4. `StartRemoteShellProc` / `StartLocalShellProc` dereference `cmdOpts.SwapToken` with no nil guard.**\n- Files/lines: `pkg/shellexec/shellexec.go:330` (`cmdOpts.SwapToken.Token`), `:406` (`PackForClient`), `:413` and `:532` (`AddTokenSwapEntry`)\n- Kind: missing defensive check / future crash\n\nA nil `SwapToken` panics inside the format-arg dereference, `PackForClient`, and `AddTokenSwapEntry`. Today's only caller (blockcontroller) always sets it, so this is latent \u2014 but `StartLocalShellProc` in particular is a widely reusable helper, and the PR also *removed* the old explicit \"no jwt token provided to connection\" error check (shellexec.go:402-405), so the invariant is now implicit. One future caller that forgets `SwapToken` gets a panic instead of an error.\n\n**5. `ScriptText` / `InitScriptText` is never populated.**\n- Files/lines: `pkg/util/shellutil/tokenswap.go:25` (field), `pkg/wshutil/wshproxy.go:95` (`InitScriptText: entry.ScriptText`), `cmd/wsh/cmd/wshcmd-token.go:46`\n- Kind: dead code / unfinished feature\n\nNothing in the diff ever assigns `ScriptText` (the old `conncontroller.TokenSwapEntry.EncodeForShell` that joined env + script text was deleted with no replacement writer). So `wsh token` always prints env vars followed by a blank line, and the \"init script\" side of the swap \u2014 including `TokenSwapEntry.JwtToken` (also never read or written) \u2014 is vestigial. Ship it or drop it; right now it reads as an unfinished feature.",
+        "path": "pkg/shellexec/shellexec.go",
+        "start_line": 413,
+        "end_line": 413,
+        "observation_id": "1cdd00e0f1be9cfe",
+        "claimed_path": "pkg/shellexec/shellexec.go",
+        "path_resolution": "exact",
+        "merged_from": [
+          "9a66b4aa6b8ba67d",
+          "01a652fc4a58e8a5",
+          "043d94501b0ff774",
+          "05176e6608ef1495"
+        ]
+      },
+      {
+        "content": "**6. `askForJwtToken` doesn't read a line, and accepts an empty token.**\n- File: `cmd/wsh/cmd/wshcmd-connserver.go:244-249`\n- Kind: misleading logic / missing validation\n\n`fmt.Fscanln` reads a single whitespace-delimited field, not \"a single line\" as the comment claims \u2014 a token containing (or followed by) spaces silently truncates. More practically: an empty line returns `\"\" , nil`, and the failure surfaces later as a generic \"error extracting rpc context from JWT token\" with no hint that the input was empty. Also, the `HAVE-JWT` short-circuit (lines 234-238) trusts *any* ambient `WAVETERM_JWT` (stale/expired/wrong-conn, e.g. exported into the env by a previous swap eval): the app side then never sends the fresh token, and the connserver authenticates (or fails to authenticate) with the stale one, with no recovery path.",
+        "path": "cmd/wsh/cmd/wshcmd-connserver.go",
+        "start_line": 244,
+        "end_line": 244,
+        "observation_id": "7d804a5b0343f48a",
+        "claimed_path": "cmd/wsh/cmd/wshcmd-connserver.go",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "**7. The JWT handshake introduces a 3-second timeout and a blocking round trip where there was none.**\n- File: `pkg/remote/conncontroller/conncontroller.go:335-338`\n- Kind: robustness / flake\n\nThe previous flow wrote the JWT unconditionally; the new flow waits for a `NEED-JWT`/`HAVE-JWT` status line with `ReadLineWithTimeout(linesChan, 3*time.Second)`. On a slow or loaded remote (first login, slow disk), or with any remote `wsh` whose version string compares equal but whose handshake doesn't speak this protocol (e.g. old dev builds both reporting `v0.0.0` \u2014 `WaveVersion` defaults to `0.0.0`), the read times out, the session is closed, and the connection is left with wsh disabled \u2014 a silent degradation that the old unconditional write didn't have.\n\n**8. `AddTokenSwapEntry`'s error is ignored at both call sites.**\n- Files/lines: `pkg/shellexec/shellexec.go:413`, `:532`\n- Kind: missing validation\n\nIf registration fails (token empty/collision), the shell still gets a packed token that resolves to nothing, and the failure is invisible (the rc suppresses the `wsh token` error). Unrealistic today (uuid), but ignoring the error makes the \"silently no env swap\" failure mode the only one.",
+        "path": "pkg/remote/conncontroller/conncontroller.go",
+        "start_line": 335,
+        "end_line": 335,
+        "observation_id": "bf7d2663ab14372d",
+        "claimed_path": "pkg/remote/conncontroller/conncontroller.go",
+        "path_resolution": "exact",
+        "merged_from": [
+          "ad7883bf593d9211"
+        ]
+      },
+      {
+        "content": "**9. `debugLog` double-logs every block lifecycle message into the block's own log stream.**\n- File: `pkg/blockcontroller/blockcontroller.go:866-869` (used at `:890`, `:720`)\n- Kind: unclear logic / noise\n\nEvery \"start blockcontroller\" and \"error running shell\" now goes to both the server log and the user-visible block log (blocklogger with `[conndebug]` tag). For interactive shells the user's log view will be flooded with these on every block start. If the intent is remote-debugging, gate it behind a flag.",
+        "path": "pkg/blockcontroller/blockcontroller.go",
+        "start_line": 866,
+        "end_line": 866,
+        "observation_id": "64ac408be3974a41",
+        "claimed_path": "pkg/blockcontroller/blockcontroller.go",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "**10. Unrelated churn: `NewSyncMap` \u2192 `MakeSyncMap`.**\n- File: `pkg/util/ds/syncmap.go:13`\n- Kind: unrelated change / naming\n\nA public constructor renamed to the less idiomatic (`New` is the Go convention), touching a shared util, with no connection to this PR. Only the test file is shown updated in the diff \u2014 any caller not in the diff silently breaks the build.",
+        "path": "pkg/util/ds/syncmap.go",
+        "start_line": 13,
+        "end_line": 13,
+        "observation_id": "5d57bc6db165d46c",
+        "claimed_path": "pkg/util/ds/syncmap.go",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "**11. `IsWshVersionUpToDate` gained an unused `logCtx` parameter.**\n- File: `pkg/remote/conncontroller/conncontroller.go:233` (callers at `:318` and `pkg/wshrpc/wshserver/wshserver.go`)\n- Kind: dead parameter\n\n**12. rc-file issues:**",
+        "path": "pkg/remote/conncontroller/conncontroller.go",
+        "start_line": 233,
+        "end_line": 233,
+        "observation_id": "dd5b2bf81ec118f5",
+        "claimed_path": "pkg/remote/conncontroller/conncontroller.go",
+        "path_resolution": "exact",
+        "merged_from": [
+          "50826a67fab9f824"
+        ]
+      },
+      {
+        "content": "- `pkg/util/shellutil/shellutil.go:161`: pwsh `Remove-Item Env:WAVETERM_SWAPTOKEN` raises a visible (non-terminating) error whenever the variable is absent, unlike the bash/zsh/fish `unset`/`set -e` variants which are silent. Kind: minor UX defect.",
+        "path": "pkg/util/shellutil/shellutil.go",
+        "start_line": 161,
+        "end_line": 161,
+        "observation_id": "1c38526c38f5a993",
+        "claimed_path": "pkg/util/shellutil/shellutil.go",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "- `pkg/util/shellutil/shellutil.go:143`: the fish comment says \"the echo is to prevent fish from complaining about empty input\" \u2014 there is no echo; stale comment describing removed code. Kind: misleading comment.",
+        "path": "pkg/util/shellutil/shellutil.go",
+        "start_line": 143,
+        "end_line": 143,
+        "observation_id": "60d0ba0c36f51c34",
+        "claimed_path": "pkg/util/shellutil/shellutil.go",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "**13. `tokenCmdRun` burns the one-time token before validating `shellType`.**\n- File: `cmd/wsh/cmd/wshcmd-token.go:37-41`\n- Kind: missing validation (ordering)\n\nThe RPC (`AuthenticateTokenCommand`) consumes the entry from the map; an invalid `shellType` then fails `EncodeEnvVarsForShell` and the token is lost. Validate the shell type before the RPC.",
+        "path": "cmd/wsh/cmd/wshcmd-token.go",
+        "start_line": 37,
+        "end_line": 37,
+        "observation_id": "7c6d10bc488bb4b8",
+        "claimed_path": "cmd/wsh/cmd/wshcmd-token.go",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "**15. rc-file installation moved to connserver startup, with failure downgraded from fatal to logged.**\n- File: `cmd/wsh/cmd/wshcmd-connserver.go:253-256` (replacing the removed fatal `RemoteInstallRcFilesCommand` at `pkg/shellexec/shellexec.go:321-325`)\n- Kind: behavior change / silent degradation\n\nA failed install used to abort shell start loudly; now it logs and continues, so the shell runs with stale (or absent) waveterm rc files \u2014 no env swap, no PATH, no completions \u2014 and the failure only shows as a log line. Also, rc files are now updated only when a connserver starts, so an app update leaves remote shells on old rc content until reconnect.\n\nAlso worth confirming (couldn't verify, repo absent): `wsh token` runs under the root `PersistentPreRunE`, so `preRunSetupRpcClient` (wshcmd-root.go:86-91) takes the terminal raw-mode branch in the rc context (no JWT in env yet) for every shell start \u2014 worth eyeballing that raw-mode setup/restore is correct for a short-lived subprocess inside a pty.### CRITICAL",
+        "path": "cmd/wsh/cmd/wshcmd-connserver.go",
+        "start_line": 253,
+        "end_line": 253,
+        "observation_id": "b85f7d5565bf7ea2",
+        "claimed_path": "cmd/wsh/cmd/wshcmd-connserver.go",
+        "path_resolution": "exact",
+        "merged_from": [
+          "c100e69cb8216c3c"
+        ]
+      },
+      {
+        "content": "**pkg/wshutil/wshproxy.go:216** \u2014 **Type error: wrong return type**\n`HandleClientProxyAuth` is declared to return `(string, error)` (routeId), but returns `entry.RpcContext` which is `*wshrpc.RpcContext`. The function will not compile.\n```go\n// Line 216 in diff hunk:\nreturn entry.RpcContext, nil  // BUG: returns *RpcContext, not string\n```\nShould be:\n```go\nrouteId, _ := MakeRouteIdFromCtx(entry.RpcContext)\nreturn routeId, nil\n```\n\n---\n\n### HIGH",
+        "path": "pkg/wshutil/wshproxy.go",
+        "start_line": 216,
+        "end_line": 216,
+        "observation_id": "0d15657be589201a",
+        "claimed_path": "pkg/wshutil/wshproxy.go",
+        "path_resolution": "exact",
+        "merged_from": [
+          "a555c966eab16676"
+        ]
+      },
+      {
+        "content": "**pkg/util/shellutil/shellquote.go:59** \u2014 **Command injection in fish shell**\n`HardQuoteFish` only escapes `\"`, `\\`, `$` but not backticks `` ` ``. In fish, backticks perform command substitution. If an env value contains `` `rm -rf /` ``, it executes when the startup script runs `set -x VAR value`.",
+        "path": "pkg/util/shellutil/shellquote.go",
+        "start_line": 59,
+        "end_line": 59,
+        "observation_id": "d1eb724fe5dab97c",
+        "claimed_path": "pkg/util/shellutil/shellquote.go",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "**pkg/util/shellutil/tokenswap.go:78,98** \u2014 **O(n) cleanup on every operation**\n`removeExpiredTokens` iterates the entire `tokenSwapMap` on every `AddTokenSwapEntry` and `GetAndRemoveTokenSwapEntry`. Under load with many tokens, this becomes a scalability bottleneck. Should use a timer-based cleanup or priority queue.",
+        "path": "pkg/util/shellutil/tokenswap.go",
+        "start_line": 78,
+        "end_line": 78,
+        "observation_id": "9664be6a2f641f66",
+        "claimed_path": "pkg/util/shellutil/tokenswap.go",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "**pkg/blockcontroller/blockcontroller.go:287** \u2014 **Hardcoded 5-minute token expiry**\n`Exp: time.Now().Add(5 * time.Minute)` \u2014 not configurable. Slow shell startups (heavy .zshrc, network FS) could exceed this, causing `wsh token` to fail with \"no token entry found\" after cleanup.\n\n---\n\n### MEDIUM",
+        "path": "pkg/blockcontroller/blockcontroller.go",
+        "start_line": 287,
+        "end_line": 287,
+        "observation_id": "2ff13cabd0aea107",
+        "claimed_path": "pkg/blockcontroller/blockcontroller.go",
+        "path_resolution": "exact",
+        "merged_from": [
+          "df52ce773f334d01"
+        ]
+      },
+      {
+        "content": "**cmd/wsh/cmd/wshcmd-connserver.go:234** \u2014 **Debug output to stdout breaks scripting**\n`fmt.Printf(\"HAVE-JWT\\n\")` prints to stdout. If this output is captured (e.g., `token=$(wsh connserver)`), it pollutes the token value. Should use `log.Printf` or stderr.",
+        "path": "cmd/wsh/cmd/wshcmd-connserver.go",
+        "start_line": 234,
+        "end_line": 234,
+        "observation_id": "4486bc5d850bb7f5",
+        "claimed_path": "cmd/wsh/cmd/wshcmd-connserver.go",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "**cmd/wsh/cmd/wshcmd-connserver.go:242** \u2014 **Indefinite stdin block with no timeout**\n`fmt.Fscanln(os.Stdin, &line)` blocks forever waiting for input. No context timeout, no deadline. If stdin is closed or no input arrives, the process hangs permanently.",
+        "path": "cmd/wsh/cmd/wshcmd-connserver.go",
+        "start_line": 242,
+        "end_line": 242,
+        "observation_id": "71abe21d219b2e67",
+        "claimed_path": "cmd/wsh/cmd/wshcmd-connserver.go",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "**cmd/wsh/cmd/wshcmd-connserver.go:252-256** \u2014 **Unconditional rc file install on every server start**\n`wshutil.InstallRcFiles()` runs every time `serverRun` is called. Could be slow, overwrite user customizations, or have side effects. Should be gated (first-run only, or explicit flag).",
+        "path": "cmd/wsh/cmd/wshcmd-connserver.go",
+        "start_line": 252,
+        "end_line": 252,
+        "observation_id": "d7692b8830cd99e0",
+        "claimed_path": "cmd/wsh/cmd/wshcmd-connserver.go",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "**pkg/blockcontroller/blockcontroller.go:363** \u2014 **Swap token logged in plaintext**\n`blocklogger.Infof(logCtx, \"[conndebug] created swaptoken: %s\\n\", swapToken.Token)` \u2014 logs the UUID token. If logs are exported/leaked, tokens can be replayed within the 5-min window.",
+        "path": "pkg/blockcontroller/blockcontroller.go",
+        "start_line": 363,
+        "end_line": 363,
+        "observation_id": "43351a51553b7bc2",
+        "claimed_path": "pkg/blockcontroller/blockcontroller.go",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "**pkg/remote/conncontroller/conncontroller.go:322-326** \u2014 **Force-update checks local env, not remote**\n```go\nif isUpToDate && !afterUpdate && os.Getenv(wavebase.WaveWshForceUpdateVarName) != \"\" {\n```\nChecks `WAVETERM_WSHFORCEUPDATE` on the *controller* machine, not the remote. For SSH connections, the remote's wsh version should be forced from the remote side or config.",
+        "path": "pkg/remote/conncontroller/conncontroller.go",
+        "start_line": 322,
+        "end_line": 322,
+        "observation_id": "844fded0a444372e",
+        "claimed_path": "pkg/remote/conncontroller/conncontroller.go",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "**pkg/waveapp/waveapp.go:184** \u2014 **AuthenticateCommand now waits for response**\nChanged from `&wshrpc.RpcOpts{NoResponse: true}` to `nil`. Old code fire-and-forget; new code blocks on RPC response. Could hang if server doesn't respond.\n\n---\n\n### LOW",
+        "path": "pkg/waveapp/waveapp.go",
+        "start_line": 184,
+        "end_line": 184,
+        "observation_id": "dc21af701f1b7aa5",
+        "claimed_path": "pkg/waveapp/waveapp.go",
+        "path_resolution": "exact",
+        "merged_from": [
+          "8a3fa11a6c80f6e9"
+        ]
+      },
+      {
+        "content": "**pkg/util/ds/syncmap.go:13** \u2014 **Breaking API change: `NewSyncMap` \u2192 `MakeSyncMap`**\nExternal callers (if any) will fail to compile. Tests updated but no deprecation path.",
+        "path": "pkg/util/ds/syncmap.go",
+        "start_line": 13,
+        "end_line": 13,
+        "observation_id": "3f96acc1520ab2a0",
+        "claimed_path": "pkg/util/ds/syncmap.go",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "**pkg/util/shellutil/shellutil.go:143** \u2014 **Fish startup missing `echo` from comment**\nComment says \"the echo is to prevent fish from complaining about empty input\" but no `echo` in actual code: `wsh token \"$WAVETERM_SWAPTOKEN\" fish 2>/dev/null | source`. May error on empty output.",
+        "path": "pkg/util/shellutil/shellutil.go",
+        "start_line": 143,
+        "end_line": 143,
+        "observation_id": "ca9a34b1390b829c",
+        "claimed_path": "pkg/util/shellutil/shellutil.go",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "**pkg/util/shellutil/tokenswap.go:91** \u2014 **UUID collision returns error instead of retry**\n`AddTokenSwapEntry` fails if token exists. UUID v4 collision probability is ~1 in 2^122, but non-zero. Should loop with new UUID instead of returning error.",
+        "path": "pkg/util/shellutil/tokenswap.go",
+        "start_line": 91,
+        "end_line": 91,
+        "observation_id": "d3a23b5eea487562",
+        "claimed_path": "pkg/util/shellutil/tokenswap.go",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "**cmd/wsh/cmd/wshcmd-token.go:20** \u2014 **Command hidden from help**\n`Hidden: true` makes `wsh token` undiscoverable. Intentional for internal use?",
+        "path": "cmd/wsh/cmd/wshcmd-token.go",
+        "start_line": 20,
+        "end_line": 20,
+        "observation_id": "c70cf24fa882ab6e",
+        "claimed_path": "cmd/wsh/cmd/wshcmd-token.go",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "**pkg/util/shellutil/shellutil.go:68,127** \u2014 **PATH added twice in zsh/bash templates**\nRedundant but harmless: PATH set before sourcing original rc, then again after with duplicate check.\n\n---\n\n### Notes on Architecture\n\nThe swap token design is sound: short-lived (5 min), single-use (deleted on `GetAndRemove`), carries only `{token, sockname, rpccontext}` to client, server returns `{env, initscripttext}`. The JWT stays in process env (`WAVETERM_JWT`) for backward compat but the new flow uses the swap token for authentication.\n\nKey trust boundary: the `wsh token` RPC response is `eval`/`source`d directly. Consider signing the response or at least documenting that the WaveTerm server must be trusted.",
+        "path": "pkg/util/shellutil/shellutil.go",
+        "start_line": 68,
+        "end_line": 68,
+        "observation_id": "a6b4fe3ce47341e1",
+        "claimed_path": "pkg/util/shellutil/shellutil.go",
+        "path_resolution": "exact",
+        "merged_from": [
+          "cbe16073f9aa3b04"
+        ]
+      }
+    ]
+  },
+  "rundir": "/home/user/.cache/llm-panel/runs/aacr-up-ban6gqas-bcce3c081ffc/20260828-234508-2005717",
+  "extractor": "3",
+  "unlocated": [
+    {
+      "content": "**14. `waveapp.go` switches `AuthenticateCommand` from `NoResponse: true` to `nil` with no stated reason.**\n- File: `pkg/waveapp/waveapp.go:184`\n- Kind: behavior change with unclear intent\n\n`Connect()` now blocks waiting for an authenticate response where it previously fire-and-forgot, and `authRtn` is still unused. If the server side ever fails to answer the response (or `nil` opts carry no timeo",
+      "observation_id": "642aa6e234133a44",
+      "claimed_path": "waveapp.go",
+      "path_resolution": "basename"
+    },
+    {
+      "content": "**pkg/util/shellutil/shellutil.go** (multiple shell templates) \u2014 **Arbitrary code execution from server response**\nAll four shell startup scripts (zsh, bash, fish, pwsh) execute `wsh token` output via `source <(...)`, `eval \"$(...)\"`, `| source`, `Invoke-Expression`. If the server is compromised or token stolen, attacker gets arbitrary code execution in user's shell. This is the trust model but wo",
+      "observation_id": "b65c21e290b50c2c",
+      "claimed_path": "pkg/util/shellutil/shellutil.go",
+      "path_resolution": "exact"
+    }
+  ]
+}

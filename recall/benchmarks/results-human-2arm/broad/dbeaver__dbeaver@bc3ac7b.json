@@ -1,0 +1,147 @@
+{
+  "review": {
+    "comments": [
+      {
+        "content": "- **High \u2014 Security defect / missing validation:** `plugins/org.jkiss.dbeaver.model/src/org/jkiss/dbeaver/model/navigator/fs/DBNPathBase.java:364` \u2014 `folder.resolve(str)` trusts `getNodeDisplayName()` as a path. A custom or plugin-provided `DBNNode` can return `../../outside.txt` or an absolute path, causing a drop to write outside the destination folder. Reject absolute paths and path separators, or derive and validate a single filename before resolving it.",
+        "path": "plugins/org.jkiss.dbeaver.model/src/org/jkiss/dbeaver/model/navigator/fs/DBNPathBase.java",
+        "start_line": 364,
+        "end_line": 364,
+        "observation_id": "735c71f22194169f",
+        "claimed_path": "plugins/org.jkiss.dbeaver.model/src/org/jkiss/dbeaver/model/navigator/fs/DBNPathBase.java",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "- **High \u2014 Data-loss defect:** `plugins/org.jkiss.dbeaver.model/src/org/jkiss/dbeaver/model/navigator/fs/DBNPathBase.java:366` \u2014 Existing destination files are unconditionally copied with `REPLACE_EXISTING`. Dropping a stream-backed node whose display name matches an existing file silently destroys that file, bypassing any conflict/confirmation handling used by the normal path-backed flow.",
+        "path": "plugins/org.jkiss.dbeaver.model/src/org/jkiss/dbeaver/model/navigator/fs/DBNPathBase.java",
+        "start_line": 366,
+        "end_line": 366,
+        "observation_id": "d3f5a1e59c00689d",
+        "claimed_path": "plugins/org.jkiss.dbeaver.model/src/org/jkiss/dbeaver/model/navigator/fs/DBNPathBase.java",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "- **Medium \u2014 Resource leak:** `plugins/org.jkiss.dbeaver.model/src/org/jkiss/dbeaver/model/navigator/fs/DBNPathBase.java:290` \u2014 The `InputStream` returned by the adapter is never closed; `Files.copy(InputStream, ...)` does not close it. Repeated drops can leak file descriptors/resources, and the leak also occurs when copying throws. Acquire it in a try-with-resources block.\n\nI checked the supplied diff; the workspace contains no source files, so no surrounding implementation or tests were available to inspect.**CRITICAL**",
+        "path": "plugins/org.jkiss.dbeaver.model/src/org/jkiss/dbeaver/model/navigator/fs/DBNPathBase.java",
+        "start_line": 290,
+        "end_line": 290,
+        "observation_id": "a4a11a1cdfd117e4",
+        "claimed_path": "plugins/org.jkiss.dbeaver.model/src/org/jkiss/dbeaver/model/navigator/fs/DBNPathBase.java",
+        "path_resolution": "exact",
+        "merged_from": [
+          "896c752a91e968a6"
+        ]
+      },
+      {
+        "content": "1. **DBNPathBase.java:363-372** \u2014 Resource leak: `copyInputStream` does not close the `InputStream`. `Files.copy(InputStream, Path, ...)` does not close the stream (per Javadoc). The caller (`dropNodes` at line 295) also doesn't close it. Every dropped node that uses this path leaks a file handle.",
+        "path": "plugins/org.jkiss.dbeaver.model/src/org/jkiss/dbeaver/model/navigator/fs/DBNPathBase.java",
+        "start_line": 363,
+        "end_line": 363,
+        "observation_id": "75755322ab5df1bc",
+        "claimed_path": "DBNPathBase.java",
+        "path_resolution": "basename",
+        "merged_from": []
+      },
+      {
+        "content": "2. **DBNPathBase.java:294-300** \u2014 `monitor.worked(1)` executes in `finally` even when `copyInputStream` throws `IOException`. The exception propagates out of `dropNodes`, but the progress monitor has already recorded the work as completed. Callers will see \"work done\" for a failed operation.",
+        "path": "plugins/org.jkiss.dbeaver.model/src/org/jkiss/dbeaver/model/navigator/fs/DBNPathBase.java",
+        "start_line": 294,
+        "end_line": 294,
+        "observation_id": "40a234cd37fb2c5b",
+        "claimed_path": "DBNPathBase.java",
+        "path_resolution": "basename",
+        "merged_from": []
+      },
+      {
+        "content": "3. **DBNPathBase.java:294-300** \u2014 `monitor.worked(1)` executes even when `adapter == null` (no copy attempted). The `try` block encompasses the `if (adapter != null)` check, so `finally` runs regardless. Progress is inflated for no-op nodes.\n\n**HIGH**",
+        "path": "plugins/org.jkiss.dbeaver.model/src/org/jkiss/dbeaver/model/navigator/fs/DBNPathBase.java",
+        "start_line": 294,
+        "end_line": 294,
+        "observation_id": "e9dd4a233e9543a9",
+        "claimed_path": "DBNPathBase.java",
+        "path_resolution": "basename",
+        "merged_from": [
+          "0dad1a5842341356"
+        ]
+      },
+      {
+        "content": "4. **DBNResource.java:429** \u2014 `log.error(\"Error get file content\")` lacks context (file name, resource path). Debugging a failure in production will have zero identifying information.",
+        "path": "plugins/org.jkiss.dbeaver.model.rcp/src/org/jkiss/dbeaver/model/navigator/DBNResource.java",
+        "start_line": 429,
+        "end_line": 429,
+        "observation_id": "5014111428e05af5",
+        "claimed_path": "DBNResource.java",
+        "path_resolution": "basename",
+        "merged_from": []
+      },
+      {
+        "content": "5. **DBNResource.java:430-431** \u2014 Wrapping `CoreException` in `RuntimeException` discards the original exception type and suppresses the stack trace context. Catch-and-rethrow should preserve the cause: `throw new RuntimeException(\"Error getting file content for \" + resource, e);`\n\n**MEDIUM**",
+        "path": "plugins/org.jkiss.dbeaver.model.rcp/src/org/jkiss/dbeaver/model/navigator/DBNResource.java",
+        "start_line": 430,
+        "end_line": 430,
+        "observation_id": "15a99dfda4532371",
+        "claimed_path": "DBNResource.java",
+        "path_resolution": "basename",
+        "merged_from": [
+          "81c3b7f9576e4fef"
+        ]
+      },
+      {
+        "content": "6. **DBNPathBase.java:293** \u2014 `monitor.subTask(\"Copy file\")` uses a static string while the Path branch (line 315) includes the resource path: `\"Copy file \" + resource`. Inconsistent progress reporting.",
+        "path": "plugins/org.jkiss.dbeaver.model/src/org/jkiss/dbeaver/model/navigator/fs/DBNPathBase.java",
+        "start_line": 293,
+        "end_line": 293,
+        "observation_id": "56519013e92de70f",
+        "claimed_path": "DBNPathBase.java",
+        "path_resolution": "basename",
+        "merged_from": []
+      },
+      {
+        "content": "7. **DBNPathBase.java:297** \u2014 Pre-existing typo in log message: `\"doesn't not exists\"` \u2192 should be `\"does not exist\"`.\n\n**LOW / STYLE**",
+        "path": "plugins/org.jkiss.dbeaver.model/src/org/jkiss/dbeaver/model/navigator/fs/DBNPathBase.java",
+        "start_line": 297,
+        "end_line": 297,
+        "observation_id": "f92bcbfc250cd799",
+        "claimed_path": "DBNPathBase.java",
+        "path_resolution": "basename",
+        "merged_from": [
+          "1e83de00105ec22c"
+        ]
+      },
+      {
+        "content": "8. **DBNResource.java:38**, **DBNPathBase.java:40** \u2014 Wildcard import `java.nio.file.*` (project convention may allow, but explicit imports are preferred for clarity).",
+        "path": "plugins/org.jkiss.dbeaver.model.rcp/src/org/jkiss/dbeaver/model/navigator/DBNResource.java",
+        "start_line": 38,
+        "end_line": 38,
+        "observation_id": "db835c13d87abcf1",
+        "claimed_path": "DBNResource.java",
+        "path_resolution": "basename",
+        "merged_from": []
+      },
+      {
+        "content": "9. **DBNPathBase.java:363** \u2014 Parameter name `str` in `copyInputStream(InputStream, Path, String str)` is non-descriptive; should be `fileName`.",
+        "path": "plugins/org.jkiss.dbeaver.model/src/org/jkiss/dbeaver/model/navigator/fs/DBNPathBase.java",
+        "start_line": 363,
+        "end_line": 363,
+        "observation_id": "bc584249264d47fd",
+        "claimed_path": "DBNPathBase.java",
+        "path_resolution": "basename",
+        "merged_from": []
+      },
+      {
+        "content": "10. **DBNPathBase.java:295** \u2014 `node.getNodeDisplayName()` may return strings invalid for the target filesystem (e.g., `/`, `\\`, `:`, `*`, `?`, `\"`, `<`, `>`, `|` on Windows). No sanitization.",
+        "path": "plugins/org.jkiss.dbeaver.model/src/org/jkiss/dbeaver/model/navigator/fs/DBNPathBase.java",
+        "start_line": 295,
+        "end_line": 295,
+        "observation_id": "ac3dd97df835a8c8",
+        "claimed_path": "DBNPathBase.java",
+        "path_resolution": "basename",
+        "merged_from": []
+      }
+    ]
+  },
+  "rundir": "/home/user/.cache/llm-panel/runs/aacr-up-y6gn5m1u-b09ede83aba4/20260829-155052-4122947",
+  "extractor": "3",
+  "unlocated": []
+}

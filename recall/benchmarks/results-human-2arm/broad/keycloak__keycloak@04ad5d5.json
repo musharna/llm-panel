@@ -1,0 +1,406 @@
+{
+  "review": {
+    "comments": [
+      {
+        "content": "1. **High \u2014 Functional defect:** `tests/base/pom.xml:146` \u2014 The `mixed-cluster` profile enables the containerized cluster but does not set `kc.test.database.internal=true`. With the default `internal=false`, Keycloak receives the database\u2019s host-mapped `localhost:<port>` JDBC URL; inside a Keycloak container, that resolves to the Keycloak container itself, so database-backed startup fails. The clustering module\u2019s properties set this flag, but this profile does not.",
+        "path": "tests/base/pom.xml",
+        "start_line": 146,
+        "end_line": 146,
+        "observation_id": "11bf7e706a1c3f58",
+        "claimed_path": "tests/base/pom.xml",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "2. **High \u2014 Test defect:** `tests/clustering/src/test/java/org/keycloak/tests/compatibility/MixedVersionClusterTest.java:35` \u2014 This test has no automated verification of cluster formation or mixed-version behavior. Two independently running, mutually isolated Keycloak nodes pass because the test only prints their URLs. The unconditional one-minute sleep at line 40 adds suite time without establishing or checking any condition.",
+        "path": "tests/clustering/src/test/java/org/keycloak/tests/compatibility/MixedVersionClusterTest.java",
+        "start_line": 35,
+        "end_line": 35,
+        "observation_id": "f4f0eebb714acf62",
+        "claimed_path": "tests/clustering/src/test/java/org/keycloak/tests/compatibility/MixedVersionClusterTest.java",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "3. **Medium \u2014 Resource leak:** `test-framework/clustering/src/main/java/org/keycloak/testframework/server/ClusteredKeycloakServer.java:93` and `:110` \u2014 Incremental startup has no rollback. If node 1 starts and a later image cannot be pulled or node 2 fails startup, the earlier containers use `MANUAL_STOP=true` and remain running because `stop()` is never called on the exceptional path.",
+        "path": "test-framework/clustering/src/main/java/org/keycloak/testframework/server/ClusteredKeycloakServer.java",
+        "start_line": 93,
+        "end_line": 93,
+        "observation_id": "a16c18c71dc4fe26",
+        "claimed_path": "test-framework/clustering/src/main/java/org/keycloak/testframework/server/ClusteredKeycloakServer.java",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "4. **Medium \u2014 Race:** `test-framework/clustering/src/main/java/org/keycloak/testframework/clustering/LoadBalancer.java:10` \u2014 `urls` is a plain `HashMap`, while `node()` mutates it through `computeIfAbsent` at line 20. Concurrent JUnit execution or concurrent test requests to the same injected object can produce `ConcurrentModificationException`, duplicate initialization, or corrupted map state. Use an immutable/eager collection or a concurrent map.",
+        "path": "test-framework/clustering/src/main/java/org/keycloak/testframework/clustering/LoadBalancer.java",
+        "start_line": 10,
+        "end_line": 10,
+        "observation_id": "9bb013ad444165e5",
+        "claimed_path": "test-framework/clustering/src/main/java/org/keycloak/testframework/clustering/LoadBalancer.java",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "5. **Medium \u2014 Configuration defect:** `test-framework/clustering/src/main/java/org/keycloak/testframework/server/ClusteredKeycloakServer.java:62` \u2014 `String.split(\",\")` discards trailing empty fields. For example, a two-node setting of `images=old-image,` is interpreted as one image and silently runs both nodes with `old-image`, rather than rejecting the malformed per-node list. That can make a purported mixed-version test exercise only one version.",
+        "path": "test-framework/clustering/src/main/java/org/keycloak/testframework/server/ClusteredKeycloakServer.java",
+        "start_line": 62,
+        "end_line": 62,
+        "observation_id": "6bd1aac4b2560618",
+        "claimed_path": "test-framework/clustering/src/main/java/org/keycloak/testframework/server/ClusteredKeycloakServer.java",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "6. **Medium \u2014 Fragile networking abstraction:** `test-framework/core/src/main/java/org/keycloak/testframework/database/AbstractContainerTestDatabase.java:85` \u2014 Selecting the first entry from `NetworkSettings.getNetworks()` does not ensure that the chosen network is reachable by the Keycloak containers, which are not explicitly attached to the database\u2019s network. A database attached to multiple or custom networks can yield an arbitrary, unreachable IP. A shared Docker network and alias should define connectivity instead of relying on map order and raw container IPs.",
+        "path": "test-framework/core/src/main/java/org/keycloak/testframework/database/AbstractContainerTestDatabase.java",
+        "start_line": 85,
+        "end_line": 85,
+        "observation_id": "69dd3029cb518f57",
+        "claimed_path": "test-framework/core/src/main/java/org/keycloak/testframework/database/AbstractContainerTestDatabase.java",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "7. **Low \u2014 Input-validation defect:** `test-framework/clustering/src/main/java/org/keycloak/testframework/clustering/LoadBalancer.java:17` \u2014 The bounds check omits `nodeIndex < 0`, so `node(-1)` reaches `containers[-1]` and throws an unrelated `ArrayIndexOutOfBoundsException`. Additionally, line 18 reverses the formatting arguments: requesting node 5 from a two-node cluster reports \u201cRequested nodeIndex: 2, cluster size: 5.\u201d",
+        "path": "test-framework/clustering/src/main/java/org/keycloak/testframework/clustering/LoadBalancer.java",
+        "start_line": 17,
+        "end_line": 17,
+        "observation_id": "c8f8bc5d1c034834",
+        "claimed_path": "test-framework/clustering/src/main/java/org/keycloak/testframework/clustering/LoadBalancer.java",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "8. **Low \u2014 Missing validation:** `test-framework/clustering/src/main/java/org/keycloak/testframework/server/ClusteredKeycloakServer.java:55` \u2014 The constructor accepts zero or negative server counts. A negative value fails with `NegativeArraySizeException`; zero starts \u201csuccessfully\u201d and later crashes when the framework asks for node 0\u2019s base URL. Reject counts below one with a configuration-specific error.",
+        "path": "test-framework/clustering/src/main/java/org/keycloak/testframework/server/ClusteredKeycloakServer.java",
+        "start_line": 55,
+        "end_line": 55,
+        "observation_id": "b57beb973646148e",
+        "claimed_path": "test-framework/clustering/src/main/java/org/keycloak/testframework/server/ClusteredKeycloakServer.java",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "9. **Low \u2014 Duplicated version state:** `tests/base/pom.xml:94` \u2014 The clustering dependency hard-codes `999.0.0-SNAPSHOT` even though this change also adds it to the test-framework BOM and neighboring dependencies rely on dependency management. A release/version override can therefore resolve the stale snapshot instead of the BOM-selected artifact.\n\n10. **Low \u2014 Misleading abstraction/name:** `test-framework/clustering/src/main/java/org/keycloak/testframework/clustering/LoadBalancer.java:8` \u2014 This class performs no load balancing and exposes only indexed node URLs. Calling it `LoadBalancer` and injecting it through `@InjectLoadBalancer` suggests tests are exercising a balanced endpoint when they are bypassing one entirely; a node-directory name would reflect the current contract.\n\nThe workspace contained no repository files, so these checks are against the supplied diff; surrounding implementation and tests were unavailable.",
+        "path": "tests/base/pom.xml",
+        "start_line": 94,
+        "end_line": 94,
+        "observation_id": "348b5a174c089e46",
+        "claimed_path": "tests/base/pom.xml",
+        "path_resolution": "exact",
+        "merged_from": [
+          "7166628b51c6323e"
+        ]
+      },
+      {
+        "content": "**3. A mid-start failure in the cluster leaks already-started containers**\n`ClusteredKeycloakServer.java:91` and `:107`\nIn both `startContainersWithMixedImage` and `startContainersWithSameImage`, each iteration calls `container.run(...)` inside the loop with no try/finally. If container[1] fails to start, container[0] is left running and is never stopped \u2014 `stop()` is only invoked by the normal shutdown path. Concrete scenario: second node's `run()` throws (bad image, port conflict), the test bails, and an orphaned Keycloak container keeps running against the shared DB. Wrap the loop body in try/finally (or fail-fast cleanup).",
+        "path": "test-framework/clustering/src/main/java/org/keycloak/testframework/server/ClusteredKeycloakServer.java",
+        "start_line": 91,
+        "end_line": 91,
+        "observation_id": "0bba14a15abe910a",
+        "claimed_path": "ClusteredKeycloakServer.java",
+        "path_resolution": "basename",
+        "merged_from": []
+      },
+      {
+        "content": "**4. `getMappedPort` NPEs if the container was never started**\n`DockerKeycloakDistribution.java:338-340`\n```java\npublic int getMappedPort(int port) {\n    return keycloakContainer.getMappedPort(port);\n}\n```\n`keycloakContainer` is null until `run()` is called. A test copying providers and then asking for a mapped port before `start()` gets an opaque NPE at `keycloakContainer.getMappedPort`. Minor, but it's a misuse path with a misleading failure.\n\n## Not-yet-wrong but worth raising",
+        "path": "quarkus/tests/junit5/src/main/java/org/keycloak/it/utils/DockerKeycloakDistribution.java",
+        "start_line": 338,
+        "end_line": 338,
+        "observation_id": "5057c2632a70ffa0",
+        "claimed_path": "DockerKeycloakDistribution.java",
+        "path_resolution": "basename",
+        "merged_from": [
+          "f024bbd8e6a8a6c9"
+        ]
+      },
+      {
+        "content": "**5. Hardcoded `999.0.0-SNAPSHOT` instead of the BOM-managed version**\n`tests/base/pom.xml:94-96` \u2014 the clustering dependency pins `<version>999.0.0-SNAPSHOT</version>` explicitly while the other `org.keycloak.testframework` deps in the same file rely on dependencyManagement via the imported BOM (`test-framework/bom`). The XML in `tests/base/pom.xml` sits right above entries that omit the version. This will silently break on the next version bump and is inconsistent with the sibling deps. This is a maintainability defect (mixed hardcoded version).",
+        "path": "tests/base/pom.xml",
+        "start_line": 94,
+        "end_line": 94,
+        "observation_id": "1ab015f802e84b6a",
+        "claimed_path": "tests/base/pom.xml",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "**6. Committed debug scaffolding posing as a test**\n`MixedVersionClusterTest.java:31-37` \u2014 `testUrls` only `Thread.sleep(TimeUnit.MINUTES.toMillis(1))` (a 60-second sleep in the test suite) and `System.out.println`s the URLs, with a hardcoded `assumeTrue(loadBalancer.clusterSize() == 2)`. The README (`tests/clustering/README.md:22`) even documents \"the test has some println to check the state.\" This is throwaway debugging left in the tree: it doesn't assert anything, sleeps real time, and the name `testUrls` misleads. Either make it a real assertion or drop it (and the README block) before merge.",
+        "path": "tests/clustering/src/test/java/org/keycloak/tests/compatibility/MixedVersionClusterTest.java",
+        "start_line": 31,
+        "end_line": 31,
+        "observation_id": "68a6c6507235510a",
+        "claimed_path": "MixedVersionClusterTest.java",
+        "path_resolution": "basename",
+        "merged_from": []
+      },
+      {
+        "content": "**7. Config-injection fallbacks are silently swallowed**\n`ClusteredKeycloakServerSupplier.java:16-20` \u2014 `numContainers` and `images` are `@ConfigProperty`-annotated *field* injections with initialized defaults. If MicroProfile Config injection isn't actually active on these classes (they're instantiated by the framework, not CDI), the fields silently keep their literal defaults (`2`, `\"-\"`) and any `KC_TEST_SERVER_IMAGES`/`numContainer` setting is ignored without warning. This is a duplicate/silent-default concern \u2014 the rest of the framework reads config via `Config.getValueTypeConfig(...)`, not field injection, so verify wiring; otherwise a \"cluster with 5 nodes\" config silently starts 2.",
+        "path": "test-framework/clustering/src/main/java/org/keycloak/testframework/server/ClusteredKeycloakServerSupplier.java",
+        "start_line": 16,
+        "end_line": 16,
+        "observation_id": "b245e3858f6fabfe",
+        "claimed_path": "ClusteredKeycloakServerSupplier.java",
+        "path_resolution": "basename",
+        "merged_from": []
+      },
+      {
+        "content": "**8. CWD-dependent path derivation in image creation**\n`DockerKeycloakDistribution.java:88` (constructor) computes `BuildToolHelper.getProjectDir(Paths.get(\"\"))` \u2014 i.e., relative to the *current working directory* \u2014 then `getParent().getParent()`. `ClusteredKeycloakServer.java:49-50` derives the same thing from the classpath resource and goes `... resolve(\"quarkus\")`. These two derivations are inconsistent (one resolves *into* `quarkus`, the other assumes CWD *is* inside it), and the constructor's version is wrong unless the build/IDE launches with a specific CWD. If the distribution/Dockerfile lookups miss, the non-cluster path silently falls back to the remote image (`failIfDockerFileMissing=false`), which can silently change what's under test. Fragile and inconsistent; worth unifying on a classpath-derived root.",
+        "path": "quarkus/tests/junit5/src/main/java/org/keycloak/it/utils/DockerKeycloakDistribution.java",
+        "start_line": 88,
+        "end_line": 88,
+        "observation_id": "e90f95997ebb584a",
+        "claimed_path": "DockerKeycloakDistribution.java",
+        "path_resolution": "basename",
+        "merged_from": []
+      },
+      {
+        "content": "**9. `copyToContainer` modeled as a `Map` keyed on `MountableFile`**\n`DockerKeycloakDistribution.java:77`, `:196-208` \u2014 a pending-copy list is stored as a `HashMap<MountableFile, String>` and later `forEach`'d (`:152`). A `Map` keyed on the source file is the wrong shape (no lookup by key is ever done; two distinct copy ops that produce equal `MountableFile`s would silently overwrite each other). A `List` of pairs would be clearer and collision-free. Abstract-concern / unclear-logic item.",
+        "path": "quarkus/tests/junit5/src/main/java/org/keycloak/it/utils/DockerKeycloakDistribution.java",
+        "start_line": 77,
+        "end_line": 77,
+        "observation_id": "12de28b88199b503",
+        "claimed_path": "DockerKeycloakDistribution.java",
+        "path_resolution": "basename",
+        "merged_from": []
+      },
+      {
+        "content": "**10. Misleading parameter name**\n`ClusteredKeycloakServer.java:53` \u2014 the constructor parameter is spelled `mumServers` (typo for `numServers`). Naming item; easy to misread when reading or refactoring.\n\nOrdered as-is: items 1\u20134 are the real defects, then 5\u201310 are the raise-before-it-bites items.",
+        "path": "test-framework/clustering/src/main/java/org/keycloak/testframework/server/ClusteredKeycloakServer.java",
+        "start_line": 53,
+        "end_line": 53,
+        "observation_id": "9737b661547de367",
+        "claimed_path": "ClusteredKeycloakServer.java",
+        "path_resolution": "basename",
+        "merged_from": []
+      },
+      {
+        "content": "### 1. `DockerKeycloakDistribution.java` \u2014 **Critical: Race condition / State leak in `run()` method**\n\n**File:** `quarkus/tests/junit5/src/main/java/org/keycloak/it/utils/DockerKeycloakDistribution.java`  \n**Lines:** ~147-156 (in diff hunk)\n\n```java\nthis.backupConsumer = new BackupConsumer(customLogConsumer);\nkeycloakContainer = getKeycloakContainer();\ncopyToContainer.forEach(keycloakContainer::withCopyFileToContainer);\n```\n\n**Issue:** The `copyToContainer` map is a field (`private final Map<MountableFile, String> copyToContainer = new HashMap<>();`) that accumulates entries across multiple `run()` calls. If `run()` is called more than once on the same instance (which the API allows \u2014 `run()` is public and not idempotent), files from previous runs will be copied again, causing duplicates or failures.\n\n**Failure scenario:** A test calls `distribution.run(args1)`, then later `distribution.run(args2)`. The second run copies both the first and second set of providers/configs. If the same JAR is copied twice to `/opt/keycloak/providers/`, the container startup may fail with \"file already exists\" or classloader conflicts.\n\n**Fix:** Clear `copyToContainer` at the start of `run()`, or make `copyProvider`/`copyConfigFile` replace entries by destination path.\n\n---",
+        "path": "quarkus/tests/junit5/src/main/java/org/keycloak/it/utils/DockerKeycloakDistribution.java",
+        "start_line": 147,
+        "end_line": 147,
+        "observation_id": "784eed026f2ca452",
+        "claimed_path": "DockerKeycloakDistribution.java",
+        "path_resolution": "basename",
+        "merged_from": []
+      },
+      {
+        "content": "### 2. `DockerKeycloakDistribution.java` \u2014 **Bug: `getMappedPort()` NPE if called before `run()`**\n\n**File:** `DockerKeycloakDistribution.java`  \n**Lines:** ~337-340 (new method at end)\n\n```java\npublic int getMappedPort(int port) {\n    return keycloakContainer.getMappedPort(port);\n}\n```\n\n**Issue:** `keycloakContainer` is `null` until `run()` is called. Calling `getMappedPort()` before `run()` throws NPE.\n\n**Failure scenario:** Test code calls `distribution.getMappedPort(8080)` before `distribution.run(...)` \u2014 crashes with NPE instead of a clear error.\n\n**Fix:** Add a null check and throw `IllegalStateException(\"Container not started\")`.\n\n---",
+        "path": "quarkus/tests/junit5/src/main/java/org/keycloak/it/utils/DockerKeycloakDistribution.java",
+        "start_line": 337,
+        "end_line": 337,
+        "observation_id": "73a5606ae2a46f50",
+        "claimed_path": "DockerKeycloakDistribution.java",
+        "path_resolution": "basename",
+        "merged_from": []
+      },
+      {
+        "content": "### 3. `DockerKeycloakDistribution.java` \u2014 **Bug: `startContainersWithMixedImage` uses wrong arg order in exception message**\n\n**File:** `ClusteredKeycloakServer.java`  \n**Lines:** ~107-109 (in diff)\n\n```java\nthrow new IllegalArgumentException(\"Node index out of bounds. Requested nodeIndex: %d, cluster size: %d\".formatted(server.clusterSize(), nodeIndex));\n```\n\n**Issue:** The format string expects `nodeIndex` first, then `clusterSize`, but arguments are swapped.\n\n**Failure scenario:** Requesting node index 5 in a 2-node cluster produces: `\"Node index out of bounds. Requested nodeIndex: 2, cluster size: 5\"` \u2014 misleading.\n\n---",
+        "path": "quarkus/tests/junit5/src/main/java/org/keycloak/it/utils/DockerKeycloakDistribution.java",
+        "start_line": 107,
+        "end_line": 107,
+        "observation_id": "714f1daeb24a94f4",
+        "claimed_path": "DockerKeycloakDistribution.java",
+        "path_resolution": "basename",
+        "merged_from": []
+      },
+      {
+        "content": "### 4. `ClusteredKeycloakServer.java` \u2014 **Bug: Typo in constructor parameter name**\n\n**File:** `ClusteredKeycloakServer.java`  \n**Line:** ~52 (in diff)\n\n```java\npublic ClusteredKeycloakServer(int mumServers, String images) {\n```\n\n**Issue:** Parameter named `mumServers` (should be `numServers`). Used correctly inside but misleading.\n\n---",
+        "path": "test-framework/clustering/src/main/java/org/keycloak/testframework/server/ClusteredKeycloakServer.java",
+        "start_line": 52,
+        "end_line": 52,
+        "observation_id": "76b09cce8a3571a1",
+        "claimed_path": "ClusteredKeycloakServer.java",
+        "path_resolution": "basename",
+        "merged_from": []
+      },
+      {
+        "content": "### 5. `ClusteredKeycloakServer.java` \u2014 **Bug: `startContainersWithMixedImage` logic error for SNAPSHOT_IMAGE**\n\n**File:** `ClusteredKeycloakServer.java`  \n**Lines:** ~88-102 (in diff)\n\n```java\nif (SNAPSHOT_IMAGE.equals(imagePeServer[i])) {\n    if (snapshotImage == null) {\n        snapshotImage = defaultImage();\n    }\n    resolvedImage = snapshotImage;\n} else {\n    resolvedImage = new RemoteDockerImage(DockerImageName.parse(imagePeServer[i]));\n}\n```\n\n**Issue:** `defaultImage()` returns a `LazyFuture<String>` that builds the image. If multiple containers use `SNAPSHOT_IMAGE` (\"-\"), they all share the *same* `LazyFuture` instance \u2014 correct. But if the first container fails to build, subsequent containers reuse the failed future without retry.\n\n**More critically:** The `imagePeServer` array comes from splitting `images` by comma. If `images = \"-,quay.io/keycloak/keycloak:nightly\"`, then `imagePeServer[0] = \"-\"` and `imagePeServer[1] = \"quay.io/keycloak/keycloak:nightly\"`. But the code treats `\"-\"` as `SNAPSHOT_IMAGE` correctly. However, if `images = \"quay.io/keycloak/keycloak:26.2.3,quay.io/keycloak/keycloak:26.2.4\"`, neither is `\"-\"`, so both use `RemoteDockerImage` \u2014 correct.\n\n**But:** The `startContainersWithSameImage` path (when `images` is null/empty/single value) passes `imageFuture` to all containers. If `image` is `\"-\"` or null, they all share one `defaultImage()` future \u2014 correct. If `image` is a remote image, they all share one `RemoteDockerImage` \u2014 also correct (Testcontainers handles deduplication).\n\n---",
+        "path": "test-framework/clustering/src/main/java/org/keycloak/testframework/server/ClusteredKeycloakServer.java",
+        "start_line": 88,
+        "end_line": 88,
+        "observation_id": "acaa8c500d4f5041",
+        "claimed_path": "ClusteredKeycloakServer.java",
+        "path_resolution": "basename",
+        "merged_from": []
+      },
+      {
+        "content": "### 6. `ClusteredKeycloakServer.java` \u2014 **Missing validation: `numContainers` can be \u2264 0**\n\n**File:** `ClusteredKeycloakServerSupplier.java`  \n**Lines:** ~13-14 (in diff)\n\n```java\n@ConfigProperty(name = \"numContainer\", defaultValue = \"2\")\nint numContainers = 2;\n```\n\n**Issue:** No validation that `numContainers > 0`. If config sets `numContainer=0` or negative, `new DockerKeycloakDistribution[0]` creates empty array, `clusterSize()` returns 0, and `getBaseUrl(0)` throws `ArrayIndexOutOfBoundsException`.\n\n**Fix:** Add `@Positive` or validate in `getServer()`.\n\n---",
+        "path": "test-framework/clustering/src/main/java/org/keycloak/testframework/server/ClusteredKeycloakServer.java",
+        "start_line": 13,
+        "end_line": 13,
+        "observation_id": "5e2c148e9e557560",
+        "claimed_path": "ClusteredKeycloakServer.java",
+        "path_resolution": "basename",
+        "merged_from": []
+      },
+      {
+        "content": "### 7. `AbstractContainerTestDatabase.java` \u2014 **Bug: `getJdbcUrl()` assumes single network**\n\n**File:** `AbstractContainerTestDatabase.java`  \n**Lines:** ~85-89 (in diff)\n\n```java\nvar ip = container.getContainerInfo().getNetworkSettings().getNetworks().values().iterator().next().getIpAddress();\nreturn url.replace(container.getHost() + \":\" + container.getFirstMappedPort(), ip + \":\" + container.getExposedPorts().get(0));\n```\n\n**Issue:** \n- `getNetworks().values().iterator().next()` arbitrarily picks the first network. Container may be on multiple networks (e.g., testcontainers default + custom).\n- `getExposedPorts().get(0)` assumes the first exposed port is the database port \u2014 not guaranteed.\n- `replace()` is fragile: if host:port appears elsewhere in URL (unlikely but possible), it replaces wrong occurrence.\n\n**Failure scenario:** PostgreSQL container exposes 5432, but testcontainers also exposes a random port for something else. `getExposedPorts().get(0)` returns the wrong port.\n\n**Fix:** Use `container.getContainerIpAddress()` and `container.getMappedPort(5432)` (or the known database port).\n\n---",
+        "path": "test-framework/core/src/main/java/org/keycloak/testframework/database/AbstractContainerTestDatabase.java",
+        "start_line": 85,
+        "end_line": 85,
+        "observation_id": "7a6f0340352af698",
+        "claimed_path": "AbstractContainerTestDatabase.java",
+        "path_resolution": "basename",
+        "merged_from": [
+          "48e4c2e22b559414"
+        ]
+      },
+      {
+        "content": "### 8. `DockerKeycloakDistribution.java` \u2014 **Resource leak: `parallelReaperExecutor` never shut down**\n\n**File:** `DockerKeycloakDistribution.java`  \n**Line:** ~46 (in diff)\n\n```java\nprivate final Executor parallelReaperExecutor = Executors.newSingleThreadExecutor();\n```\n\n**Issue:** The executor is created but never shut down. If many `DockerKeycloakDistribution` instances are created (e.g., in a test suite), threads leak.\n\n**Fix:** Shut down in `stop()` or implement `AutoCloseable`.\n\n---",
+        "path": "quarkus/tests/junit5/src/main/java/org/keycloak/it/utils/DockerKeycloakDistribution.java",
+        "start_line": 46,
+        "end_line": 46,
+        "observation_id": "14f1a53f7e7384dd",
+        "claimed_path": "DockerKeycloakDistribution.java",
+        "path_resolution": "basename",
+        "merged_from": []
+      },
+      {
+        "content": "### 9. `DockerKeycloakDistribution.java` \u2014 **Inconsistent path handling: `Paths.get(\"\")` for project dir**\n\n**File:** `DockerKeycloakDistribution.java`  \n**Line:** ~54 (in diff)\n\n```java\nthis.image = image == null ? createImage(BuildToolHelper.getProjectDir(Paths.get(\"\")).getParent().getParent(), false) : image;\n```\n\n**Issue:** `Paths.get(\"\")` resolves to current working directory, which may not be the project root when tests run from different directories (e.g., IDE, Maven surefire, CI). `BuildToolHelper.getProjectDir()` likely handles this, but relying on `Paths.get(\"\")` is fragile.\n\n**Better:** Use a known anchor (e.g., `Paths.get(\".\").toAbsolutePath().normalize()`) or rely on `BuildToolHelper` alone.\n\n---",
+        "path": "quarkus/tests/junit5/src/main/java/org/keycloak/it/utils/DockerKeycloakDistribution.java",
+        "start_line": 54,
+        "end_line": 54,
+        "observation_id": "89e836a2890a8502",
+        "claimed_path": "DockerKeycloakDistribution.java",
+        "path_resolution": "basename",
+        "merged_from": []
+      },
+      {
+        "content": "### 10. `ClusteredKeycloakServer.java` \u2014 **Dead code: `MANAGEMENT_PORT` constant unused in some paths**\n\n**File:** `ClusteredKeycloakServer.java`  \n**Lines:** ~31, 73, 83 (in diff)\n\n`MANAGEMENT_PORT = 9000` is defined but in `startContainersWithSameImage`, `exposedPorts` is created as `new int[]{REQUEST_PORT, MANAGEMENT_PORT}` \u2014 correct. In `startContainersWithMixedImage`, same. But `getManagementBaseUrl(int)` uses `MANAGEMENT_PORT` \u2014 correct. However, the container is started with `.withExposedPorts(exposedPorts)` which includes both ports, but `waitingFor(Wait.forListeningPorts(8080))` only waits for 8080. Management port 9000 may not be ready when tests start.\n\n**Issue:** Tests using management API on node > 0 may fail intermittently if management endpoint isn't ready.\n\n**Fix:** Wait for both ports, or document that management port readiness isn't guaranteed.\n\n---",
+        "path": "test-framework/clustering/src/main/java/org/keycloak/testframework/server/ClusteredKeycloakServer.java",
+        "start_line": 31,
+        "end_line": 31,
+        "observation_id": "6a245a468077af01",
+        "claimed_path": "ClusteredKeycloakServer.java",
+        "path_resolution": "basename",
+        "merged_from": []
+      },
+      {
+        "content": "### 11. `tests/clustering/pom.xml` \u2014 **Version mismatch: hardcoded `999.0.0-SNAPSHOT`**\n\n**File:** `tests/clustering/pom.xml`  \n**Lines:** ~7-8, 20, 26 (in diff)\n\n```xml\n<version>999.0.0-SNAPSHOT</version>\n```\n\n**Issue:** Parent pom uses `${project.version}` but this module hardcodes `999.0.0-SNAPSHOT`. If the project version changes (e.g., release), this diverges.\n\n**Fix:** Use `${project.version}` consistently.\n\n---",
+        "path": "tests/clustering/pom.xml",
+        "start_line": 7,
+        "end_line": 7,
+        "observation_id": "e7ad3bdc80ebcea5",
+        "claimed_path": "tests/clustering/pom.xml",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "### 12. `test-framework/clustering/pom.xml` \u2014 **Missing newline at end of file**\n\n**File:** `test-framework/clustering/pom.xml`  \n**Line:** 22 (in diff shows `\\ No newline at end of file`)\n\n**Issue:** Violates POSIX and many linters; some tools warn/error.\n\n---",
+        "path": "test-framework/clustering/pom.xml",
+        "start_line": 22,
+        "end_line": 22,
+        "observation_id": "9d331634a52eae47",
+        "claimed_path": "test-framework/clustering/pom.xml",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "### 13. `tests/clustering/src/test/resources/keycloak-test.properties` \u2014 **Missing newline at end of file**\n\n**File:** `tests/clustering/src/test/resources/keycloak-test.properties`  \n**Line:** 13 (in diff shows `\\ No newline at end of file`)\n\n---",
+        "path": "tests/clustering/src/test/resources/keycloak-test.properties",
+        "start_line": 13,
+        "end_line": 13,
+        "observation_id": "c13ea26950eaebf2",
+        "claimed_path": "tests/clustering/src/test/resources/keycloak-test.properties",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "### 14. `MixedVersionClusterTest.java` \u2014 **Test sleeps for 1 minute \u2014 flaky/integration test smell**\n\n**File:** `MixedVersionClusterTest.java`  \n**Line:** ~38 (in diff)\n\n```java\nThread.sleep(TimeUnit.MINUTES.toMillis(1));\n```\n\n**Issue:** Hardcoded 60-second sleep in a test. Makes test suite slow; indicates missing proper assertion/wait logic. This is a placeholder test but will be committed as-is.\n\n---",
+        "path": "tests/clustering/src/test/java/org/keycloak/tests/compatibility/MixedVersionClusterTest.java",
+        "start_line": 38,
+        "end_line": 38,
+        "observation_id": "a1d51ad3380d3dac",
+        "claimed_path": "MixedVersionClusterTest.java",
+        "path_resolution": "basename",
+        "merged_from": []
+      },
+      {
+        "content": "### 15. `DockerKeycloakDistribution.java` \u2014 **`createImage` method: `failIfDockerFileMissing` logic inverted for remote image fallback**\n\n**File:** `DockerKeycloakDistribution.java`  \n**Lines:** ~124-128 (in diff)\n\n```java\nif (dockerFile.exists()) {\n    return new ImageFromDockerfile(...);\n} else {\n    if (failIfDockerFileMissing) {\n        throw new RuntimeException(\"Docker file %s not found\".formatted(dockerFile.getAbsolutePath()));\n    }\n    return new RemoteDockerImage(DockerImageName.parse(\"quay.io/keycloak/keycloak\"));\n}\n```\n\n**Issue:** When `failIfDockerFileMissing=true` (called from `ClusteredKeycloakServer.defaultImage()`), it throws if Dockerfile missing. But the *original* code fell back to remote image silently. The new behavior breaks existing callers that expected fallback. `ClusteredKeycloakServer.defaultImage()` passes `true`, so it will fail if Dockerfile missing \u2014 but the comment in `README.md` says \"if empty, uses the built distribution archive from quarkus/dist directory in all containers\" \u2014 implying local build is expected. This may be intentional, but it's a behavior change worth noting.\n\n---",
+        "path": "quarkus/tests/junit5/src/main/java/org/keycloak/it/utils/DockerKeycloakDistribution.java",
+        "start_line": 124,
+        "end_line": 124,
+        "observation_id": "842bb00923e02119",
+        "claimed_path": "DockerKeycloakDistribution.java",
+        "path_resolution": "basename",
+        "merged_from": []
+      },
+      {
+        "content": "### 16. `DockerKeycloakDistribution.java` \u2014 **`copyProvider` and `copyConfigFile` don't prevent duplicate destination paths**\n\n**File:** `DockerKeycloakDistribution.java`  \n**Lines:** ~190-210 (in diff)\n\n```java\ncopyToContainer.put(MountableFile.forHostPath(providerPath), \"/opt/keycloak/providers/\" + providerPath.getFileName());\n```\n\n**Issue:** If two different provider JARs have the same filename (e.g., `my-spi-1.0.jar` from different groups), the second `put` overwrites the first. Testcontainers will copy only the last one.\n\n**Fix:** Use a key that includes groupId, or validate uniqueness.\n\n---",
+        "path": "quarkus/tests/junit5/src/main/java/org/keycloak/it/utils/DockerKeycloakDistribution.java",
+        "start_line": 190,
+        "end_line": 190,
+        "observation_id": "7a86912f9e1add83",
+        "claimed_path": "DockerKeycloakDistribution.java",
+        "path_resolution": "basename",
+        "merged_from": []
+      },
+      {
+        "content": "### 17. `ClusteredKeycloakServer.java` \u2014 **`defaultImage()` uses fragile classloader resource lookup**\n\n**File:** `ClusteredKeycloakServer.java`  \n**Lines:** ~39-46 (in diff)\n\n```java\nclassPathDir = Paths.get(Thread.currentThread().getContextClassLoader().getResource(\".\").toURI());\n```\n\n**Issue:** `getResource(\".\")` behavior varies by classloader (may return `file:/path/to/classes/` or `jar:file:/path/to/jar!/`). `toURI()` fails on JAR URLs. This can throw `URISyntaxException` or return wrong path in shaded/uberjar contexts.\n\n**Fix:** Use a more robust method to locate the quarkus module (e.g., Maven project structure, system property, or `BuildToolHelper` from a known class).\n\n---",
+        "path": "test-framework/clustering/src/main/java/org/keycloak/testframework/server/ClusteredKeycloakServer.java",
+        "start_line": 39,
+        "end_line": 39,
+        "observation_id": "ccc404147f77615c",
+        "claimed_path": "ClusteredKeycloakServer.java",
+        "path_resolution": "basename",
+        "merged_from": []
+      },
+      {
+        "content": "### 18. `AbstractKeycloakServerSupplier.java` \u2014 **`cache()` method returns \"local\" but clustering needs \"ispn\"**\n\n**File:** `AbstractKeycloakServerSupplier.java`  \n**Lines:** ~77-79 (in diff)\n\n```java\nprotected String cache() {\n    return \"local\";\n}\n```\n\n**Issue:** `ClusteredKeycloakServerSupplier` overrides to return `\"ispn\"` \u2014 correct. But the base class default is `\"local\"`, which is wrong for any clustered server. If a subclass forgets to override, clustering breaks silently (single-node cache in multi-node cluster).\n\n**Fix:** Make `cache()` abstract, or throw `UnsupportedOperationException` in base.\n\n---",
+        "path": "test-framework/core/src/main/java/org/keycloak/testframework/server/AbstractKeycloakServerSupplier.java",
+        "start_line": 77,
+        "end_line": 77,
+        "observation_id": "dec1e2797497860d",
+        "claimed_path": "AbstractKeycloakServerSupplier.java",
+        "path_resolution": "basename",
+        "merged_from": []
+      },
+      {
+        "content": "### 19. `DockerKeycloakDistribution.java` \u2014 **`BackupConsumer` constructor breaks existing callers**\n\n**File:** `DockerKeycloakDistribution.java`  \n**Lines:** ~37-43 (in diff)\n\n```java\nfinal Consumer<OutputFrame> customLogConsumer;\npublic BackupConsumer(Consumer<OutputFrame> customLogConsumer) {\n    this.customLogConsumer = customLogConsumer;\n}\n```\n\n**Issue:** `BackupConsumer` is a private static class, but it previously had a no-arg constructor. The `run()` method now calls `new BackupConsumer(customLogConsumer)`. This is fine since it's private, but if any external code (unlikely) instantiated it, it would break. Not a real issue given visibility.\n\n---",
+        "path": "quarkus/tests/junit5/src/main/java/org/keycloak/it/utils/DockerKeycloakDistribution.java",
+        "start_line": 37,
+        "end_line": 37,
+        "observation_id": "e63aeae6c6d6a759",
+        "claimed_path": "DockerKeycloakDistribution.java",
+        "path_resolution": "basename",
+        "merged_from": []
+      },
+      {
+        "content": "### 20. `test-framework/bom/pom.xml` \u2014 **New module dependency added but version is `${project.version}` \u2014 OK**\n\n**File:** `test-framework/bom/pom.xml`  \n**Lines:** ~105-110 (in diff)\n\n```xml\n<dependency>\n    <groupId>org.keycloak.testframework</groupId>\n    <artifactId>keycloak-test-framework-clustering</artifactId>\n    <version>${project.version}</version>\n    <scope>test</scope>\n</dependency>\n```\n\n**Issue:** None \u2014 correct BOM usage.\n\n---\n\n### Summary of Severity\n\n| Severity | Count | Items |\n|----------|-------|-------|\n| **Critical (crash/data loss)** | 2 | #1 (state leak), #2 (NPE) |\n| **High (wrong results/logic bug)** | 3 | #3 (arg swap), #7 (JDBC URL), #10 (management port not waited) |\n| **Medium (misleading/defensive missing)** | 5 | #4 (typo), #6 (validation), #9 (path), #16 (dup dest), #18 (cache default) |\n| **Low (style/resource leak)** | 4 | #8 (executor leak), #11 (version), #12 (newline), #13 (newline) |\n| **Test quality** | 1 | #14 (sleep) |\n| **Fragility** | 2 | #15 (behavior change), #17 (classloader) |\n\n---\n\n**Most critical to fix before merge:** #1, #2, #3, #7, #10, #18",
+        "path": "test-framework/bom/pom.xml",
+        "start_line": 105,
+        "end_line": 105,
+        "observation_id": "64916ef538a7b289",
+        "claimed_path": "test-framework/bom/pom.xml",
+        "path_resolution": "exact",
+        "merged_from": [
+          "4ea036911fedf4b5"
+        ]
+      }
+    ]
+  },
+  "rundir": "/home/user/.cache/llm-panel/runs/aacr-up-02sfp3xh-ab63a5797e29/20260829-150109-4068825",
+  "extractor": "3",
+  "unlocated": [
+    {
+      "content": "**DockerKeycloakDistribution.java:**\n\n1. **Constructor null `image` handling / NPE risk:** \n```java\npublic DockerKeycloakDistribution(boolean debug, boolean manualStop, int requestPort, int[] exposedPorts, LazyFuture<String> image) {\n    ...\n    this.image = image == null ? createImage(...) : image;\n}\n```\nActually this handles null fine.\n\n2. **`start()` NPE on `getMappedPort`:** `getMappedPort(int",
+      "observation_id": "6e681167799bc346",
+      "claimed_path": "DockerKeycloakDistribution.java",
+      "path_resolution": "basename"
+    },
+    {
+      "content": "**ClusteredKeycloakServer.java:**\n\n5. **`start()` with no containers** \u2014 if `mumServers` (typo for numServers) is 0, arrays length 0, loop runs 0 times, cluster starts with zero nodes but doesn't fail. Combined with `getBaseUrl()` calling `containers[0]` \u2192 ArrayIndexOutOfBounds. Minor edge case. Also `LoadBalancer.node(int)` checks `nodeIndex >= server.clusterSize()` but not `nodeIndex < 0` \u2014 nega",
+      "observation_id": "5d39f53b1e8b64ca",
+      "claimed_path": "ClusteredKeycloakServer.java",
+      "path_resolution": "basename"
+    },
+    {
+      "content": "**AbstractContainerTestDatabase.java \u2014 the `internal` JDBC URL rewrite:**\n\nThis is significant. The logic:\n```java\nvar url = container.getJdbcUrl();\nif (internal) {\n    var ip = container.getContainerInfo().getNetworkSettings().getNetworks().values().iterator().next().getIpAddress();\n    return url.replace(container.getHost() + \":\" + container.getFirstMappedPort(), ip + \":\" + container.getExposedP",
+      "observation_id": "f1b637de84c0079c",
+      "claimed_path": "AbstractContainerTestDatabase.java",
+      "path_resolution": "basename"
+    }
+  ]
+}

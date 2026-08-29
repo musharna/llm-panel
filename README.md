@@ -223,8 +223,11 @@ nothing.
   A volume-matched control settles what that gain is: the `defect` prompt told only to be
   exhaustive scores **25.2%** (31/123, vs broad p = 1.0) — but with 392 findings at 7.9%
   precision to broad's 243 at 13.2%. Verbosity alone buys the recall; the broad prompt's
-  content buys efficiency and a different set of hits (more human-authored references).
-  See `recall/benchmarks/results-volume-3judge/README.md`.
+  content buys efficiency. An earlier draft added "and a different set of hits (more
+  human-authored references)"; a pre-registered replication on 35 fresh PRs (150
+  human-authored references) found broad 12.0% vs volume 10.7%, one-sided p = 0.40 — the
+  claim is withdrawn. See `recall/benchmarks/results-volume-3judge/README.md` and
+  `recall/benchmarks/results-human-2arm/README.md`.
   An earlier version of this bullet split recall by a DEFECT/IMPROVEMENT classifier I
   wrote; that split was circular and is withdrawn — on the benchmark's own `category`
   field the `defect` prompt recalls both classes at the same rate. The default stays

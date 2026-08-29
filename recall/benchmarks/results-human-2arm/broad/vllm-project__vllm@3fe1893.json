@@ -1,0 +1,49 @@
+{
+  "review": {
+    "comments": [
+      {
+        "content": "- **High \u2014 Defect (wrong resource calculation/runtime failure):** `vllm/multimodal/profiling.py:258` returns per-item maxima directly, ignoring `mm_counts`. For example, profiling four maximum-size Qwen images still reports `16384` image tokens rather than `4 * 16384`. This under-profiles requests allowed by `limit_mm_per_prompt`, so cache/capacity planning can accept insufficient resources and later reject or fail such requests. The fast path must aggregate each per-item maximum using the effective modality counts, while excluding zero/disabled modalities.",
+        "path": "vllm/multimodal/profiling.py",
+        "start_line": 258,
+        "end_line": 258,
+        "observation_id": "99e032216f7872f6",
+        "claimed_path": "calculation/runtime",
+        "path_resolution": "relocated",
+        "merged_from": []
+      },
+      {
+        "content": "**1. WRONG RESULTS (defect) \u2014 `vllm/multimodal/profiling.py`, lines 258\u2013260**\n\nThe early-return skips `_get_dummy_mm_inputs(seq_len, mm_counts)` and returns the hardcoded map verbatim. The parameters `seq_len` and `mm_counts` are completely ignored in the fast path. If the actual maximum token budget per item depends on `seq_len` (e.g. the budget is clamped to available context length) or on `mm_counts` (e.g. multi-image/multi-video budgets differ from single-item), the hardcoded constants are silently wrong. Downstream code consuming an inflated token count would either OOM or produce garbled scheduling. The old dummy-input path existed precisely because this relationship is model-dependent. If the constants are intended to be `seq_len`-independent upper bounds, that contract should be documented and the return value asserted at the call site.",
+        "path": "vllm/multimodal/profiling.py",
+        "start_line": 258,
+        "end_line": 258,
+        "observation_id": "f77457de7eaa8a57",
+        "claimed_path": "vllm/multimodal/profiling.py",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "**2. DEAD CODE RISK / UNNECESSARY CONSTANT (maintenance) \u2014 `vllm/model_executor/models/qwen2_vl.py`, lines 822\u2013823**\n\n`get_max_tokens_per_item` returns literal values with no derivation from the model's actual config (tokenizer vocab size, max resolution, spatial patch size, etc.). If the model's image/video tokenization formula changes (new resolution bucket, different patch merge), these numbers silently drift from reality. At minimum the values should be derived from the model's vision config or have an assertion cross-checking them against a computed value, so a refactor to the processor doesn't ship silently wrong constants.",
+        "path": "vllm/model_executor/models/qwen2_vl.py",
+        "start_line": 822,
+        "end_line": 822,
+        "observation_id": "ff12107a14a8ca38",
+        "claimed_path": "vllm/model_executor/models/qwen2_vl.py",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "**3. MISSING VALIDATION (defensive) \u2014 `vllm/multimodal/profiling.py`, line 258**\n\nNo assertion that the returned `max_tokens_per_item` keys cover all modalities actually requested by the caller. If a subclass returns a map that omits a modality (or the caller passes `mm_counts` with an unexpected key), the downstream code will KeyError. The old path derived results from actual dummy inputs and therefore was structurally safe against key mismatches.",
+        "path": "vllm/multimodal/profiling.py",
+        "start_line": 258,
+        "end_line": 258,
+        "observation_id": "5064d8bb5154ccd4",
+        "claimed_path": "vllm/multimodal/profiling.py",
+        "path_resolution": "exact",
+        "merged_from": []
+      }
+    ]
+  },
+  "rundir": "/home/user/.cache/llm-panel/runs/aacr-up-whrerxdp-24e2d3b370e0/20260829-120731-3759624",
+  "extractor": "3",
+  "unlocated": []
+}

@@ -1,0 +1,211 @@
+{
+  "review": {
+    "comments": [
+      {
+        "content": "- **Medium \u2014 defect:** `server/src/services/person.service.ts:624` initializes `update` with `id`, so `Object.keys(update).length > 0` is always true. Merging a person when no fields need copying still executes an UPDATE, potentially advancing `updatedAt`/`updateId`, firing database triggers, and emitting phantom sync changes. Keep `id` outside the change set or test for more than the identifier.\n\n- **Low \u2014 tooling/test defect:** `server/src/repositories/person.repository.ts:112` still supplies `[{ id: UUID }]` to `@GenerateSql`, but `delete` now accepts `string[]`. SQL generation or any execution-based repository harness will bind an object where PostgreSQL expects a UUID, and the generated example no longer exercises the real call shape. Use `[[DummyValue.UUID]]`.\n\n- **Low \u2014 dead/misleading logic:** `server/src/repositories/person.repository.ts:337` applies `?? null` to the `Promise` returned by `executeTakeFirst()`, rather than to its resolved value. A missing row therefore resolves to `undefined`, never `null`; any caller relying on explicit null normalization will behave incorrectly. Await the query before coalescing or remove the unreachable fallback.\n\n- **Low \u2014 maintainability/duplicated state:** `server/src/database.ts:210` manually reproduces the generated `Person` schema, and `AssetFace` does the same at line 225. A schema change can update `src/db` while these parallel definitions remain stale, silently giving DTOs and entities incorrect nullability or field types. Derive these from `Selectable<DatabasePerson>` / `Selectable<DatabaseAssetFaces>` and add only the joined `person` property.",
+        "path": "server/src/services/person.service.ts",
+        "start_line": 624,
+        "end_line": 624,
+        "observation_id": "a1d8326b413fb36e",
+        "claimed_path": "server/src/services/person.service.ts",
+        "path_resolution": "exact",
+        "merged_from": [
+          "9230d0dbfaf27214",
+          "d17efd3ddda367fa",
+          "5ee7a3caa5d16e02"
+        ]
+      },
+      {
+        "content": "**1. `person.service.ts` \u2014 `handleGeneratePersonThumbnail` (lines ~551-566 in new file).**\n\nOld code:\n```js\nconst person = await this.personRepository.getById(data.id);\nif (!person?.faceAssetId) { ... FAILED }\n\nconst face = await this.personRepository.getFaceByIdWithAssets(person.faceAssetId);\nif (!face) { ... FAILED }\n\nconst { assetId, ... } = face;\n\nconst asset = await this.assetRepository.getById(assetId, { exifInfo: true, files: true });\nif (!asset) { FAILED }\n```\n\nNew code:\n```js\nconst person = await this.personRepository.getPersonForThumbnailGenerationJob(data.id);\nif (!person?.face?.asset) {\n  this.logger.error(`Could not generate person thumbnail: person ${person} has no face asset`);\n  return JobStatus.FAILED;\n}\n\nconst { asset, ... } = person.face;\n\nif (asset.files.length === 0) {\n  this.logger.error(`Could not generate person thumbnail: asset ${asset.originalPath} has no preview`);\n  return JobStatus.FAILED;\n}\n```\n\nNotice a regression in this log message: `person ${person}` will serialize the entire person object (Promise-like / object) into the log string. Previously it logged `person ${person?.id}`. Logging the whole `person` object produces a noisy/unhelpful log line (the object's `toString()` is `[object Object]` for plain objects, or it triggers something else). This is minor.\n\nMore importantly, there is a **behavioral/logic concern**: previously `getById` returned the person and then a separate query fetched the face. Now the whole job is one query. `getPersonForThumbnailGenerationJob` has `where person.faceAssetId is not null` and a LATERAL join. If `person.faceAssetId` is null, the query returns nothing \u2192 `person` undefined \u2192 FAILED. OK.\n\nBut: the error branch `if (!person?.face?.asset)` covers (a) person not found, (b) face missing, (c) asset in the lateral returns null. However there's a subtle issue: the lateral join `where asset_faces.id = person.faceAssetId and asset_faces.deletedAt is null`. If the face asset is deleted, lateral returns no row, `face` = null. Good, covered.\n\n**Real defect candidate \u2014 `getFaceForFacialRecognitionJob` returns `undefined` but service still type-accesses `face.asset`.**\n\nLet me look at the recognizeFaces handler:\n```js\nconst face = await this.personRepository.getFaceForFacialRecognitionJob(id);\nif (!face || !face.asset) { ... FAILED }\n```\nThat's fine, guarded.\n\n**Now the important one \u2014 the embedding / recognition path.** Let me reconsider the deleted `getFaceByIdWithAssets` vs new `getFaceForFacialRecognitionJob`. The old one accepted `relations?: { faceSearch?: boolean }` and a `select` option. The new one always selects `withFaceSearch`. In the service, previously `getFaceByIdWithAssets(id, { faceSearch: true }, ['id','personId','sourceType'])`. Now it selects `withFaceSearch` (the face_search embedding). That behavior is retained.",
+        "path": "server/src/services/person.service.ts",
+        "start_line": 551,
+        "end_line": 551,
+        "observation_id": "092c8282db6772a4",
+        "claimed_path": "person.service.ts",
+        "path_resolution": "basename",
+        "merged_from": [
+          "249dda9e96174f69"
+        ]
+      },
+      {
+        "content": "**Now the security-relevant change in `person.dto.ts` \u2014 `mapFaces`:**\n\nOld:\n```js\nexport function mapFaces(face: AssetFaceEntity, auth: AuthDto): AssetFaceResponseDto {\n  return {\n    ...mapFacesWithoutPerson(face),\n    person: face.person?.ownerId === auth.user.id ? mapPerson(face.person) : null,\n  };\n}\n```\nNew: inlines the spread fields and keeps the person ownership check. Same behavior. Fine.\n\n**Now a real concern \u2014 the `color` field.** The `Person` type in database.ts in the new code does NOT include a `color` field:\n```js\nexport type Person = {\n  createdAt: Date;\n  id: string;\n  ...\n  isHidden: boolean;\n  thumbnailPath: string;\n};\n```\nWait \u2014 but `mapPerson` returns color? Let me check. In `person.dto.ts` the `mapPerson` function (lines around 220):\n```js\nexport function mapPerson(person: Person): PersonResponseDto {\n  return {\n    id: person.id,\n    name: person.name,\n    ... color? \n  };\n}\n```\nThe diff doesn't show mapPerson's body changing the fields, just the type signature. But the test spec now adds `color: expect.any(String)` to responseDto and asserts `color: personStub.isFavorite.color` etc. And `personStub` fixtures now have `color: 'red'`. So `mapPerson` must already read `person.color` \u2014 but the new `Person` type in `database.ts` does NOT declare `color`. \n\nWait, let me re-read the Person type from database.ts. The diff shows:\n```js\nexport type Person = {\n  createdAt: Date;\n  id: string;\n  ownerId: string;\n  updatedAt: Date;\n  updateId: string;\n  isFavorite: boolean;\n  name: string;\n  birthDate: Date | null;\n  color: string | null;\n  faceAssetId: string | null;\n  isHidden: boolean;\n  thumbnailPath: string;\n};\n```\nActually re-reading \u2014 it DOES include `color: string | null;`. Good, I misread. And the fixtures set `color: 'red'`. Fine. The spec now requires `color` in mapPerson output \u2014 meaning `mapPerson` (not shown changed body) must already output color. Consistent.\n\n**Now \u2014 the `birthDate` type change.** `Person` type has `birthDate: Date | null`. Previously `PersonEntity.birthDate!: Date | string | null;`. The stub changed `birthDate: '1976-06-30'` \u2192 `birthDate: new Date(...)`. The search.repository `minBirthDate?: Date | null`. This change from `string` to `Date` for birthDate is consistent with DB type. Minor note: not a defect.\n\n**The `toJson` helper / `getPersonForThumbnailGenerationJob` nesting** \u2014 the SQL and the Kysely code. One thing: in the Kysely `getPersonForThumbnailGenerationJob`, `innerJoin('exif', ...)` means if the asset has no exif row, the whole lateral returns nothing \u2192 `face` is null \u2192 service FAILED. Previously the service did `assetRepository.getById(assetId, { exifInfo: true, files: true })` and if `asset.exifInfo` was absent, `getInputDimensions` threw \"dimensions are unknown\" \u2014 but that happened AFTER the guard. Actually let me trace: previously the flow would still generate thumbnail if exif missing? No \u2014 old `getInputDimensions` threw if `!asset.exifInfo?.exifImageHeight`. So the behavior (fail when no exif) is preserved. But now it's a silent FAILED rather than a thrown error \u2192 the job gets marked FAILED either way. OK.\n\nHowever, there IS a subtle behavior difference worth raising: In the NEW code, the `inner join exif` is inside the innermost lateral for the face, and the `where person.faceAssetId is not null` filter plus lateral means a person whose face asset's asset row lacks an exif row now yields `face: null` \u2192 treated identically to \"person has no face\". The error message `person ${person} has no face asset` would be misleading for that case (the person HAS a face asset; it's the asset/exif that's missing). That's the misleading-log / unclear-error-path point.\n\n**Now the bigger potential logic regression: the `files` array and `getInputDimensions` reordering.** In the new code, `handleGeneratePersonThumbnail` checks `asset.files.length === 0` \u2192 FAILED before calling getInputDimensions. Previously, the files check was inside `getInputDimensions` via `getAssetFile`. For IMAGE type, the new `getInputDimensions` no longer needs preview file (uses originalPath); for video, needs preview. But now the service rejects images with no preview files at the top (`asset.files.length === 0` \u2192 FAILED), even for IMAGE assets that don't need a preview. \n\nWait \u2014 is that a regression? For an IMAGE asset, `getInputDimensions` uses `asset.originalPath` as input path and doesn't need the preview file. But the new top-of-function check `if (asset.files.length === 0) return FAILED` will reject an IMAGE asset with no preview file, even though it could be cropped from the original. Under the old code, an IMAGE with no preview file would pass (getAssetFile on IMAGE path isn't called for images \u2014 inputPath = originalPath). So this is a **behavioral regression**: IMAGE-type faces whose asset has no PREVIEW file are now always skipped (FAILED), whereas before they'd be processed from the original. Actually wait \u2014 the SQL `files` subquery filters `asset_files.type = $1` where $1 = PREVIEW. So `asset.files` only contains preview files (limit $2 = 1). So `asset.files.length === 0` = \"no preview file\". For image type assets, the thumbnail generation crops from `originalPath`, so a missing preview shouldn't block. This is a real regression for image assets without previews. Worth raising as a wrong-result/behavior item. Hmm, but note: the getInputDimensions for IMAGE uses originalPath as input, and the actual crop in generateThumbnail... Let me think \u2014 `getInputDimensions` for IMAGE returns `inputPath: asset.originalPath`. So yes, image doesn't need preview. The new unconditional `files.length === 0` check before knowing the type is overly broad \u2192 regression for image assets lacking preview.\n\nActually wait, but I should double check the ordering: does the new code check files before knowing asset.type? Yes \u2014 `if (asset.files.length === 0)` runs unconditionally. Under old code, `assetRepository.getById(... files: true)` and then `getInputDimensions` \u2014 for an image it never looked at files. So an image asset with no preview previously generated a thumbnail fine; now it fails. That's a concrete regression. Good item.\n\n**Now the log-message regression** `person ${person}` \u2014 logs whole object.\n\n**Dead/unused code:** `getFaces` still exists, `getFaceById` still exists. `SelectFaceOptions` type still defined but `getFaceForFacialRecognitionJob` no longer takes a select option. Is `SelectFaceOptions` still used anywhere? The old `getFaceByIdWithAssets` used it with `select?: SelectFaceOptions`. Now removed. Let me check if `SelectFaceOptions` is still referenced. In the diff it's still declared (`export type SelectFaceOptions = ...` at line ~53). If nothing uses it now, it's dead. I can't verify call sites since no files. I'll flag as possible dead code (unverifiable).\n\n**`mapFacesWithoutPerson` and `mapFaces` duplication.** `mapFaces` now inlines the six fields instead of spreading `mapFacesWithoutPerson(face)`. But note `mapFacesWithoutPerson` returns `sourceType` too:\n```js\nexport function mapFacesWithoutPerson(face) {\n  return { id, imageHeight, imageWidth, boundingBoxX1, boundingBoxX2, boundingBoxY1, boundingBoxY2, sourceType };\n}\n```\nAnd new `mapFaces` inlines id, imageHeight, imageWidth, bbox x1/x2/y1/y2, sourceType. So they match. This duplication is a maintainability flag (the inlined fields duplicate mapFacesWithoutPerson), a refactor to prevent future drift. Worth raising as \"duplicated state / unclear logic\" low priority.\n\n**`peopleWithFaces` TODO comment** \u2014 `// TODO: this is inefficient` added. Fine, acknowledged.\n\n**`getAll` type change** \u2014 `getAll(options: GetAllPeopleOptions | undefined = {})` \u2014 return type now inferred. `$if(options.faceAssetId === null, ...)` still present. Note the new `GetAllPeopleOptions.faceAssetId?: string | null` allows distinguishing. But `GetAllFacesOptions.personId?: string | null` \u2014 but `getAllFaces` never uses `personId`! Let me check: getAllFaces filters on `sourceType`, `assetId`, and `deletedAt is null`. It does NOT filter on personId. Yet `GetAllFacesOptions` includes `personId?: string | null`. That's a **dead/ineffective option** \u2014 the interface declares a `personId` filter that is never applied in the query. Misleading interface. Worth raising.\n\nLet me double-check the getAllFaces body from the diff:\n```js\ngetAllFaces(options: GetAllFacesOptions | undefined = {}): AsyncIterableIterator<Selectable<AssetFaces>> {\n  return this.db\n    .selectFrom('asset_faces')\n    .selectAll('asset_faces')\n    .$if(!!options.sourceType, (qb) => qb.where('asset_faces.sourceType', '=', options.sourceType!))\n    .$if(!!options.assetId, (qb) => qb.where('asset_faces.assetId', '=', options.assetId!))\n    .where('asset_faces.deletedAt', 'is', null)\n    .stream();\n}\n```\nYes \u2014 `personId` is declared in `GetAllFacesOptions` but never used. That's a misleading/dead interface member. Good catch.\n\n**`create` change \u2014 `executeTakeFirst()` \u2192 `executeTakeFirstOrThrow()`.** Behavior change: previously returned person possibly undefined; now throws if insert fails. In `handleRecognizeFaces`, `personRepository.create.mockResolvedValue(...)`. This is stricter \u2014 probably fine, but it changes the contract. Not a defect per se.\n\n**`getById` change**: formatting only.\n\n**The spec test \"should throw an error when personId is invalid\"**: still asserts NotFoundException via checkOwnerAccess. Removed the getById mock \u2014 consistent with new flow since getThumbnail no longer calls getById? Actually `getThumbnail` still exists... not fully shown. Skip.\n\n**`iou` signature narrowed** to the bbox fields only \u2014 fine, less coupling.\n\n**`delete` refactor** \u2014 `delete(ids: string[])`. The service now maps people \u2192 ids before calling, and also unlinks thumbnailPath separately. Previously `delete(people)` received full entities. Fine. No issue.\n\nNow, the most severe items ranking:",
+        "path": "server/src/dtos/person.dto.ts",
+        "start_line": 220,
+        "end_line": 220,
+        "observation_id": "d34c7ac25b49acc4",
+        "claimed_path": "person.dto.ts",
+        "path_resolution": "basename",
+        "merged_from": []
+      },
+      {
+        "content": "**1. Wrong-result regression: IMAGE-type faces with no preview file are now silently dropped.**\n`server/src/services/person.service.ts`, new lines ~559\u2013562 (hunk `@@ -551,34 +548,24 @@`).\n```js\nif (asset.files.length === 0) {\n  this.logger.error(`Could not generate person thumbnail: asset ${asset.originalPath} has no preview`);\n  return JobStatus.FAILED;\n}\n```\nThe `files` subquery in `getPersonForThumbnailGenerationJob` only loads `asset_files.type = PREVIEW` (limit 1), so `files.length === 0` means \"no preview file.\" But this check runs **unconditionally, before `getInputDimensions`**, which uses different input paths per type \u2014 for `AssetType.IMAGE` it crops from `asset.originalPath` and never needs a preview. Under the old flow (`assetRepository.getById(... {files:true})` + `getInputDimensions`), an image with no preview file still produced a thumbnail. Now that same image is hard-FAILED. Concrete scenario: an imported/legacy image whose PREVIEW file is missing or failed to generate \u2014 face thumbnail is never created (and never retried as success), where it previously worked. Kind: **real defect (wrong result)**.",
+        "path": "server/src/services/person.service.ts",
+        "start_line": 559,
+        "end_line": 559,
+        "observation_id": "a86b4c5909b1b4da",
+        "claimed_path": "server/src/services/person.service.ts",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "**2. Misleading interface + dead option: `GetAllFacesOptions.personId` is declared but never applied.**\n`server/src/repositories/person.repository.ts`, `GetAllFacesOptions` (new lines ~50\u201356, hunk `@@ -49,6 +47,19 @@`) vs `getAllFaces` body (hunk `@@ -121,7 +125,7 @@`).\nThe interface advertises `personId?: string | null` as a filter, but `getAllFaces` only binds `sourceType`, `assetId`, and `deletedAt is null` \u2014 no `personId` predicate exists. A caller who passes `personId` gets back **unfiltered** faces and no error. Kind: **dead/unused code + misleading name (worse: silently wrong when used)**.",
+        "path": "server/src/repositories/person.repository.ts",
+        "start_line": 50,
+        "end_line": 50,
+        "observation_id": "52e70337a3a47d04",
+        "claimed_path": "server/src/repositories/person.repository.ts",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "**3. Collapsed failure paths + broken template-log: debugging signal is lost.**\n`server/src/services/person.service.ts`, lines ~549\u2013553 (same hunk):\n```js\nif (!person?.face?.asset) {\n  this.logger.error(`Could not generate person thumbnail: person ${person} has no face asset`);\n  return JobStatus.FAILED;\n}\n```\nToo many distinct causes now funnel into one branch: person not found, `faceAssetId` null, face soft-deleted, the inner `inner join exif` producing no row, or asset missing. These previously produced distinct error messages (\"face X not found\", \"asset Y does not exist\"). Now the operator cannot tell which one happened. Worse, the message interpolates **`person ${person}`** \u2014 the whole object, not `person.id` \u2014 so the log prints `[object Object]` (or a full serialization), not the id the old message gave. Kind: **unclear/misleading logic + broken log message**.",
+        "path": "server/src/services/person.service.ts",
+        "start_line": 549,
+        "end_line": 549,
+        "observation_id": "5a7e72d8f0b2fc26",
+        "claimed_path": "server/src/services/person.service.ts",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "**4. Possible dead type: `SelectFaceOptions`.**\n`server/src/repositories/person.repository.ts`, line ~53. It was consumed only by the now-deleted `getFaceByIdWithAssets(id, relations, select): SelectFaceOptions`. The new `getFaceForFacialRecognitionJob` takes no select option and `getFaceById` uses `withPerson` directly. If nothing else in the file uses `SelectFaceOptions`, it's dead. I **cannot verify** call sites because there is no source tree in the working directory \u2014 flagging as possible dead code pending that check.",
+        "path": "server/src/repositories/person.repository.ts",
+        "start_line": 53,
+        "end_line": 53,
+        "observation_id": "ffe684d98321a228",
+        "claimed_path": "server/src/repositories/person.repository.ts",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "**5. Duplicated mapping state: `mapFaces` re-inlines fields that `mapFacesWithoutPerson` already returns.**\n`server/src/dtos/person.dto.ts`, new lines ~249\u2013258 (hunk `@@ -245,9 +246,16 @@`).\n`mapFaces` now manually repeats `id, imageHeight, imageWidth, boundingBoxX1/2, boundingBoxY1/2, sourceType` instead of spreading `mapFacesWithoutPerson(face)`. They are currently identical, but the duplication means adding a field to one and not the other drifts silently. Kind: **duplicated state / refactor that would prevent a future bug**.",
+        "path": "server/src/dtos/person.dto.ts",
+        "start_line": 249,
+        "end_line": 249,
+        "observation_id": "712d32d418bb6ef1",
+        "claimed_path": "server/src/dtos/person.dto.ts",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "**7. Contract change: `create` switched to `executeTakeFirstOrThrow()`.**\n`server/src/repositories/person.repository.ts`, hunk `@@ -362,8 +420,8 @@`. Previously `create` returned an optional person (`undefined` on failure); now it throws. Different failure mode surfaced to callers; reviewers should confirm every caller (e.g. `handleRecognizeFaces` create paths) is prepared for a throw rather than an undefined check. Kind: **behavioral contract change** \u2014 minor, but errs loud, which is generally the desired direction.\n\n## Notes on things I deliberately did NOT raise\n- The removed `PersonEntity.birthDate: Date | string` \u2192 `Person.birthDate: Date` and the fixture change (`'1976-06-30'` no longer a string) are internally consistent with the DB type \u2014 fine.\n- `mapFaces`' ownership check (`face.person?.ownerId === auth.user.id`) is preserved \u2014 no privacy regression.\n- The `// TODO: this is inefficient` on `peopleWithFaces` is an honest acknowledgment \u2014 no comment needed.\n\n**Caveat:** items 4, 6, and 7 depend partly on call sites outside this diff. I could not verify them because the provided working directory contains no repository files (`glob`/`read` returned nothing). If a real checkout exists elsewhere, those three should be confirmed against it.",
+        "path": "server/src/repositories/person.repository.ts",
+        "start_line": 420,
+        "end_line": 420,
+        "observation_id": "058878923f222885",
+        "claimed_path": "server/src/repositories/person.repository.ts",
+        "path_resolution": "exact",
+        "merged_from": [
+          "8acad1fe03fc5ad5"
+        ]
+      },
+      {
+        "content": "### **CRITICAL: Crash / Wrong Results**\n\n**1. `server/src/services/person.service.ts:554`** \u2014 Error message logs object instead of ID\n```typescript\nthis.logger.error(`Could not generate person thumbnail: person ${person} has no face asset`);\n```\n`person` is an object; this logs `[object Object]`. Should be `person.id`.\n\n**2. `server/src/cores/storage.core.ts:137`** \u2014 Unused `ownerId` parameter, likely breaks path construction\n```typescript\nasync movePersonFile(person: { id: string; ownerId: string; thumbnailPath: string }, pathType: PersonPathType) {\n  const { id: entityId, thumbnailPath } = person;\n```\n`ownerId` is accepted but never destructured or used. `entityId` is destructured but never used. The `switch` cases below (not shown in diff) likely need `ownerId` for `getNestedPath` calls \u2014 this will cause wrong thumbnail paths or crashes.\n\n**3. `server/src/services/person.service.ts:560`** \u2014 Potential undefined access on `asset.files`\n```typescript\nif (asset.files.length === 0) {\n```\nThe SQL for `getPersonForThumbnailGenerationJob` returns `files` via `coalesce(json_agg(agg), '[]')`, so it should be an array. However, the TypeScript type for the returned `asset` doesn't guarantee `files` exists \u2014 if the lateral join returns `null`, `asset` could be `null` or missing `files`. Add optional chaining: `asset?.files?.length === 0`.\n\n**4. `server/src/services/person.service.ts:684`** \u2014 Potential null access on `asset.exifInfo`\n```typescript\nif (!asset.exifInfo.exifImageHeight || !asset.exifInfo.exifImageWidth) {\n```\nThe SQL builds `exifInfo` via `jsonBuildObject`, which always returns an object (with possibly `null` values). But if the `exif` join finds no row, the lateral join may return `null` for the whole `asset`, making `asset.exifInfo` undefined. Guard with `asset?.exifInfo`.\n\n---",
+        "path": "server/src/services/person.service.ts",
+        "start_line": 554,
+        "end_line": 554,
+        "observation_id": "d695de9d642c4e10",
+        "claimed_path": "server/src/services/person.service.ts",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "### **HIGH: Type Safety Gaps**\n\n**5. `server/src/entities/asset.entity.ts:51`** \u2014 `faces` type doesn't match `AssetFace.person` optionality\n```typescript\nfaces!: AssetFace[];\n```\n`AssetFace` in `database.ts:224` has `person?: Person | null` (optional). Code iterating `asset.faces` may assume `face.person` exists and crash on `undefined`. Either make `person` non-optional in `AssetFace` or handle `undefined` in consumers.\n\n**6. `server/src/utils/database.ts:20-45`** \u2014 `toJson` type helper is fragile\nComplex conditional types with `ExpressionBuilder`, `Nullable`, `Simplify` \u2014 high risk of inference failures or `any` leakage. No tests visible for this utility. Consider simplifying or adding type tests.\n\n**7. `server/src/repositories/person.repository.ts`** \u2014 Multiple public methods missing return type annotations\n- `getAllFaces` (line 125)\n- `getAll` (line 146)\n- `getAllWithoutFaces` (line 216)\n- `getFaces` (line 228)\n- `getFaceById` (line 240)\n- `getFaceForFacialRecognitionJob` (line 253)\n- `getPersonForThumbnailGenerationJob` (line 282)\n- `reassignFace` (line 328)\n- `create` (line 362)\n- `update` (line 399)\n\nReturn types default to `any`/`Promise<any>`, losing type safety. Add explicit return types.\n\n---",
+        "path": "server/src/entities/asset.entity.ts",
+        "start_line": 51,
+        "end_line": 51,
+        "observation_id": "fa698d45a909c9b6",
+        "claimed_path": "server/src/entities/asset.entity.ts",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "### **MEDIUM: Logic / Maintenance Risks**\n\n**8. `server/src/services/person.service.ts:319`** \u2014 Redundant `id` in type annotation\n```typescript\nconst facesToAdd: (Insertable<AssetFaces> & { id: string })[] = [];\n```\n`Insertable<AssetFaces>` already includes `id` (primary key). The intersection adds nothing.\n\n**9. `server/src/services/person.service.ts:377-382`** \u2014 `iou` parameter type weakened\n```typescript\nprivate iou(\n  face: { boundingBoxX1: number; boundingBoxY1: number; boundingBoxX2: number; boundingBoxY2: number },\n  newBox: BoundingBox,\n): number {\n```\nPreviously took `AssetFaceEntity` (which had more fields). Callers now must pass only the four box fields \u2014 verify all call sites construct this shape correctly.\n\n**10. `server/src/dtos/asset-response.dto.ts:74`** \u2014 Acknowledged inefficiency left unfixed\n```typescript\n// TODO: this is inefficient\nconst peopleWithFaces = (faces: AssetFace[]): PersonWithFacesResponseDto[] => {\n```\nEither fix it or remove the TODO \u2014 leaving it signals known technical debt.\n\n**11. `server/src/dtos/person.dto.ts:245-260`** \u2014 Duplicated mapping logic\n```typescript\nexport function mapFaces(face: AssetFace, auth: AuthDto): AssetFaceResponseDto {\n  return {\n    id: face.id,\n    imageHeight: face.imageHeight,\n    // ... all fields manually copied instead of spreading mapFacesWithoutPerson(face)\n```\n`mapFacesWithoutPerson` exists but isn't reused. DRY violation; if fields change, both must be updated.\n\n**12. `server/src/repositories/person.repository.ts:47-55`** \u2014 Inconsistent default parameter syntax\n```typescript\ngetAllFaces(options: GetAllFacesOptions | undefined = {}): ...\ngetAll(options: GetAllPeopleOptions | undefined = {}): ...\n```\nOne uses `= {}`, the other `= undefined` with `| undefined`. Pick one style.\n\n---",
+        "path": "server/src/services/person.service.ts",
+        "start_line": 319,
+        "end_line": 319,
+        "observation_id": "d9a0e99661d24029",
+        "claimed_path": "server/src/services/person.service.ts",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "### **LOW: Naming / Clarity**\n\n**13. `server/src/database.ts:199-235`** \u2014 `Person` and `AssetFace` types duplicate DB schema\nThese mirror `src/db` generated types. If `src/db` is the source of truth, re-export from there instead of duplicating. Divergence risk.\n\n**14. `server/src/repositories/person.repository.ts:362`** \u2014 `create` returns `executeTakeFirstOrThrow()` but signature doesn't document it throws\nCallers must know it throws on failure. Add `@throws` JSDoc or return `Promise<Person>` with note.\n\n---\n\n### **Summary**\n\n| Severity | Count |\n|----------|-------|\n| Critical (crash/wrong result) | 4 |\n| High (type safety) | 3 |\n| Medium (logic/maintenance) | 5 |\n| Low (naming/clarity) | 2 |\n\n**Top 3 to fix immediately:**",
+        "path": "server/src/database.ts",
+        "start_line": 199,
+        "end_line": 199,
+        "observation_id": "49bb182473647b17",
+        "claimed_path": "server/src/database.ts",
+        "path_resolution": "exact",
+        "merged_from": [
+          "3db1efc506c04288",
+          "4d6811f2240a806b"
+        ]
+      },
+      {
+        "content": "1. `person.service.ts:554` \u2014 broken error logging",
+        "path": "server/src/services/person.service.ts",
+        "start_line": 554,
+        "end_line": 554,
+        "observation_id": "a3ca07dbb07c54f7",
+        "claimed_path": "person.service.ts",
+        "path_resolution": "basename",
+        "merged_from": []
+      },
+      {
+        "content": "2. `storage.core.ts:137` \u2014 unused `ownerId` breaks file moves",
+        "path": "server/src/cores/storage.core.ts",
+        "start_line": 137,
+        "end_line": 137,
+        "observation_id": "93c569958b65bef3",
+        "claimed_path": "storage.core.ts",
+        "path_resolution": "basename",
+        "merged_from": []
+      },
+      {
+        "content": "3. `person.service.ts:560` / `684` \u2014 missing null guards on nested objects\n\nThe refactor direction (entities \u2192 Kysely types) is sound, but the type flow from SQL \u2192 repository \u2192 service \u2192 DTO needs tightening at the boundaries.",
+        "path": "server/src/services/person.service.ts",
+        "start_line": 560,
+        "end_line": 560,
+        "observation_id": "6fad73cd2522110d",
+        "claimed_path": "person.service.ts",
+        "path_resolution": "basename",
+        "merged_from": []
+      }
+    ]
+  },
+  "rundir": "/home/user/.cache/llm-panel/runs/aacr-up-lppxb7mw-4f64d2a1f81e/20260829-015419-2488385",
+  "extractor": "3",
+  "unlocated": [
+    {
+      "content": "1. **Image-asset-without-preview regression** (person.service.ts, the `if (asset.files.length === 0)` check): image faces whose asset lacks a PREVIEW file are now unconditionally FAILED even though image thumbnails are cropped from the original. Previously image assets didn't need a preview. \u2192 wrong-result/behavior regression. Concrete failure scenario: an image upload that failed to generate a pr",
+      "observation_id": "018d8e254fcb8658",
+      "claimed_path": "person.service.ts",
+      "path_resolution": "basename"
+    },
+    {
+      "content": "2. **`GetAllFacesOptions.personId` declared but never applied** (person.repository.ts) \u2014 misleading interface / dead option; a caller passing `personId` would silently get unfiltered results.",
+      "observation_id": "4bd9b409218f790d",
+      "claimed_path": "person.repository.ts",
+      "path_resolution": "basename"
+    },
+    {
+      "content": "3. **Misleading error message / failure provenance loss** (person.service.ts): several distinct failure causes (person not found, face not found, face asset deleted, asset missing, exif row missing) collapse into one `person ${person} has no face asset` branch, and the log prints the whole object via template string instead of `.id`. Merged failure paths make debugging ambiguous; also the `person ",
+      "observation_id": "8a9b8b2856a30f12",
+      "claimed_path": "person.service.ts",
+      "path_resolution": "basename"
+    },
+    {
+      "content": "4. **Duplicated field mapping** (person.dto.ts mapFaces inlines what mapFacesWithoutPerson returns) \u2014 maintainability; future drift risk.\n\n5. Possibly dead `SelectFaceOptions` type \u2014 unverifiable without call sites; flag as possible dead code.\n\n6. `create` now `executeTakeFirstOrThrow()` \u2014 contract change; callers previously could get undefined. Minor.\n\nLet me also double check the `getPersonForTh",
+      "observation_id": "34f5eab7fa57b117",
+      "claimed_path": "person.dto.ts",
+      "path_resolution": "basename"
+    },
+    {
+      "content": "**6. `@GenerateSql` param annotation mismatch for the new query.**\n`server/src/repositories/person.repository.ts`, `getPersonForThumbnailGenerationJob` \u2014 the annotation is `@GenerateSql({ params: [DummyValue.UUID] })` (one param), but the query has **three** placeholders: `$1` = `AssetFileType.PREVIEW`, `$2` = limit `1`, `$3` = person id. The generation/debugging helper will be fed wrong params an",
+      "observation_id": "be0552c687afa3ac",
+      "claimed_path": "server/src/repositories/person.repository.ts",
+      "path_resolution": "exact"
+    }
+  ]
+}
