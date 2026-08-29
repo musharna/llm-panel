@@ -228,9 +228,12 @@ def panel_findings(diff, judges, effort, timeout, style="defect", cwd=None):
     work = pathlib.Path(cwd) if cwd else pathlib.Path(tempfile.mkdtemp(prefix="aacr-up-"))
     sib = ROOT.parent / "llm-panel"
     binary = str(sib if sib.is_file() else "llm-panel")
+    # The prompt goes on stdin (`-f -`), never argv: Linux caps one argv element at 128 KB
+    # (MAX_ARG_STRLEN) and a PR diff can be far larger -- ollama@498792c is 839 KB, and as
+    # an argument it raised E2BIG at exec, before llm-panel ever ran, on every attempt.
     r = subprocess.run([binary, "--cwd", str(work), "--judges", judges, "--effort", effort,
-                        "--timeout", str(timeout),
-                        panel_prompt(style, diff, cwd is not None)],
+                        "--timeout", str(timeout), "-f", "-"],
+                       input=panel_prompt(style, diff, cwd is not None),
                        capture_output=True, text=True, timeout=timeout * 3)
     m = re.search(r"panel written to (\S+?)\]", r.stdout + r.stderr)
     if not m:
