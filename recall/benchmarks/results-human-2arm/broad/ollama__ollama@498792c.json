@@ -1,0 +1,545 @@
+{
+  "review": {
+    "comments": [
+      {
+        "content": "1. **Defect \u2014 goroutine leak and race after timeout:** `integration/api_test.go:104,263`  \n   If the timer or outer context wins the `select`, the subtest returns without canceling or joining the API call. The worker later blocks forever sending on the unbuffered `done` channel. It can also continue invoking the callback after the subtest ends; the next subtest mutates the shared request while the previous call may still use it, and timeout-path reads of `buf` race with callback writes.",
+        "path": "integration/api_test.go",
+        "start_line": 104,
+        "end_line": 104,
+        "observation_id": "123e70e97d3b0b32",
+        "claimed_path": "integration/api_test.go",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "2. **Defect \u2014 VRAM filtering happens only after downloading the oversized model:** `integration/model_arch_test.go:85,138`  \n   `PullIfMissing` runs before the model-size check. A low-VRAM runner can therefore spend substantial bandwidth and disk space downloading models such as `command-r`, or hit the hard timeout and fail, before discovering that the test should have been skipped.",
+        "path": "integration/model_arch_test.go",
+        "start_line": 85,
+        "end_line": 85,
+        "observation_id": "073337efbe42fb89",
+        "claimed_path": "integration/model_arch_test.go",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "3. **Defect \u2014 soft-timeout calculation mixes two different time origins:** `integration/model_arch_test.go:20,57`  \n   `softTimeout` is the remaining duration from when the test starts, but lines 82/135 compare it with elapsed time since package initialization. For example, if this test starts four minutes into a ten-minute test deadline, both values are already about four minutes and the model subtests immediately begin skipping, rather than running until two minutes before the deadline.",
+        "path": "integration/model_arch_test.go",
+        "start_line": 20,
+        "end_line": 20,
+        "observation_id": "16b7ea5853af4527",
+        "claimed_path": "integration/model_arch_test.go",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "4. **Defect \u2014 clean environments cannot reliably satisfy the ten-second setup deadline:** `integration/api_test.go:297`  \n   `TestAPIListModels` calls `PullIfMissing` under a ten-second parent context, while the same change allows a pull to stall for 60 seconds (`integration/utils_test.go:161`). On a machine without the model cached, downloading `llama3.2:1b` will commonly exceed ten seconds, so the test fails before exercising `List`.",
+        "path": "integration/api_test.go",
+        "start_line": 297,
+        "end_line": 297,
+        "observation_id": "1ba81324d388259a",
+        "claimed_path": "integration/api_test.go",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "5. **Defect \u2014 one outer deadline is incorrectly shared across setup and both subtests:** `integration/api_test.go:19,174`  \n   The one-minute context starts before model pulling and is reused for both streaming modes. Thus the second request receives only whatever time remains, and even the first request cannot receive its advertised 60-second initial timeout after setup. A slow but responsive machine can fail through `ctx.Done()` despite neither request exceeding its own timeout.",
+        "path": "integration/api_test.go",
+        "start_line": 19,
+        "end_line": 19,
+        "observation_id": "b0bea751c23303fe",
+        "claimed_path": "integration/api_test.go",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "6. **Test-coverage defect \u2014 embedding coverage is nondeterministic:** `integration/model_arch_test.go:133`  \n   `embedModels` is a map, so iteration order is randomized. Because line 135 stops launching cases after the shared soft timeout, each run can test a different arbitrary subset, allowing a regression to be skipped depending on map order.",
+        "path": "integration/model_arch_test.go",
+        "start_line": 133,
+        "end_line": 133,
+        "observation_id": "856455c1a532cc4a",
+        "claimed_path": "integration/model_arch_test.go",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "7. **Future-bug risk \u2014 numeric golden vectors are tied to mutable model tags:** `integration/model_arch_test.go:185`  \n   The exact embedding expectations use `:latest` tags. If the registry updates one of those tags, a valid new model artifact can produce a different vector and fail the cosine check. Numeric golden tests should pin immutable model versions or digests.",
+        "path": "integration/model_arch_test.go",
+        "start_line": 185,
+        "end_line": 185,
+        "observation_id": "c38b87032e40e581",
+        "claimed_path": "integration/model_arch_test.go",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "8. **Diagnostics issue \u2014 API errors are discarded:** `integration/api_test.go:116,275`  \n   Both failure branches test `genErr` but omit it from `Fatalf`. Network, decoding, callback-timeout, and server errors therefore all produce the same message, hiding the information needed to diagnose an integration failure.",
+        "path": "integration/api_test.go",
+        "start_line": 116,
+        "end_line": 116,
+        "observation_id": "0cc329c0761fddb7",
+        "claimed_path": "integration/api_test.go",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "9. **Dead code:** `integration/model_arch_test.go:188,202,203,209,211`  \n   Several enormous embedding vectors are committed as comments and cannot be exercised. They substantially bloat and obscure the fixture table; remove them or keep disabled fixtures in generated/external test data with an explicit enablement mechanism.",
+        "path": "integration/model_arch_test.go",
+        "start_line": 188,
+        "end_line": 188,
+        "observation_id": "32dfb5785c7a8405",
+        "claimed_path": "integration/model_arch_test.go",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "1. **`getTimeouts` return value bug** (model_arch_test.go, line 647): \n```go\nreturn -time.Since(deadline.Add(-2 * time.Minute)), -time.Since(deadline.Add(-20 * time.Second))\n```\nLet me think about what these return. `deadline.Add(-2*time.Minute)` is the deadline minus 2 minutes. `time.Since(x)` is positive if x is in the past. `-time.Since(x)` would be negative if x is in the past (i.e., deadline - 2min > now), but if deadline is far in future, `deadline.Add(-2min)` is in the future relative to now, so `time.Since` would be negative, and negating gives positive. So it correctly returns a positive duration equal to remaining time before (deadline - 2min). OK that's correct after all. Actually the formula is convoluted and could be written as `deadline.Sub(time.Now()) - 2*time.Minute` but it computes correctly. Worth a code-clarity note but not a defect.\n\nActually wait \u2014 there is a subtle issue: the `t.Skip(\"too little time\")` return path returns both timeouts as `0`. Skipping terminates the test so the returned zeros are unused. Fine.\n\n2. **`time.Now().Sub(started)`** \u2014 uses `Sub` directly, deprecated in favor of `time.Since`. Style only.\n\n3. **Race condition in TestAPIGenerate/TestAPIChat** (api_test.go): The goroutine runs `client.Generate(ctx, &req, fn)` and writes to `genErr`, while the main goroutine reads `genErr` in the select `done` case. There's a happens-before via the channel `done <- 0` send and `<-done` receive, so the write to genErr in the goroutine is sequenced before the read after receiving done. Actually: goroutine sets genErr then sends on done; main receives on done then reads genErr. The channel send/receive creates a happens-before edge. So genErr read after <-done is fine \u2014 NOT a data race in the correct path.\n\nBUT: if the stallTimer fires or ctx.Done fires, the test returns without ever receiving on done, leaving the goroutine blocked sending on `done <- 0` forever \u2014 a goroutine leak. Since Generate would eventually finish and the goroutine would leak if the test already finished. Actually when test function returns, the goroutine continues. In a streaming generate that's stuck, the goroutine leaks. Also, the goroutine blocks on `done <- 0` with an unbuffered channel; if select already chose stallTimer.C, the send blocks forever \u2192 goroutine leak. That's a real leak concern.\n\nAdditionally `stallTimer` is never `Stop()`d; but it's per-subtest and falls out of scope. Minor.",
+        "path": "integration/model_arch_test.go",
+        "start_line": 647,
+        "end_line": 647,
+        "observation_id": "0fa2d9e52d0cda27",
+        "claimed_path": "model_arch_test.go",
+        "path_resolution": "basename",
+        "merged_from": [
+          "57926a57a28a830e",
+          "a38211fc6fc5797e"
+        ]
+      },
+      {
+        "content": "4. **The streaming fn dereferences `*req.Stream`** (api_test.go line 77 in TestAPIGenerate): `if response.DoneReason == \"\" && *req.Stream`. But `req.Stream` is set inside the goroutine (`req.Stream = &test.stream`), which races with the main goroutine reading `*req.Stream` in `fn`. Since `fn` is called by `Generate` in the goroutine, and `req.Stream` is assigned in that same goroutine before calling Generate, the assignment happens-before Generate is called happens-before fn is invoked. So both the read and write of req.Stream are in the goroutine (fn is invoked within Generate). So no race. OK.\n\nActually wait, the initial req.Stream \u2014 for the model the request struct `req` is shared between the two subtests `stream` and `no_stream`. `req.Stream` gets reassigned each subtest. But each subtest runs sequentially (t.Run runs serially unless Parallel). The goroutine sets it before Generate. Fine.\n\n5. **Anything wrong about the all-minilm expected embedding** (line 775): there's a `-7.227309e-33` value in all-minilm. That's a near-zero float noise value, but in the array it's a literal. Fine-ish.",
+        "path": "integration/api_test.go",
+        "start_line": 77,
+        "end_line": 77,
+        "observation_id": "c189e1151055aca8",
+        "claimed_path": "api_test.go",
+        "path_resolution": "basename",
+        "merged_from": [
+          "91cdd700c48ff44c"
+        ]
+      },
+      {
+        "content": "6. **`cosineSimilarity` function** \u2014 not defined in this diff. It must exist elsewhere in the package (in model_arch_test.go's build-tagged file or another file under `models` tag). Since the file has `//go:build integration && models`, and cosineSimilarity is referenced, it must be defined in another models-tagged file. This would only compile under that tag. But also \u2014 importantly \u2014 **`var started = time.Now()` (line 610) is a package-level var that records package init time.** It's used for soft timeout checks. Different tests in the package would share this. Fine.\n\nBut note: this file builds only with `models` tag, and references `started`, `embedModels`, `cosineSimilarity`, `DoGenerate`, `PullIfMissing`, `InitServerConnection`, `skipUnderMinVRAM`. DoGenerate and PullIfMissing/InitServerConnection are in utils_test.go and common files. cosineSimilarity \u2014 likely in another models-tagged file. If the `models` tag is used when only this file of the model tests is present, compile would fail if cosineSimilarity isn't defined under that tag. Can't verify from the diff. I'll note it as something to verify but not assert.\n\n7. **`normalizeExample` for test name in model_arch_test**: `t.Run(model, ...)` with model names containing `:` (e.g., \"llama3.2:latest\"). t.Run names with colons are valid in Go subtests? Actually subtest names may not contain spaces or be empty; colons are allowed. OK.\n\nActually wait \u2014 t.Run name with `:1b` etc... names with `:` are fine.\n\n8. **The VRAM skip comparison in TestModelsGenerate embedding (line 684/737)**: `float32(m.Size)*1.2 > float32(maxVram)`. COnverting m.Size (a large uint/int) to float32 loses precision for the magic \"1.2\" multiplier. Also the size is model size on disk, not VRAM footprint \u2014 VRAM footprint is usually larger (weights in RAM + KV cache + compute). The 1.2x heuristic claims model size > 1.2x VRAM can't fit, but a model whose size is 0.9x VRAM still won't fit because VRAM usage > model size. This heuristic lets models through that will OOM. It's a fuzzy heuristic; worth noting but it's test infra.\n\n9. **Missing free of `stallTimer`** \u2014 Timer not stopped. Minor.\n\n10. **TestAPIListModels (line 328-342)**: iterates only `resp.Models[0]` and checks it. The `List` is unsorted order; fine.\n\n11. In TestModelsEmbed, `for model, expected := range embedModels` \u2014 map iteration is unordered, causing nondeterministic order of subtests. Combined with the global soft-timeout `started` barrier, this is nondeterministic \u2014 a subset of tests may run in varying order and the timeout cutoff may skip different tests across runs. Not a bug per se but nondeterminism.\n\n12. **`localErr` / shared `genErr` across subtests** \u2014 in TestAPIGenerate, `genErr` declared per-subtest inside t.Run closure. Fine.\n\n13. **TestAPIChat: `response.CreatedAt` check with wrong error message** (line 238): \n```go\nif response.CreatedAt == nilTime {\n    t.Errorf(\"final response missing total_duration: %#v\", response)\n}\n```\nMessage says \"total_duration\" but it's checking CreatedAt. Copy-paste error in error message \u2014 misleading diagnostic. Worth raising (misleading message).\n\nAlso for Chat, `CreatedAt` might legitimately be zero for the final response? Not sure; but error message is definitively wrong \u2014 copy-paste. Raise it.\n\n14. **TestAPIGenerate: `*req.Stream` nil deref risk** (line 77): `*req.Stream` \u2014 if streaming somehow... req.Stream is always set in goroutine before Generate. But `fn` closure could be invoked concurrently with the assignment? No. Actually the real risk: `req.Stream` is set inside the goroutine AFTER the goroutine starts (line 116 `req.Stream = &test.stream` then line 117 Generate). fn is only called from within Generate, so it's ordered. Fine.\n\nBut there's a subtle data race: `req` is captured by the goroutine closure, and `req.Stream = &test.stream` writes req.Stream. Meanwhile the main goroutine, in the `select` `case <-done:` branch, reads `genErr` (not req). And `req` fields read in main? req.Model, req.Prompt read in t.Fatalf inside goroutine. Hmm, actually the main goroutine reads `req.Model` and `req.Prompt` in line 130 t.Fatalf \u2014 but that's a formatted string. `req.Model` and `req.Prompt` are not modified after creation, so concurrent read is fine (Go race detector would flag only if there's a concurrent write; there's no write to Model/Prompt). OK.\n\n15. **The `done` channel send `done <- 0` when select already chose ctx.Done** \u2014 same leak as #3.\n\n16. **model_arch_test embedModels map**: contains models like \"llama3.2-vision\", \"minicpm-v\" (vision models) used as EMBEDDING models \u2014 those vision models may not support embeddings and could error/timeout. But they're in embedModels, so the test would pull and generate embeddings; if the model doesn't support embedding, `client.Embeddings` errors \u2192 t.Fatalf \u2192 test fails. This could be flaky. Worth raising as a question. Actually the same models appear in chatModels and embedModels. minicpm-v and llama3.2-vision being tested for embeddings is questionable. But this is test infra intent.\n\n17. **TestModelsEmbed immediate failure path \u2014 `resp[0:5]` slice** (line 768): `expected[0:5]` and `resp.Embedding[0:5]`. If an embedding model returns fewer than 5 dimensions (unlikely), this would panic. Embedding dims are typically \u2265 384. Low risk. But `expected[0:5]` \u2014 expected is from embedModels with hundreds of dims. Fine.\n\nWait, more importantly, line 757-764: it checks length equality between expected and resp embedding; if they differ, it prints a \"cut-and-paste\" hint and fails. Good.\n\n18. **`getTimeouts` Math with `deadline.Compare`** \u2014 Go version? `time.Time.Compare` requires Go 1.20+. And `deadline.Add` approach. This is fine if Go version supports.\n\nActually let me reconsider item 1 formula once more, because it's genuinely convoluted:\n```go\nreturn -time.Since(deadline.Add(-2 * time.Minute)), -time.Since(deadline.Add(-20 * time.Second))\n```\n`deadline.Add(-2*time.Minute)` = deadline - 2min. `time.Since(deadline-2min) = time.Now() - (deadline-2min)`. Negated: `(deadline-2min) - time.Now()`. If deadline-2min is in the future (deadline > now+2min), this is positive = remaining time until (deadline-2min). Good, \"soft timeout\". Second term similar for hard timeout (deadline-20s). So the arithmetic is correct but written confusingly. I'll note as unclear logic needing comment, low severity.\n\nHmm, but is it truly correct? Consider deadline very far out e.g. 10 min. deadline-2min = now+8min. time.Since(now+8min) is negative (-8min). -(-8min)=+8min. Good. soft=8min hard = deadline-20s - now = 9min40s. Good.\n\nConsider deadline = now+1min. Check earlier: `deadline.Compare(time.Now().Add(2*time.Minute)) <= 0` \u2192 deadline <= now+2min \u2192 skip. Good, so it won't reach the return with tiny deadline. OK.\n\n19. **Model size comment**: model_arch_test line 685 `format.HumanBytes(m.Size)` \u2014 Size is likely int64; fine.\n\n20. **Potential division-by-precision**: `float32(m.Size)*1.2 > float32(maxVram)` where maxVram is ParseUint value (bytes). Comparing model file size (bytes) to VRAM in bytes. The 1.2x factor accounts for... nothing precise. Also the comparison uses uint64\u2192float32 which for >16.7M values loses precision \u2014 model sizes are in GBs (~1e9-1e10 bytes), float32 has ~7 significant digits, so precision loss is real but relative comparison at 20% margin is unaffected meaningfully. Still, converting to float32 unnecessarily loses precision.",
+        "path": "integration/model_arch_test.go",
+        "start_line": 610,
+        "end_line": 610,
+        "observation_id": "299b7b4e6bbb4170",
+        "claimed_path": "model_arch_test.go",
+        "path_resolution": "basename",
+        "merged_from": [
+          "3c20da41a35785e5",
+          "3688fc8626ff2df9",
+          "6a18736db4fce29d",
+          "f3d0c8eaab608285",
+          "70f90165c60f650d",
+          "36daa22766074ba8",
+          "5b60dd84c8897894",
+          "85f07c7796816d0d",
+          "10ea962de232236b",
+          "211476ada3670ce7",
+          "3e961eeff0a089c1",
+          "74c201db36adea1c",
+          "a854fa373df47d27",
+          "f4d5f288d664c907"
+        ]
+      },
+      {
+        "content": "22. **`skipUnderMinVRAM` referenced by TestUnicode etc.** \u2014 defined in utils_test.go (line 888). But `skipUnderMinVRAM` requires `os`, `strconv`, `format` imports added to utils_test.go. And require. Good.\n\nBut wait: api_test.go doesn't use skipUnderMinVRAM. fine.\n\n23. **Missing validation: TestAPIGenerate relies on model \"llama3.2:1b\"** \u2014 which is a quantization/size tag. If upstream removes that tag, tests break. test infra.",
+        "path": "integration/utils_test.go",
+        "start_line": 888,
+        "end_line": 888,
+        "observation_id": "eb8c18b51b2af74f",
+        "claimed_path": "utils_test.go",
+        "path_resolution": "basename",
+        "merged_from": [
+          "87d29e7d8aad110b"
+        ]
+      },
+      {
+        "content": "24. **The most concrete defect candidate: goroutine leak on timeout** (api_test.go lines 115-119 / 272-278, combined with select at 121-146 / 280-305). Concrete failure scenario: if streaming Generate stalls and stalls long enough that stallTimer.C (30s) fires, or ctx.Done fires (outer 1min), the test does `t.Errorf` and the subtest returns. The goroutine running `client.Generate` continues (the request may still be in-flight or stuck until network timeout), and when it returns it blocks forever trying `done <- 0` on an unbuffered channel with no receiver. The goroutine leaks for the life of the test binary. If many such stalls, goroutine accumulation. This is a real leak. Severity medium for a test.\n\nAlso the interplay: after the subtest returns, the next subtest in TestAPIGenerate reruns; fine.\n\n25. **Possible data race on genErr between goroutine and a potential `done` case**: covered, no race because channel handoff. But if the test fails via stallTimer before reading done, genErr remains unwritten-ish; no read happens. OK no race.\n\n26. **`t.Fatalf` called from within the goroutine?** No \u2014 Fatalf only called in the main select path after <-done. Wait: the `fn` callback uses `t.Errorf` (safe). The goroutine's `client.Generate` may itself call t methods? No. The `done` case calls `t.Fatalf` from main goroutine while the worker goroutine might still be finishing up the send. After `done <- 0` in worker, the main receives; worker is done. t.Fatalf from main is fine. But if genErr != nil and t.Fatalf invoked, worker already sent on done and finished. OK.\n\nBut actually \u2014 subtle race: main receives `<-done` then reads `genErr`. Worker wrote genErr before sending on done. Happens-before OK. \n\n27. **Unused result/`t.Run` `test` capture** \u2014 Go pre-1.22 loop var capture. `for _, test := range tests` then `t.Run(test.name, ...)` \u2014 the closure captures `test`. Since tests run sequentially and Go version may be <1.22, the loop var is shared. But t.Run is synchronous (not Parallel), so by the time the closure body runs, test is the current iteration. t.Run runs the subtest immediately unless Parallel. So even with shared loop var it's correct. Fine.\n\n28. **The strongest \"wrong result\" issue: embedding determinism test with similarity threshold 0.99 tied to specific checkpoint behavior, plus `temperature`/`seed` on EmbeddingRequest means nothing (embeddings don't sample)** \u2014 passing temperature 0 and seed to EmbeddingRequest is meaningless noise (options ignored or at least irrelevant), harmless.\n\nLet me also double-check the `started` package var and the embedded per-model `embedModels` map \u2014 map literal of slices. Very large data. That's fine.\n\n29. **In TestModelsGenerate, the variable `softTimeout, hardTimeout := getTimeouts(t)` then used; the soft timeout skip check uses `time.Now().Sub(started) > softTimeout`.** `started` is package-level set at test binary init. Fine.\n\nBut a subtle bug: both `TestModelsGenerate` and `TestModelsEmbed` share `started`. If run in parallel (they're not Parallel), serial. Fine.\n\n30. **`getTimeouts` returns `-time.Since(...)`** \u2014 I'll note it as confusing, and also note that if `hasDeadline` is false it returns 8/10 min but the ctx is created with these; fine.\n\nNow, the biggest genuinely-a-defect items:\n- Copy-paste error message in TestAPIChat (`total_duration` vs CreatedAt) \u2014 misleading diagnostic. Concrete.\n- Goroutine leak + worker goroutine not reliably terminated on stall/ctx timeout in TestAPIGenerate and TestAPIChat.\n- Unbounded/leaked stallTimer not Stopped (minor).\n- VRAM heuristic in TestModelsGenerate/Embed is flawed (can let oversized models proceed \u2192 OOM/timeouts; also float32 precision).\n\nAlso the `getTimeouts` convoluted return I'll mention.\n\nAlso `Response.Context` check at api_test.go line 96: `if len(response.Context) == 0 { t.Errorf(\"final response missing context\") }`. For stream, done responses always include context; for no_stream too. But \u2014 for the final (done) response, is Context always non-empty? Probably. But it's a fragility. Not raising as defect.\n\nAnother: In TestAPIGenerate, the final response check at line 77 requires DoneReason when streaming. But a `generate` can end by reaching max tokens with done_reason unset? The TODO already acknowledges uncertainty (line 78). So it's a potential flaky failure. Medium.\n\nOne more real one: **`req.Stream` in TestAPIGenerate when stream=false** \u2014 line 77 `*req.Stream` \u2014 the DoneReason requirement. The TODO comment at line 78 acknowledges non-stream may lack done_reason. Fine.\n\nAlso `TestAPIListModels` line 328 notes only `[0]`.\n\nAlso: the `list` VRAM skip uses `client.List(ctx)` which returns ALL models, but it only finds the specific model by name and skips if too large. But a big model could be loaded (from another test) \u2014 irrelevant.\n\nLet me also reconsider the goroutine closure for `genErr` in TestAPIGenerate. Actually here's a real subtle issue: `genErr` is declared in the subtest closure. The goroutine writes it. In the `stallTimer.C` and `ctx.Done()` branches, the code never joins the goroutine; then the subtest returns. As the tests structure shows `defer cancel()` only at the outer function. The goroutine leak is real.\n\nNow, another correctness issue in TestModelsGenerate: **the test calls `t.Run(model, ...)` and inside checks `time.Now().Sub(started) > softTimeout \u2192 t.Skip`.** But softTimeout is based on test deadline. If go test runs with `-timeout 30m`, deadline is ~30min out \u2192 soft ~28min \u2192 the soft limit never triggers and the loop runs ALL models, including huge ones like command-r, solar-pro, gemma2 \u2014 each with 2min DoGenerate timeout \u2014 total possibly 40+ min. And context is set to hardTimeout (10min default) shared across ALL subtests. Since ctx is created once outside the loop (line 653) with hardTimeout, the context deadline applies to the whole test, not per-model. So after hardTimeout expires, all remaining client calls error. This is intended behavior (the \"hard timeout\" bounds the whole loop). But combined with softTimeout being the real cap, and the soft check skipping only AFTER the subtest has already pulled the model (PullIfMissing before the skip check at line 675? No \u2014 skip check is line 672, before PullIfMissing at 675). So skip check happens before pull. Good.\n\nBut wait \u2014 the shared ctx with hardTimeout: if one model hangs the whole client for 2 min (DoGenerate internal timeout is 120s), and there are 20 models, the shared 10min hard ctx means later models fail not by timeout but by ctx expiry \u2192 t.Fatalf from DoGenerate? Let me deliver the review now.\n\nLet me also flag: **model_arch_test.go's `getTimeouts` \"too little time\" branch calls `t.Skip` but then returns zeros; skip aborts, fine.** Not an issue.\n\nLet me also note the **`HumanBytes(int64(maxVram))` conversion** \u2014 maxVram is uint64; converting to int64 fine.\n\nLet me check: does anything actually reference `cosineSimilarity` that's missing? I can't confirm from the diff whether it's exported elsewhere. I'll flag as \"verify it exists under the models build tag\" \u2014 but that's speculative. I'll mention that these model tests won't compile unless cosineSimilarity, DoGenerate etc. exist under the `models` tag \u2014 a build/tag coupling worth verifying. Actually, I should be careful not to assert a defect I can't verify. I'll note it as a question to verify.\n\nLet me also check the severity ordering and line numbers.\n\nNow the line numbers: the instructions say \"name the FILE and the LINE NUMBER it lives on, taken from the diff hunk headers.\" Since both new files start at line 1, the line numbers within the file == diff line numbers for the new files. For modified files, the line numbers are those of the new file (from hunk header context). Let me use the file content line numbers (which for new files match; for modified hunks I'll use the hunk header's starting line + offset).\n\nFor api_test.go (new file), lines are as shown:\n- goroutine leak: lines 115-119 (TestAPIGenerate), 272-278 (TestAPIChat)\n- copy-paste error message: line 238\n- `*req.Stream` deref/TODO: lines 77-79\n- size check etc.\n\nFor model_arch_test.go (new file):\n- float32 VRAM comparison: lines 684 and 737\n- getTimeouts convoluted return: line 647\n- `time.Now().Sub` lines 672, 725\n- shared started var line 610\n- shared ctx across loop with hardTimeout: lines 653 (Generate) and 706 (Embed)\n\nFor utils_test.go (modified): \n- skipUnderMinVRAM line 888\n\nLet me finalize. I'll verify the goroutine leak line numbers. TestAPIGenerate goroutine: lines 115-119. select: 121-128. Yes.\n\nAlso one more: TestAPI Embeddings `TestAPIEmbeddings` uses \"orca-mini\" (line 422) while everything else switched to llama3.2. orca-mini still used \u2014 but that's fine, orca-mini is an embedding-capable model. Keep.\n\nNow, one more potential real defect: **In TestAPIGenerate and TestAPIChat, when stream test runs, `req.Stream` is set inside the goroutine; but in the NO_STREAM subtest that runs AFTER the stream subtest, `req.Stream` gets set again \u2014 but between subtests, is req ever used with stale Stream? No, each subtest sets it fresh. Fine.\n\nAlso, `client.Generate(ctx, &req, fn)` \u2014 passing `&req` and the goroutine mutates req.Stream concurrently with... nothing else. OK.\n\nLet me also reconsider an actual functional concern: the stall timer reset on every callback, and the outer context 1 minute. For streaming of llama3.2:1b, generation could take a while but responses arrive; each reset extends the timer, and initial 60s. Combined with 1 min ctx. The stream test with a slow model could exhaust ctx and hit the ctx.Done branch \u2192 \"outer test context done\" error which is not fatal (t.Error) but confusable. It's just a test robustness note.\n\nAlright. Let me also flag: In `getTimeouts`, the \"too little time\" t.Skip returns `time.Duration(0), time.Duration(0)` \u2014 fine.\n\nLet me also double check line 647 arithmetic note and write it as \"unclear logic.\"\n\nI think I have a solid set. Let me write the review. Order by severity:\n\n1. Goroutine leak on stall/ctx timeout (both API tests) \u2014 real leak \u2192 lines 115-119/272-278 api_test.go\n2. Copy-paste misleading error message (CreatedAt labeled total_duration) \u2014 misleading diagnostic \u2192 line 238\n3. VRAM-fit heuristic is wrong-directioned/fuzzy + float32 precision + OOM risk \u2192 lines 684/737 model_arch_test.go\n4. Shared package-level `started` clock + shared hardTimeout ctx over whole model loop \u2192 cross-test coupling/nondeterminism \u2192 lines 610, 653, 706\n5. Failed-subtest goroutine not joined \u2192 tied to #1\n6. TestAPIChat `response.CreatedAt == nilTime` gate may itself be wrong for chat (should probably check done_reason/metrics) \u25ba line 238 combined with #2\n7. getTimeouts convoluted/commented-ambiguous return \u2192 line 647\n8. duplicate test harness (DoGenerate already exists) \u2192 duplication refactor note\n9. `req.Stream` deref guarded only by inline execution order, fragile; also line 77 depends on non-stream done_reason behavior flagged as open TODO \u2192 flaky risk\n10. All-minilm embedding has stray -7e-33 noise literal \u2192 harmless but sloppy (line 775), low.\n11. Nondeterministic map iteration ordering in TestModelsEmbed \u2192 line 723\n12. `time.Now().Sub` use \u2192 minor (lines 672,725)\n\nThe instructions want severity-ordering with concrete failure scenarios and item-kind. Let me write concisely.\n\nActually, let me reconsider #1's severity vs #2. The goroutine leak: is it truly a leak? The goroutine blocks on `done <- 0` forever because the receiving select already exited. In Go, a goroutine blocked on an unbuffered channel send that never gets a receiver is permanently leaked (unless the program's test binary exits). In integration tests this accumulates across the run. Yes, real leak. But the bigger correctness consequence: the `client.Generate` call in the leaked goroutine may hold an HTTP connection/goroutine inside the client as well, potentially leaving the server's runner busy on the model \u2014 meaning the subsequent test's generate could queue behind a stuck request, causing cascading timeout failures. That strengthens severity.\n\nConcrete failure scenario for #1: A model generates slowly; the initial 60s stallTimer or 1-min ctx fires on a legitimately slow-but-progressing generation (the fn resets the timer on each chunk, so a stall between chunks >30s with nothing returned fires it, or ctx expires). Actually ctx 1min fires while stallTimer is 60s. The ctx.Done branch or stallTimer branch runs t.Error, subtest returns, but the Generate goroutine keeps running and its `done <- 0` blocks. Next subtest starts with a model potentially still busy \u2192 the new request is queued or errors. Repeated stalls leak goroutines + connections.\n\nOK writing now.\n\nFor line numbers I'll reference diff lines (file lines for new files = diff line numbers since new files start at 1). For modified files, use the hunk-based new-file line numbers.\n\nutils_test.go: skipUnderMinVRAM is at new-file lines 888-898 (diff hunk `@@ -341,3 +342,15 @@` \u2192 starts at new line 342; the added function spans +15 lines ending ~356 of hunk \u2192 new file lines 888 is wrong? Wait. The hunk header for the skipUnderMinVRAM addition: `@@ -341,3 +342,15 @@` with the `+func skipUnderMinVRAM` at the diff line 888 in the material file. The actual NEW FILE line number: the hunk starts at new-file line 342. The function `func skipUnderMinVRAM` is the diff line 888 = part of the +15. Let me count: hunk adds 15 lines starting at new file line 342 (context). The diff shows `+` lines from `+func skipUnderMinVRAM` onward. In the new file, skipUnderMinVRAM is around line 343. Hmm, but I reference the material file line numbers, not real file. The instruction says \"LINE NUMBER it lives on, taken from the diff hunk headers.\" \n\nI'll give the line numbers from the target files as best from hunks. For clarity I'll use the new-file line numbers I can compute: the skipUnderMinVRAM func is at new file line ~343 (`@@ ... +342,15 @@`). I'll say utils_test.go line ~342-355 (skipUnderMinVRAM). Actually to be safe, cite the hunk: `+342,15`.\n\nGiven precision matters, let me report line references using the file's new line numbers: skipUnderMinVRAM \u2248 line 343. I'll write \"utils_test.go, around +343 (skipUnderMinVRAM)\".\n\nFor api_test.go, it's a new file (0,0,1,427), so diff line = file line directly.\n\nFor model_arch_test.go, new file (0,0,1,212): file lines 647 etc. Wait \u2014 model_arch_test is 212 lines in the file, but the material lines go to 802+. The line numbers in the file: getTimeouts func at file lines 639-648 (from the hunk listing). Yes, `getTimeouts` is around file line 639-648. So `line 647` is the return statement in the file. Good.\n\nThe `started` var is at file line 610. The VRAM skip at file lines 684 and 737. The shared ctx at 653/706. loop at 723. Good \u2014 these are the actual new-file line numbers (212 total file lines for model_arch_test). Wait, file has 212 lines? Hunk says +1,212 so file has 212 lines. The material excerpt lines (609-802) correspond to file lines roughly 4-200. Yes consistent with getTimeouts at file ~639-648... wait that would be material line ~1247. Hmm.\n\nLet me recheck: The hunk header `@@ -0,0 +1,212 @@` means the new file is 212 total lines. The material file lines 590-802 cover this file. If file line 639-648 (getTimeouts) then material would be around line 590+... material line for getTimeouts is ~570-580. But material shows getTimeouts at material lines 639-648 (the `func getTimeouts` at material line 639). Wait, material line 639 is `// Soft timeout, hard timeout` and 640 `func getTimeouts`. Hmm, so material line numbers align with the FILE line numbers? Let me check: material line 590 is `+//go:build integration && models` = file line 1. material line 609 `+var (` ... file line ~20. material 639 = file ~50? \n\nActually mapping: For a new file, file line N = material_line - 589 (since file line 1 = material line 590). So getTimeouts func at material line 640 \u2192 file line 51. And `started` at material 610 \u2192 file line 21. The VRAM skip `float32(m.Size)*1.2` at material line 684 \u2192 file line 95. Line 737 \u2192 file line 148. Shared ctx at material 653 \u2192 file line 64.\n\nHmm wait, that contradicts my earlier assumption. The file is only 212 lines total, so getTimeouts at material 640 = file line 51. And `time.Now().Sub(started)` skip at material 672 = file line 83. VRAM compare at material 684 = file line 95.\n\nSo for model_arch_test.go, the real file line numbers are (material_line - 589):\n- getTimeouts return (647): file line 58\n- started (610): 21\n- VRAM compare Generate (684): 95\n- VRAM compare Embed (737): 148\n- time.Now().Sub (672): 83, (725): 136\n- shared ctx (653): 64, (706): 117\n- map loop (723): 134\n\nLet me recompute precisely. The hunk for model_arch_test begins at material line 590 = file line 1 (`//go:build`). So file_line = material_line - 589.\n\n- material 647 (return statement of getTimeouts): file 58\n- material 640 (func getTimeouts): file 51\n- material 653 (ctx, hardTimeout): file 64\n- material 661 (OLLAMA_MAX_VRAM gen): 72\n- material 672 (time.Now().Sub(started) gen): 83\n- material 684 (float32 m.Size gen): 95\n- material 706 (ctx in embed): 117\n- material 725 (time.Now().Sub embed): 136\n- material 737 (float32 m.Size embed): 148\n- material 723 (for model, expected range): 134\n\nGood.\n\nFor api_test.go: hunk `@@ -0,0 +1,427 @@` starts material line 14 = file line 1. file_line = material_line - 13.\n- goroutine generate: material 115-119 \u2192 file 102-106\n- select stallTimeout: material 121-128 \u2192 file 108-115\n- goroutine chat: material 274-278 \u2192 file 261-265\n- `*req.Stream` deref: material 77 \u2192 file 64\n- DoneReason check: material 77-79 \u2192 file 64-66\n- CreatedAt check: material 238 \u2192 file 225\n- ListModels [0]: material 328 \u2192 file 315\n- Embedding test: material 416-441 \u2192 file 403-428\n\nHmm, wait \u2014 that mapping: material line 14 is `@@ -0,0 +1,427 @@` (the hunk header), file line 1 is material line 15 (`+//go:build integration`). So file_line = material_line - 14.\n\n- material 115 (go func generate): file 101\n- mat 128 (case <-done): 114\n- material 77: file 63\n- material 238: file 224\n- material 416: file 402\n\nLet me recompute with -14:\n- mat 115 \u2192 101; mat 116 \u2192 102 (req.Stream = ...); mat 117 \u2192 103 (client.Generate); mat 118 \u2192104 (done <- 0)\n- goroutine gen: file 101-104\n- mat 121 (select): 107; mat 122 (stallTimer.C): 108\n- mat 77: file 63\n- mat 238: file 225? -14 \u2192 224. material238-14=224.\n- mat 416: 402.\n\nI'll cite approximations cleanly. Let me use these.\n\nFor utils_test.go skipUnderMinVRAM: hunk `@@ -341,3 +342,15 @@`. New file line 342 is the first context line after the change (`}` of GenerateRequests at material 886 originally). Actually material line 883 `@@ -341,3 +342,15 @@`, then material 884 `}` (context, new line 342? no). Let's see: `@@ -341,3 +342,15 @@` means old starts at 341 (3 lines), new starts at 342 with 15 lines. The first line shown after header at material is ` \t\t}` (close of array) \u2014 that's new file line 342. Then the 15 added lines follow. The function `func skipUnderMinVRAM` \u2014 material line 888. File line = 342 + (888 - 885)? Let me count the new lines. Hunk new block = 15 lines starting 342. Lines: the `+` additions. `func skipUnderMinVRAM` is the 7th of the added lines roughly \u2192 about file line 348. I'll cite skipUnderMinVRAM at utils_test.go line ~348. \n\nRather than over-precise, I'll cite the function names and approximate line numbers, flagging the new-file line numbers. Given the new files, my -14/-589 offsets give exact values. Good enough.\n\nLet me write the final review.</think>I've read the full diff. Here is my review, most severe first. Line numbers are taken from the diff hunk headers (new-file line numbers for the files added/modified).\n\n---",
+        "path": "integration/api_test.go",
+        "start_line": 115,
+        "end_line": 115,
+        "observation_id": "817812340208f542",
+        "claimed_path": "api_test.go",
+        "path_resolution": "basename",
+        "merged_from": [
+          "69c3c9d74f3faee4",
+          "dd623c071ae30511",
+          "c00c2d901bd23671",
+          "90b610b1b95c90f6",
+          "b313390194974b4a",
+          "f376c20982ed6e13",
+          "1815940c4b33f609",
+          "e4e076f8a4aaff28",
+          "7e87e9f20a22fe55",
+          "28b0f3b23c591ceb",
+          "ed5d414ba79331c8",
+          "011b9004bd3e4440",
+          "f22f04efd64c2247",
+          "0199e092f8888364",
+          "16083815bf285d95",
+          "7b745b0ae2679115",
+          "d7a6592d82175c9b",
+          "4f31bfd0e3996f1d"
+        ]
+      },
+      {
+        "content": "**1. Leaked blocking goroutine on stall / context timeout \u2014 real goroutine + connection leak, can cascade into later tests**\nFILE: `integration/api_test.go`, lines 101\u2013104 (Generate) and 261\u2013264 (Chat) \u2014 the anonymous goroutine; failing branch is the `stallTimer.C` (line 108) and `ctx.Done()` (line 132) cases of the `select`.\n\nThe worker goroutine runs `client.Generate(ctx, &req, fn)` and then does `done <- 0` on an *unbuffered* channel. The main goroutine only ever receives from `done` in the `case <-done:` arm. If the stall timer (30 s) or the outer 1-minute context fires first, the subtest calls `t.Errorf`/`t.Error` and returns without joining the worker. The worker then blocks forever on `done <- 0` with no receiver.\n\n**Concrete failure scenario:** a slow-but-otherwise-healthy generation produces no chunk for >60 s (or the 1-minute outer ctx expires), the select takes the timeout path, the subtest reports a failure and exits, and the in-flight `Generate` goroutine leaks holding an HTTP request and, more importantly, keeps the model busy on the server. The next subtest's generate then queues behind the stuck request and times out too \u2014 a cascade of spurious failures. This recurs for every stalled subtest in the run, accumulating goroutines and server-side work for the life of the test binary. The fix is to make `done` buffered (cap 1) so the worker never blocks on the send, and/or select on the worker's completion in all branches.",
+        "path": "integration/api_test.go",
+        "start_line": 101,
+        "end_line": 101,
+        "observation_id": "556e98fcc89c2d22",
+        "claimed_path": "integration/api_test.go",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "**2. Misleading error message \u2014 copies the wrong field name, misdirects the diagnostic**\nFILE: `integration/api_test.go`, line 224 (Chat test)\n\n```go\nif response.CreatedAt == nilTime {\n    t.Errorf(\"final response missing total_duration: %#v\", response)\n}\n```\n\nThe check is against `response.CreatedAt` but the message claims `total_duration` is missing \u2014 a copy-paste from the `TestAPIGenerate` block above. When this fires, the maintainer reading the failure will chase the wrong metric. The `DoneReason == \"\"` check in the Generate test sets the same trap via its TODO (line 63\u201366) but at least that one is flagged; here the message is affirmatively wrong.\n\n**3. VRAM-fit heuristic is directionally wrong and will let oversized models proceed \u2014 then OOM/timeout**\nFILE: `integration/model_arch_test.go`, lines 95 and 148\n\n```go\nif m.Name == model && float32(m.Size)*1.2 > float32(maxVram) {\n```\n\n`m.Size` is the on-disk model size; the runtime VRAM footprint (weights mapped in + KV cache + compute buffers) is larger than the disk size, and the test even multiplies by 1.2 *in the direction of* allowing models whose footprint is up to 120% of VRAM. So a model whose true VRAM need is, say, 1.1\u00d7 available VRAM passes the check and then fails to fit \u2014 exactly the \"hammer the small VRAM cards\" situation the guard is trying to avoid (see the comment at utils_test.go's `skipUnderMinVRAM`). Also `uint64` sizes are narrowed to `float32` (~7 significant digits), which is precision loss with no benefit for the comparison. This guard will be consistently wrong for the boundary cases and should either query actual VRAM allocation or use a margin in the *other* direction.",
+        "path": "integration/api_test.go",
+        "start_line": 224,
+        "end_line": 224,
+        "observation_id": "9a3eb2f8af4904a9",
+        "claimed_path": "integration/api_test.go",
+        "path_resolution": "exact",
+        "merged_from": [
+          "a9e0ba13c202e238"
+        ]
+      },
+      {
+        "content": "**4. Shared hard-timeout context across the whole model loop defeats per-model isolation**\nFILE: `integration/model_arch_test.go`, line 64 (`TestModelsGenerate`) and line 117 (`TestModelsEmbed`)\n\nOne `context.WithTimeout(..., hardTimeout)` is created once and reused for every `t.Run(model, ...)` subtest in the loop. A single model that consumes most of the hard timeout (soft timeout logic notwithstanding) makes every subsequent model's `PullIfMissing`/`DoGenerate`/`Embeddings` fail via a now-expired context, producing an unrelated `t.Fatal` in a different model's subtest. The per-model `DoGenerate` already has its own 120 s stall timeout; the shared ctx removes the isolation that per-subtest contexts would give.",
+        "path": "integration/model_arch_test.go",
+        "start_line": 64,
+        "end_line": 64,
+        "observation_id": "bf92f2884e81e5e4",
+        "claimed_path": "integration/model_arch_test.go",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "**5. Nondeterministic subtest ordering against a global soft-timeout budget**\nFILE: `integration/model_arch_test.go`, lines 21 (`started` package var), 83 & 136 (`time.Now().Sub(started) > softTimeout`), 134 (`for model, expected := range embedModels`)\n\n`embedModels` is a `map`, so `TestModelsEmbed` iterates in randomized order, while both `TestModelsGenerate` and `TestModelsEmbed` decrement the same package-global `started` clock with a soft deadline. Which models get tested before the soft-timeout cutoff is therefore nondeterministic across runs \u2014 flaky coverage and hard-to-reproduce \"test X skipped\" failures. Also `time.Now().Sub(...)` should be `time.Since(...)` (deprecated form, vet will flag it).",
+        "path": "integration/model_arch_test.go",
+        "start_line": 21,
+        "end_line": 21,
+        "observation_id": "ab7773555d78040e",
+        "claimed_path": "integration/model_arch_test.go",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "**6. Convoluted and under-commented timeout math**\nFILE: `integration/model_arch_test.go`, line 58\n\n```go\nreturn -time.Since(deadline.Add(-2 * time.Minute)), -time.Since(deadline.Add(-20 * time.Second))\n```\n\nThe double negation of a signed `time.Since` is correct (it yields the remaining time until `deadline\u22122m` / `deadline\u221220s`), but it is the opposite of self-documenting, and the `-20s` \"hard\" timeout is computed from a `deadline` that may have nothing to do with per-model limits (see item 4). Anyone reading or modifying this will very plausibly \"fix\" the sign and break it. Rewrite as `deadline.Sub(time.Now()) - 2*time.Minute` or take parameters explicitly.",
+        "path": "integration/model_arch_test.go",
+        "start_line": 58,
+        "end_line": 58,
+        "observation_id": "96f6b0567fad6cb2",
+        "claimed_path": "integration/model_arch_test.go",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "**7. Fragment-hardcoding risk: repeat of the abandoned-model \"2GB\" magic numbers**\nFILE: `integration/model_arch_test.go`, line 95/148 and `integration/concurrency_test.go` line 120 (`maxVram < 2*format.GibiByte`)\n\n`skipUnderMinVRAM` and the model loop's VRAM checks each re-derive \"how much VRAM exists\" from the `OLLAMA_MAX_VRAM` env var with two different mechanisms and thresholds (`gb*format.GibiByte` vs the `*1.2` size comparison). These two guards will drift apart. Prefer one helper (the `skipUnderMinVRAM` from utils_test.go) used consistently, informed by the same data source. (Abstraction that will not hold / duplicated logic.)",
+        "path": "integration/model_arch_test.go",
+        "start_line": 95,
+        "end_line": 95,
+        "observation_id": "d94e16e4b19394a3",
+        "claimed_path": "integration/model_arch_test.go",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "**8. `*req.Stream` dereference depends on subtle in-goroutine ordering and a known-uncertain assumption**\nFILE: `integration/api_test.go`, lines 63\u201366\n\n```go\nif response.DoneReason == \"\" && *req.Stream {\n    // TODO - is the lack of done reason on non-stream a bug?\n```\n\n`req.Stream` is assigned inside the same goroutine that invokes `fn` (line 102, before `Generate` at 103), so today this is not a data race \u2014 but the code lives in one unstated assumption away from one, and the omitted case (non-stream done_reason) is marked as an unresolved product question. Combined, this is a known point of flakiness: if the non-stream `done_reason` genuinely can be empty, this test fails with a message that says \"final response missing done_reason\" and blames a possibly-correct server. The TODO shows the author knows the boundary is not settled.",
+        "path": "integration/api_test.go",
+        "start_line": 63,
+        "end_line": 63,
+        "observation_id": "49272ed6d4f7e320",
+        "claimed_path": "integration/api_test.go",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "**9. `bytes.Buffer` is not goroutine-safe and is written from the callback the worker drives while the main goroutine reads it**\nFILE: `integration/api_test.go`, lines 116\u2013117 (`buf.Write` inside `fn`) vs line 121 (`buf.String()` after `<-done`)\n\nThis is safe *today* because the only reads happen after the `done` handoff (which gives happens-before), and the timeout paths read `buf.Len()`/`buf.String()` *only after the worker is blocked or done* \u2014 wait, no: the `stallTimer.C` branch at line 109 reads `buf.Len()`/`buf.String()` while the worker goroutine *may still be actively calling `fn` and writing to `buf`* (a stall just means no new chunk arrived in 30 s; it does not mean the worker stopped). That read/write on `bytes.Buffer` from two goroutines with no synchronization is a real data race on the timeout/no-stall path. Go's race detector will flag this. Worth raising even though the leak in item 1 partially masks it.",
+        "path": "integration/api_test.go",
+        "start_line": 116,
+        "end_line": 116,
+        "observation_id": "757bc69ab54d1e0a",
+        "claimed_path": "integration/api_test.go",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "**10. Test duplication: manual stall-timer streaming harness reinvents `DoGenerate`**\nFILE: `integration/api_test.go`, lines 53\u2013145 and 205\u2013292\n\n`utils_test.go` already provides `DoGenerate`, which implements the same generate-and-check-stream-with-stall-timeout pattern. These two tests re-implement it inline with slightly different (and here, racy/leaky) behavior instead of reusing it. This is a refactor that would remove items 1 and 9 at the source rather than duplicating the defect.\n\n---\n\nItems 1 and 9 (the leak and the buffer race) are the ones I'd require before merging; items 2 and 3 are clear corrections; the rest are robustness/consistency improvements. I could not verify from the diff that `cosineSimilarity`, `embedModels`, and `DoGenerate` referenced by the new `model_arch_test.go` all exist under the `//go:build integration && models` tag in the surrounding package \u2014 if any is defined in a file without that `models` tag, the whole file fails to compile under the tag, so that's worth a quick check before merging.",
+        "path": "integration/api_test.go",
+        "start_line": 53,
+        "end_line": 53,
+        "observation_id": "6352c59369f6071c",
+        "claimed_path": "integration/api_test.go",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "### 1. `integration/api_test.go` \u2014 **Real Defects & Logic Errors**\n\n| File | Line | Severity | Issue |\n|------|------|----------|-------|\n| `integration/api_test.go` | 77\u201379 | **Defect: Wrong validation logic** | `if response.DoneReason == \"\" && *req.Stream` \u2014 the test only checks for `done_reason` on streaming responses, but the TODO comment admits uncertainty: *\"is the lack of done reason on non-stream a bug?\"* This means the test may be **accepting buggy behavior** for non-streaming responses. If the API should always return `done_reason`, this test won't catch the regression. |\n| `integration/api_test.go` | 116\u2013117 | **Race / Shared mutable state** | `req.Stream = &test.stream` mutates the shared `req` struct (declared at line 36) from inside a goroutine. While `t.Run` executes subtests sequentially in Go, this pattern is fragile: if someone adds `t.Parallel()` or restructures the loop, a data race appears. The fix is to copy the request per subtest: `reqCopy := req; reqCopy.Stream = &test.stream`. |\n| `integration/api_test.go` | 133\u2013143 | **Defect: Weak correctness check** | The response verification only requires *one* of `{\"rayleigh\", \"scattering\"}` to appear anywhere in the output. A completely wrong answer like *\"The sky is blue because of rayleigh scattering in the atmosphere\"* would pass, but so would *\"Rayleigh is a guy I know\"* or *\"Scattering ashes is sad\"*. This validates keyword presence, not answer correctness. |\n| `integration/api_test.go` | 160\u2013161 | **Defect: Substring match on model name** | `strings.Contains(model.Name, req.Model)` matches substrings. If models `llama3.2:1b` and `llama3.2:3b` both exist, the test could match the wrong one. Should use exact match or prefix match with tag separator. |\n| `integration/api_test.go` | 237\u2013238 | **Defect: Misleading error message** | `t.Errorf(\"final response missing total_duration: %#v\", response)` \u2014 but the check is `if response.CreatedAt == nilTime`. The error message says \"total_duration\" but validates `CreatedAt`. This will confuse debugging when the test fails. |\n| `integration/api_test.go` | 100\u2013103 | **Dead code in test** | Commented-out check for `PromptEvalCount` with note *\"caching can result in no prompt eval count\"*. Commented assertions in tests are dead code \u2014 either remove them or make them conditional with a clear rationale. |\n| `integration/api_test.go` | 68\u201369 | **Defect: Stall timer logic** | `stallTimer.Reset(streamTimeout)` returns `false` if the timer already fired. The code returns an error which gets treated as a stream callback error \u2014 but the caller (`client.Generate`) may not handle callback errors cleanly. More critically, if `Reset` returns false, the timer already fired and the select case `<-stallTimer.C` would also be ready, creating a race between the two timeout paths. |\n| `integration/api_test.go` | 345\u2013366 | **Abstraction leak: `verifyModelDetails` in wrong file** | This helper is defined in `api_test.go` but is called from `model_arch_test.go` (lines 372, 398). Cross-test-file dependencies in the same package work but are an anti-pattern \u2014 it couples test files and makes it unclear where shared helpers live. Should be in `utils_test.go`. |\n\n---",
+        "path": "integration/api_test.go",
+        "start_line": 36,
+        "end_line": 36,
+        "observation_id": "2dca514e2c3c6758",
+        "claimed_path": "integration/api_test.go",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "### 2. `integration/model_arch_test.go` \u2014 **Critical Defects & Maintainability Issues**\n\n| File | Line | Severity | Issue |\n|------|------|----------|-------|\n| `integration/model_arch_test.go` | 774\u2013801 | **Critical: Brittle hardcoded expectations** | ~2,000 lines of hardcoded embedding vectors for 15+ models. This is **unmaintainable**: any model update (re-quantization, version bump) breaks tests. The cosine similarity threshold of **0.99 (line 767)** is extremely strict for floating-point embeddings \u2014 minor numerical differences (CPU vs GPU, different BLAS, quantization) will cause false failures. Comments confirm this: *\"Too inconsistent between platforms - similarity ~97%\"* (line 798) and *\"~92%\"* (line 800). Tests with known-flaky expectations should not be committed. |\n| `integration/model_arch_test.go` | 611\u2013636 | **Defect: Known-flaky models in test matrix** | `chatModels` includes models with explicit comments: `\"phi:latest\" // flaky, sometimes generates no response on first query` and `\"stablelm2:latest\" // Predictions are off, crashes on small VRAM GPUs`. Committing tests for known-broken models pollutes CI signal and wastes resources. Either fix the models or exclude them with a proper skip mechanism. |\n| `integration/model_arch_test.go` | 639\u2013648 | **Defect: Opaque timeout calculation** | `getTimeouts` returns negative durations via `-time.Since(deadline.Add(-2 * time.Minute))`. This is extremely hard to read and reason about. The logic: \"soft timeout = time until 2min before test deadline; hard timeout = time until 20s before test deadline\" \u2014 but expressed as negative `time.Since` values. A bug here (e.g., off-by-one on the deadline math) would cause tests to run with wrong timeouts silently. |\n| `integration/model_arch_test.go` | 699 | **Potential compile error: `DoGenerate` signature mismatch** | Call: `DoGenerate(ctx, t, client, req, anyResp, 120*time.Second, 30*time.Second)` (7 args). The `DoGenerate` signature in `utils_test.go` (line 283) is truncated in the diff. If the signature doesn't match exactly, this won't compile. **Verify the signature matches before merge.** |\n| `integration/model_arch_test.go` | 670\u2013700 | **Missing `t.Parallel()` for independent subtests** | Each model test is independent but runs sequentially. With 25+ models, this makes the test suite unnecessarily slow. Adding `t.Parallel()` inside `t.Run` would allow parallel execution (subject to VRAM constraints). |\n| `integration/model_arch_test.go` | 658\u2013668 | **Missing validation: `OLLAMA_MAX_VRAM` parsing** | If `OLLAMA_MAX_VRAM` is set but invalid (non-numeric), `strconv.ParseUint` returns an error which is correctly fatal. However, if the env var is **not set**, `maxVram` stays 0 and the VRAM check is skipped entirely \u2014 tests run on any hardware, likely timing out on small GPUs. The default should be conservative or the test should require the env var. |\n| `integration/model_arch_test.go` | 678\u2013687 | **Inefficient: Repeated `client.List` call per model** | Inside the model loop, `client.List(ctx)` is called for every model to check VRAM. This repeats the same API call 25+ times. Should call once before the loop and reuse the result. |\n\n---",
+        "path": "integration/model_arch_test.go",
+        "start_line": 767,
+        "end_line": 767,
+        "observation_id": "708837f1274f9422",
+        "claimed_path": "integration/model_arch_test.go",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "### 3. `integration/utils_test.go` \u2014 **Behavior Changes & Missing Guards**\n\n| File | Line | Severity | Issue |\n|------|------|----------|-------|\n| `integration/utils_test.go` | 820 | **Behavior change: Timeout doubled** | `time.Now().Add(10*time.Second)` \u2192 `time.Now().Add(20*time.Second)` for `Show` call. This masks performance regressions (e.g., if model loading slows down). If the increase is justified, add a comment explaining why. |\n| `integration/utils_test.go` | 829 | **Behavior change: Stall duration doubled** | `30 * time.Second` \u2192 `60 * time.Second` for pull progress. Same concern \u2014 masks real stalls. The comment says *\"and slower systems\"* but doesn't justify why 30s was insufficient. |\n| `integration/utils_test.go` | 888\u2013898 | **Defect: `skipUnderMinVRAM` only skips when env var is SET** | If `OLLAMA_MAX_VRAM` is **not set**, the function does nothing \u2014 tests run on any hardware and may OOM or timeout. The default behavior should be to skip or require the env var. Current logic: \"if env var exists AND VRAM < threshold \u2192 skip; else \u2192 run\". This is backwards for safety. |\n| `integration/utils_test.go` | 890\u2013895 | **Missing import: `os` and `strconv`** | The new `skipUnderMinVRAM` function uses `os.Getenv` and `strconv.ParseUint` but the diff doesn't show these imports added. The file already imports `os` (line 21 in original? need to check) \u2014 but `strconv` is not in the import block shown. **This will not compile** unless `strconv` is already imported elsewhere in the file. |\n| `integration/utils_test.go` | 37\u201338 | **Comment drift** | Comment says *\"By default each request uses llama3.2 as the model\"* but the code uses `\"llama3.2:1b\"`. Minor but misleading. |\n\n---",
+        "path": "integration/utils_test.go",
+        "start_line": 21,
+        "end_line": 21,
+        "observation_id": "52493cac2abeaadf",
+        "claimed_path": "integration/utils_test.go",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "### 4. Other Files \u2014 **Model Migration Issues**\n\n| File | Line | Severity | Issue |\n|------|------|----------|-------|\n| `integration/basic_test.go` | 451, 473 | **Model migration** | `orca-mini` \u2192 `llama3.2:1b`. Ensure this model is available in test environments and has similar resource requirements. |\n| `integration/concurrency_test.go` | 486, 516\u2013517 | **Model migration + size change** | `orca-mini` (2992 MiB) \u2192 `llama3.2:1b` (2876 MiB). The size change is minor but verify the VRAM math in `TestMultiModelStress` (line 504) still holds. |\n| `integration/llm_test.go` | 549, 558 | **Model migration** | Same change. |\n| `integration/max_queue_test.go` | 581 | **Model migration** | Same change. |\n| `integration/llm_image_test.go` | 529, 537 | **New VRAM skips** | `skipUnderMinVRAM(t, 6)` and `skipUnderMinVRAM(t, 8)` added. These depend on the `OLLAMA_MAX_VRAM` env var being set (see defect above). |\n\n---\n\n### Summary: Most Severe First",
+        "path": "integration/basic_test.go",
+        "start_line": 504,
+        "end_line": 504,
+        "observation_id": "919b937ef06bcd2f",
+        "claimed_path": "integration/basic_test.go",
+        "path_resolution": "exact",
+        "merged_from": [
+          "7a315abfd1b1769e"
+        ]
+      },
+      {
+        "content": "1. **`model_arch_test.go:774-801`** \u2014 Hardcoded embedding vectors with known-flaky expectations (~92-97% similarity vs 99% threshold). Will cause frequent false failures.",
+        "path": "integration/model_arch_test.go",
+        "start_line": 774,
+        "end_line": 774,
+        "observation_id": "20d5628bc0857b71",
+        "claimed_path": "model_arch_test.go",
+        "path_resolution": "basename",
+        "merged_from": []
+      },
+      {
+        "content": "2. **`model_arch_test.go:611-636`** \u2014 Known-flaky models (`phi`, `stablelm2`) included in test matrix with comments admitting flakiness.",
+        "path": "integration/model_arch_test.go",
+        "start_line": 611,
+        "end_line": 611,
+        "observation_id": "49f6b52c877fa809",
+        "claimed_path": "model_arch_test.go",
+        "path_resolution": "basename",
+        "merged_from": []
+      },
+      {
+        "content": "3. **`api_test.go:77-79`** \u2014 Test explicitly ignores `done_reason` validation for non-streaming responses with a TODO questioning if that's a bug.",
+        "path": "integration/api_test.go",
+        "start_line": 77,
+        "end_line": 77,
+        "observation_id": "ab6a08f78b365d51",
+        "claimed_path": "api_test.go",
+        "path_resolution": "basename",
+        "merged_from": []
+      },
+      {
+        "content": "4. **`api_test.go:116-117`** \u2014 Shared mutable `req` struct mutated from goroutine; fragile to refactoring.",
+        "path": "integration/api_test.go",
+        "start_line": 116,
+        "end_line": 116,
+        "observation_id": "39a90bed66104eb4",
+        "claimed_path": "api_test.go",
+        "path_resolution": "basename",
+        "merged_from": []
+      },
+      {
+        "content": "5. **`utils_test.go:888-898`** \u2014 `skipUnderMinVRAM` only protects when env var is set; default is unsafe.",
+        "path": "integration/utils_test.go",
+        "start_line": 888,
+        "end_line": 888,
+        "observation_id": "288b2645b353529f",
+        "claimed_path": "utils_test.go",
+        "path_resolution": "basename",
+        "merged_from": []
+      },
+      {
+        "content": "6. **`model_arch_test.go:699`** \u2014 Potential compile error if `DoGenerate` signature doesn't match 7-arg call.",
+        "path": "integration/model_arch_test.go",
+        "start_line": 699,
+        "end_line": 699,
+        "observation_id": "bcfe4706bb35ed93",
+        "claimed_path": "model_arch_test.go",
+        "path_resolution": "basename",
+        "merged_from": []
+      },
+      {
+        "content": "7. **`utils_test.go:890-895`** \u2014 Missing `strconv` import for new function (verify in full file).",
+        "path": "integration/utils_test.go",
+        "start_line": 890,
+        "end_line": 890,
+        "observation_id": "a5dee25c33685ed5",
+        "claimed_path": "utils_test.go",
+        "path_resolution": "basename",
+        "merged_from": []
+      },
+      {
+        "content": "8. **`api_test.go:237-238`** \u2014 Error message says \"total_duration\" but checks `CreatedAt`.",
+        "path": "integration/api_test.go",
+        "start_line": 237,
+        "end_line": 237,
+        "observation_id": "df121a3f91803bf5",
+        "claimed_path": "api_test.go",
+        "path_resolution": "basename",
+        "merged_from": []
+      },
+      {
+        "content": "9. **`model_arch_test.go:639-648`** \u2014 Opaque negative-duration timeout calculation.",
+        "path": "integration/model_arch_test.go",
+        "start_line": 639,
+        "end_line": 639,
+        "observation_id": "269e8e57a64b2022",
+        "claimed_path": "model_arch_test.go",
+        "path_resolution": "basename",
+        "merged_from": []
+      },
+      {
+        "content": "10. **`model_arch_test.go:678-687`** \u2014 Repeated `client.List` call inside model loop (25+ redundant API calls).\n\n\nThe review is complete. Here are the findings, ordered by severity:\n\n---",
+        "path": "integration/model_arch_test.go",
+        "start_line": 678,
+        "end_line": 678,
+        "observation_id": "84fc196127d4d330",
+        "claimed_path": "model_arch_test.go",
+        "path_resolution": "basename",
+        "merged_from": []
+      },
+      {
+        "content": "### **CRITICAL / REAL DEFECTS**\n\n| File | Line | Kind | Issue |\n|------|------|------|-------|\n| `integration/model_arch_test.go` | 774\u2013801 | **Brittle test data / False failures** | ~2,000 lines of hardcoded embedding vectors for 15+ models. Cosine similarity threshold of **0.99** is unreasonably strict; comments admit *\"Too inconsistent between platforms - similarity ~97%\"* (line 798) and *\"~92%\"* (line 800). Any model re-quantization or version bump breaks tests. |\n| `integration/model_arch_test.go` | 611\u2013636 | **Known-flaky tests committed** | `chatModels` includes `\"phi:latest\" // flaky, sometimes generates no response on first query` and `\"stablelm2:latest\" // Predictions are off, crashes on small VRAM GPUs`. Committing tests for known-broken models pollutes CI. |\n| `integration/api_test.go` | 77\u201379 | **Missing validation / Wrong logic** | `if response.DoneReason == \"\" && *req.Stream` \u2014 only validates `done_reason` for streaming. The TODO admits uncertainty: *\"is the lack of done reason on non-stream a bug?\"* If the API should always return it, this test accepts buggy behavior. |\n| `integration/api_test.go` | 116\u2013117 | **Race condition / Shared mutable state** | `req.Stream = &test.stream` mutates the shared `req` struct (line 36) from a goroutine. Sequential `t.Run` avoids a race today, but adding `t.Parallel()` or restructuring introduces a data race. Fix: copy the request per subtest. |\n| `integration/utils_test.go` | 888\u2013898 | **Missing guard / Unsafe default** | `skipUnderMinVRAM` only skips when `OLLAMA_MAX_VRAM` **is set AND insufficient**. If the env var is unset (common), tests run on any hardware \u2192 OOM/timeouts. Default should be conservative or require the var. |\n| `integration/model_arch_test.go` | 699 | **Potential compile error** | Calls `DoGenerate(ctx, t, client, req, anyResp, 120*time.Second, 30*time.Second)` (7 args). The `DoGenerate` signature in `utils_test.go` (line 283) is truncated in the diff \u2014 **verify it matches exactly** or this won't compile. |\n| `integration/utils_test.go` | 890\u2013895 | **Missing import** | New `skipUnderMinVRAM` uses `strconv.ParseUint` but `strconv` is not in the import block shown (lines 24\u201330). Will fail to compile unless already imported elsewhere in the file. |\n\n---",
+        "path": "integration/model_arch_test.go",
+        "start_line": 798,
+        "end_line": 798,
+        "observation_id": "321134e96a6f68f6",
+        "claimed_path": "integration/model_arch_test.go",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "### **MEDIUM: MAINTAINABILITY / ABSTRACTION ISSUES**\n\n| File | Line | Kind | Issue |\n|------|------|------|-------|\n| `integration/model_arch_test.go` | 639\u2013648 | **Opaque timeout logic** | `getTimeouts` returns negative durations via `-time.Since(deadline.Add(-2 * time.Minute))`. Extremely hard to read; off-by-one errors in deadline math would silently produce wrong timeouts. |\n| `integration/model_arch_test.go` | 678\u2013687 | **Repeated API call in loop** | `client.List(ctx)` called inside the model loop (25+ iterations) to check VRAM. Should call once before the loop and reuse. |\n| `integration/model_arch_test.go` | 670\u2013700 | **Missing parallelism** | 25+ independent model tests run sequentially. Add `t.Parallel()` inside `t.Run` for speed (subject to VRAM). |\n| `integration/api_test.go` | 345\u2013366 | **Abstraction leak** | `verifyModelDetails` defined in `api_test.go` but used by `model_arch_test.go` (lines 372, 398). Cross-test-file dependency in same package works but couples tests; should live in `utils_test.go`. |\n| `integration/utils_test.go` | 820, 829 | **Timeout increases without justification** | `Show` timeout 10s\u219220s, pull stall 30s\u219260s. Masks performance regressions. Add comment explaining why original values were insufficient. |\n\n---",
+        "path": "integration/model_arch_test.go",
+        "start_line": 372,
+        "end_line": 372,
+        "observation_id": "c38254156d652919",
+        "claimed_path": "integration/model_arch_test.go",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "- `basic_test.go:451,473`",
+        "path": "integration/basic_test.go",
+        "start_line": 451,
+        "end_line": 451,
+        "observation_id": "e54324b434d121f0",
+        "claimed_path": "basic_test.go",
+        "path_resolution": "basename",
+        "merged_from": []
+      },
+      {
+        "content": "- `concurrency_test.go:486,516\u2013517` (size 2992\u21922876 MiB)",
+        "path": "integration/concurrency_test.go",
+        "start_line": 486,
+        "end_line": 486,
+        "observation_id": "33f9e0fc6ea937cd",
+        "claimed_path": "concurrency_test.go",
+        "path_resolution": "basename",
+        "merged_from": []
+      },
+      {
+        "content": "- `llm_test.go:549,558`",
+        "path": "integration/llm_test.go",
+        "start_line": 549,
+        "end_line": 549,
+        "observation_id": "5fe80ca24a142dfc",
+        "claimed_path": "llm_test.go",
+        "path_resolution": "basename",
+        "merged_from": []
+      },
+      {
+        "content": "- `max_queue_test.go:581`",
+        "path": "integration/max_queue_test.go",
+        "start_line": 581,
+        "end_line": 581,
+        "observation_id": "2971075f2b0a06dd",
+        "claimed_path": "max_queue_test.go",
+        "path_resolution": "basename",
+        "merged_from": []
+      },
+      {
+        "content": "- `utils_test.go:442,451,461,470,480` (GenerateRequests)\n\nEnsure `llama3.2:1b` is available in test environments and has similar resource profile.\n\n---\n\n**Top 3 blockers for merge:**",
+        "path": "integration/utils_test.go",
+        "start_line": 442,
+        "end_line": 442,
+        "observation_id": "f8b4f032c570670a",
+        "claimed_path": "utils_test.go",
+        "path_resolution": "basename",
+        "merged_from": [
+          "dda42e8aca864091"
+        ]
+      },
+      {
+        "content": "1. `model_arch_test.go` hardcoded embeddings with known-flaky expectations (lines 774\u2013801)",
+        "path": "integration/model_arch_test.go",
+        "start_line": 774,
+        "end_line": 774,
+        "observation_id": "92efce7294f2e5cf",
+        "claimed_path": "model_arch_test.go",
+        "path_resolution": "basename",
+        "merged_from": []
+      },
+      {
+        "content": "2. `model_arch_test.go` known-flaky models in test matrix (lines 611\u2013636)",
+        "path": "integration/model_arch_test.go",
+        "start_line": 611,
+        "end_line": 611,
+        "observation_id": "0ac36ddbedd266ac",
+        "claimed_path": "model_arch_test.go",
+        "path_resolution": "basename",
+        "merged_from": []
+      },
+      {
+        "content": "3. `utils_test.go` missing `strconv` import for `skipUnderMinVRAM` (lines 890\u2013895) \u2014 verify in full file",
+        "path": "integration/utils_test.go",
+        "start_line": 890,
+        "end_line": 890,
+        "observation_id": "a1ff7f5bf716711e",
+        "claimed_path": "utils_test.go",
+        "path_resolution": "basename",
+        "merged_from": []
+      }
+    ]
+  },
+  "rundir": "/home/mjarnold/.cache/llm-panel/runs/aacr-up-d5o97j64-5cf5ad23d524/20260829-152404-4093236",
+  "extractor": "3",
+  "unlocated": [
+    {
+      "content": "21. **IMPORTANT \u2014 `DoGenerate` with stream**: TestAPIGenerate uses raw Generate with a manual stall timer instead of reusing DoGenerate; duplication. DoGenerate exists in utils_test.go and handles the same pattern. refactor worth noting: significant duplication between TestAPIGenerate and TestAPIChat which could share helpers.",
+      "observation_id": "9a3c1f5409cfac59",
+      "claimed_path": "utils_test.go",
+      "path_resolution": "basename"
+    },
+    {
+      "content": "### **HIGH: WRONG RESULTS / MISLEADING CHECKS**\n\n| File | Line | Kind | Issue |\n|------|------|------|-------|\n| `integration/api_test.go` | 133\u2013143 | **Weak correctness check** | Response verification only requires *one* of `{\"rayleigh\", \"scattering\"}` anywhere in output. *\"Rayleigh is a guy I know\"* would pass. Validates keyword presence, not answer correctness. |\n| `integration/api_test.go` | 1",
+      "observation_id": "37b9721a05108478",
+      "claimed_path": "integration/api_test.go",
+      "path_resolution": "exact"
+    },
+    {
+      "content": "### **LOW / CLEANUP**\n\n| File | Line | Kind | Issue |\n|------|------|------|-------|\n| `integration/api_test.go` | 100\u2013103 | **Dead code in test** | Commented-out `PromptEvalCount` check with note about caching. Remove or make conditional with clear rationale. |\n| `integration/api_test.go` | 68\u201369 | **Stall timer race** | `stallTimer.Reset(streamTimeout)` returns `false` if timer already fired. Bo",
+      "observation_id": "f284960e19bd68a1",
+      "claimed_path": "integration/api_test.go",
+      "path_resolution": "exact"
+    }
+  ]
+}

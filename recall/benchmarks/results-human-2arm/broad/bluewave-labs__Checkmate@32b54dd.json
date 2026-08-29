@@ -1,0 +1,373 @@
+{
+  "review": {
+    "comments": [
+      {
+        "content": "1. **High \u2014 Defect:** `client/src/Components/Table/index.jsx:113` invokes `tooltipContent` as an ordinary function, while `client/src/Pages/Incidents/Components/IncidentTable/index.jsx:29` calls `useTheme` inside that function. Each row therefore adds a hook to `DataTable`; when loading finishes or the row count changes, React can throw \u201cRendered more/fewer hooks than expected.\u201d Render a real tooltip-content component instead.",
+        "path": "client/src/Components/Table/index.jsx",
+        "start_line": 113,
+        "end_line": 113,
+        "observation_id": "6fb5292985cfdc10",
+        "claimed_path": "client/src/Components/Table/index.jsx",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "2. **High \u2014 Defect:** `server/src/service/infrastructure/networkService.js:156` returns from the raw-payload matching branch whenever `expectedValue` exists, making the `jsonPath` branch unreachable when both options are configured. For example, `{\"status\":\"ok\"}` with JSONPath `$.status`, expected value `ok`, and `equal` compares the entire payload to `ok` and incorrectly reports failure.",
+        "path": "server/src/service/infrastructure/networkService.js",
+        "start_line": 156,
+        "end_line": 156,
+        "observation_id": "64e0877256ea4eaf",
+        "claimed_path": "server/src/service/infrastructure/networkService.js",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "3. **High \u2014 Data-migration defect:** `server/src/db/mongo/migration/0001_migrateStatusWindowThreshold.js:4` only migrates values strictly below `1`. A legacy threshold of exactly `1`\u2014the upper bound of the old fractional representation\u2014remains `1` instead of becoming `100`, so the monitor subsequently uses a 1% threshold rather than 100%.",
+        "path": "server/src/db/mongo/migration/0001_migrateStatusWindowThreshold.js",
+        "start_line": 4,
+        "end_line": 4,
+        "observation_id": "04125ac75c811677",
+        "claimed_path": "server/src/db/mongo/migration/0001_migrateStatusWindowThreshold.js",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "4. **Medium \u2014 Reliability defect:** `server/src/db/mongo/migration/0001_migrateStatusWindowThreshold.js:14` converts migration failures into a resolved `false`, and `server/src/db/mongo/migration/index.js:4` ignores that result. If one save fails after earlier monitors were converted, startup continues with mixed fractional and percentage thresholds, producing inconsistent monitor statuses. Migration failure should abort startup or otherwise be surfaced.",
+        "path": "server/src/db/mongo/migration/0001_migrateStatusWindowThreshold.js",
+        "start_line": 14,
+        "end_line": 14,
+        "observation_id": "e2ca25506d1829db",
+        "claimed_path": "server/src/db/mongo/migration/0001_migrateStatusWindowThreshold.js",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "5. **Medium \u2014 Defect / missing ambiguity validation:** `server/src/service/infrastructure/networkService.js:279` uses `find` for partial IDs, so it cannot detect multiple containers sharing a supplied prefix and silently monitors whichever Docker returns first. This is readily reachable because `client/src/Validation/validation.js:134` accepts even a one-character alphanumeric input. Collect all prefix matches and reject ambiguous IDs.",
+        "path": "server/src/service/infrastructure/networkService.js",
+        "start_line": 279,
+        "end_line": 279,
+        "observation_id": "1f553386074041a6",
+        "claimed_path": "server/src/service/infrastructure/networkService.js",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "6. **Medium \u2014 Defect:** `server/src/service/infrastructure/networkService.js:312` assigns `404` to `dockerResponse.status` and immediately overwrites it with `false`; `dockerResponse.code` is never set. Consumers receive an ambiguity failure without its status code. The accompanying message also claims a match is being used even though the function returns before inspecting any container.\n\n7. **Low \u2014 Abstraction/future-bug risk:** `server/src/db/mongo/migration/index.js:3` has no applied-migration ledger and reruns every numbered migration on every process startup. The current migration already repeatedly rewrites zero-valued thresholds; any future non-idempotent migration, especially under multiple application instances, can corrupt data or repeat side effects.",
+        "path": "server/src/service/infrastructure/networkService.js",
+        "start_line": 312,
+        "end_line": 312,
+        "observation_id": "edfcff97cf0020dc",
+        "claimed_path": "server/src/service/infrastructure/networkService.js",
+        "path_resolution": "exact",
+        "merged_from": [
+          "17b8fb0fd793ac2f"
+        ]
+      },
+      {
+        "content": "8. **Low \u2014 Dead code:** `server/src/service/infrastructure/networkService.js:1` imports `match` from `assert` but never uses it. This also fails builds where unused imports are lint errors.## 1. Real defect (crash) \u2014 hook called inside a per-row helper function",
+        "path": "server/src/service/infrastructure/networkService.js",
+        "start_line": 1,
+        "end_line": 1,
+        "observation_id": "1fa6cd9bd8d9c513",
+        "claimed_path": "server/src/service/infrastructure/networkService.js",
+        "path_resolution": "exact",
+        "merged_from": [
+          "f3bedf88dd5e61de"
+        ]
+      },
+      {
+        "content": "- `client/src/Pages/Incidents/Components/IncidentTable/index.jsx:29` (`const theme = useTheme();` inside `GetTooltip`), invoked per row from `client/src/Components/Table/index.jsx:113` (`config.tooltipContent(row)`).\n\n`GetTooltip` is PascalCase (component-shaped) but is called as a plain function during `DataTable`'s render, and it calls the `useTheme()` hook. Each call consumes a hook slot on the `DataTable` fiber, so the hook count tracks the row count. The moment `checks` changes length between renders \u2014 a check result arrives, the list filters, pagination changes \u2014 React throws \"Rendered more/fewer hooks than during the previous render\" (production error codes 300/301) and the tree unmounts to a blank screen. It works while the row count is coincidentally stable, which makes it worse: it crashes on the first real data change. Fix: render it like a component (``<Tooltip title={<GetTooltip row={row} />}>``) or resolve the theme in `DataTable`/`IncidentTable` and pass it in.\n\n## 2. Real defect (wrong results) \u2014 threshold unit flip without touching `failureRate`",
+        "path": "client/src/Pages/Incidents/Components/IncidentTable/index.jsx",
+        "start_line": 29,
+        "end_line": 29,
+        "observation_id": "9cade6cb92046c99",
+        "claimed_path": "client/src/Pages/Incidents/Components/IncidentTable/index.jsx",
+        "path_resolution": "exact",
+        "merged_from": [
+          "556c3d605d1abe56"
+        ]
+      },
+      {
+        "content": "- `server/src/db/models/Monitor.js:40` (`default: 60`) + `server/src/service/infrastructure/statusService.js:161` (`failureRate < monitor.statusWindowThreshold`).\n\nThe default changes 0.6 \u2192 60 and the comparison flips from `<=` to `<`, but the diff never changes how `failureRate` is computed. If `failureRate` is still a 0\u20131 fraction (which the old 0.6 default implies), `failureRate < 60` is a tautology: every down monitor is marked healthy at every evaluation, so down-states can't persist and the status page flaps to \"up\" while checks keep failing. If it's already a percentage, then the old code was broken \u2014 either way this diff fixes only one side of a two-sided unit coupling. I cannot see the `failureRate` computation (not in the diff; not on disk here) \u2014 that line is the missing piece needed to confirm. Separately, the `<=` \u2192 `<` flip changes behavior at exact equality (failureRate == threshold, e.g. 60/100 \u2192 60.0), which is reachable with integer percentages.\n\n## 3. Real defects (wrong results + crash) \u2014 new expected-value matching block",
+        "path": "server/src/db/models/Monitor.js",
+        "start_line": 40,
+        "end_line": 40,
+        "observation_id": "d3685502bffe22e8",
+        "claimed_path": "server/src/db/models/Monitor.js",
+        "path_resolution": "exact",
+        "merged_from": [
+          "5865124e916922c0"
+        ]
+      },
+      {
+        "content": "- `server/src/service/infrastructure/networkService.js:156-169`.\n\n- **Compares the raw payload *before* jsonPath extraction, and early-returns in every `expectedValue` case.** The `jsonPath` branch (line 171) is now unreachable whenever `expectedValue` is set. Monitors configured with both jsonPath and expectedValue \u2014 a combination the old flow explicitly logged (`jsonPath` was in the match log detail) \u2014 are now judged against the whole raw body (`payload === expectedValue` at 158, `.includes` at 159, regex at 160). For a JSON API, a parsed-object payload will never `===` a string and `payload.includes` will throw; either way a previously passing monitor check becomes a permanent 500/`status:false`.\n- **Type-unsafe `.includes`**: `payload` at this point can be a parsed JSON object, Buffer, or number depending on content-type; `payload.includes(...)` throws TypeError \u2192 unhandled rejection in the job path.\n- **`new RegExp(expectedValue)` on user-controlled input**: an invalid pattern (e.g. `(`) throws SyntaxError, and a catastrophic pattern is a ReDoS vector re-run on every check with no timeout.\n- **Unknown `matchMethod` values silently fail**: any value other than exactly `\"equal\"`/`\"include\"`/`\"regex\"` leaves `ok = false` and the monitor is marked down with no diagnostic \u2014 and the old `logger.info` of the match parameters was deleted, so mismatches aren't even observable.\n- Dead code alongside it: `server/src/service/infrastructure/networkService.js:1` \u2014 `import { match } from \"assert\";` is unused anywhere in the diff (and `assert.match` is a weird thing to import for this). Remove it unless its use lives in an unchanged part of the file, which I can't check here.\n\n## 4. Real defect (wrong result) \u2014 duplicate assignment leaves `code` undefined",
+        "path": "server/src/service/infrastructure/networkService.js",
+        "start_line": 156,
+        "end_line": 156,
+        "observation_id": "2d0c274c9be97718",
+        "claimed_path": "server/src/service/infrastructure/networkService.js",
+        "path_resolution": "exact",
+        "merged_from": [
+          "6a8b356d8c686194"
+        ]
+      },
+      {
+        "content": "- `server/src/service/infrastructure/networkService.js:312-313`.\n\n`dockerResponse.status = 404;` is immediately overwritten by `dockerResponse.status = false;`. The sibling no-container branch correctly sets `code = 404` (line 293); this ambiguous-match path never sets `code` at all. Any consumer that classifies via `code === 404` gets `undefined`. The log/message also claims \"Using exact ID match\" while actually returning a failure \u2014 contradictory.\n\n## 5. Real defect (wrong results) \u2014 partial-ID ambiguity never detected",
+        "path": "server/src/service/infrastructure/networkService.js",
+        "start_line": 312,
+        "end_line": 312,
+        "observation_id": "32ff9fd728594d5e",
+        "claimed_path": "server/src/service/infrastructure/networkService.js",
+        "path_resolution": "exact",
+        "merged_from": [
+          "ac7c3dfa9a4221c3"
+        ]
+      },
+      {
+        "content": "- `server/src/service/infrastructure/networkService.js:279`.\n\n`containers.find((c) => c.Id.toLowerCase().startsWith(normalizedInput))` returns the *first* match. Two containers sharing a 12-char prefix (collisions are possible in real fleets) silently resolve to the wrong container \u2014 the check reports on a different container's status, with no warning. Only cross-type ambiguity (exact ID vs exact name vs partial ID, lines 300-316) is rejected. Related edge: a container *named* with hex-looking string (e.g. `abc123def456`) that is also a prefix of another container's ID makes the exact-name match get rejected as \"ambiguous\" (line 305) \u2014 monitoring that container permanently fails with 404 despite an exact name match.\n\n## 6. Real defect (wrong results) \u2014 migration is not idempotent and re-runs every boot",
+        "path": "server/src/service/infrastructure/networkService.js",
+        "start_line": 279,
+        "end_line": 279,
+        "observation_id": "8efca0ef23d9a5e0",
+        "claimed_path": "server/src/service/infrastructure/networkService.js",
+        "path_resolution": "exact",
+        "merged_from": [
+          "291ed7aab19521cb"
+        ]
+      },
+      {
+        "content": "- `server/src/db/mongo/migration/0001_migrateStatusWindowThreshold.js:4-16`, invoked unconditionally from `server/src/db/mongo/MongoDB.js:69` on every connect.\n\n- The `$lt: 1` filter is a heuristic with no version tracking. After this migration ships, any threshold deliberately set below 1 (a legitimate 0.5 = 0.5% under the new semantics) is silently \u00d7100 again on the next boot. The migration is only safe if the codebase guarantees no post-migration values < 1 can ever be written \u2014 nothing in the diff enforces that.\n- Old values \u2265 1 (e.g. a user-set `2`, meaning 200% tolerance under old semantics) are never migrated and now read as 2% \u2014 the monitor effectively never recovers.\n- The `catch` returns `false` but `runMigrations()` in `migration/index.js:3` ignores the result: a mid-loop `save()` failure leaves a partial migration and the server proceeds, with no retry and no record.\n- `console.log`/`console.error` instead of the winston logger the rest of the server uses.\n\n## 7. Duplicated state (and possible secrets at rest) \u2014 full monitor snapshot into job data",
+        "path": "server/src/db/mongo/migration/0001_migrateStatusWindowThreshold.js",
+        "start_line": 4,
+        "end_line": 4,
+        "observation_id": "c635fbb7374f454a",
+        "claimed_path": "server/src/db/mongo/migration/0001_migrateStatusWindowThreshold.js",
+        "path_resolution": "exact",
+        "merged_from": [
+          "a833aa15d2e6fd01"
+        ]
+      },
+      {
+        "content": "- `server/src/service/infrastructure/SuperSimpleQueue/SuperSimpleQueue.js:89` (`data: monitor.toObject()`).\n\nThe entire mongoose document is now embedded in the scheduler's persisted job data, and the queue page displays that snapshot (`monitorInterval: job?.data?.interval || null`, line 144). Any monitor mutation that doesn't route through `updateJob` leaves stale visible data \u2014 duplicated state that will drift. Worse, `toObject()` copies *everything*, including any auth headers/tokens the Monitor schema holds \u2014 I can't see the model here to confirm, but that's the thing to check before merging. Also worth verifying outside the diff: `super-simple-scheduler` 1.4.0 (lockfile shows it dropped its `mongoose`/`ioredis`/`human-interval` deps entirely \u2014 a bigger internal change than the patch version implies) and whether `updateJob(id, { repeat, data })` expects `repeat` in ms and replaces vs merges data.\n\n## 8. Unverified call on a facade \u2014 possible runtime crash",
+        "path": "server/src/service/infrastructure/SuperSimpleQueue/SuperSimpleQueue.js",
+        "start_line": 89,
+        "end_line": 89,
+        "observation_id": "15a47a882fa4cbfb",
+        "claimed_path": "server/src/service/infrastructure/SuperSimpleQueue/SuperSimpleQueue.js",
+        "path_resolution": "exact",
+        "merged_from": [
+          "49a7eb8c63f78b69"
+        ]
+      },
+      {
+        "content": "- `server/src/controllers/statusPageController.js:98` (`this.db.statusPageModule.deleteStatusPage(req.params.url)`).\n\nThe diff assumes `statusPageModule` exists on the db facade and switches only this one call to the namespaced form while every sibling call in the controller stays `this.db.<method>`. If the facade doesn't define it, DELETE status pages throws TypeError \u2192 500. Nothing in the diff creates `statusPageModule` \u2014 unverifiable from the diff, but it's exactly the kind of assumption to grep for before merge.\n\n## 9. Missing validation / minor defects (not yet wrong, but would raise)",
+        "path": "server/src/controllers/statusPageController.js",
+        "start_line": 98,
+        "end_line": 98,
+        "observation_id": "cb107f92a8fb54ae",
+        "claimed_path": "server/src/controllers/statusPageController.js",
+        "path_resolution": "exact",
+        "merged_from": [
+          "50896f279d397131"
+        ]
+      },
+      {
+        "content": "- `client/src/Pages/Logs/Queue/components/JobTable/index.jsx:52` \u2014 `row.monitorInterval` can be `null` for jobs queued before this change (server coalesces with `|| null` at SuperSimpleQueue.js:144); the column renders `\"null ms\"`. Needs a fallback.",
+        "path": "client/src/Pages/Logs/Queue/components/JobTable/index.jsx",
+        "start_line": 52,
+        "end_line": 52,
+        "observation_id": "409b3f792773105e",
+        "claimed_path": "client/src/Pages/Logs/Queue/components/JobTable/index.jsx",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "- `client/src/Pages/Incidents/Components/IncidentTable/index.jsx:46,50` \u2014 the tooltip fires for every row regardless of check type; ping/port/docker checks have no `statusCode`/`responseTime`, so they show \"Status code: undefined\" / \"Response time: undefined ms\". Also line 51's `phases && \u2026` renders the \"Request timing:\" header plus an empty table for `phases = {}`.\n- `client/src/Hooks/logHooks.js` (hunk `@@ -15,9 +15,6 @@`) \u2014 the success toast is removed but `logsPage.toast.fetchLogsSuccess` is still shipped in `client/src/locales/en.json` \u2014 dead translation key.",
+        "path": "client/src/Pages/Incidents/Components/IncidentTable/index.jsx",
+        "start_line": 46,
+        "end_line": 46,
+        "observation_id": "e0e06da8b7d52009",
+        "claimed_path": "client/src/Pages/Incidents/Components/IncidentTable/index.jsx",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "- `client/src/Validation/validation.js:134` \u2014 the `[a-zA-Z0-9]+` and `[a-f0-9]{12,64}` alternatives are entirely subsumed by the first branch (dead regex alternatives), and the client pattern independently approximates Docker's name rules while the server matcher normalizes differently (strip slashes + lowercase; the client doesn't lint `a--b`-style names at all) \u2014 duplicated validation logic that will drift.",
+        "path": "client/src/Validation/validation.js",
+        "start_line": 134,
+        "end_line": 134,
+        "observation_id": "0663a085c6804415",
+        "claimed_path": "client/src/Validation/validation.js",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "- `client/src/Pages/Incidents/Components/IncidentTable/index.jsx:38` \u2014 `border={`1px solid ${theme.palette.primary.lowContrast}`}` relies on a palette key that isn't in a default MUI theme; if the app theme doesn't define it, the border declaration is silently dropped. Verify the theme defines `lowContrast`.",
+        "path": "client/src/Pages/Incidents/Components/IncidentTable/index.jsx",
+        "start_line": 38,
+        "end_line": 38,
+        "observation_id": "bcf8583911b9fd8e",
+        "claimed_path": "client/src/Pages/Incidents/Components/IncidentTable/index.jsx",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "- `client/src/Components/Table/index.jsx:106-134` \u2014 every row of every `DataTable` now allocates Tooltip/Popper machinery with `slotProps`/modifiers even when `tooltipContent` is the default `null` (line 45); and `followCursor` tooltips are mouse-only, so the status/response info is unreachable by keyboard. Naming: `GetTooltip` (IncidentTable:28) reads as a component, which is precisely what invited the hook misuse in item 1.\n\nItems 2, 3, 7, and 8 hinge on code not present in this diff (the `failureRate` computation, the tail of `requestHttp`, the Monitor schema's fields, the db facade, `super-simple-scheduler`'s 1.4.0 API). Those are the files to open before merging; everything else above is self-contained in the diff.",
+        "path": "client/src/Components/Table/index.jsx",
+        "start_line": 106,
+        "end_line": 106,
+        "observation_id": "823defe76925b333",
+        "claimed_path": "client/src/Components/Table/index.jsx",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "### 1. **CRITICAL: `server/src/db/models/Monitor.js:41` \u2014 Default value change breaks semantics**\n\n```diff\n-\t\t\tdefault: 0.6,\n+\t\t\tdefault: 60,\n```",
+        "path": "server/src/db/models/Monitor.js",
+        "start_line": 41,
+        "end_line": 41,
+        "observation_id": "6d2dde3df1941e5b",
+        "claimed_path": "server/src/db/models/Monitor.js",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "**Defect type: Wrong result / semantic break**\n\nThe `statusWindowThreshold` field changed from a **ratio (0.6 = 60%)** to a **percentage (60)**. The migration (`0001_migrateStatusWindowThreshold.js`) multiplies existing values by 100, but:\n- The migration only runs on documents where `statusWindowThreshold < 1` (line 4: `{ $lt: 1 }`)\n- Any document already at `\u22651` (e.g., a user who manually entered `60` thinking it was a percentage) will **not be migrated** and will now be treated as `60%` instead of `6000%` \u2014 effectively disabling the threshold\n- New documents get `default: 60` (meaning 60%), but the code in `statusService.js:161` compares `failureRate < monitor.statusWindowThreshold` where `failureRate` is a **ratio (0\u20131)**. **This comparison is now broken**: `0.15 < 60` is always true, so monitors will **never stay down** once they recover.\n\n**Failure scenario**: A monitor fails 50% of checks (`failureRate = 0.5`). Old logic: `0.5 <= 0.6` \u2192 stays down. New logic: `0.5 < 60` \u2192 true \u2192 recovers immediately. The threshold is effectively infinite.\n\n**Fix**: Either keep the default as `0.6` and don't migrate, or change `statusService.js` to compare `failureRate * 100 < threshold` (and audit all callers).\n\n---",
+        "path": "server/src/db/mongo/migration/0001_migrateStatusWindowThreshold.js",
+        "start_line": 4,
+        "end_line": 4,
+        "observation_id": "1052ab85b0668f66",
+        "claimed_path": "0001_migrateStatusWindowThreshold.js",
+        "path_resolution": "basename",
+        "merged_from": []
+      },
+      {
+        "content": "### 2. **CRITICAL: `server/src/service/infrastructure/statusService.js:161` \u2014 Comparison operator changed incorrectly**\n\n```diff\n-\t\t\telse if (failureRate <= monitor.statusWindowThreshold && monitor.status === false) {\n+\t\t\telse if (failureRate < monitor.statusWindowThreshold && monitor.status === false) {\n```\n\n**Defect type: Wrong result / logic error**\n\nCombined with #1, this compounds the bug. Even if the threshold were correctly stored as a ratio (0.6), changing `<=` to `<` means:\n- At exactly the threshold (e.g., `failureRate = 0.6`, `threshold = 0.6`), the monitor **won't recover** when it should\n- This is a behavioral change with no explanation in the diff\n\n---",
+        "path": "server/src/service/infrastructure/statusService.js",
+        "start_line": 161,
+        "end_line": 161,
+        "observation_id": "2701b25f255c2fd6",
+        "claimed_path": "server/src/service/infrastructure/statusService.js",
+        "path_resolution": "exact",
+        "merged_from": [
+          "a9982347fd1dfaa3"
+        ]
+      },
+      {
+        "content": "### 4. **HIGH: `server/src/service/infrastructure/networkService.js:173-195` \u2014 HTTP match logic rewritten with a logic hole**\n\n```diff\n-\t\t\tif (!expectedValue) {\n+\t\t\tif (!expectedValue && !jsonPath) {\n \t\t\t\treturn httpResponse;\n \t\t\t}\n \n-\t\t\t// logging...\n+\t\t\tif (expectedValue) {\n+\t\t\t\tlet ok = false;\n+\t\t\t\tif (matchMethod === \"equal\") ok = payload === expectedValue;\n+\t\t\t\tif (matchMethod === \"include\") ok = payload.includes(expectedValue);\n+\t\t\t\tif (matchMethod === \"regex\") ok = new RegExp(expectedValue).test(payload);\n+\n+\t\t\t\tif (ok === true) {\n+\t\t\t\t\treturn httpResponse;\n+\t\t\t\t} else {\n+\t\t\t\t\thttpResponse.code = 500;\n+\t\t\t\t\thttpResponse.status = false;\n+\t\t\t\t\treturn httpResponse;\n+\t\t\t\t}\n+\t\t\t}\n \n \t\t\tif (jsonPath) {\n```\n\n**Defect type: Wrong result / logic hole**\n\n**Original behavior**: If `expectedValue` is set, it logged and presumably fell through to `jsonPath` handling (or other logic). If `jsonPath` was also set, both could be evaluated.\n\n**New behavior**: If `expectedValue` is truthy, it **returns early** \u2014 either success or `500`/failure. The `jsonPath` block **never runs** when `expectedValue` is set. This is a **breaking change** for monitors that use both keyword matching AND JSONPath extraction.\n\n**Failure scenario**: A monitor checks an API that returns `{ \"status\": \"ok\", \"data\": \"...\" }` with `expectedValue: \"ok\"` (include) AND `jsonPath: \"$.status\"`. Old code: both checked. New code: only keyword match runs; JSONPath ignored.\n\n---",
+        "path": "server/src/service/infrastructure/networkService.js",
+        "start_line": 173,
+        "end_line": 173,
+        "observation_id": "45706ec966ddcc38",
+        "claimed_path": "server/src/service/infrastructure/networkService.js",
+        "path_resolution": "exact",
+        "merged_from": [
+          "1aa164332f144095"
+        ]
+      },
+      {
+        "content": "### 5. **HIGH: `server/src/service/infrastructure/networkService.js:253-330` \u2014 Docker container matching has ambiguous-match bug**\n\n```javascript\n// Priority-based matching...\nlet exactIdMatch = containers.find((c) => c.Id.toLowerCase() === normalizedInput);\nlet exactNameMatch = containers.find((c) =>\n    c.Names.some((name) => {\n        const cleanName = name.replace(/^\\/+/, \"\").toLowerCase();\n        return cleanName === normalizedInput;\n    })\n);\nlet partialIdMatch = containers.find((c) => c.Id.toLowerCase().startsWith(normalizedInput));\n\nlet targetContainer = exactIdMatch || exactNameMatch || partialIdMatch;\n\n// ...\n\nif (matchTypes.length > 1) {\n    // logs warning, returns 404 with \"Ambiguous container match\"\n    dockerResponse.status = 404;  // BUG: should be .code = 404\n    dockerResponse.status = false;\n    return dockerResponse;\n}\n```\n\n**Defect type: Wrong result / typo**\n\nLine with `dockerResponse.status = 404;` should be `dockerResponse.code = 404;`. The `status` field is a boolean (used elsewhere as `true`/`false`), but here it's assigned a number. Downstream code checking `response.status === true/false` will misbehave.\n\n**Also**: The ambiguous-match logic returns 404 **even when a valid container was found** (it picks one via priority but then errors). This seems intentional but is user-hostile \u2014 it should probably just log a warning and proceed with the highest-priority match.\n\n---",
+        "path": "server/src/service/infrastructure/networkService.js",
+        "start_line": 253,
+        "end_line": 253,
+        "observation_id": "bc5802323d64c5da",
+        "claimed_path": "server/src/service/infrastructure/networkService.js",
+        "path_resolution": "exact",
+        "merged_from": [
+          "e077610a9d9f6d90"
+        ]
+      },
+      {
+        "content": "### 6. **MEDIUM: `server/src/db/mongo/migration/0001_migrateStatusWindowThreshold.js:4` \u2014 Migration query misses edge case**\n\n```javascript\nconst monitors = await Monitor.find({ statusWindowThreshold: { $lt: 1 } });\n```\n\n**Defect type: Data integrity / incomplete migration**\n\nAs noted in #1, this misses documents where `statusWindowThreshold >= 1` but was stored as a ratio (e.g., `1.0` meaning 100%). Unlikely but possible. Also, if the migration runs twice, documents already migrated (now `\u2265100`) won't be re-processed \u2014 that's fine. But the `$lt: 1` boundary assumes all ratio values are `<1`, which holds for percentages but not for values like `1.5` (150%).\n\n---",
+        "path": "server/src/db/mongo/migration/0001_migrateStatusWindowThreshold.js",
+        "start_line": 4,
+        "end_line": 4,
+        "observation_id": "6544e54e21cfa0ba",
+        "claimed_path": "server/src/db/mongo/migration/0001_migrateStatusWindowThreshold.js",
+        "path_resolution": "exact",
+        "merged_from": [
+          "259df192b61a7bcf"
+        ]
+      },
+      {
+        "content": "### 7. **MEDIUM: `client/src/Validation/validation.js:133-140` \u2014 Docker validation regex is over-permissive**\n\n```diff\n-\t\t\t.regex(/^[a-z0-9]{64}$/)\n+\t\t\t.regex(\n+\t\t\t\t/^(\\/+)?([a-zA-Z0-9][a-zA-Z0-9_.-]*[a-zA-Z0-9]|[a-zA-Z0-9]+|[a-f0-9]{12,64})$/\n+\t\t\t)\n```\n\n**Defect type: Validation bypass / security**\n\nThe new regex accepts:\n- `[a-zA-Z0-9]+` \u2014 any alphanumeric string (e.g., `\"a\"`, `\"123\"`, `\"malicious\"`)\n- `[a-f0-9]{12,64}` \u2014 any hex string 12\u201364 chars (looks like a short ID but no validation it's real)\n- Container name pattern \u2014 reasonable\n\n**But**: It no longer validates that a **full 64-char hex ID** is actually 64 hex chars. A 12-char hex string passes (short ID), but so does `\"abcdefghijkl\"` (12 lowercase letters, not hex). The `{12,64}` allows non-hex chars because `[a-f0-9]` is only in the third alternative \u2014 wait, re-reading: the third alternative is `[a-f0-9]{12,64}`, so that one is hex-only. But the second alternative `[a-zA-Z0-9]+` allows any alphanumeric.\n\n**Failure scenario**: User enters `\"not-a-real-container\"` \u2014 passes validation, but Docker lookup will fail at runtime. The old regex at least caught format errors early.\n\n**Worth raising**: The validation message says \"valid container name or ID\" but the regex doesn't match Docker's actual naming rules (e.g., no uppercase in container names, max 63 chars, must start with letter). This is a **false sense of security**.\n\n---",
+        "path": "client/src/Validation/validation.js",
+        "start_line": 133,
+        "end_line": 133,
+        "observation_id": "6a5bf912c1d94cfc",
+        "claimed_path": "client/src/Validation/validation.js",
+        "path_resolution": "exact",
+        "merged_from": [
+          "f6a92b17db234ebf"
+        ]
+      },
+      {
+        "content": "### 8. **MEDIUM: `client/src/Components/Table/index.jsx:103-158` \u2014 Tooltip wraps TableRow, invalid HTML structure**\n\n```jsx\n<Tooltip ...>\n    <TableRow ...>\n        {headers.map(...)}\n    </TableRow>\n</Tooltip>\n```\n\n**Defect type: Rendering bug / accessibility**\n\n`<Tooltip>` renders a wrapper `div` (or `span`) around its children. `<TableRow>` **must be a direct child of `<TableBody>`** (or `<TableHead>`/`<TableFoot>`). Wrapping it in a `div` breaks table semantics and causes:\n- Invalid HTML (browser may move the `div` out of the table)\n- Broken keyboard navigation / screen readers\n- Visual glitches (borders, hover styles)\n\n**Correct pattern**: Put the `Tooltip` **inside** a `<TableCell>`, or wrap the cell content, not the row.\n\n---",
+        "path": "client/src/Components/Table/index.jsx",
+        "start_line": 103,
+        "end_line": 103,
+        "observation_id": "bc517e98e6519841",
+        "claimed_path": "client/src/Components/Table/index.jsx",
+        "path_resolution": "exact",
+        "merged_from": [
+          "3c35a8b127d95fec"
+        ]
+      },
+      {
+        "content": "### 9. **LOW: `client/src/Hooks/logHooks.js:18-20` \u2014 Success toast removed without comment**\n\n```diff\n-\t\t\t\tcreateToast({\n-\t\t\t\t\tbody: t(\"logsPage.toast.fetchLogsSuccess\"),\n-\t\t\t\t});\n```\n\n**Defect type: UX regression / missing feedback**\n\nRemoving a success toast is a behavioral change. If intentional, it should be in the PR description. If accidental, users lose confirmation that logs loaded. **Worth asking**: Was this deliberate?\n\n---",
+        "path": "client/src/Hooks/logHooks.js",
+        "start_line": 18,
+        "end_line": 18,
+        "observation_id": "476e287de52b64d0",
+        "claimed_path": "client/src/Hooks/logHooks.js",
+        "path_resolution": "exact",
+        "merged_from": [
+          "fcd80aa5f39da60f"
+        ]
+      },
+      {
+        "content": "### 11. **LOW: `server/src/controllers/statusPageController.js:98` \u2014 Method call path changed**\n\n```diff\n-\t\t\tawait this.db.deleteStatusPage(req.params.url);\n+\t\t\tawait this.db.statusPageModule.deleteStatusPage(req.params.url);\n```\n\n**Defect type: Potential crash if `statusPageModule` undefined**\n\nThis assumes `this.db.statusPageModule` exists. If the DB initialization doesn't attach it, this crashes. Verify the MongoDB class exports `statusPageModule`.\n\n---",
+        "path": "server/src/controllers/statusPageController.js",
+        "start_line": 98,
+        "end_line": 98,
+        "observation_id": "beb069ebde46e25d",
+        "claimed_path": "server/src/controllers/statusPageController.js",
+        "path_resolution": "exact",
+        "merged_from": [
+          "00a2a4bce844e959"
+        ]
+      },
+      {
+        "content": "### 12. **LOW: `client/src/Pages/Incidents/Components/IncidentTable/index.jsx:17` \u2014 `GetTooltip` defined inside component file but uses `useTheme`**\n\n```javascript\nconst GetTooltip = (row) => {\n    const theme = useTheme();\n    // ...\n};\n```\n\n**Defect type: Hook rule violation risk**\n\n`GetTooltip` is a **function component** (uses `useTheme`) but is defined **inside the module scope**, not inside a component. It's passed as `config={{ tooltipContent: GetTooltip }}` to `DataTable`, which calls it as `config.tooltipContent(row)`. This works only if `GetTooltip` is called **during render** of a component that has a `ThemeContext` provider. If `DataTable` calls it outside render (e.g., in a memo, or async), it will crash: `useTheme` must be called in a React component.\n\n**Check**: Does `DataTable` call `tooltipContent` during its render? The diff shows `title={typeof config.tooltipContent === \"function\" ? config.tooltipContent(row) : config.tooltipContent}` inside the `Tooltip` component \u2014 yes, it's during render. So it's **currently safe** but fragile \u2014 if `DataTable` ever memoizes rows or moves tooltip content to a portal, it breaks.\n\n**Better**: Make `GetTooltip` a plain function that takes `theme` as an argument, or use `withTheme` HOC.\n\n---\n\n### 13. **NIT: `.gitignore` \u2014 Missing newline at EOF**\n\n```diff\n+.vscode\n\\ No newline at end of file\n```\n\n**Defect type: Style / tooling warning**\n\nMany tools (git, prettier, eslint) warn about missing final newline. Trivial to fix.\n\n---\n\n### Summary by severity\n\n| Severity | Count | Items |\n|----------|-------|-------|\n| **CRITICAL** | 3 | #1 (threshold semantics), #2 (comparison operator), #3 (assert.match import) |\n| **HIGH** | 2 | #4 (HTTP match early return), #5 (Docker ambiguous match + typo) |\n| **MEDIUM** | 3 | #6 (migration edge case), #7 (validation regex), #8 (Tooltip wrapping TableRow) |\n| **LOW** | 4 | #9 (toast removal), #10 (lockfile drift), #11 (db path), #12 (hook in callback) |\n| **NIT** | 1 | #13 (missing newline) |\n\n**Top 3 must-fix before merge**: #1, #2, #3 (all cause incorrect behavior or crashes). #4 and #5 are high-risk logic errors.",
+        "path": "client/src/Pages/Incidents/Components/IncidentTable/index.jsx",
+        "start_line": 17,
+        "end_line": 17,
+        "observation_id": "de5e134b77de8864",
+        "claimed_path": "client/src/Pages/Incidents/Components/IncidentTable/index.jsx",
+        "path_resolution": "exact",
+        "merged_from": [
+          "02e2338002a4bd88",
+          "6dab20d490ee95ca",
+          "79b5c3d40fab5ce3",
+          "e6403ac6aa78941d"
+        ]
+      }
+    ]
+  },
+  "rundir": "/home/mjarnold/.cache/llm-panel/runs/aacr-up-rn7p4i2r-020a27952fc6/20260829-055804-2985152",
+  "extractor": "3",
+  "unlocated": [
+    {
+      "content": "### 3. **CRITICAL: `server/src/service/infrastructure/networkService.js` \u2014 `assert.match` import is wrong**\n\n```diff\n+import { match } from \"assert\";\n```\n\n**Defect type: Crash / runtime error**\n\n`assert.match` **does not exist** in Node.js `assert` module. The correct import would be `import assert from \"assert\";` then `assert.match(...)`, but `assert.match` was added in Node.js **v17.2.0** \u2014 if t",
+      "observation_id": "a19ca03d611a8d2f",
+      "claimed_path": "server/src/service/infrastructure/networkService.js",
+      "path_resolution": "exact"
+    },
+    {
+      "content": "### 10. **LOW: `server/package-lock.json` \u2014 Massive dependency updates without `package.json` changes**\n\n**Defect type: Supply chain risk / unreviewed transitive updates**\n\nThe lockfile shows ~100+ dependency version bumps (eslint 9.31\u21929.34, mongodb 6.18\u21926.19, mongoose 8.16\u21928.18, ioredis 5.6\u21925.7, etc.) but `package.json` only shows `super-simple-scheduler: 1.3.0\u21921.4.0`. This suggests `npm install`",
+      "observation_id": "74ea899d00a3de4c",
+      "claimed_path": "server/package-lock.json",
+      "path_resolution": "exact"
+    }
+  ]
+}

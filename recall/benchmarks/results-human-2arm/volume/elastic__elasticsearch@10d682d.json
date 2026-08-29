@@ -1,0 +1,149 @@
+{
+  "review": {
+    "comments": [
+      {
+        "content": "1. **High \u2014 `CertificateTool.java:336`**  \n   `elasticsearch-certutil ca --ca-keyusage \",\"` treats the nonempty raw argument as an empty usage list, so `buildKeyUsage` returns `null` and the CA is emitted without any key-usage extension. A certificate signed by that CA is then rejected by Python 3.13/OpenSSL strict verification\u2014the exact compatibility failure this change addresses. [Concrete strict-verification failure](https://github.com/elastic/elasticsearch/issues/117769)",
+        "path": "x-pack/plugin/security/cli/src/main/java/org/elasticsearch/xpack/security/cli/CertificateTool.java",
+        "start_line": 336,
+        "end_line": 336,
+        "observation_id": "74208556b31d9efe",
+        "claimed_path": "CertificateTool.java",
+        "path_resolution": "basename",
+        "merged_from": []
+      },
+      {
+        "content": "2. **High \u2014 `HttpCertificateCommand.java:1041`**  \n   At the HTTP wizard\u2019s CA key-usage prompt, input `,` produces a zero-length array and is accepted as an empty list. The generated HTTP CA consequently has no key-usage extension, and Python 3.13 clients reject connections with \u201cCA cert does not include key usage extension.\u201d [Concrete strict-verification failure](https://github.com/elastic/elasticsearch/issues/117769)",
+        "path": "x-pack/plugin/security/cli/src/main/java/org/elasticsearch/xpack/security/cli/HttpCertificateCommand.java",
+        "start_line": 1041,
+        "end_line": 1041,
+        "observation_id": "449588bbdc78281a",
+        "claimed_path": "HttpCertificateCommand.java",
+        "path_resolution": "basename",
+        "merged_from": []
+      },
+      {
+        "content": "3. **High \u2014 `CertificateTool.java:429` and `HttpCertificateCommand.java:939`**  \n   Neither CA-generation path requires `keyCertSign`. For example, `certutil ca --ca-keyusage digitalSignature`, or choosing `digitalSignature` for the HTTP CA, creates a CA and then uses it to sign server certificates despite its critical key-usage extension forbidding certificate signing. Strict path validation rejects the resulting chain because certificate issuers with key usage must have `keyCertSign`. [RFC 5280 requirements](https://www.rfc-editor.org/rfc/rfc5280.html#section-4.2.1.3)",
+        "path": "x-pack/plugin/security/cli/src/main/java/org/elasticsearch/xpack/security/cli/CertificateTool.java",
+        "start_line": 429,
+        "end_line": 429,
+        "observation_id": "963da951c2abd51b",
+        "claimed_path": "CertificateTool.java",
+        "path_resolution": "basename",
+        "merged_from": []
+      },
+      {
+        "content": "4. **High \u2014 `HttpCertificateCommand.java:1039`**  \n   The same unrestricted validator allows `keyCertSign` for an HTTP leaf certificate or CSR. That leaf is generated with `BasicConstraints CA:false`, so input `keyCertSign` produces an internally contradictory certificate that strict validators can reject: RFC 5280 says `keyCertSign` MUST NOT be asserted when the CA bit is false. [RFC 5280 basic-constraints rule](https://www.rfc-editor.org/rfc/rfc5280.html#section-4.2.1.9)",
+        "path": "x-pack/plugin/security/cli/src/main/java/org/elasticsearch/xpack/security/cli/HttpCertificateCommand.java",
+        "start_line": 1039,
+        "end_line": 1039,
+        "observation_id": "c7227f0083d9c2d4",
+        "claimed_path": "HttpCertificateCommand.java",
+        "path_resolution": "basename",
+        "merged_from": []
+      },
+      {
+        "content": "5. **Medium \u2014 `CertificateTool.java:278` and `CertificateTool.java:967`**  \n   `cert --self-signed --ca-keyusage digitalSignature` is accepted because the option is only disabled by external-CA options. The self-signed branch then calls the overload that supplies `null` key usage, so the requested option is silently ignored and the output certificate contains no key-usage extension.",
+        "path": "x-pack/plugin/security/cli/src/main/java/org/elasticsearch/xpack/security/cli/CertificateTool.java",
+        "start_line": 278,
+        "end_line": 278,
+        "observation_id": "88c27077d5d5af65",
+        "claimed_path": "CertificateTool.java",
+        "path_resolution": "basename",
+        "merged_from": []
+      },
+      {
+        "content": "6. **Medium \u2014 `HttpCertificateCommandTests.java:383`**  \n   `randomSubsetOf(...)` can return an empty list. The test then enters `\"\"` at the prompt, which selects the default CA usages, but later expects the empty list at line 474. That seed fails because the generated CA contains `keyCertSign,cRLSign` while the assertion expects no bits, making this test intermittent.",
+        "path": "x-pack/plugin/security/cli/src/test/java/org/elasticsearch/xpack/security/cli/HttpCertificateCommandTests.java",
+        "start_line": 383,
+        "end_line": 383,
+        "observation_id": "40b177928b98fe14",
+        "claimed_path": "HttpCertificateCommandTests.java",
+        "path_resolution": "basename",
+        "merged_from": []
+      },
+      {
+        "content": "7. **Medium \u2014 `CertificateTool.java:332`**  \n   Repeating the option crashes instead of combining its values. For example, `certutil ca --ca-keyusage keyCertSign --ca-keyusage cRLSign` is accepted by the option parser as two arguments, but `value(options)` throws `MultipleArgumentsForOptionException`, so no CA is generated.",
+        "path": "x-pack/plugin/security/cli/src/main/java/org/elasticsearch/xpack/security/cli/CertificateTool.java",
+        "start_line": 332,
+        "end_line": 332,
+        "observation_id": "a5c009aa7687730f",
+        "claimed_path": "CertificateTool.java",
+        "path_resolution": "basename",
+        "merged_from": []
+      },
+      {
+        "content": "8. **Low \u2014 `docs/reference/elasticsearch/command-line-tools/certutil.md:103`**  \n   The documentation says the option is prohibited only with `csr` and `http`, and the synopsis lists it for `cert`. However, `cert --ca existing.p12 --ca-keyusage keyCertSign` and the equivalent `--ca-cert/--ca-key` invocation are rejected by the `availableUnless` constraints rather than behaving as documented.",
+        "path": "docs/reference/elasticsearch/command-line-tools/certutil.md",
+        "start_line": 103,
+        "end_line": 103,
+        "observation_id": "befbdb2feff69436",
+        "claimed_path": "docs/reference/elasticsearch/command-line-tools/certutil.md",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "9. **Low \u2014 `HttpCertificateCommand.java:1041`**  \n   Java\u2019s one-argument `split` drops trailing empty fields, so `digitalSignature,` is accepted as `digitalSignature`. This bypasses the method\u2019s explicit blank-entry rejection; a missing usage after the final comma is silently discarded rather than causing another prompt.",
+        "path": "x-pack/plugin/security/cli/src/main/java/org/elasticsearch/xpack/security/cli/HttpCertificateCommand.java",
+        "start_line": 1041,
+        "end_line": 1041,
+        "observation_id": "c933e4ca21570c1b",
+        "claimed_path": "HttpCertificateCommand.java",
+        "path_resolution": "basename",
+        "merged_from": []
+      },
+      {
+        "content": "**1. `CertificateGenerateTool.java:406` \u2014 the `cert`-command engine's CA is generated with `null` key usage, silently discarding the new option and the default.**\n`getCAInfo` calls `CertGenUtils.generateCACertificate(x500Principal, keyPair, days, null)`. `CertificateGenerateTool.generateCertificates`/`getCAInfo` is the CA-creation path of the multi-certificate engine (`--in` yaml mode; its tests are updated in this same diff), while the `--ca-keyusage` option is wired into the enclosing `CertificateCommand` via `acceptCertificateAuthorityKeyUsage()` (CertificateTool.java:281-292). Failure: `elasticsearch-certutil cert --in instances.yml --ca-keyusage digitalSignature` (or with no flag at all) emits a CA certificate with **no keyUsage extension** \u2014 the flag is a no-op on this path, and the CA lacks even the new default `keyCertSign,cRLSign` restriction that `ca` and `http` paths now apply. Two CA-generation entry points in the same CLI now produce structurally different CAs; the PR's own changelog claim (\"Set keyUsage for ... self-signed CA\") is not met on this path.",
+        "path": "x-pack/plugin/security/cli/src/main/java/org/elasticsearch/xpack/security/cli/CertificateGenerateTool.java",
+        "start_line": 406,
+        "end_line": 406,
+        "observation_id": "348e7c85d47d1e6c",
+        "claimed_path": "CertificateGenerateTool.java",
+        "path_resolution": "basename",
+        "merged_from": []
+      },
+      {
+        "content": "**2. `HttpCertificateCommand.java:1043-1066` (`readKeyUsage`) / `CertGenUtils.java:474-489` (`buildKeyUsage`) \u2014 no semantic validation of key-usage combinations; the tool generates RFC 5280-invalid or unusable certificates.**\n`isValidKeyUsage` only checks the name against the menu; any single name is accepted for any role. Concrete failures:\n- User answers the CA prompt (\"What key usage should your CA have?\", HttpCertificateCommand.java:942-968) with `digitalSignature`: the CA is issued with critical keyUsage `digitalSignature` and `basicConstraints CA:true`. Every leaf subsequently signed by it fails RFC 5280 \u00a76.1.4(k) path validation (CA cert with keyUsage present but no `keyCertSign`) \u2014 `openssl verify`/Java PKIX reject the whole chain.\n- User picks `keyCertSign` (offered in the leaf menu) for the server certificate: the leaf has no `digitalSignature`/`keyEncipherment`, so JSSE/OpenSSL reject the TLS handshake (\"certificate does not permit key usage\").\n- User picks `encipherOnly` or `decipherOnly` alone: RFC 5280 \u00a74.2.1.3 defines these bits only when `keyAgreement` is also set; the generated cert is non-conformant and at the mercy of the validating implementation.",
+        "path": "x-pack/plugin/security/cli/src/main/java/org/elasticsearch/xpack/security/cli/HttpCertificateCommand.java",
+        "start_line": 1043,
+        "end_line": 1043,
+        "observation_id": "5f9621e6ff04b5ac",
+        "claimed_path": "HttpCertificateCommand.java",
+        "path_resolution": "basename",
+        "merged_from": []
+      },
+      {
+        "content": "**3. `HttpCertificateCommandTests.java:380` and `:385` (assert at `:474`) \u2014 flaky test: empty random key-usage subset contradicts the \"empty input means keep default\" behavior.**\n`caKeyUsage = randomSubsetOf(KEY_USAGE_MAPPINGS.keySet())` can be the empty set (ES's `randomSubsetOf` picks size uniformly in 0..9 \u21d2 ~10% of the randomized branch, ~5% of test runs). `Strings.collectionToCommaDelimitedString(\u2205)` feeds `\"\"` to the prompt, and `tryReadInput` (HttpCertificateCommand.java:1171-1180) returns the **default** `DEFAULT_CA_KEY_USAGE` for empty input \u2014 the CA is then created with `keyCertSign,cRLSign`, but `assertExpectedKeyUsage(caCertKey.v1(), caKeyUsage)` asserts all nine bits are false. Failure: test fails randomly with \"keyUsage bit [5] not expected to be set\".",
+        "path": "x-pack/plugin/security/cli/src/test/java/org/elasticsearch/xpack/security/cli/HttpCertificateCommandTests.java",
+        "start_line": 380,
+        "end_line": 380,
+        "observation_id": "76fd68145a52152b",
+        "claimed_path": "HttpCertificateCommandTests.java",
+        "path_resolution": "basename",
+        "merged_from": []
+      },
+      {
+        "content": "**4. `CertificateTool.java:333-343` (`getCaKeyUsage`) + `CertGenUtils.java:481-484` (IAE) \u2014 CLI parse errors for `--ca-keyusage` are raw `IllegalArgumentException`s with a message that names nothing.**\n`Strings.splitStringByCommaToArray` emits untrimmed, possibly empty elements, and empty-string elements are not filtered. Concrete failures: `--ca-keyusage \"keyCertSign,\"` (trailing comma) or `--ca-keyusage \",\"` \u2192 element `\"\"` \u2192 `findKeyUsageByName` returns null \u2192 `IllegalArgumentException(\"Unknown keyUsage: \")` \u2014 the message has a trailing space and never lists the valid values (unlike the interactive path), and the exception surfaces as a bare stack trace from `ca`/`cert` instead of a usable CLI error. Likewise `--ca-keyusage crlSign` (case typo) fails the same way.",
+        "path": "x-pack/plugin/security/cli/src/main/java/org/elasticsearch/xpack/security/cli/CertificateTool.java",
+        "start_line": 333,
+        "end_line": 333,
+        "observation_id": "9641d1ad27a5ef28",
+        "claimed_path": "CertificateTool.java",
+        "path_resolution": "basename",
+        "merged_from": []
+      },
+      {
+        "content": "**5. `CertGenUtilsTests.java:240-246` \u2014 the \"duplicates and whitespaces are ignored\" check never actually checks what it claims.**\n```java\nassertThat(keyUsage.hasUsages(KEY_USAGE_MAPPINGS.get(\"digitalSignature\")), is(true));\nassertThat(keyUsage.hasUsages(KEY_USAGE_MAPPINGS.get(\"nonRepudiation\")), is(true));\nassertThat(keyUsage.hasUsages(KEY_USAGE_MAPPINGS.get(\"digitalSignature\")), is(true));  // duplicate of the first, line ~244\nassertThat(keyUsage.hasUsages(KEY_USAGE_MAPPINGS.get(\"keyEncipherment\")), is(true));\n```\nThe third assertion repeats the first. Failure scenario for a regression: if `buildKeyUsage` were changed to keep only the first occurrence of a name (or to drop whitespace-trimmed duplicates), every assertion in this block would still pass, because each pair of inputs is a distinct name \u2014 the block cannot distinguish dedup/whitespace handling from a plain loop, so the test provides no protection for the behavior it claims to verify.",
+        "path": "x-pack/plugin/security/cli/src/test/java/org/elasticsearch/xpack/security/cli/CertGenUtilsTests.java",
+        "start_line": 240,
+        "end_line": 240,
+        "observation_id": "b1ce1754ebcb9bac",
+        "claimed_path": "CertGenUtilsTests.java",
+        "path_resolution": "basename",
+        "merged_from": []
+      }
+    ]
+  },
+  "rundir": "/home/mjarnold/.cache/llm-panel/runs/aacr-up-yq335lp7-ea115abfa2df/20260829-020820-2564663",
+  "extractor": "3",
+  "unlocated": []
+}

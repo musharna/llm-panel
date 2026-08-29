@@ -1,0 +1,181 @@
+{
+  "review": {
+    "comments": [
+      {
+        "content": "1. **High \u2014 `vllm/multimodal/profiling.py:259`**  \n   The fast path ignores `seq_len`, although the existing profiling path sizes dummy inputs using it. For a Qwen2-VL deployment with `seq_len=32768`, this returns `98304` video tokens rather than the maximum that can fit in that sequence. Downstream cache/budget calculations therefore reserve for an impossible input and can reject an otherwise valid configuration or exhaust memory during startup.",
+        "path": "vllm/multimodal/profiling.py",
+        "start_line": 259,
+        "end_line": 259,
+        "observation_id": "c20fe6d3f4b40185",
+        "claimed_path": "vllm/multimodal/profiling.py",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "2. **High \u2014 `vllm/model_executor/models/qwen2_vl.py:823`**  \n   The hard-coded image maximum does not reflect runtime image-processor configuration. For example, with `mm_processor_kwargs` raising `max_pixels` so an image produces 20,000 visual tokens, the processor accepts that image but profiling still reports only `16384`; encoder-cache and scheduling limits are consequently under-sized for the accepted request.",
+        "path": "vllm/model_executor/models/qwen2_vl.py",
+        "start_line": 823,
+        "end_line": 823,
+        "observation_id": "ecc028144d388747",
+        "claimed_path": "vllm/model_executor/models/qwen2_vl.py",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "3. **High \u2014 `vllm/model_executor/models/qwen2_vl.py:823`**  \n   The hard-coded video maximum likewise does not reflect runtime video limits such as frame count and pixel budget. A configuration permitting a video that produces more than `98304` visual tokens is accepted by the processor while profiling reports only `98304`, causing the request\u2019s encoder-token demand to exceed the profiled budget.",
+        "path": "vllm/model_executor/models/qwen2_vl.py",
+        "start_line": 823,
+        "end_line": 823,
+        "observation_id": "51f79284c301aec1",
+        "claimed_path": "vllm/model_executor/models/qwen2_vl.py",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "4. **Medium \u2014 `vllm/multimodal/profiling.py:259`**  \n   The fast path ignores the modalities requested through `mm_counts`. For example, `get_mm_max_tokens(seq_len, {\"image\": 1, \"video\": 0})` still reports `98304` video tokens. An image-only deployment can therefore allocate or validate its encoder budget against a nonexistent maximum-sized video, potentially failing startup from unnecessary memory requirements.",
+        "path": "vllm/multimodal/profiling.py",
+        "start_line": 259,
+        "end_line": 259,
+        "observation_id": "aad8e48d7dacd8b8",
+        "claimed_path": "vllm/multimodal/profiling.py",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "1. **mm_counts ignored / multiple items under-allocated (profiling.py ~line 256-258).** The short-circuit discards `mm_counts`. The function's purpose (renamed? no \u2014 same) computes max tokens for a request with given mm counts; returning a per-item constant breaks the multi-item and multi-count case. This is a real defect that is directly evident from the diff: the return no longer depends on `mm_counts` or `seq_len` at all, but the method signature retains them, and the docstring/reason for a separate method proves per-item was meant to be scaled.",
+        "path": "vllm/multimodal/profiling.py",
+        "start_line": 256,
+        "end_line": 256,
+        "observation_id": "ec019ce93085a3c8",
+        "claimed_path": "profiling.py",
+        "path_resolution": "basename",
+        "merged_from": []
+      },
+      {
+        "content": "2. **Video token limit (98304) returned even though video dummy generation is what's being short-circuited; the constant assumes a max number of video frames.** Not strongly evidenced.\n\nSince the directory is empty and I can't verify callers, I should clearly separate what the diff itself proves from what needs call-site inspection. Let me give the defects I can point at with line numbers from hunk headers.\n\nLine numbers: profiling.py hunk header is `@@ -253,6 +253,9 @@` \u2014 so the new code begins around old line 253-255; the added `max_tokens_per_item` branch is around lines 255-257 (the `+` lines). Specifically:\n- `+        max_tokens_per_item = self.processing_info.get_max_tokens_per_item()` \u2190 line 256\n- `+        if max_tokens_per_item is not None:` \u2190 257\n- `+            return max_tokens_per_item` \u2190 258\n\nqwen2_vl.py hunk `@@ -819,6 +819,9 @@`:\n- `+    def get_max_tokens_per_item` \u2014 context line 822 is `    def get_supported_mm_limits`, so the new method starts ~line 822-823, and `return {\"image\": 16384, \"video\": 98304}` is roughly line 825-826.\n\nprocessing.py hunk `@@ -1100,6 +1100,18 @@`:\n- new method around lines 1103-1115.\n\nNow let me write up the defects. I'll note the file/line where possible and the verification limitation (empty dir).\n\nKey defects:\n\n**1. profiling.py (~line 256-258): per-item max returned without scaling by item count / mm_counts \u2014 under-allocates the multimodal token budget.** The old code \u2192 `_get_mm_num_tokens(mm_inputs)` where `mm_inputs` derives from `mm_counts`. A request containing several images (Qwen2.5-VL supports multiple images per request) now yields the single-item bound (16384) rather than \u2265 `count \u00d7 16384`. Concrete: request with 3 images \u2192 profiled max \u2248 16384 tokens instead of ~49152; downstream `max_multimodal_tokens` / memory profiling under-reserves \u2192 later OOM or spurious \"max model len exceeded\" on valid inputs. The diff removes the only dependence on `mm_counts`, but the method signature keeps `seq_len` and `mm_counts`, signalling they were meant to matter.\n\n**2. profiling.py (~line 256-258): seq_len dimension dropped.** Per-item tokens for vision models are not always sequence-independent. Under the old path the dummy generation consumed `seq_len`; now the returned bound is a constant. If the model's per-image token count depends on seq_len (token/patch merging or max-positional adjustments), the returned max is wrong for some seq_len. Lower confidence \u2014 depends on model internals I can't read here.\n\n**3. qwen2_vl.py (~line 825-826): hardcoded 16384/98304 constants are config-dependent and become silently stale.** These magic numbers assume a fixed vision-tower resolution and tokenizer. The default in processing.py's docstring itself says the alternative (dummy generation) works but is slow \u2014 i.e., these are an unvalidated shortcut. A change to `min_pixels`/`max_pixels`/resolution config that alters per-image patch/token count yields a returned max that no longer matches actual usage, silently breaking the profiling this method feeds. Concrete: config raising resolution \u21d2 actual per-image tokens exceed 16384 \u21d2 under-allocation again.\n\nLet me reconsider whether the sum-over-modalities is a distinct defect. If callers sum over modalities from the returned dict, image+video is fine. If a caller takes the max, it's broken. Can't verify caller. I'll mention as lower-confidence only if there's a concrete angle. Actually the `_get_mm_num_tokens` previously returned a mapping per modality too, so the contract shape is per-modality and callers likely handle per-modality. The real regression is the count scaling. I'll keep the count issue as the headline.\n\nLet me write the response, being honest about the empty-directory limitation while still flagging the concrete diff-evident defect.The working directory is empty (0 entries), so I have no source to verify callers or model internals against. I can only judge what the diff itself makes evident, plus speculate flagged as such. Here are the defects I can point at, most severe first.\n\n---",
+        "path": "vllm/multimodal/profiling.py",
+        "start_line": 253,
+        "end_line": 253,
+        "observation_id": "9b983230f663432d",
+        "claimed_path": "profiling.py",
+        "path_resolution": "basename",
+        "merged_from": []
+      },
+      {
+        "content": "**1. `vllm/multimodal/profiling.py` ~line 256\u2013258 \u2014 per-item max is returned without scaling by item count, ignoring `mm_counts` (under-allocation).**\n\nThe new branch:\n```python\nmax_tokens_per_item = self.processing_info.get_max_tokens_per_item()\nif max_tokens_per_item is not None:\n    return max_tokens_per_item\n```\nreturns a per-item bound verbatim, discarding `mm_counts` entirely. The old code (`_get_dummy_mm_inputs(seq_len, mm_counts)` \u2192 `_get_mm_num_tokens(...)`) produced a total proportional to how many items of each modality were present. Qwen2.5-VL accepts multiple images per request; `get_max_tokens_per_item` returns `{\"image\": 16384, ...}` \u2014 a *single-item* limit. Concrete failure: a request with 3 images (each up to 16384 tokens) now profiles to ~16384 instead of ~49152; the downstream multimodal-token / memory allocation (the result feeds `max_multimodal_tokens` and memory profiling) is under-reserved, causing an otherwise valid multi-image request to hit a spurious \"max model len exceeded\" rejection or OOM at runtime. The fact that the method signature keeps `seq_len` and `mm_counts` while the new fast path no longer uses either is direct evidence the return value regressed from \"budget for this request\" to \"budget for one item.\"",
+        "path": "vllm/multimodal/profiling.py",
+        "start_line": 256,
+        "end_line": 256,
+        "observation_id": "3cdd6d8e9eb5f2a0",
+        "claimed_path": "vllm/multimodal/profiling.py",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "**2. `vllm/multimodal/profiling.py` ~line 255\u2013258 \u2014 `seq_len` dimension dropped from the computation.**\n\n`get_mm_max_tokens` is called with `seq_len` because per-item multimodal token counts are not necessarily sequence-independent for vision models. The fast path now returns a constant that ignores `seq_len`, so any model whose per-image token count depends on `seq_len` (patch/token merging, vision-tower position adjustments) gets a wrong bound for some lengths. Lower confidence \u2014 requires knowing the model internals, which I cannot read here \u2014 but the removal of the `seq_len` dependence from a method that still takes `seq_len` is a regression the diff supports.",
+        "path": "vllm/multimodal/profiling.py",
+        "start_line": 255,
+        "end_line": 255,
+        "observation_id": "8521a76afc029f31",
+        "claimed_path": "vllm/multimodal/profiling.py",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "**3. `vllm/model_executor/models/qwen2_vl.py` ~line 825\u2013826 \u2014 hardcoded `16384`/`98304` are config-dependent magic numbers that silently go stale.**\n\nThese constants bake in a specific vision-tower resolution and tokenization. The base docstring in `processing.py` (added in hunk 2) itself acknowledges the dummy-generation path it replaces \"works but can be very slow,\" implying these precomputed values were chosen for one configuration. Any change to resolution/`min_pixels`/`max_pixels`/tokenizer settings that alters per-image tokens makes the returned bound no longer match real usage, and since the fast path never re-derives it, the mismatch is silent. Concrete failure: raising the image resolution config pushes actual per-image tokens above 16384, profiling under-allocates (same bad downstream effect as item 1), and no code path detects the staleness.\n\n---\n\n**Verification caveat:** I could not confirm the caller contracts (whether the returned mapping is summed vs. maxed across modalities, whether `mm_counts` was the only scaling factor, or whether Qwen2.5-VL per-item tokens depend on `seq_len`) because the working directory is empty \u2014 there is no source to read. Items 1 and 3 are defensible from the diff alone; item 2 depends on model internals I could not verify. If the caller only ever passes `mm_counts` with a value of 1 per modality, item 1's blast radius is smaller but the defect (returning a constant where a count-scaled total is expected) still stands.## Defects Found",
+        "path": "vllm/model_executor/models/qwen2_vl.py",
+        "start_line": 825,
+        "end_line": 825,
+        "observation_id": "d4f3ca0dc93b8701",
+        "claimed_path": "vllm/model_executor/models/qwen2_vl.py",
+        "path_resolution": "exact",
+        "merged_from": [
+          "aa7c1043204811f3"
+        ]
+      },
+      {
+        "content": "### 1. **profiling.py:256-258** \u2014 Semantic mismatch: pre-computed path returns per-item max tokens, fallback returns total max tokens for given `mm_counts`\n\n**Failure scenario**: Caller invokes `get_mm_max_tokens(seq_len=4096, mm_counts={\"image\": 2})`. \n- For a model **without** `get_max_tokens_per_item` override: fallback generates dummy inputs for 2 images \u2192 returns *total* tokens for 2 images.\n- For Qwen2VL **with** override: returns `{\"image\": 16384}` (per-item) ignoring `mm_counts` entirely.\n- Downstream code expecting \"max tokens for the request\" gets per-item value for one model and total for another \u2192 incorrect memory planning, potential OOM or under-allocation.",
+        "path": "vllm/multimodal/profiling.py",
+        "start_line": 256,
+        "end_line": 256,
+        "observation_id": "cb62a94ce8c79f5f",
+        "claimed_path": "profiling.py",
+        "path_resolution": "basename",
+        "merged_from": []
+      },
+      {
+        "content": "### 2. **profiling.py:256-258** \u2014 `mm_counts` parameter silently ignored when pre-computed values exist\n\n**Failure scenario**: Same as above. API contract implies `mm_counts` affects result (fallback uses it), but pre-computed path discards it. Caller passing `mm_counts={\"image\": 1}` vs `{\"image\": 10}` gets identical result for Qwen2VL.",
+        "path": "vllm/multimodal/profiling.py",
+        "start_line": 256,
+        "end_line": 256,
+        "observation_id": "90e245ff1484e259",
+        "claimed_path": "profiling.py",
+        "path_resolution": "basename",
+        "merged_from": []
+      },
+      {
+        "content": "### 3. **profiling.py:256-258** \u2014 No validation of returned mapping from `get_max_tokens_per_item()`\n\n**Failure scenarios**:\n- Model returns `{}` (empty dict) \u2192 profiling returns empty dict \u2192 downstream `KeyError` or silent zero-token allocation.\n- Model returns `{\"image\": -1}` or `{\"image\": 0}` \u2192 negative/zero token counts propagate to memory planner.\n- Model returns `{\"image\": \"16384\"}` (string) \u2192 type error later when arithmetic performed.\n- Model returns `{\"audio\": 1000}` (unexpected key) \u2192 caller expecting \"image\"/\"video\" keys gets `KeyError`.",
+        "path": "vllm/multimodal/profiling.py",
+        "start_line": 256,
+        "end_line": 256,
+        "observation_id": "2eded3a207430723",
+        "claimed_path": "profiling.py",
+        "path_resolution": "basename",
+        "merged_from": []
+      },
+      {
+        "content": "### 4. **qwen2_vl.py:822-823** \u2014 Hardcoded per-item values may not match actual model configuration\n\n**Failure scenario**: Qwen2VL variant with different `patch_size`, `merge_size`, or `spatial_merge_size` config values. The hardcoded 16384/98304 assume specific config. If model processes larger images (higher resolution), actual tokens exceed 16384 \u2192 profiling underestimates \u2192 KV cache allocation too small \u2192 OOM at runtime. If model processes smaller images, profiling overestimates \u2192 wasted memory.",
+        "path": "vllm/model_executor/models/qwen2_vl.py",
+        "start_line": 822,
+        "end_line": 822,
+        "observation_id": "562a57c7a185ca68",
+        "claimed_path": "qwen2_vl.py",
+        "path_resolution": "basename",
+        "merged_from": []
+      },
+      {
+        "content": "### 5. **qwen2_vl.py:822-823** \u2014 Returns max tokens for modalities the model instance may not support\n\n**Failure scenario**: Qwen2VL model initialized with `vision_config` that disables video (or image). `get_max_tokens_per_item()` still returns both `{\"image\": 16384, \"video\": 98304}`. Profiling reports video capacity \u2192 scheduler may admit video requests \u2192 runtime error when vision encoder lacks video support.",
+        "path": "vllm/model_executor/models/qwen2_vl.py",
+        "start_line": 822,
+        "end_line": 822,
+        "observation_id": "846dda1fad2a0292",
+        "claimed_path": "qwen2_vl.py",
+        "path_resolution": "basename",
+        "merged_from": []
+      },
+      {
+        "content": "### 6. **profiling.py:256-258** \u2014 No runtime type guard ensuring values are `int` (only static `Optional[Mapping[str, int]]`)\n\n**Failure scenario**: Subclass overrides `get_max_tokens_per_item()` returning `Mapping[str, float]` or `Mapping[str, str]`. The `is not None` check passes, returns non-int values \u2192 `TypeError` in downstream arithmetic (e.g., `seq_len + max_tokens`).",
+        "path": "vllm/multimodal/profiling.py",
+        "start_line": 256,
+        "end_line": 256,
+        "observation_id": "c264d0523d4775a9",
+        "claimed_path": "profiling.py",
+        "path_resolution": "basename",
+        "merged_from": []
+      },
+      {
+        "content": "### 7. **processing.py:1101-1110** \u2014 Docstring references \"Qwen2.5-VL\" but implementation is in `qwen2_vl.py` (Qwen2-VL)\n\n**Failure scenario**: Developer reads docstring, assumes Qwen2.5-VL has this optimization, but the override is only on Qwen2VL class. Qwen2.5-VL (if separate class) falls back to slow dummy generation. Not a runtime defect but a maintainability trap.",
+        "path": "vllm/multimodal/processing.py",
+        "start_line": 1101,
+        "end_line": 1101,
+        "observation_id": "ef96968821298ae6",
+        "claimed_path": "processing.py",
+        "path_resolution": "basename",
+        "merged_from": []
+      },
+      {
+        "content": "### 8. **qwen2_vl.py:821-823** \u2014 Method lacks `@override` decorator or explicit indication it's overriding base class\n\n**Failure scenario**: Base class in `processing.py` changes signature (e.g., adds required parameter). Qwen2VL override silently becomes incorrect (wrong signature) but still callable \u2192 runtime `TypeError` when invoked via base class reference. (Minor: Python doesn't enforce `@override`, but missing it removes static analysis safety.)\n\n---\n\n**Total: 8 distinct defects with concrete failure scenarios.** The most severe are #1 and #2 (semantic inconsistency breaking API contract) and #3 (no validation allowing silent corruption).",
+        "path": "vllm/model_executor/models/qwen2_vl.py",
+        "start_line": 821,
+        "end_line": 821,
+        "observation_id": "fc10ef60cfc1bc56",
+        "claimed_path": "qwen2_vl.py",
+        "path_resolution": "basename",
+        "merged_from": []
+      }
+    ]
+  },
+  "rundir": "/home/mjarnold/.cache/llm-panel/runs/aacr-up-yf8xvug0-dde80eaba6a9/20260829-120857-3760729",
+  "extractor": "3",
+  "unlocated": []
+}

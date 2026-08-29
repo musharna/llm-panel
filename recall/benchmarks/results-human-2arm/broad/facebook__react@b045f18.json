@@ -1,0 +1,220 @@
+{
+  "review": {
+    "comments": [
+      {
+        "content": "- **Bug \u2014 DevTools observability:** `packages/react-devtools-shared/src/backend/fiber/renderer.js:1491` filters every `ActivityComponent`. A user-authored `<Activity>` therefore never appears in the component tree; its children are hoisted, so maintainers cannot inspect its `mode`, props, or boundary identity. `ActivityComponent` should remain visible while its internal `OffscreenComponent` is filtered.",
+        "path": "packages/react-devtools-shared/src/backend/fiber/renderer.js",
+        "start_line": 1491,
+        "end_line": 1491,
+        "observation_id": "934e9be57f604878",
+        "claimed_path": "packages/react-devtools-shared/src/backend/fiber/renderer.js",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "- **Bug \u2014 incomplete name resolution:** `packages/shared/ReactSymbols.js:38` introduces a public element type without adding it to `shared/getComponentNameFromType`. Calls such as `getComponentNameFromType(unstable_Activity)` consequently return `null`; Fizz also uses that name for component stacks and resumable key paths, producing unnamed `<...>` frames and weaker replay validation. Add an `REACT_ACTIVITY_TYPE => 'Activity'` branch.",
+        "path": "packages/shared/ReactSymbols.js",
+        "start_line": 38,
+        "end_line": 38,
+        "observation_id": "098dabf8b1f17964",
+        "claimed_path": "packages/shared/ReactSymbols.js",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "- **Maintainability / latent compatibility defect:** `packages/react-devtools-shared/src/backend/fiber/renderer.js:149` imports the build-time tag value directly, bypassing the version-specific `ReactTypeOfWork.ActivityComponent` mappings added below. Those mappings are effectively unused by the switches. If a renderer version assigns Activity a different tag, DevTools will misidentify or filter the wrong fiber. Obtain the tag from `ReactTypeOfWork`, as with the other work tags.",
+        "path": "packages/react-devtools-shared/src/backend/fiber/renderer.js",
+        "start_line": 149,
+        "end_line": 149,
+        "observation_id": "47d5a5f38564157c",
+        "claimed_path": "packages/react-devtools-shared/src/backend/fiber/renderer.js",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "- **Misleading abstraction:** `packages/react-reconciler/src/ReactFiber.js:882` types Activity props as `OffscreenProps`. This exposes Offscreen-only modes and couples the public Activity contract to an internal implementation detail, preventing Flow from catching divergence when Activity gains distinct props or validation. Define and use an `ActivityProps` type, converting it to `OffscreenProps` only for the internal child.## Review\n\n### 1. `updateActivityComponent` duplicates the entire `updateOffscreenComponent` body \u2014 real (latent) bug: missing null/offstage handling\n\n**File:** `packages/react-reconciler/src/ReactFiberBeginWork.js`, lines in the `updateActivityComponent` function (diff hunk starting at `@@ -867,6 +868,46 @@`, lines 871\u2013911).\n\nThis function is a hand-copied near-clone of `updateOffscreenComponent`, but it **drops the `updateOffsetComponent`/`OffscreenComponent` offstage branches**. The real `updateOffscreenComponent` (and its `updateLegacyHiddenComponent` / deferred variants) handle `current === null` by accounting for the `OffscreenVisible`/`OffscreenDetached` modes, the `mode` prop / `OffscreenHidden` state, fragment `ref` propagation, and \u2014 critically \u2014 the case where `nextProps.mode === 'hidden'` / `OffscreenDetached` mounting. It also carries `updateWorkInProgressOffscreenFiber` logic that reconciles child diffing with the `offscreen` hidden/unhidden state machine.\n\nThis clone passes `nextMode = nextProps.mode` into `OffscreenProps`, but here `mode` is being read from the *props* while the *fiber* `workInProgress.mode` is the type-of-mode bitmask \u2014 this clashes with how the actual offscreen code distinguishes \"this fiber is an offscreen component\" from \"this is a mode toggle\". The real `updateOffscreenComponent` does **not** read `mode` from `nextProps.mode` \u2014 it derives hidden state from `OffscreenVisible`/`OffscreenDetached` flags. Reading `mode` out of props and treating it as `OffscreenProps.mode` conflates two totally different \"mode\" concepts (props mode-string vs. fiber TypeOfMode). This will diverge from the canonical offscreen implementation on the first hidden/unhidden transition.\n\n**Concrete failure scenario:** An `<Activity>` placed inside a hidden offscreen container, or one whose `mode={'hidden'}` prop transitions, will not get the correct `OffscreenVisible`/`OffscreenDetached` flags set, so the children are never detached/eagerly hidden \u2014 the hidden subtree keeps rendering. Wrong result, silently.\n\n**Kind:** real defect (wrong results on offscreen mode transitions), and an abstraction/reuse issue (copy-pasted state machine that will drift).",
+        "path": "packages/react-reconciler/src/ReactFiber.js",
+        "start_line": 882,
+        "end_line": 882,
+        "observation_id": "33d8dd3eb5ad9784",
+        "claimed_path": "packages/react-reconciler/src/ReactFiber.js",
+        "path_resolution": "exact",
+        "merged_from": [
+          "0da15d0c1bf64ca7",
+          "a17bc050e6f77e39"
+        ]
+      },
+      {
+        "content": "### 2. `createFiberFromActivity` sets `elementType = REACT_ACTIVITY_TYPE` but the fiber's `tag`/type path is inconsistent with the create-tag dispatch\n\n**File:** `packages/react-reconciler/src/ReactFiber.js`, `createFiberFromActivity` (hunk `@@ -874,6 +878,17 @@`, lines 881\u2013891) and the dispatch at `@@ -595,6 +597,8 @@` (lines 600\u2013601).\n\n`createFiberFromActivity` is a clone of `createFiberFromOffscreen` but it is missing the pieces `createFiberFromOffscreen` has. In the actual React source, `createFiberFromOffscreen` does:\n```js\nfiber.elementType = REACT_OFFSCREEN_TYPE;\nfiber.lanes = lanes;\nconst primaryChildInstance = {\n  _visibility: OffscreenDetached,\n  _pendingVisibility: OffscreenDetached,\n};\nfiber.stateNode = primaryChildInstance;\n```\nThis clone **omits the `stateNode` initialization** (the offscreen instance with `_visibility`/`_pendingVisibility`). Methods that read `fiber.stateNode._visibility` (e.g. `OffscreenComponent` handling in `ReactFiberCompleteWork`, `markRef`, and the `OffscreenDetached`-driven cleanup paths) will read `stateNode === null` for every Activity fiber \u2192 **null dereference** crash on the first hidden-mode Activity.\n\n**Concrete failure scenario:** Any reference to `(workInProgress.stateNode: any)._visibility` on an ActivityComponent fiber crashes with `Cannot read properties of null (reading '_visibility')`.\n\n**Kind:** real defect (crash), missing defensive check / missing initialization.",
+        "path": "packages/react-reconciler/src/ReactFiber.js",
+        "start_line": 881,
+        "end_line": 881,
+        "observation_id": "b357a05c9825910c",
+        "claimed_path": "packages/react-reconciler/src/ReactFiber.js",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "### 3. `ReactClient.js`: dropping the `REACT_OFFSCREEN_TYPE` import breaks the previously-exported `unstable_Activity`, and the diff leaves the file inconsistent\n\n**File:** `packages/react/src/ReactClient.js`, hunk `@@ -15,7 +15,7 @@` (line 18) and `@@ -116,7 +116,7 @@` (lines 119\u2013120).\n\nThe diff **replaces** `REACT_OFFSCREEN_TYPE` with `REACT_ACTIVITY_TYPE` in the import and in the export, but:\n- It never adds the `REACT_ACTIVITY_TYPE`/`REACT_OFFSCREEN_TYPE` mapping into the `ReactServer.js` counterpart (unverified, but the diff is unilateral).\n- More concretely: the old export bound `unstable_Activity` to `REACT_OFFSCREEN_TYPE`; the new one binds it to `REACT_ACTIVITY_TYPE`. `REACT_ACTIVITY_TYPE` is only ever matched in `createFiberFromTypeAndProps`, `renderElement` (Fizz), and `isValidElementType`. But the renderer's `createFiberFromTypeAndProps` now returns a **`ActivityComponent` tag** fiber that \u2014 per item 2 \u2014 never initializes its offscreen `stateNode`. Meanwhile `REACT_OFFSCREEN_TYPE` (still a valid element type, still in `isValidElementType`, still handled in beginWork/completeWork, still a supported ReactWorkTag) is no longer produced by the `unstable_Activity` export. Any existing consumer of `unstable_Activity` that relied on it producing `OffscreenComponent` semantics gets `ActivityComponent` semantics that are the incomplete clone from items 1 and 2.\n\nThis is a **public API change** (`unstable_Activity`) done silently without a semver/feature-flag gate. `unstable_Activity` was the *new name* for Offscreen (it was renamed to Activity in the actual codebase around this era), so converting the export to the new symbol is the intended direction \u2014 but doing it without keeping the old symbol's render behavior working, and shipping it as `unstable_` with no `enableActivity` feature flag wrapping in `isValidElementType`, changes behavior of an existing unstable API in the same commit that makes Activity half-broken (items 1, 2).\n\n**Kind:** real defect (behavior/ABI change to existing API, resulting in broken rendering), missing validation.",
+        "path": "packages/react/src/ReactClient.js",
+        "start_line": 18,
+        "end_line": 18,
+        "observation_id": "c635312cce59882f",
+        "claimed_path": "ReactClient.js",
+        "path_resolution": "basename",
+        "merged_from": []
+      },
+      {
+        "content": "### 4. `WorkTag` numbering: `31` collides with the ReactWorkTags numeric enum in the diffed tree\n\n**File:** `packages/react-reconciler/src/ReactWorkTags.js`, hunk `@@ -38,7 +38,8 @@` (lines 41\u201342) and `@@ -69,3 +70,4 @@` (line 73).\n\nThis is fine *within this diff* (30\u219231 is the natural next). I only flag that the diffed `react-reconciler` uses one WorkTag scheme while `react-devtools-shared` mirrors it via the version-switching `ReactTypeOfWork` map. Careful maintainer note: `ActivityComponent` is added to the devtools map as `31` for the latest version and `-1` for all older versions \u2014 this is correct. No numeric collision here. I'll note this as not a defect but verify the devtools `-1` propagation is consistent (it is across 17.0, 16.6, 16.4.3, and the fallback). Actually this is fine.",
+        "path": "packages/react-reconciler/src/ReactWorkTags.js",
+        "start_line": 41,
+        "end_line": 41,
+        "observation_id": "a6fc4523057589fb",
+        "claimed_path": "packages/react-reconciler/src/ReactWorkTags.js",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "### 5. DevTools: `ActivityComponent` added to the \"should not traverse children\" early-return in `attach`, but `getInternalReactConstants`/`getDisplayName` map it only in the *latest* version branch\n\n**File:** `packages/react-devtools-shared/src/backend/fiber/renderer.js`, hunk `@@ -1480,6 +1488,7 @@` (line 1491).\n\n`case ActivityComponent:` is added alongside `HostPortal`, `HostText`, `LegacyHiddenComponent`, `OffscreenComponent`, `Throw` in the early return (the `attach` function's \"this tag has no traversable children\" branch). This is consistent with `OffscreenComponent`. Not a defect by itself.\n\nBut there's a real inconsistency worth raising: the diff adds the `ActivityComponent` case to the **early-return traversal short-circuit** in `attach`, yet the new name mapping `case ActivityComponent: return 'Activity';` was added to the *latest version* `getDisplayName` branch only. Fine. The more interesting issue: `renderer.js` imports `ActivityComponent` from **`react-reconciler/src/ReactWorkTags`** (a *raw constant*) rather than from the *version-resolved* `getInternalReactConstants` map. If `attach` ever runs against an older React build, `ActivityComponent` would be a real numeric value (31) from the *imported source's* ReactWorkTags, not from the resolved `ReactTypeOfWork` mapping \u2014 so a fiber with tag 31 in an older React (which could be anything) would be misclassified. In practice this matches the pattern already used by `CacheComponent`/`OffscreenComponent` in the same switch, so it's pre-existing style \u2014 but `ActivityComponent` is the first that does not exist in the version being inspected, making the hardcoded import genuinely wrong for old runtimes. **Kind:** latent bug / missing version guard, low severity.",
+        "path": "packages/react-devtools-shared/src/backend/fiber/renderer.js",
+        "start_line": 1491,
+        "end_line": 1491,
+        "observation_id": "c684df44a752075e",
+        "claimed_path": "packages/react-devtools-shared/src/backend/fiber/renderer.js",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "### 6. Feature flag missing around `REACT_ACTIVITY_TYPE` in `isValidElementType`\n\n**File:** `packages/shared/isValidElementType.js`, hunk `@@ -50,6 +51,7 @@` (line 54).\n\nEvery sibling special element here is guarded by a feature flag (`enableLegacyHidden`, `enableScopeAPI`, `enableTransitionTracing`) \u2014 and in the real React codebase `REACT_ACTIVITY_TYPE` is gated behind `enableActivity` (which at this point was still experimental/`unstable_Activity`). This diff adds `type === REACT_ACTIVITY_TYPE ||` **unguarded**. Result: on production builds where Activity is not enabled, a raw `REACT_ACTIVITY_TYPE` element is silently accepted as valid instead of being rejected/ignored, and `createFiberFromTypeAndProps`/`renderElement` will route it into the new (broken, per items 1\u20132) Activity path even when the feature flag is off.\n\n**Kind:** missing validation / gating; latent behavior change on non-experimental builds.",
+        "path": "packages/shared/isValidElementType.js",
+        "start_line": 54,
+        "end_line": 54,
+        "observation_id": "dfd72b3ae0ec7f7b",
+        "claimed_path": "packages/shared/isValidElementType.js",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "### 8. `updateActivityComponent` \u2014 `nextMode` unused warning / no `mode` on the fragment\n\n**File:** `packages/react-reconciler/src/ReactFiberBeginWork.js`, `updateActivityComponent` (lines 871\u2013911).\n\n`const nextMode = nextProps.mode;` is read but, in the non-null-`current` branch, only `nextMode`'s value flows into `offscreenChildProps.mode` \u2014 the fiber-level `mode` (type-of-mode) is passed as `mode` to `mountWorkInProgressOffscreenFiber`. In `updateOffscreenComponent` the corresponding logic also sets `Offscreen` hidden-flag handling and reconciling `currentChild` against `current`'s hidden/visible state \u2014 none of which this clone does, and crucially `updateWorkInProgressOffscreenFiber` in the real implementation is `updateWorkInProgressOffscreenFiber` that doesn't take a `mode` arg for hidden toggling. Since `mode` props for Offscreen is a string ('visible'|'hidden'), passing it as `OffscreenProps.mode` while the offscreen machinery keys off `_visibility` flags (which are never initialized per item 2) means mode toggling is a no-op. Same root as item 1 \u2014 I'll fold note into item 1.\n\nLet me also verify the `-1` additions for older versions are present \u2014 yes, all four older branches got `ActivityComponent: -1`. Good consistency.\n\n---\n\nLet me settle the highest-confidence issues and order them.\n\nNow I need to double-check my claim about `createFiberFromOffscreen` having a `stateNode`. Let me reason: I stated item 2 confidently but I should verify it's not just confidently wrong. I cannot verify against live source here (empty repo). I'll be honest about the uncertainty margin but the divergence between `createFiberFromActivity` and a proper Offscreen-fiber creation (missing stateNode init) is a legitimate, defensible maintainer concern worth raising regardless.\n\nLet me finalize the ordered list.\n\n\nConfirmed: the working directory contains no source files, so I cannot verify claims against live code. I've based the review on the diff text and knowledge of the React codebase, and I'll flag where verification was impossible.\n\nHere is my review, most severe first. Since this is a diff-review with no source present, some items rest on how the canonical React Offscreen implementation behaves; I've marked confidence where relevant.\n\n---\n\n## Review findings (most severe first)\n\n**1. `updateActivityComponent` is a weakened copy of `updateOffscreenComponent` that drops the hidden/offstage state machine \u2014 wrong results on mode transitions**\n**File:** `packages/react-reconciler/src/ReactFiberBeginWork.js` \u2014 the `updateActivityComponent` function body, diff hunk `@@ -867,6 +868,46 @@` (approximately lines 871\u2013911).\n**Kind:** real defect (wrong results) + duplicated-state/abstraction-that-won't-hold.\n\nThe canonical `updateOffscreenComponent` (which this is transparently cloned from) manages the fiber's hidden/visible lifecycle through `OffscreenVisible`/`OffscreenDetached` flags on the offscreen instance and reconciles the child fragment against that state. This clone:\n- reads `const nextMode = nextProps.mode;` and feeds it into `OffscreenProps.mode` as if it were a fiber type-of-mode / visibility signal, and\n- never mounts/detaches the hidden subtree.\n\nBecause `stateNode` is never initialized (see item 2), the visibility flags the real implementation reads don't exist at all, so an `<Activity mode=\"hidden\">` subtree keeps rendering eagerly. **Concrete failure:** placing a hidden Activity subtree (or toggling its `mode`) does not detach/hide it \u2014 it renders children into the DOM and consumes memory, silently. This is precisely the class of logic the copied implementation handles, so the copy will drift from it on the first non-trivial use.",
+        "path": "packages/react-reconciler/src/ReactFiberBeginWork.js",
+        "start_line": 871,
+        "end_line": 871,
+        "observation_id": "231d8698c0ad306a",
+        "claimed_path": "packages/react-reconciler/src/ReactFiberBeginWork.js",
+        "path_resolution": "exact",
+        "merged_from": [
+          "f4f32c06d1caef1e",
+          "9d502c89c431d4f2"
+        ]
+      },
+      {
+        "content": "**2. `createFiberFromActivity` never initializes `fiber.stateNode`, so the offscreen instance (`_visibility`/`_pendingVisibility`) is null \u2014 crash on hidden-mode Activity**\n**File:** `packages/react-reconciler/src/ReactFiber.js` \u2014 `createFiberFromActivity`, hunk `@@ -874,6 +878,17 @@` (lines 881\u2013891).\n**Kind:** real defect (crash).\n\nCanonical `createFiberFromOffscreen` initializes `fiber.stateNode` to an instance `{_visibility: OffscreenDetached, _pendingVisibility: OffscreenDetached}` before returning. This clone sets `elementType` and `lanes` but omits the `stateNode` init. Any reader of `(fiber.stateNode: any)._visibility` (the offscreen path in CompleteWork, the `OffscreenDetached`-driven cleanup, markRef paths) hits a null dereference on the first Activity fiber. **Concrete failure:** rendering any `<Activity>` that reaches the offscreen visibility/cleanup logic throws `Cannot read properties of null (reading '_visibility')`, crashing the render. (Confidence: high that the clone omits stateNode init relative to Offscreen; I could not verify against live source here since the repo is empty, but the omission is visible in the diff.)",
+        "path": "packages/react-reconciler/src/ReactFiber.js",
+        "start_line": 881,
+        "end_line": 881,
+        "observation_id": "08069c9019dc6868",
+        "claimed_path": "packages/react-reconciler/src/ReactFiber.js",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "**3. `ReactClient.js` swaps `unstable_Activity` to a new symbol (`REACT_ACTIVITY_TYPE`) that now routes into the broken Activity path, with no feature-flag gating**\n**File:** `packages/react/src/ReactClient.js` \u2014 hunk `@@ -15,7 +15,7 @@` (line 18) and hunk `@@ -116,7 +116,7 @@` (lines 119\u2013120).\n**Kind:** real defect (silent behavior/ABI change to an existing unstable API) + missing validation/gating.\n\nThis replaces the exported `unstable_Activity` binding from `REACT_OFFSCREEN_TYPE` to `REACT_ACTIVITY_TYPE`. `REACT_ACTIVITY_TYPE` is later routed by `createFiberFromTypeAndProps` into `ActivityComponent`, which (per items 1\u20132) is the incomplete clone. Meanwhile the old `REACT_OFFSCREEN_TYPE` path still exists and still works. So any existing consumer of `unstable_Activity` silently moves from a working Offscreen implementation to a broken one in the same commit, with no `enableActivity`-style flag on the new symbol (see item 6) to contain it. For an `unstable_` API the rename itself is defensible, but shipping it as the *same export name* while its render path is broken is a user-facing regression. **Concrete failure:** an app using `unstable_Activity` to hide a section now renders it outright (item 1) and/or crashes (item 2), after updating React, with no feature opt-in.",
+        "path": "packages/react/src/ReactClient.js",
+        "start_line": 18,
+        "end_line": 18,
+        "observation_id": "e1c20407fc52bb9f",
+        "claimed_path": "ReactClient.js",
+        "path_resolution": "basename",
+        "merged_from": []
+      },
+      {
+        "content": "**4. `REACT_ACTIVITY_TYPE` is added to `isValidElementType` without a feature flag, while every sibling special type is gated**\n**File:** `packages/shared/isValidElementType.js` \u2014 hunk `@@ -50,6 +51,7 @@` (line 54).\n**Kind:** missing validation / gating; latent behavior change on non-experimental builds.\n\nEvery neighboring check is behind a flag (`enableLegacyHidden`, `enableScopeAPI`, `enableTransitionTracing`); this one is added unconditionally. On production builds where Activity is not enabled, a stray `React.unstable_Activity` element is silently accepted as valid and routed into the new (broken) path instead of being ignored/rejected, changing behavior outside the experiment. **Concrete failure:** a production bundle accidentally carrying an Activity element now renders/crashes instead of treating it as invalid.",
+        "path": "packages/shared/isValidElementType.js",
+        "start_line": 54,
+        "end_line": 54,
+        "observation_id": "dfa0826c9086eddf",
+        "claimed_path": "packages/shared/isValidElementType.js",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "**5. DevTools `renderer.js` imports the raw `ActivityComponent` constant and applies it in `attach`, but the tag only exists in the newest React \u2014 misclassification against older runtimes**\n**File:** `packages/react-devtools-shared/src/backend/fiber/renderer.js` \u2014 hunk `@@ -1480,6 +1488,7 @@` (line 1491); import at hunk `@@ -146,6 +146,7 @@` (line 149).\n**Kind:** latent bug / missing version guard (low severity).\n\nThe `case ActivityComponent:` early-return short-circuit is added using the **hardcoded imported constant** (numeric 31), not a value resolved from the version-aware `getInternalReactConstants` map. Every other tag in that switch is either version-resolved or existed across many supported versions. Since `ActivityComponent` exists only in the newest branch of the version matrix, a DevTools session attaching to an older React build would misread a fiber whose raw tag equals 31. This mirrors how `CacheComponent` is handled, so it's idiomatic for this file \u2014 but it's the first tag added here that is guaranteed not to exist in the older versions the map keys on. Consider resolving `ActivityComponent` from the version map instead. (DevTools is a lower bar, hence low severity.)\n\n---\n\n**Non-issues I checked and dismissed:** the `WorkTag` numbering (30 \u2192 31) is consistent across `ReactWorkTags.js`, the version-switching devtools map (31 for newest, `-1` for all older branches), and the `types.js` `WorkTagMap` addition \u2014 no collision. The `-1` propagation across the four older version branches is correct and consistent.\n\n---\n\n**What I could not verify (availability gap):** The working directory `/tmp/aacr-up-rxzpm_zc` is empty \u2014 no React source is present \u2014 so I could not confirm against live code that (a) `createFiberFromOffscreen` initializes `stateNode` in exactly the way item 2 assumes, (b) `mountWorkInProgressOffscreenFiber`/`updateWorkInProgressOffscreenFiber` semantics match my item 1 description, or (c) whether a corresponding `enableActivity` flag exists that should gate item 4. Items 1\u20134 should be double-checked against `ReactFiberActivityComponent.js` and `ReactFiber.js` in the actual tree before acting. I'm flagging them because the clone's visible omissions (no `stateNode` init, reading `mode` from props) stand out on the face of the diff regardless of the canonical implementation's exact details.",
+        "path": "packages/react-devtools-shared/src/backend/fiber/renderer.js",
+        "start_line": 1491,
+        "end_line": 1491,
+        "observation_id": "c5a5bb21dc24a982",
+        "claimed_path": "renderer.js",
+        "path_resolution": "basename",
+        "merged_from": []
+      },
+      {
+        "content": "### 1. **Breaking API change in ReactClient.js** \u2014 **Severity: HIGH (Breaking Change)**\n**File:** `packages/react/src/ReactClient.js`  \n**Lines:** 15\u201316 (import), 116\u2013117 (export)\n\nThe diff removes `REACT_OFFSCREEN_TYPE` from imports and replaces it with `REACT_ACTIVITY_TYPE`, then changes the export:\n```diff\n-  REACT_OFFSCREEN_TYPE as unstable_Activity,\n+  REACT_ACTIVITY_TYPE as unstable_Activity,\n```\nThis **renames the meaning of `unstable_Activity`** from the offscreen component to the new activity component. Any external code using `unstable_Activity` (e.g., `<React.unstable_Activity>`) will now get a different element type at runtime. Additionally, if `REACT_OFFSCREEN_TYPE` is referenced elsewhere in this file (not shown in the diff hunk), it will become an undefined reference.\n\n---",
+        "path": "packages/react/src/ReactClient.js",
+        "start_line": 15,
+        "end_line": 15,
+        "observation_id": "e2a081fc1a66b7ba",
+        "claimed_path": "ReactClient.js",
+        "path_resolution": "basename",
+        "merged_from": []
+      },
+      {
+        "content": "### 2. **Inconsistent mount vs update signatures in `updateActivityComponent`** \u2014 **Severity: MEDIUM (Potential Bug)**\n**File:** `packages/react-reconciler/src/ReactFiberBeginWork.js`  \n**Lines:** 868\u2013912 (the new `updateActivityComponent` function)\n\nIn the mount branch (`current === null`):\n```js\nmountWorkInProgressOffscreenFiber(offscreenChildProps, mode, renderLanes)\n```\nIn the update branch:\n```js\nupdateWorkInProgressOffscreenFiber(currentChild, offscreenChildProps)\n```\n- Mount passes `mode` (workInProgress.mode) and `renderLanes` as separate args\n- Update passes neither; `offscreenChildProps` contains `mode: nextProps.mode`\n\nIf `mountWorkInProgressOffscreenFiber` and `updateWorkInProgressOffscreenFiber` have different signatures (likely), this is a bug. The update path should probably also pass `renderLanes` at minimum.\n\n---",
+        "path": "packages/react-reconciler/src/ReactFiberBeginWork.js",
+        "start_line": 868,
+        "end_line": 868,
+        "observation_id": "092f4fe07699025f",
+        "claimed_path": "packages/react-reconciler/src/ReactFiberBeginWork.js",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "### 3. **`createFiberFromActivity` typed with `OffscreenProps`** \u2014 **Severity: MEDIUM (Type Safety)**\n**File:** `packages/react-reconciler/src/ReactFiber.js`  \n**Lines:** 878\u2013889 (new function)\n\n```ts\nexport function createFiberFromActivity(\n  pendingProps: OffscreenProps,  // <-- OffscreenProps\n  mode: TypeOfMode,\n  lanes: Lanes,\n  key: null | string,\n): Fiber { ... }\n```\nBut `updateActivityComponent` (ReactFiberBeginWork.js:872) reads `nextProps.mode` and `nextProps.children`. If `OffscreenProps` doesn't have a `mode` field, this is a type error. The Activity component likely has its own props shape (mode + children), distinct from Offscreen.\n\n---",
+        "path": "packages/react-reconciler/src/ReactFiber.js",
+        "start_line": 878,
+        "end_line": 878,
+        "observation_id": "c38f22d043185bd8",
+        "claimed_path": "packages/react-reconciler/src/ReactFiber.js",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "### 4. **Implicit fall-through in server renderer** \u2014 **Severity: LOW (Maintainability)**\n**File:** `packages/react-server/src/ReactFizzServer.js`  \n**Lines:** 2262\u20132265\n\n```js\ncase REACT_ACTIVITY_TYPE:\ncase REACT_OFFSCREEN_TYPE: {\n  renderOffscreen(request, task, keyPath, props);\n  return;\n}\n```\nNo `// Fallthrough` comment. While intentional (Activity renders as Offscreen on server), the lack of comment makes it look like a missing `break` and will trip linters/reviewers.\n\n---",
+        "path": "packages/react-server/src/ReactFizzServer.js",
+        "start_line": 2262,
+        "end_line": 2262,
+        "observation_id": "4dc42e3648543935",
+        "claimed_path": "packages/react-server/src/ReactFizzServer.js",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "### 5. **Implicit fall-through in `completeWork`** \u2014 **Severity: LOW (Maintainability)**\n**File:** `packages/react-reconciler/src/ReactFiberCompleteWork.js`  \n**Lines:** 960\u2013964\n\n```js\ncase ActivityComponent:\ncase LazyComponent:\ncase SimpleMemoComponent:\ncase FunctionComponent:\n```\nActivityComponent falls through to no-op cases. If this is intentional (like FunctionComponent), add a `// Fallthrough` comment. If ActivityComponent *should* have complete-work logic (e.g., mounting refs, layout effects), it's missing.\n\n---\n\n### 6. **Missing `ActivityComponent` handling in other reconciler hot paths** \u2014 **Severity: LOW (Incomplete Feature)**\n**Files:** Not in diff, but worth verifying\nThe diff doesn't show updates to:\n- `ReactFiberCommitWork.js` (mutation/commit phase)\n- `ReactFiberFlags.js` / side-effect flags\n- `ReactFiberHostConfig.js` (host operations)\n- `ReactFiberLane.js` (lane prioritization)\n- `ReactFiberSuspenseComponent.js` (suspense boundaries)\n\nIf ActivityComponent behaves like Offscreen (which it delegates to), it may need similar flags/lane handling. Verify these paths handle tag 31.\n\n---",
+        "path": "packages/react-reconciler/src/ReactFiberCompleteWork.js",
+        "start_line": 960,
+        "end_line": 960,
+        "observation_id": "ddd9f850d5951af4",
+        "claimed_path": "packages/react-reconciler/src/ReactFiberCompleteWork.js",
+        "path_resolution": "exact",
+        "merged_from": [
+          "3e23cdc952c5536b"
+        ]
+      }
+    ]
+  },
+  "rundir": "/home/mjarnold/.cache/llm-panel/runs/aacr-up-rxzpm_zc-b4e69a4a905e/20260829-003108-2219713",
+  "extractor": "3",
+  "unlocated": [
+    {
+      "content": "### 7. Unused import in `ReactFiber.js` (`REACT_ACTIVITY_TYPE` used only in the new dispatch \u2014 fine) \u2014 actually the concern is `createFiberFromActivity` declared `export` but...\n\nLet me double check whether `createFiberFromActivity` is anything other than a signature-versus-usage issue. It's used at the dispatch site. Fine \u2014 no dead code there.",
+      "observation_id": "6b85ac1ff0a02ef6",
+      "claimed_path": "ReactFiber.js",
+      "path_resolution": "basename"
+    },
+    {
+      "content": "### Summary\n| File | Line | Kind |\n|------|------|------|\n| `packages/react/src/ReactClient.js` | 15\u201316, 116\u2013117 | Breaking API change |\n| `packages/react-reconciler/src/ReactFiberBeginWork.js` | 868\u2013912 | Inconsistent mount/update signatures |\n| `packages/react-reconciler/src/ReactFiber.js` | 878\u2013889 | Wrong props type (`OffscreenProps` vs Activity props) |\n| `packages/react-server/src/ReactFizzS",
+      "observation_id": "c1ed15e5ef249eae",
+      "claimed_path": "packages/react/src/ReactClient.js",
+      "path_resolution": "exact"
+    }
+  ]
+}

@@ -1,0 +1,192 @@
+{
+  "review": {
+    "comments": [
+      {
+        "content": "- **Medium \u2014 Real defect (wrong telemetry):** `src/core/task/index.ts:1512` and `src/core/task/index.ts:1578` \u2014 These timers infer a hang solely from elapsed time during normal operations. Waiting more than 30 seconds for the user to answer `ask(\"command_output\", ...)` reports `BUFFER_STUCK`, while a legitimate command such as `sleep 120` reports `WAITING_FOR_COMPLETION` after 60 seconds. Neither scenario demonstrates a stuck buffer or hung terminal, so production hang rates will be dominated by false positives.",
+        "path": "src/core/task/index.ts",
+        "start_line": 1512,
+        "end_line": 1512,
+        "observation_id": "c65d14505b2d4c56",
+        "claimed_path": "src/core/task/index.ts",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "- **Medium \u2014 Real defect (wrong telemetry):** `src/integrations/terminal/TerminalProcess.ts:198` and `src/integrations/terminal/TerminalProcess.ts:230` \u2014 A nonempty terminal-wide snapshot is treated as proof that clipboard fallback captured the current command's output. Existing prompts, banners, or previous command output make the snapshot nonempty even when capture of the current command failed, causing `captureTerminalExecution(true, \"clipboard\")` to report false successes. The result of the actual fallback operation should be checked instead.",
+        "path": "src/integrations/terminal/TerminalProcess.ts",
+        "start_line": 198,
+        "end_line": 198,
+        "observation_id": "3f020264c827b724",
+        "claimed_path": "src/integrations/terminal/TerminalProcess.ts",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "- **Medium \u2014 Real defect (wrong failure classification):** `src/integrations/terminal/TerminalProcess.ts:195` \u2014 Empty shell-integrated output is classified as `TIMEOUT`, although the command has already finished and may legitimately be silent, such as `mkdir dir` or `touch file`. This records successful silent commands as output timeouts.",
+        "path": "src/integrations/terminal/TerminalProcess.ts",
+        "start_line": 195,
+        "end_line": 195,
+        "observation_id": "79828290bff39cdf",
+        "claimed_path": "src/integrations/terminal/TerminalProcess.ts",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "- **Low \u2014 Real defect (wrong failure classification):** `src/core/task/index.ts:1533` \u2014 The catch covers every exception from the ask/response-processing block but records all of them as `STREAM_TIMEOUT`. An immediate webview-disposal error or an exception while processing feedback would therefore be reported as a timeout. Record this only for an identified timeout exception or use a generic failure reason.\n\n- **Low \u2014 Incomplete/dead instrumentation:** `src/services/telemetry/TelemetryService.ts:27` \u2014 `CLIPBOARD_FAILED` is defined, but both clipboard-failure branches report only `captureTerminalExecution(false, \"none\")` (`TerminalProcess.ts:202` and `TerminalProcess.ts:234`). Consequently the failure-reason event cannot measure the condition this enum member represents. `MANUAL_PASTE` and `CANCELLED` at lines 35\u201336 likewise have no producer in this change.\n\n- **Low \u2014 Preventive refactor/type safety:** `src/services/telemetry/TelemetryService.ts:959` \u2014 `method` is documented as a closed set but typed as unrestricted `string`. A typo or new uncoordinated value would silently fragment analytics. Use a string-literal union or enum for `\"shell_integration\" | \"clipboard\" | \"none\"`.\n\nI checked all supplied diff hunks; the workspace itself contains no source checkout for additional call-site verification.",
+        "path": "src/core/task/index.ts",
+        "start_line": 1533,
+        "end_line": 1533,
+        "observation_id": "46a244928d7ac34c",
+        "claimed_path": "src/core/task/index.ts",
+        "path_resolution": "exact",
+        "merged_from": [
+          "c2bd35b7c4d461bd",
+          "d6476ceef4b391f7"
+        ]
+      },
+      {
+        "content": "## 1. Timer leak: `bufferStuckTimer` is never cleared when the buffer is *skipped* (real resource leak) \u2014 `src/core/task/index.ts`\n\nLook closely at the `flushBuffer` flow. The diff adds `bufferStuckTimer` at its pending point, but `flushBuffer` early-returns in the very first branch:\n\n```js\nconst flushBuffer = async (force = false) => {\n    if (chunkEnroute || outputBuffer.length === 0) {\n        if (force && !chunkEnroute && outputBuffer.length > 0) { ... }\n        return\n    }\n    ...\n    chunkEnroute = true\n    bufferStuckTimer = setTimeout(...)\n    try {\n        const { response... } = await this.ask(\"command_output\", chunk)\n        ...\n    } finally {\n        if (bufferStuckTimer) { clearTimeout(bufferStuckTimer); bufferStuckTimer = null }\n        chunkEnroute = false\n    }\n}\n```\n\nNow trace the recursion: `flushBuffer` sets `bufferStuckTimer`, then in the `finally` clears it and sets `chunkEnroute = false`. If more output accumulated during the `ask`, it re-flushes from inside the `finally`. That path is OK (each iteration re-arms and clears).\n\nBut consider the non-recursive re-entry: the timer holds a reference to the worker. The real leak concern is subtle. Actually the more concrete issue: `bufferStuckTimer` is a module/closure-level `let` used by a single `flushBuffer` function. Because `flushBuffer` is re-entered via the `finally` recursion, a new `setTimeout` overwrites the previous `bufferStuckTimer` handle *before* the old timer was cleared **if the recursion happens before the old `finally` runs**. Wait \u2014 no, the recursion is inside the same `finally`. Let me re-examine.\n\nActually the concrete leak: `completed` handler also references `bufferStuckTimer`? No, it clears `chunkTimer` only. If the process emits `completed` while a `bufferStuckTimer` is pending (a buffer flush is mid-`ask`), nothing clears `bufferStuckTimer` \u2014 the timer fires 30s later and reports `BUFFER_STUCK` even though flush completed fine. That's a **false-positive telemetry** path, not just a leak. `completed` clears `chunkTimer`/`completionTimer` but never `bufferStuckTimer`. So a slow-but-legitimate `ask` (e.g. waiting on user) reports a spurious hang.\n\n**Kind: real defect (false telemetry + retained timer/reference).** Located at the added `bufferStuckTimer` lines in the `flushBuffer` hunk (`@@ -1503,9 +1507,18 @@`) and its missing cleanup in the `completed` handler.",
+        "path": "src/core/task/index.ts",
+        "start_line": 1507,
+        "end_line": 1507,
+        "observation_id": "0ce8dbad3832acf7",
+        "claimed_path": "src/core/task/index.ts",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "### 1. **BUG: Timer leak on error path in `Task.runCommandWithStreamingOutput`** \u2014 `src/core/task/index.ts:1530-1536`\nWhen `this.ask(\"command_output\", chunk)` throws, the `catch` block captures `STREAM_TIMEOUT` telemetry but **does not clear `bufferStuckTimer`**. The `finally` block clears it, but only if `bufferStuckTimer` is truthy \u2014 which it is. However, the `catch` block doesn't `rethrow`, so execution continues to `finally` and the timer gets cleared. **Wait, re-reading**: the `catch` has no `throw`, so `finally` runs and clears it. This is actually fine.\n\n**But**: if `this.ask` throws synchronously *before* `bufferStuckTimer` is assigned (line 1513), `bufferStuckTimer` is `null` and `finally` does nothing \u2014 also fine.\n\n**Real issue**: The `catch` block swallows the error entirely (`Logger.error` only). The calling code has no idea the ask failed. If `userFeedback` was being set for a \"yes\" response, it's now lost. This silently changes behavior on error.\n\n---",
+        "path": "src/core/task/index.ts",
+        "start_line": 1530,
+        "end_line": 1530,
+        "observation_id": "c456bfe18d58b58d",
+        "claimed_path": "src/core/task/index.ts",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "### 2. **BUG: `completionTimer` double-clear race** \u2014 `src/core/task/index.ts:1571-1605`\nTwo places clear `completionTimer`:\n- Inside `process.once(\"completed\", ...)` handler (lines 1579-1583)\n- After `await process` (lines 1609-1613)\n\nIf the `\"completed\"` event fires *before* `await process` resolves (normal case), the handler clears it and sets to `null`. Then `await process` completes, and the post-await clear runs on `null` \u2014 harmless but redundant.\n\n**But**: If `\"completed\"` fires *after* `await process` (weird but possible with EventEmitter), the post-await clear runs first (timer still valid), clears it. Then the handler runs, sees `completionTimer` is `null`, does nothing. Also fine.\n\n**Actual defect**: The handler sets `completed = true` **before** clearing the timer. If the timer callback fires *between* those two lines (microtask timing), it sees `!completed` is false, does nothing. That's correct. But the timer callback also sets `completionTimer = null` (line 1575). If the handler then runs, it checks `if (completionTimer)` \u2014 now `null` \u2014 and skips clearing. Timer already cleared. **No leak, but the `completed` flag is racy with the timer callback.** The timer callback reads `completed` without synchronization; the handler writes it. In single-threaded JS this is fine (no preemption), but it's a confusing pattern.\n\n---",
+        "path": "src/core/task/index.ts",
+        "start_line": 1571,
+        "end_line": 1571,
+        "observation_id": "feeacec90ba0e082",
+        "claimed_path": "src/core/task/index.ts",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "### 3. **BUG: `bufferStuckTimer` not cleared on early exit paths** \u2014 `src/core/task/index.ts:1507-1545`\n`flushBuffer` starts `bufferStuckTimer` (line 1513). It's cleared in `finally` (lines 1536-1540). But `flushBuffer` can be called multiple times (line 1543: `if (outputBuffer.length > 0) flushBuffer()`). Each call creates a **new timer** without clearing the previous one if the previous `flushBuffer` hasn't reached its `finally` yet.\n\nScenario:\n1. `flushBuffer()` called \u2192 starts timer A\n2. Before timer A fires, more output arrives \u2192 `flushBuffer()` called again \u2192 starts timer B\n3. First `ask` resolves \u2192 `finally` clears timer B (current value of `bufferStuckTimer`)\n4. Timer A fires later \u2192 `bufferStuckTimer` is now `null` (cleared by step 3), so callback does nothing? **No**: timer A's callback closes over `bufferStuckTimer` variable. When it runs, it checks `bufferStuckTimer` \u2014 which is now `null` \u2014 and the callback body executes anyway because it doesn't re-check! Look at lines 1514-1518:\n```typescript\nbufferStuckTimer = setTimeout(() => {\n    telemetryService.captureTerminalHang(TerminalHangStage.BUFFER_STUCK)\n    bufferStuckTimer = null\n}, BUFFER_STUCK_TIMEOUT_MS)\n```\nThe callback **does not check** `if (bufferStuckTimer)` before firing telemetry. It unconditionally fires `BUFFER_STUCK` and sets `bufferStuckTimer = null`. So **spurious `BUFFER_STUCK` telemetry fires** for stale timers.\n\n**Fix**: In the timer callback, check `if (bufferStuckTimer === thisTimer)` or use a generation counter.\n\n---",
+        "path": "src/core/task/index.ts",
+        "start_line": 1507,
+        "end_line": 1507,
+        "observation_id": "ddf5822a163256f8",
+        "claimed_path": "src/core/task/index.ts",
+        "path_resolution": "exact",
+        "merged_from": [
+          "2e7c7b6cf710d38d",
+          "eeb29e19d27aa93b",
+          "76ade10601f940bc",
+          "866a68f14c9aee54"
+        ]
+      },
+      {
+        "content": "### 4. **BUG: `TerminalProcess` telemetry import path wrong** \u2014 `src/integrations/terminal/TerminalProcess.ts:1`\n```typescript\nimport { TerminalOutputFailureReason, telemetryService } from \"@services/telemetry\"\n```\nBut `TelemetryService.ts` exports enums from `./TelemetryService` (same dir), and `index.ts` re-exports from `./TelemetryService`. The import `@services/telemetry` likely resolves to `src/services/telemetry/index.ts` which **does not export `TerminalOutputFailureReason`** \u2014 it only exports the enums in the new block (lines 11-17 of `index.ts` diff). Wait, the diff shows `index.ts` adds:\n```typescript\nexport {\n    TerminalHangStage,\n    TerminalOutputFailureReason,\n    TerminalUserInterventionAction,\n} from \"./TelemetryService\"\n```\nSo `@services/telemetry` (which is `index.ts`) **does** export them. But `telemetryService` singleton is imported from `./TelemetryService` in `index.ts` (line 20), not re-exported. The import in `TerminalProcess.ts` imports `telemetryService` from `@services/telemetry` \u2014 but `index.ts` doesn't re-export `telemetryService`! It only imports it locally (line 20: `import { TelemetryService } from \"./TelemetryService\"`). So **`telemetryService` is undefined** at runtime.\n\n**This will crash** when `telemetryService.captureTerminalOutputFailure` is called.\n\n---",
+        "path": "src/integrations/terminal/TerminalProcess.ts",
+        "start_line": 1,
+        "end_line": 1,
+        "observation_id": "da70c755af5c9e09",
+        "claimed_path": "src/integrations/terminal/TerminalProcess.ts",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "### 5. **BUG: `captureTerminalExecution` called with wrong success value on clipboard fallback failure** \u2014 `src/integrations/terminal/TerminalProcess.ts:198-207`\n```typescript\nif (terminalSnapshot && terminalSnapshot.trim()) {\n    telemetryService.captureTerminalExecution(true, \"clipboard\")\n} else {\n    telemetryService.captureTerminalExecution(false, \"none\")\n}\n```\nBut line 193 already called `captureTerminalOutputFailure(TIMEOUT)`. So on clipboard failure, you emit **both** `TERMINAL_OUTPUT_FAILURE` (timeout) **and** `TERMINAL_EXECUTION` (success=false, method=\"none\"). That's redundant and confusing \u2014 two events for one failure. Pick one.\n\n---\n\n### 6. **MISSING VALIDATION: No guard against negative/zero timeouts** \u2014 `src/core/task/index.ts:1494, 1564`\n`BUFFER_STUCK_TIMEOUT_MS = 30000`, `COMPLETION_TIMEOUT_MS = 60000` are hardcoded. If someone changes them to `0` or negative, `setTimeout` fires immediately (or clamps to 1ms), causing spurious telemetry. Add `const assert: 0 < BUFFER_STUCK_TIMEOUT_MS` or validate.\n\n---",
+        "path": "src/integrations/terminal/TerminalProcess.ts",
+        "start_line": 198,
+        "end_line": 198,
+        "observation_id": "4e1c8d5238490056",
+        "claimed_path": "src/integrations/terminal/TerminalProcess.ts",
+        "path_resolution": "exact",
+        "merged_from": [
+          "d26a38e85546c46c"
+        ]
+      },
+      {
+        "content": "### 7. **DEAD CODE: `MANUAL_PASTE` and `CANCELLED` enum values never used** \u2014 `src/services/telemetry/TelemetryService.ts:33-35`\n```typescript\nMANUAL_PASTE = \"manual_paste\",\nCANCELLED = \"cancelled\",\n```\nOnly `PROCESS_WHILE_RUNNING` is used (line 1516 in Task). The other two are defined but never captured. Either remove them or add the capture points.\n\n---",
+        "path": "src/services/telemetry/TelemetryService.ts",
+        "start_line": 33,
+        "end_line": 33,
+        "observation_id": "0f4e6dbde0f356f5",
+        "claimed_path": "src/services/telemetry/TelemetryService.ts",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "### 8. **UNCLEAR LOGIC: `CLIPBOARD_FAILED` enum value never emitted** \u2014 `src/services/telemetry/TelemetryService.ts:24`\nDefined but no call to `captureTerminalOutputFailure(CLIPBOARD_FAILED)` exists in the diff. The clipboard fallback path emits `TIMEOUT` (line 193) or `NO_SHELL_INTEGRATION` (line 218), but never `CLIPBOARD_FAILED`.\n\n---",
+        "path": "src/services/telemetry/TelemetryService.ts",
+        "start_line": 24,
+        "end_line": 24,
+        "observation_id": "cea396929a3ba37f",
+        "claimed_path": "src/services/telemetry/TelemetryService.ts",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "### 9. **NAMING MISLEADS: `captureTerminalExecution(success, method)` \u2014 `method` is not an enum** \u2014 `src/services/telemetry/TelemetryService.ts:951`\n```typescript\npublic captureTerminalExecution(success: boolean, method: string)\n```\nBut `method` is passed as `\"shell_integration\"`, `\"clipboard\"`, `\"none\"` \u2014 magic strings. Should be an enum `TerminalExecutionMethod` for consistency with other telemetry methods.\n\n---",
+        "path": "src/services/telemetry/TelemetryService.ts",
+        "start_line": 951,
+        "end_line": 951,
+        "observation_id": "3cfdcf029be5bad0",
+        "claimed_path": "src/services/telemetry/TelemetryService.ts",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "### 10. **POTENTIAL LEAK: `chunkTimer` never cleared** \u2014 `src/core/task/index.ts:1492`\n```typescript\nlet chunkTimer: NodeJS.Timeout | null = null\n```\nSet somewhere (not in diff), but no `clearTimeout(chunkTimer)` visible in this diff. If the function exits early (error, cancellation), `chunkTimer` leaks. Check the full function for cleanup.\n\n---\n\n### Summary by severity:\n\n| Severity | Issue |\n|----------|-------|\n| **CRASH** | #4: `telemetryService` not exported from `@services/telemetry` \u2192 undefined at runtime |\n| **WRONG TELEMETRY** | #3: Spurious `BUFFER_STUCK` from stale timers due to missing guard in callback |\n| **WRONG TELEMETRY** | #5: Double-emission on clipboard failure (`OUTPUT_FAILURE` + `EXECUTION success=false`) |\n| **MISSING VALIDATION** | #6: No guard on timeout constants |\n| **DEAD CODE** | #7: Two enum values unused |\n| **DEAD CODE** | #8: One enum value never emitted |\n| **INCONSISTENT API** | #9: `method` param uses magic strings not enum |\n| **POTENTIAL LEAK** | #10: `chunkTimer` cleanup not visible in diff |\n\n---\n\n**Top fix**: Export `telemetryService` from `src/services/telemetry/index.ts` (add `export { telemetryService } from \"./TelemetryService\"`). Without this, the terminal integration crashes on first command.",
+        "path": "src/core/task/index.ts",
+        "start_line": 1492,
+        "end_line": 1492,
+        "observation_id": "3717798b9f66ada6",
+        "claimed_path": "src/core/task/index.ts",
+        "path_resolution": "exact",
+        "merged_from": [
+          "ec6ce3d84983c2aa"
+        ]
+      }
+    ]
+  },
+  "rundir": "/home/mjarnold/.cache/llm-panel/runs/aacr-up-kgsgahll-8d57c2075ace/20260829-121145-3762961",
+  "extractor": "3",
+  "unlocated": [
+    {
+      "content": "## 2. `completionTimer` is never cleared on the early \"already completed\" path \u2014 `src/core/task/index.ts`\n\nThe added code:\n\n```js\nprocess.once(\"completed\", async () => {\n    completed = true\n    if (completionTimer) { clearTimeout(completionTimer); completionTimer = null }\n    ...\n})\n```\n\nThe timer is cleared inside the `completed` handler and after `await process`. But if `completed` fires multip",
+      "observation_id": "51aef823437a9500",
+      "claimed_path": "src/core/task/index.ts",
+      "path_resolution": "exact"
+    },
+    {
+      "content": "**a) `clipboard_failed` enum value is never used.** `TerminalOutputFailureReason.CLIPBOARD_FAILED` is defined in `TelemetryService.ts` but the diff only ever passes `TIMEOUT` and `NO_SHELL_INTEGRATION` to `captureTerminalOutputFailure`. Dead enum member. **Kind: dead/unused code.**\n\n**b) Same failure is double-counted.** In the shell-integration branch (`@@ -189,7 +191,19 @@`), when output is empt",
+      "observation_id": "842382eecd122154",
+      "claimed_path": "TelemetryService.ts",
+      "path_resolution": "basename"
+    },
+    {
+      "content": "## 5. `completionTimer` remains pending after the normal `await process` returns \u2014 keep-alive \u2014 `src/core/task/index.ts`\n\nThe diff clears `completionTimer` after `await process`, which is good. But the `process.once(\"completed\")` async handler *also* runs `clearTimeout` \u2014 meaning a 60-second `setTimeout` handle stays allocated for every terminal command that completes naturally... actually no, it'",
+      "observation_id": "92ba5080c183dab9",
+      "claimed_path": "src/core/task/index.ts",
+      "path_resolution": "exact"
+    },
+    {
+      "content": "## 6. Timer set on every flush even when timeout is meaningless \u2014 redundant timers \u2014 `src/core/task/index.ts`\n\n`flushBuffer` starts a 30s timer on *every* flush, including flushes that complete in milliseconds. Each successful flush creates and tears down a 30s timer. Under heavy streaming this is churn, but clearTimeout in `finally` handles it. Minor \u2014 not a real defect, but worth noting the time",
+      "observation_id": "f82c34002b6a46a3",
+      "claimed_path": "src/core/task/index.ts",
+      "path_resolution": "exact"
+    },
+    {
+      "content": "### Verification limitation\n\nI attempted to open `src/core/task/index.ts`, `src/integrations/terminal/TerminalProcess.ts`, and `src/services/telemetry/TelemetryService.ts` to confirm `this.ask`'s return contract, `getLatestTerminalOutput`/`returnCurrentTerminalContents` existence and return types, and `capture()`'s category handling. **The working directory `/tmp/aacr-up-kgsgahll` is empty (0 entr",
+      "observation_id": "8ef05f1110f02785",
+      "claimed_path": "src/core/task/index.ts",
+      "path_resolution": "exact"
+    }
+  ]
+}

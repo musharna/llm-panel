@@ -1,0 +1,1119 @@
+{
+  "review": {
+    "comments": [
+      {
+        "content": "1. **Critical \u2014 `src/Storages/ObjectStorageQueue/ObjectStorageQueueSource.cpp:601`**  \n   Every reader exception is converted into a successful end-of-stream, even when that file already emitted rows. Example: a CSV reader emits 100,000 valid rows, then encounters a malformed row and throws. Those 100,000 rows can be committed, while the file is marked failed and retried; the valid prefix is inserted again on the retry, producing duplicates.",
+        "path": "src/Storages/ObjectStorageQueue/ObjectStorageQueueSource.cpp",
+        "start_line": 601,
+        "end_line": 601,
+        "observation_id": "e2fd40704821248b",
+        "claimed_path": "src/Storages/ObjectStorageQueue/ObjectStorageQueueSource.cpp",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "2. **High \u2014 `src/Storages/ObjectStorageQueue/ObjectStorageQueueUnorderedFileMetadata.cpp:122`**  \n   Removing the processing-ID check shifted all response positions, but `request_index` still uses the old four-request layout. The actual requests are `[remove ID, remove processing path, create processed]`, while the indices describe `[check ID, remove ID, remove processing path, create processed]`. If the ephemeral processing path disappeared after session expiration, its `ZNONODE` response at index 1 is misclassified as an impossible processing-ID removal failure and throws `LOGICAL_ERROR` after destination data may already have been inserted.",
+        "path": "src/Storages/ObjectStorageQueue/ObjectStorageQueueUnorderedFileMetadata.cpp",
+        "start_line": 122,
+        "end_line": 122,
+        "observation_id": "4898b2ebe1e104c8",
+        "claimed_path": "src/Storages/ObjectStorageQueue/ObjectStorageQueueUnorderedFileMetadata.cpp",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "3. **High \u2014 `src/Storages/ObjectStorageQueue/ObjectStorageQueueUnorderedFileMetadata.cpp:130`**  \n   The same stale response mapping misclassifies failure to create the processed node. If `/processed/<file>` already exists, request 2 returns `ZNODEEXISTS`, but the code treats request 2 as removal of the ephemeral processing path, logs a recoverable warning, and returns success. Because the multi transaction was rolled back, the processing-ID and processing nodes remain, while the caller proceeds as though completion succeeded.",
+        "path": "src/Storages/ObjectStorageQueue/ObjectStorageQueueUnorderedFileMetadata.cpp",
+        "start_line": 130,
+        "end_line": 130,
+        "observation_id": "38d315d3fd5fe63e",
+        "claimed_path": "src/Storages/ObjectStorageQueue/ObjectStorageQueueUnorderedFileMetadata.cpp",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "4. **High \u2014 `src/Storages/ObjectStorageQueue/ObjectStorageQueueIFileMetadata.cpp:264`**  \n   `resetProcessing()` submits only two requests but retains indices for three requests. The actual responses are index 0 = remove processing ID and index 1 = remove processing path. If a Keeper session expires so that the ephemeral processing path is absent, response 1 is misread as failure to remove the processing-ID path and an unexpected `LOGICAL_ERROR` is thrown. This prevents the normal failure/reset path from completing and leaves the persistent processing ID behind because the multi transaction is atomic.",
+        "path": "src/Storages/ObjectStorageQueue/ObjectStorageQueueIFileMetadata.cpp",
+        "start_line": 264,
+        "end_line": 264,
+        "observation_id": "aa3c43df6ebd4359",
+        "claimed_path": "src/Storages/ObjectStorageQueue/ObjectStorageQueueIFileMetadata.cpp",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "5. **Medium \u2014 `src/Storages/ObjectStorageQueue/ObjectStorageQueueSource.cpp:561`**  \n   `progress->processed_files` is incremented when a reader is acquired rather than when a file finishes. With `max_processed_files_before_commit = 10`, suppose nine files finish and the tenth reader fails. The counter reaches 10, but the equality check is bypassed by the exception path; another parallel source then finishes file 11, sees 11 rather than 10, and never triggers the configured commit boundary.",
+        "path": "src/Storages/ObjectStorageQueue/ObjectStorageQueueSource.cpp",
+        "start_line": 561,
+        "end_line": 561,
+        "observation_id": "8e94874643ca3005",
+        "claimed_path": "src/Storages/ObjectStorageQueue/ObjectStorageQueueSource.cpp",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "6. **Medium \u2014 `src/Storages/ObjectStorageQueue/ObjectStorageQueueOrderedFileMetadata.cpp:245`**  \n   Under `MULTI_READ`, an existing `processed_node_path` with empty data is treated as though the node does not exist because `processed_node` is only populated when `data` is nonempty. The later transaction consequently issues a not-exists check against an existing node. For an empty initial or legacy processed marker, every processing attempt fails that check and loops instead of processing files.",
+        "path": "src/Storages/ObjectStorageQueue/ObjectStorageQueueOrderedFileMetadata.cpp",
+        "start_line": 245,
+        "end_line": 245,
+        "observation_id": "996e8b9f79c72a0d",
+        "claimed_path": "src/Storages/ObjectStorageQueue/ObjectStorageQueueOrderedFileMetadata.cpp",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "7. **Medium \u2014 `tests/integration/test_storage_s3_queue/configs/merge_tree.xml:1`**  \n   `parts_to_throw_insert=3` applies to the entire shared integration-test cluster, not just the exception test. Any other test that temporarily accumulates three active parts\u2014for example, by inserting several blocks faster than merges run\u2014can now fail with `Too many parts`, despite not exercising this behavior.",
+        "path": "tests/integration/test_storage_s3_queue/configs/merge_tree.xml",
+        "start_line": 1,
+        "end_line": 1,
+        "observation_id": "24185caa752cef54",
+        "claimed_path": "tests/integration/test_storage_s3_queue/configs/merge_tree.xml",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "8. **Low \u2014 `tests/integration/test_storage_s3_queue/test.py:1876`**  \n   Merges are stopped without guaranteed cleanup. If file generation, attachment, a row-count assertion, or the expected-log wait fails, `SYSTEM START MERGES` is never executed. Because `started_cluster` is shared, subsequent tests run with merges disabled and can fail from part accumulation.",
+        "path": "tests/integration/test_storage_s3_queue/test.py",
+        "start_line": 1876,
+        "end_line": 1876,
+        "observation_id": "a3a4f6dd10f124f2",
+        "claimed_path": "tests/integration/test_storage_s3_queue/test.py",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "9. **Low \u2014 `tests/integration/test_storage_s3_queue/test.py:1883`**  \n   The test allows only about 20 seconds for each exact row-count target after uploading and parsing 11 million rows, and later for reaching roughly 33 million rows after recovery and optimization. On a slower CI worker, correct processing that takes longer than 20 seconds fails the test spuriously.",
+        "path": "tests/integration/test_storage_s3_queue/test.py",
+        "start_line": 1883,
+        "end_line": 1883,
+        "observation_id": "b0d313939d1189e6",
+        "claimed_path": "tests/integration/test_storage_s3_queue/test.py",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "**1. `src/Storages/ObjectStorageQueue/ObjectStorageQueueUnorderedFileMetadata.cpp` \u2014 the `request_index` map is now stale after the CHECK op was removed; failures are attributed to the wrong request.**\n(Hunks `@@ -132,7 +122,6 @@` / `@@ -141,19 +130,16 @@`, new lines ~123-146; classification chain at `@@ -204,7 +187,7 @@`, lines ~187-198.)\n\nAfter deleting `makeCheckRequest(processing_node_id_path, ...)`, only 3 ops remain per multi \u2014 `[versioned-remove(processing_node_id), remove(processing_node_path, -1), create(processed_node)]` \u2014 but the map still assigns `CHECK_PROCESSING_ID_PATH=0, REMOVE_PROCESSING_ID_PATH=1, REMOVE_PROCESSING_PATH=2, SET_PROCESSED_PATH=3`. Two concrete wrong behaviours:\n\n- **Benign failure now throws.** The processing-path node is ephemeral; if it's already gone when the multi runs (expired keeper session \u2014 the case the code's own comment at the REMOVE_PROCESSING_PATH branch calls normal), op index 1 fails \u2192 `is_request_failed(REMOVE_PROCESSING_ID_PATH=1)` matches first \u2192 `unexpected_error = true` \u2192 `LOGICAL_ERROR(\"Failed to remove processing id path\")` thrown out of `setProcessedImpl()` \u2192 out of `setProcessed()` inside `commit()` *after the rows were already inserted* \u2192 a self-declared-normal race turns a successful insert into a hard query error, with the file's ZK state half-removed (id node gone, no processed node) so it is re-processed on the next run and its rows are inserted a second time.\n- **A genuine anomaly is now swallowed.** A real `NODEEXISTS` on create-processed (a concurrent replica already processed the same file \u2014 previously `SET_PROCESSED_PATH=3` \u2192 `LOGICAL_ERROR(\"Cannot create a persistent node in /processed since it already exists\")`) now lands at idx 2 = the REMOVE_PROCESSING_PATH branch \u2192 logged as a benign \"Failed to remove processing path\" and the function returns normally, silently accepting the double-insert that the old code flagged.",
+        "path": "src/Storages/ObjectStorageQueue/ObjectStorageQueueUnorderedFileMetadata.cpp",
+        "start_line": 123,
+        "end_line": 123,
+        "observation_id": "e519599e74758ddc",
+        "claimed_path": "src/Storages/ObjectStorageQueue/ObjectStorageQueueUnorderedFileMetadata.cpp",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "**2. `src/Storages/ObjectStorageQueue/ObjectStorageQueueIFileMetadata.cpp` \u2014 `resetProcessing()` declares 3 request indices for a 2-request multi.**\n(Hunk `@@ -260,13 +264,73 @@`, constants ~277-279, requests ~281-283, classification ~297-321.)\n\nExactly two ops are pushed (`remove(processing_node_id_path, version)`, `remove(processing_node_path, -1)`); `check_processing_id_path_idx=0, remove_processing_id_path_idx=1, remove_processing_path_idx=2`:\n- When the second op fails (ephemeral processing node gone \u2014 the branch whose comment says \"This is normal in case of expired session\"), `is_request_failed(remove_processing_id_path_idx=1)` matches the *path-removal* response and treats it as the id-node removal \u2192 `unexpected_error = true` \u2192 `LOGICAL_ERROR` thrown from `setFailed(reduce_retry_count=false)` (the new call site in `setFailed`, hunk `@@ -322,6 +383,12 @@`, ~388-390). That propagates out of `commit()`, aborting the commit loop mid-way, so the *remaining* files in the batch are never committed and stay Processing in ZK.\n- `remove_processing_path_idx = 2` indexes `responses[2]` past the 2-element vector: `chassert(idx < responses.size())` fails and `responses[2]->error` is an out-of-bounds dereference (UB in release). If `tryMulti` ever returns with an empty/short `responses` (e.g. a session-expired request where no op executed), even the first `is_request_failed(0)` hits the same OOB.",
+        "path": "src/Storages/ObjectStorageQueue/ObjectStorageQueueIFileMetadata.cpp",
+        "start_line": 264,
+        "end_line": 264,
+        "observation_id": "ae995775988b9d76",
+        "claimed_path": "src/Storages/ObjectStorageQueue/ObjectStorageQueueIFileMetadata.cpp",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "**3. `src/Storages/ObjectStorageQueue/ObjectStorageQueueSource.cpp` \u2014 cancellation and table-drop are converted from an in-place, non-exception path into a `throw`, moving all file bookkeeping onto `commit(insert_succeeded=false)`.**\n(Hunks `@@ -470,11 +471,72 @@` ~471-532 and `@@ -651,39 +653,52 @@` ~653-704.)\n\nScenario: user cancels the INSERT (or the table is dropped, or the session times out) after the source has already fully read and pushed the chunks of 3 files, while a 4th is mid-read. The new code throws `QUERY_WAS_CANCELLED`; if commit is invoked with `insert_succeeded=false` on that path (the design the new `Cancelled` case depends on), then every previously `Processed` file of the batch hits `file_metadata->setFailed(exception_message, /* reduce_retry_count */ false)` \u2014 `resetProcessing()` removes their ZK nodes and no failed marker is written, so the next queue iteration re-processes them and ClickHouse does not roll back the already-written blocks \u2192 those 3 files' rows are inserted **twice**. The old code, by contrast, `break`-ed and let the finished files be committed as Processed. (If commit is *not* invoked after the throw, the in-flight file instead keeps its ZK processing nodes forever and is skipped \u2014 either way the throw-based design leaves a hole the old inline handling did not have.)",
+        "path": "src/Storages/ObjectStorageQueue/ObjectStorageQueueSource.cpp",
+        "start_line": 471,
+        "end_line": 471,
+        "observation_id": "f2f6e2bf71751b72",
+        "claimed_path": "src/Storages/ObjectStorageQueue/ObjectStorageQueueSource.cpp",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "**4. `src/Storages/ObjectStorageQueue/ObjectStorageQueueSource.cpp` \u2014 the `Commit` of a `Cancelled` file contradicts the code's own invariant and mislabels cancellation as failure.**\n(Hunk `@@ -651,39 +653,52 @@`, `case FileState::Cancelled` ~666-673.)\n\n`generateImpl` states \"Mark file as Cancelled, such files will not be set as Failed\" (hunk `@@ -470,11 +471,72 @@`, ~488/507), but `commit()`'s `Cancelled` case directly calls `setFailed(exception_message, false)` when `insert_succeeded` is false. Concrete wrong behaviour: a cancelled query reports the file through `ObjectStorageQueueFailedFiles` metric, sets file status to Failed and `node_metadata.last_exception` to the cancellation message, and `appendLogElement(..., processed = false)` records the file as failed \u2014 cancellation is surfaced everywhere as a processing failure, and because `exception_message` at that point is the *batch-level* message (\"Processing was cancelled (having unfinished file: X)\"), it is stored as the file's last exception even though the file's data may have been partially consumed.",
+        "path": "src/Storages/ObjectStorageQueue/ObjectStorageQueueSource.cpp",
+        "start_line": 653,
+        "end_line": 653,
+        "observation_id": "7f32665b07ee9b34",
+        "claimed_path": "src/Storages/ObjectStorageQueue/ObjectStorageQueueSource.cpp",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "**5. `src/Storages/ObjectStorageQueue/ObjectStorageQueueOrderedFileMetadata.cpp` \u2014 the failed-node check is unconditional in the MULTI_READ branch but conditional in the fallback branch.**\n(Hunk `@@ -245,17 +245,63 @@`: MULTI_READ `responses[1]->error == ZOK` check ~257-260 vs fallback `zk_client->exists(failed_node_path)` nested inside `if (getMaxProcessedFile(...))` ~281-287.)\n\nScenario: a file was permanently failed (`setFailedNonRetriable` wrote `failed_node_path`) but has no processed node (it never succeeded \u2014 e.g. the first file of a fresh queue, or after a restart re-offers it). With `KeeperFeatureFlag::MULTI_READ` enabled, the file is immediately returned as Failed and skipped. With MULTI_READ disabled, `getMaxProcessedFile` returns false so `exists(failed_node_path)` is never evaluated and the file proceeds to `setProcessing()` and its rows are (re-)inserted. Same input, different outcome purely depending on the keeper feature flag; the off-flag path re-inserts data of a file that must not be retried.",
+        "path": "src/Storages/ObjectStorageQueue/ObjectStorageQueueOrderedFileMetadata.cpp",
+        "start_line": 245,
+        "end_line": 245,
+        "observation_id": "1016a2ad55ef4d12",
+        "claimed_path": "src/Storages/ObjectStorageQueue/ObjectStorageQueueOrderedFileMetadata.cpp",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "**6. `src/Storages/ObjectStorageQueue/ObjectStorageQueueOrderedFileMetadata.cpp` \u2014 a processed node that exists with empty data is treated as absent in the MULTI_READ branch.**\n(Hunk `@@ -245,17 +245,63 @@`, `if (!get_response->data.empty())` ~262-271, combined with `@@ -290,7 +336,7 @@` `addCheckNotExistsRequest` ~336-340.)\n\nScenario: GET returns ZOK but `data` is empty (node present, e.g. written by another writer/version). `processed_node` stays unset, so the loop later calls `addCheckNotExistsRequest(processed_node_path)` for a node that *exists* \u2192 the op fails with NODEEXISTS \u2192 the retry loop re-issues the same GET \u2192 same empty data \u2192 the file can never be processed in this branch. The fallback branch handles the identical input differently (`getMaxProcessedFile` with the version \u2192 `makeCheckRequest(processed_node_path, version)` \u2192 processing proceeds), so the outcome diverges by feature flag.",
+        "path": "src/Storages/ObjectStorageQueue/ObjectStorageQueueOrderedFileMetadata.cpp",
+        "start_line": 245,
+        "end_line": 245,
+        "observation_id": "1395c7e329ffc31d",
+        "claimed_path": "src/Storages/ObjectStorageQueue/ObjectStorageQueueOrderedFileMetadata.cpp",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "**7. `tests/integration/test_storage_s3_queue/test.py` \u2014 `test_exception_during_insert` cannot reach its own row-count expectation with merges stopped.**\n(Hunks `@@ -1864,7 +1864,6 @@` through `@@ -1893,32 +1924,10 @@`.)\n\n`node.query(\"system stop merges\")` is issued before processing, and the shared config now sets `parts_to_throw_insert=3`. Each file's 1M-row block becomes a part in `dst_table`; with merges stopped, the count reaches 3 after three files and the 4th file's push throws \"Too many parts\". The first `generate(True)` therefore cannot deliver the expected `11_000_000` rows (max ~3M), so its `wait_for_rows(expected_rows[0])` times out after 20 s and asserts. The old version of this test avoided exactly this by keeping `parts_to_throw_insert=0` during processing and only raising it (to 10) after the rows were verified. The new flow's \"too many parts\" trigger and the \"all 11 files are inserted\" expectation are mutually exclusive with merges stopped.",
+        "path": "tests/integration/test_storage_s3_queue/test.py",
+        "start_line": 1864,
+        "end_line": 1864,
+        "observation_id": "578283d716ab7310",
+        "claimed_path": "tests/integration/test_storage_s3_queue/test.py",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "### 1. `ObjectStorageQueueIFileMetadata.cpp:229` - Incorrect retry condition logic\n**File:** `ObjectStorageQueueIFileMetadata.cpp` **Line:** ~229 (in `setProcessing()`)\n\n**Change:** Added `file_status->retries &&` check before `file_status->retries >= max_loading_retries`\n\n**Defect:** The condition `file_status->retries && file_status->retries >= max_loading_retries` is **wrong**. When `retries == 0` and `max_loading_retries == 0`, the old code would evaluate `0 >= 0` \u2192 `true` (non-processable), but the new code evaluates `0 && 0 >= 0` \u2192 `false` (processable). This allows processing a file that has failed with 0 retries when max_loading_retries is 0 (meaning no retries allowed).\n\n**Failure scenario:** `max_loading_retries = 0`, file fails first time (`retries = 0`). Old code: correctly rejects (0 >= 0). New code: incorrectly allows processing (0 && ... = false).\n\n---",
+        "path": "src/Storages/ObjectStorageQueue/ObjectStorageQueueIFileMetadata.cpp",
+        "start_line": 229,
+        "end_line": 229,
+        "observation_id": "0903aa18f3918fb9",
+        "claimed_path": "ObjectStorageQueueIFileMetadata.cpp",
+        "path_resolution": "basename",
+        "merged_from": []
+      },
+      {
+        "content": "### 2. `ObjectStorageQueueIFileMetadata.cpp:264-271` - SCOPE_EXIT runs `file_status->reset()` even on exception\n**File:** `ObjectStorageQueueIFileMetadata.cpp` **Line:** ~264-271 (in `resetProcessing()`)\n\n**Change:** Wrapped `file_status->reset()` in `SCOPE_EXIT` \n\n**Defect:** `SCOPE_EXIT` runs **always** on scope exit, including when an exception is thrown. If `zk_client->tryMulti()` throws (e.g., network error), `file_status->reset()` still executes, clearing the processing state even though the ZooKeeper cleanup failed. This leaves ZooKeeper with stale processing nodes while local state thinks it's reset.\n\n**Failure scenario:** ZooKeeper connection drops during `tryMulti` \u2192 exception thrown \u2192 `SCOPE_EXIT` runs `reset()` \u2192 local state cleared but ZooKeeper still has processing nodes \u2192 file stuck in \"processing\" limbo.\n\n---",
+        "path": "src/Storages/ObjectStorageQueue/ObjectStorageQueueIFileMetadata.cpp",
+        "start_line": 264,
+        "end_line": 264,
+        "observation_id": "4bd8b40f8193b049",
+        "claimed_path": "ObjectStorageQueueIFileMetadata.cpp",
+        "path_resolution": "basename",
+        "merged_from": []
+      },
+      {
+        "content": "### 3. `ObjectStorageQueueIFileMetadata.cpp:273-277` - Missing version check for processing_id node removal\n**File:** `ObjectStorageQueueIFileMetadata.cpp` **Line:** ~273-277\n\n**Change:** Removed `zkutil::makeCheckRequest(processing_node_id_path, processing_id_version.value())` before remove\n\n**Defect:** The code now does `makeRemoveRequest(processing_node_id_path, processing_id_version.value())` directly without a prior check. But the version could have changed between reading `processing_id_version` and this call (e.g., another processor took over). The remove with version will fail with `ZBADVERSION`, but this is treated as \"unexpected_error\" (line 305-307) throwing `LOGICAL_ERROR`.\n\n**Failure scenario:** Two processors race - Processor A reads version=5, Processor B also reads version=5, Processor A removes successfully, Processor B's remove fails with ZBADVERSION \u2192 treated as LOGICAL_ERROR crash instead of graceful handling.\n\n---",
+        "path": "src/Storages/ObjectStorageQueue/ObjectStorageQueueIFileMetadata.cpp",
+        "start_line": 273,
+        "end_line": 273,
+        "observation_id": "cf5d8e4ec2bcf0fe",
+        "claimed_path": "ObjectStorageQueueIFileMetadata.cpp",
+        "path_resolution": "basename",
+        "merged_from": []
+      },
+      {
+        "content": "### 4. `ObjectStorageQueueIFileMetadata.cpp:294-314` - Error handling logic inverted for `check_processing_id_path_idx`\n**File:** `ObjectStorageQueueIFileMetadata.cpp` **Line:** ~294-314\n\n**Defect:** The comment says \"This is normal in case of expired session with keeper\" for `check_processing_id_path_idx` failure (index 0). But index 0 is the **remove** request for `processing_node_id_path`, not a check. The check request was removed (see defect #3). So a version mismatch on remove is treated as \"normal\" when it should be unexpected, and the actual check (which doesn't exist) would be the normal case.\n\n**Failure scenario:** Version mismatch on remove \u2192 logged as \"normal\" but actually indicates concurrent modification \u2192 inconsistent state.\n\n---",
+        "path": "src/Storages/ObjectStorageQueue/ObjectStorageQueueIFileMetadata.cpp",
+        "start_line": 294,
+        "end_line": 294,
+        "observation_id": "a3c2c61512ee4e92",
+        "claimed_path": "ObjectStorageQueueIFileMetadata.cpp",
+        "path_resolution": "basename",
+        "merged_from": []
+      },
+      {
+        "content": "### 5. `ObjectStorageQueueIFileMetadata.cpp:316-320` - `chassert(false)` in production code path\n**File:** `ObjectStorageQueueIFileMetadata.cpp` **Line:** ~316-320\n\n**Defect:** The `else { chassert(false); unexpected_error = true; }` branch claims \"Unreachable\" but **is reachable**: if `code != ZOK` AND no individual request failed (all responses have `error == ZOK`), this branch hits. This can happen with `ZSYSTEMERROR` or other multi-op codes where individual ops succeed but multi fails.\n\n**Failure scenario:** ZooKeeper returns `ZSYSTEMERROR` for multi-op but individual responses show success \u2192 `chassert(false)` triggers (in debug) or `unexpected_error=true` \u2192 LOGICAL_ERROR thrown.\n\n---",
+        "path": "src/Storages/ObjectStorageQueue/ObjectStorageQueueIFileMetadata.cpp",
+        "start_line": 316,
+        "end_line": 316,
+        "observation_id": "ef25ba4449de603c",
+        "claimed_path": "ObjectStorageQueueIFileMetadata.cpp",
+        "path_resolution": "basename",
+        "merged_from": []
+      },
+      {
+        "content": "### 6. `ObjectStorageQueueIFileMetadata.cpp:323` - `file_status->onFailed()` called AFTER `resetProcessing()` in `setFailed()`\n**File:** `ObjectStorageQueueIFileMetadata.cpp` **Line:** ~323 (in `setFailed()`)\n\n**Change:** Moved `file_status->onFailed(exception_message)` to AFTER the `else { resetProcessing(); }` block\n\n**Defect:** If `resetProcessing()` throws (e.g., ZooKeeper error), `onFailed()` is never called. The file status never records the failure exception, retry count not incremented, but `processing_id` is still reset at line 327-328. File appears \"clean\" but never marked failed.\n\n**Failure scenario:** `resetProcessing()` throws ZOOKEEPER_ERROR \u2192 exception propagates \u2192 `onFailed()` skipped \u2192 `processing_id` reset \u2192 file looks unprocessed but failure not recorded \u2192 silently lost.\n\n---",
+        "path": "src/Storages/ObjectStorageQueue/ObjectStorageQueueIFileMetadata.cpp",
+        "start_line": 323,
+        "end_line": 323,
+        "observation_id": "79f724d8e3726679",
+        "claimed_path": "ObjectStorageQueueIFileMetadata.cpp",
+        "path_resolution": "basename",
+        "merged_from": []
+      },
+      {
+        "content": "### 7. `ObjectStorageQueueIFileMetadata.cpp:320-322` - `resetProcessing()` called unconditionally when `!reduce_retry_count`\n**File:** `ObjectStorageQueueIFileMetadata.cpp` **Line:** ~320-322\n\n**Change:** Added `else { resetProcessing(); }` before `onFailed()`\n\n**Defect:** When `reduce_retry_count == false` (e.g., non-retriable failure), `resetProcessing()` is called. But `resetProcessing()` **throws** if state != Processing (line 262). If file was already Failed/Processed, this throws LOGICAL_ERROR instead of just marking failed.\n\n**Failure scenario:** File already in Failed state (from earlier attempt), `setFailed(..., reduce_retry_count=false)` called \u2192 `resetProcessing()` throws \"Cannot reset non-processing state\" \u2192 failure not recorded.\n\n---",
+        "path": "src/Storages/ObjectStorageQueue/ObjectStorageQueueIFileMetadata.cpp",
+        "start_line": 320,
+        "end_line": 320,
+        "observation_id": "3c0d141a16cea93b",
+        "claimed_path": "ObjectStorageQueueIFileMetadata.cpp",
+        "path_resolution": "basename",
+        "merged_from": []
+      },
+      {
+        "content": "### 8. `ObjectStorageQueueIFileMetadata.cpp:383` - `setFailedNonRetriable()` doesn't reset `processing_id_version`\n**File:** `ObjectStorageQueueIFileMetadata.cpp` **Line:** ~383\n\n**Change:** `setFailedNonRetriable()` creates processed node but doesn't clear `processing_id_version` or `processing_id`\n\n**Defect:** Unlike `setFailed()` (lines 327-328) and `setProcessed()`, `setFailedNonRetriable()` leaves `processing_id` and `processing_id_version` set. Subsequent `setProcessing()` calls will see stale version and behave incorrectly.\n\n**Failure scenario:** File fails non-retriably \u2192 `processing_id_version` remains set \u2192 later retry attempt (if any) uses stale version \u2192 ZooKeeper version mismatch errors.\n\n---",
+        "path": "src/Storages/ObjectStorageQueue/ObjectStorageQueueIFileMetadata.cpp",
+        "start_line": 383,
+        "end_line": 383,
+        "observation_id": "d162dfd761d298ed",
+        "claimed_path": "ObjectStorageQueueIFileMetadata.cpp",
+        "path_resolution": "basename",
+        "merged_from": []
+      },
+      {
+        "content": "### 9. `ObjectStorageQueueIFileMetadata.h:59` - Removed `overwrite_status` parameter breaks callers\n**File:** `ObjectStorageQueueIFileMetadata.h` **Line:** 59\n\n**Change:** `setFailed(const std::string&, bool reduce_retry_count, bool overwrite_status)` \u2192 `setFailed(const std::string&, bool reduce_retry_count)`\n\n**Defect:** Callers in `ObjectStorageQueueSource.cpp` (old code) pass 3 arguments. The diff shows `ObjectStorageQueueSource.cpp` was updated, but **any other callers** (not shown in diff) will fail to compile or pass wrong args.\n\n**Failure scenario:** Any external code calling `setFailed(msg, true, true)` \u2192 compile error or silent bug if default arg used.\n\n---",
+        "path": "src/Storages/ObjectStorageQueue/ObjectStorageQueueIFileMetadata.h",
+        "start_line": 59,
+        "end_line": 59,
+        "observation_id": "9ffa504e3762f67a",
+        "claimed_path": "ObjectStorageQueueIFileMetadata.h",
+        "path_resolution": "basename",
+        "merged_from": []
+      },
+      {
+        "content": "### 10. `ObjectStorageQueueIFileMetadata.h:84` - Removed `virtual void resetProcessingImpl()` but base class calls it\n**File:** `ObjectStorageQueueIFileMetadata.h` **Line:** 84\n\n**Change:** Removed `virtual void resetProcessingImpl();` declaration\n\n**Defect:** The base class `resetProcessing()` (line 264) no longer calls `resetProcessingImpl()` - it was inlined. But derived classes (Ordered/Unordered) may have overridden it. The diff shows `ObjectStorageQueueUnorderedFileMetadata.cpp` removed its `resetProcessingImpl()` override (line -109 to -115), but **Ordered** may still have one not shown.\n\n**Failure scenario:** If `ObjectStorageQueueOrderedFileMetadata` has `resetProcessingImpl()` override, it's now dead code never called \u2192 logic divergence.",
+        "path": "src/Storages/ObjectStorageQueue/ObjectStorageQueueIFileMetadata.h",
+        "start_line": 84,
+        "end_line": 84,
+        "observation_id": "567888c5fc5d2aa8",
+        "claimed_path": "ObjectStorageQueueIFileMetadata.h",
+        "path_resolution": "basename",
+        "merged_from": []
+      },
+      {
+        "content": "### 11. `ObjectStorageQueueOrderedFileMetadata.cpp:248-280` - MULTI_READ path doesn't check `processed_node` existence before comparison\n**File:** `ObjectStorageQueueOrderedFileMetadata.cpp` **Line:** ~248-280 (in `setProcessingImpl()`)\n\n**Change:** New MULTI_READ branch fetches processed_node and failed_node in one multi-read\n\n**Defect:** In MULTI_READ branch (lines 257-278), if `responses[0]->error == ZNONODE` (processed node doesn't exist), `processed_node` remains `nullopt`. But the code then falls through to the `else` branch (line 279) which calls `getMaxProcessedFile()`. However, if `responses[0]->error == ZOK` but `get_response->data.empty()` (node exists but empty), `processed_node` is not set, and the code **doesn't fall through** - it just continues to line 290 with `processed_node = nullopt`. Then at line 292, `processed_node.has_value()` is false, so it adds a check-not-exists request. But the processed node DOES exist (just empty) - should be check-exists with version.\n\n**Failure scenario:** Processed node exists but empty (ZOK, empty data) \u2192 `processed_node` stays nullopt \u2192 check-not-exists request added \u2192 ZooKeeper fails with ZNODEEXISTS \u2192 processing incorrectly blocked.\n\n---",
+        "path": "src/Storages/ObjectStorageQueue/ObjectStorageQueueOrderedFileMetadata.cpp",
+        "start_line": 248,
+        "end_line": 248,
+        "observation_id": "70a95c18d58ca759",
+        "claimed_path": "ObjectStorageQueueOrderedFileMetadata.cpp",
+        "path_resolution": "basename",
+        "merged_from": []
+      },
+      {
+        "content": "### 12. `ObjectStorageQueueOrderedFileMetadata.cpp:265-270` - Failed node check uses wrong response index\n**File:** `ObjectStorageQueueOrderedFileMetadata.cpp` **Line:** ~265-270\n\n**Defect:** Line 266 checks `responses[1]->error == ZOK` for failed_node_path. But the requests are: index 0 = processed_node_path, index 1 = failed_node_path. This is correct. BUT: if failed_node_path exists (ZOK), it returns `{false, Failed}`. However, if BOTH processed_node exists AND failed_node exists, it returns Failed. This might be correct, but what if processed_node exists with newer data? The failed check wins unconditionally.\n\n**Failure scenario:** File was processed, then later marked failed (bug/race) \u2192 processed_node exists, failed_node exists \u2192 returns Failed even though processed_node has valid data.\n\n---",
+        "path": "src/Storages/ObjectStorageQueue/ObjectStorageQueueOrderedFileMetadata.cpp",
+        "start_line": 265,
+        "end_line": 265,
+        "observation_id": "6f56e564f28df4c5",
+        "claimed_path": "ObjectStorageQueueOrderedFileMetadata.cpp",
+        "path_resolution": "basename",
+        "merged_from": []
+      },
+      {
+        "content": "### 13. `ObjectStorageQueueOrderedFileMetadata.cpp:271-278` - Empty processed_node data not handled\n**File:** `ObjectStorageQueueOrderedFileMetadata.cpp` **Line:** ~271-278\n\n**Defect:** If `responses[0]->error == ZOK` but `get_response->data.empty()`, the `if (!get_response->data.empty())` block is skipped. `processed_node` remains `nullopt`. But the node **exists** (ZOK), so the check at line 292 should use check-exists with version, not check-not-exists.\n\n**Failure scenario:** Processed node created but empty (race during creation) \u2192 treated as non-existent \u2192 check-not-exists fails \u2192 processing blocked incorrectly.\n\n---",
+        "path": "src/Storages/ObjectStorageQueue/ObjectStorageQueueOrderedFileMetadata.cpp",
+        "start_line": 271,
+        "end_line": 271,
+        "observation_id": "40198596703cbcb6",
+        "claimed_path": "ObjectStorageQueueOrderedFileMetadata.cpp",
+        "path_resolution": "basename",
+        "merged_from": []
+      },
+      {
+        "content": "### 14. `ObjectStorageQueueOrderedFileMetadata.cpp:290-294` - `check_processing_id_path` request removed\n**File:** `ObjectStorageQueueOrderedFileMetadata.cpp` **Line:** ~290-294\n\n**Change:** Removed `requests.push_back(zkutil::makeCheckRequest(processing_node_id_path, processing_id_version.value()));`\n\n**Defect:** Same as defect #3. The check request that validated version before remove is gone. Now only remove-with-version is sent. If version changed, remove fails with ZBADVERSION, but there's no error handling for this in `setProcessedRequests()` - it assumes ZOK.\n\n**Failure scenario:** Concurrent processor updates version \u2192 remove fails \u2192 unhandled error \u2192 exception or silent corruption.\n\n---",
+        "path": "src/Storages/ObjectStorageQueue/ObjectStorageQueueOrderedFileMetadata.cpp",
+        "start_line": 290,
+        "end_line": 290,
+        "observation_id": "da06e348bc5d3f6f",
+        "claimed_path": "ObjectStorageQueueOrderedFileMetadata.cpp",
+        "path_resolution": "basename",
+        "merged_from": []
+      },
+      {
+        "content": "### 15. `ObjectStorageQueueOrderedFileMetadata.cpp:431-436` - Missing version check before remove in `setProcessedRequests()`\n**File:** `ObjectStorageQueueOrderedFileMetadata.cpp` **Line:** ~431-436\n\n**Defect:** The code does `makeRemoveRequest(processing_node_id_path, processing_id_version.value())` directly. If the version is stale (session expired, another processor), remove fails. No check request = no graceful handling.\n\n---",
+        "path": "src/Storages/ObjectStorageQueue/ObjectStorageQueueOrderedFileMetadata.cpp",
+        "start_line": 431,
+        "end_line": 431,
+        "observation_id": "5a61a938bfebc63d",
+        "claimed_path": "ObjectStorageQueueOrderedFileMetadata.cpp",
+        "path_resolution": "basename",
+        "merged_from": []
+      },
+      {
+        "content": "### 16. `ObjectStorageQueueOrderedFileMetadata.cpp:292` - `processed_node.has_value()` but `processed_node_stat` may be uninitialized\n**File:** `ObjectStorageQueueOrderedFileMetadata.cpp` **Line:** ~292\n\n**Defect:** In the non-MULTI_READ branch (lines 279-289), if `getMaxProcessedFile()` returns true, `processed_node_stat` is set. But in MULTI_READ branch, `processed_node_stat` is only set inside `if (!get_response->data.empty())` (line 274). If data is empty, `processed_node` is nullopt so this doesn't matter. But if somehow `processed_node.has_value()` is true but `processed_node_stat` wasn't set (logic bug), the check request uses garbage version.\n\n**Failure scenario:** Logic error leaves `processed_node` set but stat uninitialized \u2192 check request with garbage version \u2192 unpredictable ZooKeeper error.",
+        "path": "src/Storages/ObjectStorageQueue/ObjectStorageQueueOrderedFileMetadata.cpp",
+        "start_line": 292,
+        "end_line": 292,
+        "observation_id": "f426a6283e1a31bb",
+        "claimed_path": "ObjectStorageQueueOrderedFileMetadata.cpp",
+        "path_resolution": "basename",
+        "merged_from": []
+      },
+      {
+        "content": "### 17. `ObjectStorageQueueSource.cpp:474-480` - `isCancelled()` check accesses `reader->cancel()` without null check on `reader`\n**File:** `ObjectStorageQueueSource.cpp` **Line:** ~474-480\n\n**Change:** Added `isCancelled()` check at loop start\n\n**Defect:** Line 476: `if (reader) reader->cancel();` - but `reader` is a member variable (line 171 in .h). At loop start, `reader` could be null (first iteration or after reset). The null check is there, OK. But `processed_files.back().state` at line 478 accesses `processed_files.back()` - **if `processed_files` is empty**, this is UB (crash).\n\n**Failure scenario:** First iteration, `processed_files` empty, query cancelled \u2192 `processed_files.empty()` is true \u2192 line 478 `processed_files.empty() || ...` short-circuits, OK. But wait: line 478 checks `processed_files.empty() || processed_files.back().state != FileState::Processing`. If empty, first condition true, so `break`. This seems OK actually.\n\nWait, let me re-read: line 478 `if (processed_files.empty() || processed_files.back().state != FileState::Processing)` - if empty, breaks. OK.\n\nBut line 483: `auto started_file = processed_files.back().metadata;` - this is inside the `if` block that only runs when NOT empty and state==Processing. So `back()` is safe here. OK.\n\n---",
+        "path": "src/Storages/ObjectStorageQueue/ObjectStorageQueueSource.cpp",
+        "start_line": 474,
+        "end_line": 474,
+        "observation_id": "1c4a5c996332330d",
+        "claimed_path": "ObjectStorageQueueSource.cpp",
+        "path_resolution": "basename",
+        "merged_from": []
+      },
+      {
+        "content": "### 18. `ObjectStorageQueueSource.cpp:481` - `chassert(started_file->getFileStatus()->processed_rows > 0)` can fail\n**File:** `ObjectStorageQueueSource.cpp` **Line:** ~481\n\n**Defect:** The assertion assumes that if a file is in Processing state, it must have `processed_rows > 0`. But a file could be marked Processing (state set) before any rows are read. If cancelled immediately after `setProcessing()` but before first `generateImpl()` yields rows, `processed_rows == 0`.\n\n**Failure scenario:** Query starts, file set to Processing, query cancelled before any chunk returned \u2192 `processed_rows == 0` \u2192 `chassert` fails (debug) or undefined behavior (release).\n\n---",
+        "path": "src/Storages/ObjectStorageQueue/ObjectStorageQueueSource.cpp",
+        "start_line": 481,
+        "end_line": 481,
+        "observation_id": "62c2ab72edf34b2c",
+        "claimed_path": "ObjectStorageQueueSource.cpp",
+        "path_resolution": "basename",
+        "merged_from": []
+      },
+      {
+        "content": "### 19. `ObjectStorageQueueSource.cpp:485-495` - `shutdown_called` handling throws QUERY_WAS_CANCELLED for table drop\n**File:** `ObjectStorageQueueSource.cpp` **Line:** ~485-495\n\n**Defect:** When `shutdown_called && table_is_being_dropped`, it throws `QUERY_WAS_CANCELLED` with message \"Table is being dropped\". But `QUERY_WAS_CANCELLED` is for query cancellation, not table drop. This conflates two different events. Callers expecting `QUERY_WAS_CANCELLED` to mean \"query cancelled\" may handle table drop incorrectly.\n\n**Failure scenario:** Table dropped during processing \u2192 throws QUERY_WAS_CANCELLED \u2192 caller treats as query cancel \u2192 retries or wrong cleanup.\n\n---",
+        "path": "src/Storages/ObjectStorageQueue/ObjectStorageQueueSource.cpp",
+        "start_line": 485,
+        "end_line": 485,
+        "observation_id": "ba347df73b8af8bc",
+        "claimed_path": "ObjectStorageQueueSource.cpp",
+        "path_resolution": "basename",
+        "merged_from": []
+      },
+      {
+        "content": "### 20. `ObjectStorageQueueSource.cpp:497-510` - `shutdown_called` without `table_is_being_dropped` continues processing but `reader` may be null\n**File:** `ObjectStorageQueueSource.cpp` **Line:** ~497-510\n\n**Defect:** Line 500-501: `if (shutdown_called) { LOG_TEST...; break; }` - this is inside `if (reader)` block. But if `reader` is null (first iteration or after file finish), this block is skipped. The `else` block (line 503) handles `reader` null case and ALSO checks `shutdown_called` (line 504-505). But the logic is duplicated and inconsistent.\n\n**Failure scenario:** `shutdown_called=true`, `reader=null` (between files) \u2192 enters `else` block \u2192 line 504 `if (shutdown_called) break;` \u2192 exits cleanly. OK.\n\nBut: `shutdown_called=true`, `reader=valid` (mid-file) \u2192 enters `if (reader)` \u2192 line 500 `if (shutdown_called) break;` \u2192 breaks WITHOUT processing current file to completion. The comment says \"Will process the file fully and then shutdown\" (line 493) but the code **breaks immediately** at line 500. Contradiction.\n\n---",
+        "path": "src/Storages/ObjectStorageQueue/ObjectStorageQueueSource.cpp",
+        "start_line": 497,
+        "end_line": 497,
+        "observation_id": "1a334cc42013421f",
+        "claimed_path": "ObjectStorageQueueSource.cpp",
+        "path_resolution": "basename",
+        "merged_from": []
+      },
+      {
+        "content": "### 21. `ObjectStorageQueueSource.cpp:508-513` - `processed_files.emplace_back()` creates `Processing` state but no `setProcessing()` called on metadata\n**File:** `ObjectStorageQueueSource.cpp` **Line:** ~508-513\n\n**Defect:** Line 511: `processed_files.emplace_back(file_metadata);` creates `ProcessedFile` with `state=Processing` (constructor default). But `file_metadata->setProcessing()` is **never called**! The metadata's internal state stays as New/Unprocessed, while `processed_files` thinks it's Processing. Later `commit()` uses `file_state` to decide action, but metadata state is out of sync.\n\n**Failure scenario:** File added to `processed_files` as Processing \u2192 commit called with `insert_succeeded=false` \u2192 `file_metadata->setFailed()` called (line 675) \u2192 but metadata never had `setProcessing()` \u2192 `setFailed()` calls `resetProcessing()` (line 321 in IFileMetadata) which throws \"Cannot reset non-processing state\".\n\n---",
+        "path": "src/Storages/ObjectStorageQueue/ObjectStorageQueueSource.cpp",
+        "start_line": 508,
+        "end_line": 508,
+        "observation_id": "a742fbfc7076ca59",
+        "claimed_path": "ObjectStorageQueueSource.cpp",
+        "path_resolution": "basename",
+        "merged_from": []
+      },
+      {
+        "content": "### 22. `ObjectStorageQueueSource.cpp:518-530` - Exception during read sets `ErrorOnRead` but doesn't call `setFailed()` immediately\n**File:** `ObjectStorageQueueSource.cpp` **Line:** ~518-530\n\n**Change:** Old code called `file_metadata->setFailed(...)` immediately. New code sets `processed_files.back().state = FileState::ErrorOnRead` and returns empty chunk.\n\n**Defect:** The failure is deferred to `commit()`. But if the query is cancelled or crashes before `commit()`, the file is never marked failed in ZooKeeper. Also, `file_status->onFailed()` is not called (was in old code line 590), so retry count not incremented, exception not recorded locally.\n\n**Failure scenario:** Read error \u2192 `ErrorOnRead` set \u2192 return {} \u2192 query cancelled before commit \u2192 file never marked failed in ZooKeeper \u2192 file reprocessed infinitely (no retry increment).\n\n---",
+        "path": "src/Storages/ObjectStorageQueue/ObjectStorageQueueSource.cpp",
+        "start_line": 518,
+        "end_line": 518,
+        "observation_id": "30f05ed4abf37d11",
+        "claimed_path": "ObjectStorageQueueSource.cpp",
+        "path_resolution": "basename",
+        "merged_from": []
+      },
+      {
+        "content": "### 23. `ObjectStorageQueueSource.cpp:527` - `return {}` on read error loses processed data from current file\n**File:** `ObjectStorageQueueSource.cpp` **Line:** ~527\n\n**Defect:** Comment says \"Stop processing and commit what is already processed.\" But `return {}` from `generateImpl()` signals end of data to the pipeline. The current file's already-read rows (if any) are **not committed** because `commit()` is only called after all chunks. The file is marked `ErrorOnRead` but its partial data is lost.\n\n**Failure scenario:** File has 1000 rows, error at row 500 \u2192 `ErrorOnRead` \u2192 `return {}` \u2192 pipeline ends \u2192 `commit()` called \u2192 file marked failed \u2192 500 rows lost, file retried from start.\n\n---",
+        "path": "src/Storages/ObjectStorageQueue/ObjectStorageQueueSource.cpp",
+        "start_line": 527,
+        "end_line": 527,
+        "observation_id": "782202aa5aed5dda",
+        "claimed_path": "ObjectStorageQueueSource.cpp",
+        "path_resolution": "basename",
+        "merged_from": []
+      },
+      {
+        "content": "### 24. `ObjectStorageQueueSource.cpp:533` - `processed_files.back().state = FileState::Processed` set AFTER `file_status->setProcessingEndTime()`\n**File:** `ObjectStorageQueueSource.cpp` **Line:** ~533\n\n**Defect:** Minor: order doesn't matter functionally but `setProcessingEndTime()` uses `file_status` which is reset next line. OK actually - `file_status` is a shared_ptr, `reset()` just clears local ref.\n\n---",
+        "path": "src/Storages/ObjectStorageQueue/ObjectStorageQueueSource.cpp",
+        "start_line": 533,
+        "end_line": 533,
+        "observation_id": "feb9c211879c01f5",
+        "claimed_path": "ObjectStorageQueueSource.cpp",
+        "path_resolution": "basename",
+        "merged_from": []
+      },
+      {
+        "content": "### 25. `ObjectStorageQueueSource.cpp:535-536` - `reader = {};` and `file_status.reset()` before `commit()` \n**File:** `ObjectStorageQueueSource.cpp` **Line:** ~535-536\n\n**Defect:** `reader` and `file_status` are cleared before `commit()`. If `commit()` needs to access file metadata (it does via `processed_files`), this is fine since `processed_files` holds `metadata`. But `reader` is also a member variable - clearing it here means if `commit()` throws, `reader` is already gone. Not a bug per se.\n\n---",
+        "path": "src/Storages/ObjectStorageQueue/ObjectStorageQueueSource.cpp",
+        "start_line": 535,
+        "end_line": 535,
+        "observation_id": "15882ed4792e6719",
+        "claimed_path": "ObjectStorageQueueSource.cpp",
+        "path_resolution": "basename",
+        "merged_from": []
+      },
+      {
+        "content": "### 26. `ObjectStorageQueueSource.cpp:538-543` - Commit logic moved inside loop, but `max_processed_files_before_commit` check uses `progress->processed_files`\n**File:** `ObjectStorageQueueSource.cpp` **Line:** ~538-543\n\n**Defect:** `progress->processed_files` is incremented at line 512 when file added to `processed_files`. But the commit check at line 538 happens AFTER file is marked Processed (line 533). So `progress->processed_files` includes the current file. This is correct. But: if commit happens, `progress->processed_files` is not reset (old code didn't reset either). Next commit check uses accumulated count.\n\nWait, old code: `processed_files.push_back()` then `progress->processed_files += 1` then check. Same here. OK.\n\n---",
+        "path": "src/Storages/ObjectStorageQueue/ObjectStorageQueueSource.cpp",
+        "start_line": 538,
+        "end_line": 538,
+        "observation_id": "fa90fb0798228ed8",
+        "claimed_path": "ObjectStorageQueueSource.cpp",
+        "path_resolution": "basename",
+        "merged_from": []
+      },
+      {
+        "content": "### 27. `ObjectStorageQueueSource.cpp:653-695` - `commit()` switch on `file_state` has logic errors\n**File:** `ObjectStorageQueueSource.cpp` **Line:** ~653-695\n\n**Defects in commit():**\n\n1. **Line 662-668 (Processed case):** If `insert_succeeded=false`, calls `file_metadata->setFailed(exception_message, false)`. But this file WAS successfully read (state=Processed), only insert failed. Should it reduce retry count? Old code used `overwrite_status=true` and `reduce_retry_count=false`. New code uses `reduce_retry_count=false`. OK.\n\n2. **Line 670-678 (Cancelled/Processing case):** If `insert_succeeded=true`, throws LOGICAL_ERROR. But how can a Cancelled/Processing file have successful insert? The insert happens in the pipeline AFTER `generateImpl()` returns chunks. If query cancelled mid-insert, `insert_succeeded=false`. This branch seems unreachable for `insert_succeeded=true`.\n\n3. **Line 674 (Cancelled/Processing):** Calls `setFailed(exception_message, false)` - no retry reduction. But for Cancelled files, old code used `reduce_retry_count=true` (line 488 in old code). Now it's `false`. **Retry count not reduced for cancelled files** \u2192 infinite retries on cancelled files.\n\n4. **Line 680-685 (ErrorOnRead):** Calls `setFailed(exception_during_read, true)` - reduces retry count. OK.\n\n5. **Line 688:** `appendLogElement(..., processed = insert_succeeded && file_state == FileState::Processed)` - for Cancelled/Processing/ErrorOnRead, `processed=false`. OK.\n\n**Critical defect #27.3:** Cancelled files don't reduce retry count \u2192 infinite retry loop on cancellation.\n\n---",
+        "path": "src/Storages/ObjectStorageQueue/ObjectStorageQueueSource.cpp",
+        "start_line": 653,
+        "end_line": 653,
+        "observation_id": "60f53e3de08721aa",
+        "claimed_path": "ObjectStorageQueueSource.cpp",
+        "path_resolution": "basename",
+        "merged_from": [
+          "fd959c9b9275883f",
+          "b32245d3fd421b28",
+          "c788b9e7401f1deb",
+          "1c764d37b3eea731",
+          "1bcece1591d41815",
+          "db6dc2b396e3aafc"
+        ]
+      },
+      {
+        "content": "### 28. `ObjectStorageQueueSource.cpp:471` - `isCancelled()` check at loop start but `reader->cancel()` may not stop current read\n**File:** `ObjectStorageQueueSource.cpp` **Line:** ~471\n\n**Defect:** `reader->cancel()` is called but the current `generateImpl()` iteration continues. The reader's `cancel()` may be async or may not interrupt a blocking read. The code then checks `processed_files.back().state` and throws. But if reader is mid-read, it may return a chunk or throw later. Race between cancellation and read completion.\n\n**Failure scenario:** Cancellation requested \u2192 `reader->cancel()` called \u2192 reader returns partial chunk \u2192 code processes chunk \u2192 throws QUERY_WAS_CANCELLED \u2192 partial data inserted \u2192 commit marks file as failed but partial data committed.\n\n---",
+        "path": "src/Storages/ObjectStorageQueue/ObjectStorageQueueSource.cpp",
+        "start_line": 471,
+        "end_line": 471,
+        "observation_id": "fb4acb92b1a52b82",
+        "claimed_path": "ObjectStorageQueueSource.cpp",
+        "path_resolution": "basename",
+        "merged_from": []
+      },
+      {
+        "content": "### 29. `ObjectStorageQueueSource.cpp:561` - `file_status->setProcessingEndTime()` called but `file_status` was reset at line 536 in previous iteration\n**File:** `ObjectStorageQueueSource.cpp` **Line:** ~561\n\n**Wait:** Line 536 `file_status.reset();` is inside the `try` block after successful read. Line 561 is in the `catch` block. So `file_status` is still valid in catch (it's a local variable in the try block? No, `file_status` is defined at line 515: `auto file_status = file_metadata->getFileStatus();`). In catch block, `file_status` is still in scope. OK.\n\nBut wait: line 536 `file_status.reset();` is AFTER line 533 `state = Processed`. So in successful path, `file_status` is reset. In error path (catch), `file_status` is still valid. OK.\n\n---",
+        "path": "src/Storages/ObjectStorageQueue/ObjectStorageQueueSource.cpp",
+        "start_line": 561,
+        "end_line": 561,
+        "observation_id": "4d8bb65de6b3c9fb",
+        "claimed_path": "ObjectStorageQueueSource.cpp",
+        "path_resolution": "basename",
+        "merged_from": []
+      },
+      {
+        "content": "### 30. `ObjectStorageQueueSource.cpp:515` - `file_status` captured but `file_metadata->getFileStatus()` may return different object after `resetProcessing()`\n**File:** `ObjectStorageQueueSource.cpp` **Line:** ~515\n\n**Defect:** `file_status` is a `shared_ptr` to FileStatus. If `resetProcessing()` is called on metadata (e.g., in `setFailed()`), it calls `file_status->reset()` which modifies the same object. But `file_status` local variable still points to it. This is OK for shared_ptr semantics.\n\nBut: in `catch` block (line 518), `file_status->onFailed()` was called in old code. New code doesn't call it - sets `exception_during_read` instead. This defers `onFailed()` to `commit()`. See defect #22.\n\n---",
+        "path": "src/Storages/ObjectStorageQueue/ObjectStorageQueueSource.cpp",
+        "start_line": 515,
+        "end_line": 515,
+        "observation_id": "d83e845f86a5aa81",
+        "claimed_path": "ObjectStorageQueueSource.cpp",
+        "path_resolution": "basename",
+        "merged_from": []
+      },
+      {
+        "content": "### 31. `ObjectStorageQueueSource.h:177` - `ProcessedFile` constructor initializes `state=Processing` but metadata not set to Processing\n**File:** `ObjectStorageQueueSource.h` **Line:** ~177\n\n**Defect:** Constructor: `explicit ProcessedFile(FileMetadataPtr metadata_) : state(FileState::Processing), metadata(metadata_) {}`. As noted in defect #21, metadata's `setProcessing()` never called. State machine desync.\n\n---",
+        "path": "src/Storages/ObjectStorageQueue/ObjectStorageQueueSource.h",
+        "start_line": 177,
+        "end_line": 177,
+        "observation_id": "79c7d5031ab05b03",
+        "claimed_path": "ObjectStorageQueueSource.h",
+        "path_resolution": "basename",
+        "merged_from": []
+      },
+      {
+        "content": "### 32. `ObjectStorageQueueSource.h:147` - `commit()` signature changed from `success` to `insert_succeeded`\n**File:** `ObjectStorageQueueSource.h` **Line:** ~147\n\n**Defect:** Semantic change: `success` meant \"overall success including read+insert\". `insert_succeeded` means only insert. For files that failed during read (`ErrorOnRead`), `insert_succeeded` is irrelevant (they weren't inserted). The commit logic handles this via `file_state`. But callers of `commit()` must now pass correct value. Need to verify all callers updated.\n\n---",
+        "path": "src/Storages/ObjectStorageQueue/ObjectStorageQueueSource.h",
+        "start_line": 147,
+        "end_line": 147,
+        "observation_id": "3a2d21e61d31d985",
+        "claimed_path": "ObjectStorageQueueSource.h",
+        "path_resolution": "basename",
+        "merged_from": []
+      },
+      {
+        "content": "### 33. `ObjectStorageQueueSource.cpp:659` - `LOG_TEST` message changed, may break log parsing\n**File:** `ObjectStorageQueueSource.cpp` **Line:** ~659\n\n**Change:** \"Having {} files to set as {}, failed files: {}\" \u2192 \"Having {} files to commit (insert {}succeeded)\"\n\n**Defect:** Test `test_commit_on_limit` (line 2022 in test.py) checks for log \"Setting file ... as failed\". That's from `setFailed()`, not from this log. OK. But other tests may parse this log.",
+        "path": "src/Storages/ObjectStorageQueue/ObjectStorageQueueSource.cpp",
+        "start_line": 659,
+        "end_line": 659,
+        "observation_id": "69c5e50d2f39bc38",
+        "claimed_path": "ObjectStorageQueueSource.cpp",
+        "path_resolution": "basename",
+        "merged_from": []
+      },
+      {
+        "content": "### 34. `ObjectStorageQueueUnorderedFileMetadata.cpp:122-130` - Removed check request before remove for `processing_node_id_path`\n**File:** `ObjectStorageQueueUnorderedFileMetadata.cpp` **Line:** ~122-130 (in `setProcessedImpl()`)\n\n**Change:** Removed `requests.push_back(zkutil::makeCheckRequest(processing_node_id_path, processing_id_version.value()));`\n\n**Defect:** Same as defects #3, #14. Direct remove-with-version without check. If version changed (session expiry, concurrent processor), remove fails with ZBADVERSION. The error handling at lines 153-165 checks `is_request_failed(REMOVE_PROCESSING_ID_PATH)` (index 1) and treats it as \"unexpected_error\" \u2192 throws LOGICAL_ERROR.\n\n**Failure scenario:** Session expires, version changes \u2192 remove fails \u2192 LOGICAL_ERROR thrown instead of graceful retry.\n\n---",
+        "path": "src/Storages/ObjectStorageQueue/ObjectStorageQueueUnorderedFileMetadata.cpp",
+        "start_line": 122,
+        "end_line": 122,
+        "observation_id": "c33f18b1810b2b17",
+        "claimed_path": "ObjectStorageQueueUnorderedFileMetadata.cpp",
+        "path_resolution": "basename",
+        "merged_from": []
+      },
+      {
+        "content": "### 35. `ObjectStorageQueueUnorderedFileMetadata.cpp:130-138` - `request_index` mapping assumes fixed positions but `SET_PROCESSED_PATH` position varies\n**File:** `ObjectStorageQueueUnorderedFileMetadata.cpp` **Line:** ~130-138\n\n**Defect:** The `request_index` enum mapping:\n- If `processing_id_version.has_value()`: CHECK_PROCESSING_ID_PATH=0, REMOVE_PROCESSING_ID_PATH=1, REMOVE_PROCESSING_PATH=2, SET_PROCESSED_PATH=3\n- Else: SET_PROCESSED_PATH=0\n\nBut the code **removed** the CHECK request (was index 0). So now indices are: REMOVE_PROCESSING_ID_PATH=0, REMOVE_PROCESSING_PATH=1, SET_PROCESSED_PATH=2. But `request_index[REMOVE_PROCESSING_ID_PATH] = 1` (line 132) - **wrong index!** It should be 0 now.\n\n**Failure scenario:** `processing_id_version` has value \u2192 requests: [remove_id, remove_path, create_processed]. `request_index[REMOVE_PROCESSING_ID_PATH] = 1` but actual index is 0. Error handling checks wrong response.\n\n---",
+        "path": "src/Storages/ObjectStorageQueue/ObjectStorageQueueUnorderedFileMetadata.cpp",
+        "start_line": 130,
+        "end_line": 130,
+        "observation_id": "a985667a8237174c",
+        "claimed_path": "ObjectStorageQueueUnorderedFileMetadata.cpp",
+        "path_resolution": "basename",
+        "merged_from": []
+      },
+      {
+        "content": "### 36. `ObjectStorageQueueUnorderedFileMetadata.cpp:132-138` - Hardcoded indices don't match actual request positions after check removal\n**File:** `ObjectStorageQueueUnorderedFileMetadata.cpp` **Line:** ~132-138\n\n**Defect:** Continuing from #35:\n- Line 132: `request_index[REMOVE_PROCESSING_ID_PATH] = 1` \u2192 should be 0\n- Line 133: `request_index[REMOVE_PROCESSING_PATH] = 2` \u2192 should be 1\n- Line 134: `request_index[SET_PROCESSED_PATH] = 3` \u2192 should be 2\n\nIn `else` branch (line 136): `request_index[SET_PROCESSED_PATH] = 0` - this is correct since only one request.\n\nBut the `if` branch indices are all off by -1 (since check request removed but indices not updated).\n\n**Failure scenario:** Any error in multi-op \u2192 `is_request_failed()` checks wrong response index \u2192 misclassifies error \u2192 wrong failure_reason \u2192 incorrect exception or silent corruption.\n\n---",
+        "path": "src/Storages/ObjectStorageQueue/ObjectStorageQueueUnorderedFileMetadata.cpp",
+        "start_line": 132,
+        "end_line": 132,
+        "observation_id": "6fb1c2cead830a65",
+        "claimed_path": "ObjectStorageQueueUnorderedFileMetadata.cpp",
+        "path_resolution": "basename",
+        "merged_from": []
+      },
+      {
+        "content": "### 37. `ObjectStorageQueueUnorderedFileMetadata.cpp:141-146` - `SET_PROCESSED_PATH` request always added, but `request_index` only set in `if` branch\n**File:** `ObjectStorageQueueUnorderedFileMetadata.cpp` **Line:** ~141-146\n\n**Defect:** Line 141-146: `requests.push_back(create processed node)` - always executed. But `request_index[SET_PROCESSED_PATH]` is only set in `if` branch (line 134) and `else` branch (line 137). In `if` branch it's set to 3 (wrong, should be 2). In `else` branch set to 0 (correct). But what if `processing_id_version.has_value()` is true? The request is at index 2 (after two removes), but `request_index` says 3. Error handling will check wrong response.\n\n---",
+        "path": "src/Storages/ObjectStorageQueue/ObjectStorageQueueUnorderedFileMetadata.cpp",
+        "start_line": 141,
+        "end_line": 141,
+        "observation_id": "4a0aaf6069017841",
+        "claimed_path": "ObjectStorageQueueUnorderedFileMetadata.cpp",
+        "path_resolution": "basename",
+        "merged_from": []
+      },
+      {
+        "content": "### 38. `ObjectStorageQueueUnorderedFileMetadata.cpp:153-165` - Error handling uses wrong indices\n**File:** `ObjectStorageQueueUnorderedFileMetadata.cpp` **Line:** ~153-165\n\n**Defect:** `is_request_failed(CHECK_PROCESSING_ID_PATH)` - but CHECK request was removed! This enum value still exists but no corresponding request. `is_request_failed(REMOVE_PROCESSING_ID_PATH)` checks index 1 (should be 0). `is_request_failed(REMOVE_PROCESSING_PATH)` checks index 2 (should be 1). `is_request_failed(SET_PROCESSED_PATH)` checks index 3 (should be 2).\n\nAll error classifications are wrong.\n\n---",
+        "path": "src/Storages/ObjectStorageQueue/ObjectStorageQueueUnorderedFileMetadata.cpp",
+        "start_line": 153,
+        "end_line": 153,
+        "observation_id": "3aebf377d8ce1600",
+        "claimed_path": "ObjectStorageQueueUnorderedFileMetadata.cpp",
+        "path_resolution": "basename",
+        "merged_from": []
+      },
+      {
+        "content": "### 39. `ObjectStorageQueueUnorderedFileMetadata.cpp:167-175` - `max_loading_retries` check uses `zk_client->tryRemove(failed_node_path + \".retriable\", -1)`\n**File:** `ObjectStorageQueueUnorderedFileMetadata.cpp` **Line:** ~167-175\n\n**Defect:** This removes `.retriable` suffix node. But the version is -1 (any version). If another process created a new `.retriable` node concurrently, this removes it. Should use version if known. Minor race.\n\n---",
+        "path": "src/Storages/ObjectStorageQueue/ObjectStorageQueueUnorderedFileMetadata.cpp",
+        "start_line": 167,
+        "end_line": 167,
+        "observation_id": "d245165583db7308",
+        "claimed_path": "ObjectStorageQueueUnorderedFileMetadata.cpp",
+        "path_resolution": "basename",
+        "merged_from": []
+      },
+      {
+        "content": "### 40. `ObjectStorageQueueUnorderedFileMetadata.cpp:198` - `LOG_WARNING` for all errors, but some are expected (session expiry)\n**File:** `ObjectStorageQueueUnorderedFileMetadata.cpp` **Line:** ~198\n\n**Change:** Removed `if (!remove_processing_nodes_only)` condition, now always logs WARNING.\n\n**Defect:** Session expiry errors (ZCONNECTIONLOSS, ZSESSIONEXPIRED) are \"normal\" and logged at TRACE in Ordered (line 313 in IFileMetadata). Here they're WARNING. Log spam on cluster restarts.\n\n---",
+        "path": "src/Storages/ObjectStorageQueue/ObjectStorageQueueUnorderedFileMetadata.cpp",
+        "start_line": 198,
+        "end_line": 198,
+        "observation_id": "1dc463a9d1e19859",
+        "claimed_path": "ObjectStorageQueueUnorderedFileMetadata.cpp",
+        "path_resolution": "basename",
+        "merged_from": []
+      },
+      {
+        "content": "### 41. `ObjectStorageQueueUnorderedFileMetadata.h:30` - Removed `resetProcessingImpl()` override declaration\n**File:** `ObjectStorageQueueUnorderedFileMetadata.h` **Line:** 30\n\n**Change:** Removed `void resetProcessingImpl() override;`\n\n**Defect:** Base class `resetProcessing()` no longer calls `resetProcessingImpl()` (it was inlined). But if someone calls `resetProcessingImpl()` directly on Unordered pointer, it's now missing. Unlikely but possible.\n\n---",
+        "path": "src/Storages/ObjectStorageQueue/ObjectStorageQueueUnorderedFileMetadata.h",
+        "start_line": 30,
+        "end_line": 30,
+        "observation_id": "bc630b1adf60da9f",
+        "claimed_path": "ObjectStorageQueueUnorderedFileMetadata.h",
+        "path_resolution": "basename",
+        "merged_from": []
+      },
+      {
+        "content": "### 42. `ObjectStorageQueueUnorderedFileMetadata.cpp:109-115` - Removed `resetProcessingImpl()` implementation entirely\n**File:** `ObjectStorageQueueUnorderedFileMetadata.cpp` **Line:** ~109-115 (removed lines)\n\n**Defect:** The removed `resetProcessingImpl()` called `setProcessedImpl(true)` (remove processing nodes only). This logic is now inlined in base class `resetProcessing()` but **only for Ordered** (via ZooKeeper multi). Unordered's reset logic was different - it used `setProcessedImpl(true)`. Now Unordered uses base class `resetProcessing()` which does ZooKeeper multi with different requests. **Behavior changed for Unordered reset.**\n\n**Failure scenario:** Unordered file in Processing state \u2192 `resetProcessing()` called \u2192 base class does Ordered-style ZooKeeper cleanup (check version, remove id, remove path) \u2192 but Unordered may have different node structure \u2192 cleanup fails or leaves stale nodes.",
+        "path": "src/Storages/ObjectStorageQueue/ObjectStorageQueueUnorderedFileMetadata.cpp",
+        "start_line": 109,
+        "end_line": 109,
+        "observation_id": "32368c310feba915",
+        "claimed_path": "ObjectStorageQueueUnorderedFileMetadata.cpp",
+        "path_resolution": "basename",
+        "merged_from": [
+          "2106f774702d6fc2"
+        ]
+      },
+      {
+        "content": "### 43. `merge_tree.xml:4` - `parts_to_throw_insert` changed from 0 to 3\n**File:** `tests/integration/test_storage_s3_queue/configs/merge_tree.xml` **Line:** 4\n\n**Defect:** This config change affects **all** S3 queue tests, not just the new ones. `parts_to_throw_insert=3` means after 3 parts, inserts throw \"Too many parts\". This will break existing tests that insert more than 3 parts without expecting failure.\n\n**Failure scenario:** Any test inserting >3 files \u2192 \"Too many parts\" exception \u2192 test fails unexpectedly.\n\n---",
+        "path": "tests/integration/test_storage_s3_queue/configs/merge_tree.xml",
+        "start_line": 4,
+        "end_line": 4,
+        "observation_id": "52d8c5a95164a1e9",
+        "claimed_path": "merge_tree.xml",
+        "path_resolution": "basename",
+        "merged_from": []
+      },
+      {
+        "content": "### 44. `test.py:1211` - Log message assertion changed\n**File:** `tests/integration/test_storage_s3_queue/test.py` **Line:** ~1211\n\n**Change:** \"Shutdown was called, stopping sync\" \u2192 \"Shutdown was called\"\n\n**Defect:** The new log message is less specific. If other \"Shutdown was called\" logs exist, test may pass incorrectly. But more importantly, the old message \"stopping sync\" indicated a specific code path. The change suggests the log message was changed in source (which I see in Source.cpp line 487: \"Shutdown was called\" vs old \"Shutdown was called, stopping sync\"). This is a test update, not a defect per se, but indicates behavior change.\n\n---",
+        "path": "tests/integration/test_storage_s3_queue/test.py",
+        "start_line": 1211,
+        "end_line": 1211,
+        "observation_id": "29a78c13939851db",
+        "claimed_path": "test.py",
+        "path_resolution": "basename",
+        "merged_from": []
+      },
+      {
+        "content": "### 45. `test.py:1864-1935` - `test_exception_during_insert` completely rewritten\n**File:** `tests/integration/test_storage_s3_queue/test.py` **Line:** ~1864-1935\n\n**Defects in new test:**\n1. **Line 1883:** `node.query(\"system stop merges\")` - stops merges globally, affects other tests if not isolated.\n2. **Line 1885:** `create_mv()` creates materialized view.\n3. **Line 1893:** `generate(True)` called twice, then `generate(False)` - third call doesn't wait for rows.\n4. **Line 1895:** `wait_for_log_line` expects \"Merges are processing significantly slower than inserts\" - this is a **warning log**, not an error. The test expects this specific warning.\n5. **Line 1903:** `assert \"Too many parts\" in exception` - but the log waited for is about slow merges, not \"Too many parts\". Mismatch.\n6. **Line 1905-1910:** Restarts merges, optimizes table, waits for rows. But `expected_rows[0]` was accumulated over 3 `generate()` calls (33 files \u00d7 1M rows = 33M). The test only inserted 22M rows (2 `generate(True)` calls waited, 1 `generate(False)` didn't). So `wait_for_rows(expected_rows[0])` expects 33M but only 22M inserted \u2192 **test hangs or fails**.\n\n**Failure scenario:** Test expects 33M rows but only 22M were actually waited for \u2192 `wait_for_rows` times out \u2192 test fails.\n\n---",
+        "path": "tests/integration/test_storage_s3_queue/test.py",
+        "start_line": 1864,
+        "end_line": 1864,
+        "observation_id": "70269d51218ca3cd",
+        "claimed_path": "test.py",
+        "path_resolution": "basename",
+        "merged_from": [
+          "6698cefb55b2ded2",
+          "3276b559c90aea76",
+          "7cfa21e6c07b3a08",
+          "645988ce9938fcff",
+          "f184d0a6636218e6",
+          "ed2839184d9dca03",
+          "b7a694e745293030"
+        ]
+      },
+      {
+        "content": "### 46. `test.py:1913` - `wait_for_rows(expected_rows[0])` after `optimize final` but count mismatch\n**File:** `tests/integration/test_storage_s3_queue/test.py` **Line:** ~1913\n\n**Defect:** As analyzed in #45, `expected_rows[0]` = 33M (3 \u00d7 11 \u00d7 1M) but only 22M rows were committed (2 generates with `check_inserted=True`). The third generate didn't wait. After optimize, count will be 22M, not 33M. Assertion fails.\n\n---",
+        "path": "tests/integration/test_storage_s3_queue/test.py",
+        "start_line": 1913,
+        "end_line": 1913,
+        "observation_id": "c8fa80e76b4f6ce7",
+        "claimed_path": "test.py",
+        "path_resolution": "basename",
+        "merged_from": []
+      },
+      {
+        "content": "### 47. `test.py:2027-2031` - New assertion for \"will not be retried\" log\n**File:** `tests/integration/test_storage_s3_queue/test.py` **Line:** ~2027-2031\n\n**Change:** Added check for \"File ... failed to process and will not be retried\"\n\n**Defect:** This log comes from `setFailedNonRetriable()` (IFileMetadata.cpp line 383). But `setFailedNonRetriable()` doesn't reset `processing_id_version` (defect #8). The test may pass now but exposes the bug where version not cleared.\n\n---",
+        "path": "tests/integration/test_storage_s3_queue/test.py",
+        "start_line": 2027,
+        "end_line": 2027,
+        "observation_id": "a34a8943a215e1a6",
+        "claimed_path": "test.py",
+        "path_resolution": "basename",
+        "merged_from": []
+      },
+      {
+        "content": "### 48. `test.py:1877` - `files_to_generate = 10` removed, now generated inside `generate()` function\n**File:** `tests/integration/test_storage_s3_queue/test.py` **Line:** ~1877\n\n**Defect:** The `generate()` function uses `files_to_generate = 11` and `row_num = 1000000`. But `total_values` is computed and unused. The `expected_rows[0]` accumulates `files_to_generate * row_num` = 11M per call. But `generate_random_files` uses `use_random_names=1` - files have random names. The S3 queue may not process them in order, and `test_commit_on_limit` (line 2013) expects specific file `test_9999.csv`. **Random names break deterministic test.**\n\n**Failure scenario:** Random file names \u2192 `test_9999.csv` may not exist \u2192 log assertion fails.\n\n---",
+        "path": "tests/integration/test_storage_s3_queue/test.py",
+        "start_line": 1877,
+        "end_line": 1877,
+        "observation_id": "0911a9e4284d2a16",
+        "claimed_path": "test.py",
+        "path_resolution": "basename",
+        "merged_from": [
+          "8985acf8c005da72"
+        ]
+      },
+      {
+        "content": "### 49. `ObjectStorageQueueSource.cpp:39` - `QUERY_WAS_CANCELLED` error code added but not defined\n**File:** `ObjectStorageQueueSource.cpp` **Line:** 39\n\n**Change:** `extern const int QUERY_WAS_CANCELLED;`\n\n**Defect:** This declares but doesn't define. Must be defined in ErrorCodes.cpp. If not, linker error. Not in diff.\n\n---",
+        "path": "src/Storages/ObjectStorageQueue/ObjectStorageQueueSource.cpp",
+        "start_line": 39,
+        "end_line": 39,
+        "observation_id": "fae08ecec62cfd45",
+        "claimed_path": "ObjectStorageQueueSource.cpp",
+        "path_resolution": "basename",
+        "merged_from": []
+      },
+      {
+        "content": "### 50. `ObjectStorageQueueIFileMetadata.cpp:226` - `file_status->retries && file_status->retries >= max_loading_retries` - precedence issue\n**File:** `ObjectStorageQueueIFileMetadata.cpp` **Line:** ~226\n\n**Defect:** Operator precedence: `&&` has higher precedence than `>=`. So `file_status->retries && file_status->retries >= max_loading_retries` parses as `file_status->retries && (file_status->retries >= max_loading_retries)`. This is what was intended. OK.\n\nBut the logic is still wrong (defect #1): when `retries=0` and `max_loading_retries=0`, `0 && (0>=0)` = `0 && 1` = `0` (false). Should be true (non-processable).\n\n---",
+        "path": "src/Storages/ObjectStorageQueue/ObjectStorageQueueIFileMetadata.cpp",
+        "start_line": 226,
+        "end_line": 226,
+        "observation_id": "fa910c96158fffa0",
+        "claimed_path": "ObjectStorageQueueIFileMetadata.cpp",
+        "path_resolution": "basename",
+        "merged_from": []
+      },
+      {
+        "content": "### 51. `ObjectStorageQueueIFileMetadata.cpp:273` - `static constexpr size_t` indices but requests vector is dynamic\n**File:** `ObjectStorageQueueIFileMetadata.cpp` **Line:** ~273\n\n**Defect:** The indices `check_processing_id_path_idx = 0`, `remove_processing_id_path_idx = 1`, `remove_processing_path_idx = 2` assume fixed request order. But the requests are:\n1. `makeRemoveRequest(processing_node_id_path, version)`\n2. `makeRemoveRequest(processing_node_path, -1)`\n\nOnly 2 requests! But 3 indices defined. `remove_processing_path_idx = 2` is out of bounds (valid indices 0, 1). The `is_request_failed(remove_processing_path_idx)` at line 304 will `chassert(idx < responses.size())` - `chassert(2 < 2)` \u2192 **assertion failure**.\n\n**Failure scenario:** `resetProcessing()` called \u2192 2 requests sent \u2192 `is_request_failed(2)` called \u2192 `chassert(2 < 2)` fails \u2192 crash in debug, UB in release.\n\n---",
+        "path": "src/Storages/ObjectStorageQueue/ObjectStorageQueueIFileMetadata.cpp",
+        "start_line": 273,
+        "end_line": 273,
+        "observation_id": "13efd4a58c9f25de",
+        "claimed_path": "ObjectStorageQueueIFileMetadata.cpp",
+        "path_resolution": "basename",
+        "merged_from": [
+          "f41b6f476ad01718",
+          "434984b95565307a"
+        ]
+      },
+      {
+        "content": "### 52. `ObjectStorageQueueIFileMetadata.cpp:294-308` - `is_request_failed` checks indices that don't exist\n**File:** `ObjectStorageQueueIFileMetadata.cpp` **Line:** ~294-308\n\n**Defect:** Continuing #51: The code defines 3 indices but only pushes 2 requests. The `is_request_failed` lambda does `chassert(idx < responses.size())`. For index 2, this fails. Also, the logic checks `check_processing_id_path_idx` (0) - but this is the remove request, not a check. The comment says \"Version of processing id node changed\" but it's a remove version mismatch.\n\n---",
+        "path": "src/Storages/ObjectStorageQueue/ObjectStorageQueueIFileMetadata.cpp",
+        "start_line": 294,
+        "end_line": 294,
+        "observation_id": "784f6beee9c22538",
+        "claimed_path": "ObjectStorageQueueIFileMetadata.cpp",
+        "path_resolution": "basename",
+        "merged_from": []
+      },
+      {
+        "content": "### 53. `ObjectStorageQueueSource.cpp:471` - `isCancelled()` called but `reader` member may be stale\n**File:** `ObjectStorageQueueSource.cpp` **Line:** ~471\n\n**Defect:** `reader` is now a member variable (line 171 in .h). In `generateImpl()`, at loop start, `reader` could be from previous iteration. The `isCancelled()` check calls `reader->cancel()` if reader exists. But if previous file finished, `reader` was reset to `{}` at line 536. So `reader` is null. OK.\n\nBut: what if `generateImpl()` is called concurrently? `ISource::generate()` is not thread-safe typically. But if it is, `reader` member is shared state. Not a defect unless documented as thread-safe.\n\n---",
+        "path": "src/Storages/ObjectStorageQueue/ObjectStorageQueueSource.cpp",
+        "start_line": 471,
+        "end_line": 471,
+        "observation_id": "0928530df5fb500b",
+        "claimed_path": "ObjectStorageQueueSource.cpp",
+        "path_resolution": "basename",
+        "merged_from": []
+      },
+      {
+        "content": "### 54. `ObjectStorageQueueSource.cpp:511` - `progress->processed_files += 1` before file actually processed\n**File:** `ObjectStorageQueueSource.cpp` **Line:** ~511\n\n**Defect:** `progress->processed_files` incremented when file added to `processed_files` (state=Processing), not when actually processed. If file fails during read, `progress->processed_files` still counts it. The `max_processed_files_before_commit` trigger may fire early.\n\n**Failure scenario:** `max_processed_files_before_commit=1` \u2192 first file added \u2192 progress=1 \u2192 commit triggered \u2192 but file not yet read \u2192 commit processes empty `processed_files` or partial data.\n\nWait, commit is checked AFTER file marked Processed (line 538). So progress includes current file. If commit happens, it processes all files in `processed_files` including current. But current file is now Processed (line 533). OK.\n\nBut if read fails (catch block), file marked ErrorOnRead, `return {}`, `generateImpl()` returns empty chunk. Pipeline may call `commit()` with `insert_succeeded=false`. `progress->processed_files` already incremented. Next file starts, progress=2, etc. Commit threshold counts failed files too. Minor.\n\n---",
+        "path": "src/Storages/ObjectStorageQueue/ObjectStorageQueueSource.cpp",
+        "start_line": 511,
+        "end_line": 511,
+        "observation_id": "dee2b0a7470e8d51",
+        "claimed_path": "ObjectStorageQueueSource.cpp",
+        "path_resolution": "basename",
+        "merged_from": []
+      },
+      {
+        "content": "### 55. `ObjectStorageQueueSource.cpp:688` - `appendLogElement` uses `insert_succeeded && file_state == FileState::Processed` for `processed` param\n**File:** `ObjectStorageQueueSource.cpp` **Line:** ~688\n\n**Defect:** For `ErrorOnRead` files, `processed=false` (correct). For `Cancelled` files, `processed=false` (correct). For `Processing` files (shouldn't happen), `processed=false`. For `Processed` files with `insert_succeeded=false`, `processed=false`. This seems correct.\n\nBut: `appendLogElement` signature not shown. If it expects `processed` to mean \"successfully inserted\", this is correct.\n\n---",
+        "path": "src/Storages/ObjectStorageQueue/ObjectStorageQueueSource.cpp",
+        "start_line": 688,
+        "end_line": 688,
+        "observation_id": "dfe10e258da263a6",
+        "claimed_path": "ObjectStorageQueueSource.cpp",
+        "path_resolution": "basename",
+        "merged_from": []
+      },
+      {
+        "content": "### 56. `ObjectStorageQueueOrderedFileMetadata.cpp:257-278` - MULTI_READ branch doesn't handle `ZNONODE` for processed_node\n**File:** `ObjectStorageQueueOrderedFileMetadata.cpp` **Line:** ~257-278\n\n**Defect:** Line 263: `if (!(code == ZOK || code == ZNONODE)) throw...`. So `ZNONODE` for multi-op is OK. But `responses[0]->error` could be `ZNONODE` (processed node doesn't exist). Code checks `responses[0]->error == ZOK` at line 271. If `ZNONODE`, skips block. `processed_node` remains nullopt. Falls to line 292: `processed_node.has_value()` false \u2192 adds check-not-exists request. This is correct for non-existent node.\n\nBut: what if `code == ZOK` but `responses[0]->error == ZNONODE`? Multi-op returns ZOK if all ops succeed OR if some ops return ZNONODE? Actually `tryMulti` returns ZOK if all requests succeeded (including ZNONODE as success for get). So `code == ZOK` and `responses[0]->error == ZNONODE` is possible. Handled correctly (skips block, processed_node=nullopt).\n\n---",
+        "path": "src/Storages/ObjectStorageQueue/ObjectStorageQueueOrderedFileMetadata.cpp",
+        "start_line": 257,
+        "end_line": 257,
+        "observation_id": "3fa785902a1ed9fc",
+        "claimed_path": "ObjectStorageQueueOrderedFileMetadata.cpp",
+        "path_resolution": "basename",
+        "merged_from": []
+      },
+      {
+        "content": "### 57. `ObjectStorageQueueOrderedFileMetadata.cpp:265` - Failed node check: `responses[1]->error == ZOK` but what if `ZNONODE`?\n**File:** `ObjectStorageQueueOrderedFileMetadata.cpp` **Line:** ~265\n\n**Defect:** Line 266: `if (responses[1]->error == Coordination::Error::ZOK)` - if failed node exists, returns Failed. But if `responses[1]->error == ZNONODE` (failed node doesn't exist), falls through. OK.\n\nBut: what if `responses[1]->error` is other error (e.g., ZCONNECTIONLOSS)? The multi-op `code` would not be ZOK (line 263 throws). So not reached. OK.\n\n---",
+        "path": "src/Storages/ObjectStorageQueue/ObjectStorageQueueOrderedFileMetadata.cpp",
+        "start_line": 265,
+        "end_line": 265,
+        "observation_id": "491bc2cfa0f0f41d",
+        "claimed_path": "ObjectStorageQueueOrderedFileMetadata.cpp",
+        "path_resolution": "basename",
+        "merged_from": []
+      },
+      {
+        "content": "### 58. `ObjectStorageQueueIFileMetadata.cpp:327-328` - `processing_id.reset()` and `processing_id_version.reset()` called AFTER `onFailed()`\n**File:** `ObjectStorageQueueIFileMetadata.cpp` **Line:** ~327-328\n\n**Defect:** Order: `onFailed()` then reset ids. If `onFailed()` throws, ids not reset. But `onFailed()` likely doesn't throw. OK.\n\nBut in `setFailedNonRetriable()` (line 383), ids are NOT reset (defect #8). Inconsistent.\n\n---",
+        "path": "src/Storages/ObjectStorageQueue/ObjectStorageQueueIFileMetadata.cpp",
+        "start_line": 327,
+        "end_line": 327,
+        "observation_id": "43b95743c806cdcc",
+        "claimed_path": "ObjectStorageQueueIFileMetadata.cpp",
+        "path_resolution": "basename",
+        "merged_from": []
+      },
+      {
+        "content": "### 59. `ObjectStorageQueueSource.cpp:476` - `reader->cancel()` but reader's cancel may not be implemented\n**File:** `ObjectStorageQueueSource.cpp` **Line:** ~476\n\n**Defect:** `reader` is `Source::ReaderHolder` (smart pointer to `IObjectStorageReader`). `cancel()` is virtual. If concrete reader doesn't implement cancel, may be no-op. Not a defect in this code.\n\n---",
+        "path": "src/Storages/ObjectStorageQueue/ObjectStorageQueueSource.cpp",
+        "start_line": 476,
+        "end_line": 476,
+        "observation_id": "1d02323836ccfde4",
+        "claimed_path": "ObjectStorageQueueSource.cpp",
+        "path_resolution": "basename",
+        "merged_from": []
+      },
+      {
+        "content": "### 60. `ObjectStorageQueueSource.cpp:508` - `object_info->file_metadata` accessed but `object_info` is `dynamic_cast` from `reader.getObjectInfo()`\n**File:** `ObjectStorageQueueSource.cpp` **Line:** ~508\n\n**Defect:** Line 509: `const auto * object_info = dynamic_cast<const ObjectStorageQueueObjectInfo *>(reader.getObjectInfo().get());` - if cast fails, `object_info` is nullptr. Line 510: `file_metadata = object_info->file_metadata;` \u2192 **nullptr dereference**.\n\n**Failure scenario:** `reader.getObjectInfo()` returns a different ObjectInfo type (e.g., from different source) \u2192 dynamic_cast fails \u2192 crash.\n\n---",
+        "path": "src/Storages/ObjectStorageQueue/ObjectStorageQueueSource.cpp",
+        "start_line": 508,
+        "end_line": 508,
+        "observation_id": "7752f93c2169925c",
+        "claimed_path": "ObjectStorageQueueSource.cpp",
+        "path_resolution": "basename",
+        "merged_from": []
+      },
+      {
+        "content": "### 61. `ObjectStorageQueueSource.cpp:508` - `dynamic_cast` on raw pointer from `get()` - if `getObjectInfo()` returns null, crash\n**File:** `ObjectStorageQueueSource.cpp` **Line:** ~508\n\n**Defect:** `reader.getObjectInfo()` returns `ObjectInfoPtr` (shared_ptr). `.get()` returns raw pointer. If shared_ptr is null, `.get()` returns nullptr. `dynamic_cast` on nullptr returns nullptr. Then `->file_metadata` dereferences nullptr.\n\n**Failure scenario:** Reader created without ObjectInfo (bug elsewhere) \u2192 nullptr dereference.\n\n---",
+        "path": "src/Storages/ObjectStorageQueue/ObjectStorageQueueSource.cpp",
+        "start_line": 508,
+        "end_line": 508,
+        "observation_id": "2e9ac4d3af38ce7b",
+        "claimed_path": "ObjectStorageQueueSource.cpp",
+        "path_resolution": "basename",
+        "merged_from": []
+      },
+      {
+        "content": "### 62. `ObjectStorageQueueOrderedFileMetadata.cpp:292` - `requests.push_back(zkutil::makeCheckRequest(...))` uses `processed_node_stat.version` but stat may be from failed_node\n**File:** `ObjectStorageQueueOrderedFileMetadata.cpp` **Line:** ~292\n\n**Defect:** In MULTI_READ branch, `processed_node_stat` is set from `get_response->stat` (line 274). In non-MULTI_READ branch, `processed_node_stat` is output param of `getMaxProcessedFile()` (line 282). Both set it correctly for processed node. OK.\n\nBut wait: in MULTI_READ branch, if `responses[0]->error == ZOK` but data empty, `processed_node_stat` NOT set (line 274 inside `if (!data.empty())`). Then line 292 uses uninitialized `processed_node_stat`. **UB.**\n\n**Failure scenario:** Processed node exists but empty \u2192 `processed_node` nullopt, but `processed_node_stat` uninitialized \u2192 check request with garbage version \u2192 undefined behavior.\n\n---",
+        "path": "src/Storages/ObjectStorageQueue/ObjectStorageQueueOrderedFileMetadata.cpp",
+        "start_line": 292,
+        "end_line": 292,
+        "observation_id": "d838a3fee9e973e0",
+        "claimed_path": "ObjectStorageQueueOrderedFileMetadata.cpp",
+        "path_resolution": "basename",
+        "merged_from": []
+      },
+      {
+        "content": "### 63. `ObjectStorageQueueIFileMetadata.cpp:264` - `SCOPE_EXIT` captures `file_status` by reference but `file_status` is local shared_ptr\n**File:** `ObjectStorageQueueIFileMetadata.cpp` **Line:** ~264\n\n**Defect:** `SCOPE_EXIT({ file_status->reset(); });` - `file_status` is a local variable (shared_ptr). `SCOPE_EXIT` captures by reference (default). If `file_status` is reassigned (it's not), or if the lambda outlives the function (it doesn't), OK. But `SCOPE_EXIT` runs at scope end. `file_status` is still in scope. OK.\n\nHowever: `file_status` is a parameter? No, line 259: `auto file_status = getFileStatus();` - local variable. OK.\n\n---",
+        "path": "src/Storages/ObjectStorageQueue/ObjectStorageQueueIFileMetadata.cpp",
+        "start_line": 264,
+        "end_line": 264,
+        "observation_id": "f6d17264329cb0c7",
+        "claimed_path": "ObjectStorageQueueIFileMetadata.cpp",
+        "path_resolution": "basename",
+        "merged_from": []
+      },
+      {
+        "content": "### 64. `ObjectStorageQueueUnorderedFileMetadata.cpp:122` - `setProcessedImpl()` no longer has `remove_processing_nodes_only` parameter\n**File:** `ObjectStorageQueueUnorderedFileMetadata.cpp` **Line:** ~122\n\n**Change:** Removed `bool remove_processing_nodes_only` parameter.\n\n**Defect:** Base class `resetProcessing()` (line 264 in IFileMetadata) no longer calls `resetProcessingImpl()`. But `ObjectStorageQueueUnorderedFileMetadata` had `resetProcessingImpl()` that called `setProcessedImpl(true)`. Now removed. The base `resetProcessing()` does its own ZooKeeper cleanup. But Unordered's cleanup was different (used `setProcessedImpl(true)` which only removes processing nodes). Now base class does Ordered-style cleanup. **Behavior change for Unordered.**\n\n**Failure scenario:** Unordered file reset \u2192 base class tries to remove processing_id with version check \u2192 but Unordered may not have processing_id node structure \u2192 fails.\n\n---",
+        "path": "src/Storages/ObjectStorageQueue/ObjectStorageQueueUnorderedFileMetadata.cpp",
+        "start_line": 122,
+        "end_line": 122,
+        "observation_id": "96a3dd151ae04718",
+        "claimed_path": "ObjectStorageQueueUnorderedFileMetadata.cpp",
+        "path_resolution": "basename",
+        "merged_from": [
+          "18628283fbce5dae"
+        ]
+      },
+      {
+        "content": "### 65. `ObjectStorageQueueSource.cpp:653` - `commit()` parameter `insert_succeeded` but callers may pass old `success` semantics\n**File:** `ObjectStorageQueueSource.cpp` **Line:** ~653\n\n**Defect:** Need to verify all callers of `commit()` pass correct value. The diff doesn't show callers. If any caller passes `true` meaning \"read+insert succeeded\" but insert actually failed, logic breaks.\n\n---\n\nLet me compile the final list.\n\n## Summary of Defects\n\n### Critical (Crash/Data Loss)",
+        "path": "src/Storages/ObjectStorageQueue/ObjectStorageQueueSource.cpp",
+        "start_line": 653,
+        "end_line": 653,
+        "observation_id": "758cedf30eae3b19",
+        "claimed_path": "ObjectStorageQueueSource.cpp",
+        "path_resolution": "basename",
+        "merged_from": [
+          "21412d667ba998c5",
+          "7c420360e1a7d523"
+        ]
+      },
+      {
+        "content": "1. **ObjectStorageQueueIFileMetadata.cpp:273-308** - `chassert(idx < responses.size())` failure in `resetProcessing()`: Only 2 requests pushed but 3 static indices defined (0,1,2). `is_request_failed(2)` triggers `chassert(2 < 2)` \u2192 crash in debug, UB in release.",
+        "path": "src/Storages/ObjectStorageQueue/ObjectStorageQueueIFileMetadata.cpp",
+        "start_line": 273,
+        "end_line": 273,
+        "observation_id": "5e4cce33540ddade",
+        "claimed_path": "ObjectStorageQueueIFileMetadata.cpp",
+        "path_resolution": "basename",
+        "merged_from": []
+      },
+      {
+        "content": "2. **ObjectStorageQueueIFileMetadata.cpp:264-271** - `SCOPE_EXIT` runs `file_status->reset()` even on exception: If ZooKeeper `tryMulti()` throws, local state cleared but ZooKeeper nodes remain \u2192 file stuck in \"processing\" limbo.",
+        "path": "src/Storages/ObjectStorageQueue/ObjectStorageQueueIFileMetadata.cpp",
+        "start_line": 264,
+        "end_line": 264,
+        "observation_id": "451a302afd2bbf50",
+        "claimed_path": "ObjectStorageQueueIFileMetadata.cpp",
+        "path_resolution": "basename",
+        "merged_from": []
+      },
+      {
+        "content": "3. **ObjectStorageQueueSource.cpp:508-510** - Nullptr dereference: `dynamic_cast` on `reader.getObjectInfo().get()` can return null \u2192 `object_info->file_metadata` crashes.",
+        "path": "src/Storages/ObjectStorageQueue/ObjectStorageQueueSource.cpp",
+        "start_line": 508,
+        "end_line": 508,
+        "observation_id": "5372f655adf38d16",
+        "claimed_path": "ObjectStorageQueueSource.cpp",
+        "path_resolution": "basename",
+        "merged_from": []
+      },
+      {
+        "content": "4. **ObjectStorageQueueUnorderedFileMetadata.cpp:130-138** - Hardcoded request indices wrong after check removal: `request_index[REMOVE_PROCESSING_ID_PATH]=1` but actual index 0; `request_index[SET_PROCESSED_PATH]=3` but actual index 2. Error handling checks wrong responses \u2192 misclassifies errors \u2192 LOGICAL_ERROR or silent corruption.",
+        "path": "src/Storages/ObjectStorageQueue/ObjectStorageQueueUnorderedFileMetadata.cpp",
+        "start_line": 130,
+        "end_line": 130,
+        "observation_id": "8c0de2063f1ffc0a",
+        "claimed_path": "ObjectStorageQueueUnorderedFileMetadata.cpp",
+        "path_resolution": "basename",
+        "merged_from": []
+      },
+      {
+        "content": "5. **ObjectStorageQueueOrderedFileMetadata.cpp:292** - Uninitialized `processed_node_stat` used: In MULTI_READ branch, if processed node exists but empty, `processed_node_stat` not set but used in check request \u2192 garbage version \u2192 undefined behavior.\n\n### High (Incorrect Behavior)",
+        "path": "src/Storages/ObjectStorageQueue/ObjectStorageQueueOrderedFileMetadata.cpp",
+        "start_line": 292,
+        "end_line": 292,
+        "observation_id": "5f0849d7ccc9f2d1",
+        "claimed_path": "ObjectStorageQueueOrderedFileMetadata.cpp",
+        "path_resolution": "basename",
+        "merged_from": [
+          "7fb8d3fd4d72387f"
+        ]
+      },
+      {
+        "content": "6. **ObjectStorageQueueIFileMetadata.cpp:226-229** - Retry condition logic error: `retries && retries >= max_retries` evaluates false when `retries=0, max_retries=0` (should be true: no retries allowed). File with 0 retries incorrectly processable.",
+        "path": "src/Storages/ObjectStorageQueue/ObjectStorageQueueIFileMetadata.cpp",
+        "start_line": 226,
+        "end_line": 226,
+        "observation_id": "766dd97926f69dba",
+        "claimed_path": "ObjectStorageQueueIFileMetadata.cpp",
+        "path_resolution": "basename",
+        "merged_from": []
+      },
+      {
+        "content": "7. **ObjectStorageQueueIFileMetadata.cpp:273-277** - Missing version check before remove: Direct `makeRemoveRequest(processing_node_id_path, version)` without check. Version mismatch \u2192 ZBADVERSION treated as \"unexpected_error\" \u2192 LOGICAL_ERROR crash instead of graceful handling.",
+        "path": "src/Storages/ObjectStorageQueue/ObjectStorageQueueIFileMetadata.cpp",
+        "start_line": 273,
+        "end_line": 273,
+        "observation_id": "8997a503cc150bc8",
+        "claimed_path": "ObjectStorageQueueIFileMetadata.cpp",
+        "path_resolution": "basename",
+        "merged_from": []
+      },
+      {
+        "content": "8. **ObjectStorageQueueIFileMetadata.cpp:320-322** - `resetProcessing()` called unconditionally in `setFailed()` when `!reduce_retry_count`: Throws \"Cannot reset non-processing state\" if file already Failed/Processed \u2192 failure not recorded.",
+        "path": "src/Storages/ObjectStorageQueue/ObjectStorageQueueIFileMetadata.cpp",
+        "start_line": 320,
+        "end_line": 320,
+        "observation_id": "f4ecc6dfb590da7a",
+        "claimed_path": "ObjectStorageQueueIFileMetadata.cpp",
+        "path_resolution": "basename",
+        "merged_from": []
+      },
+      {
+        "content": "9. **ObjectStorageQueueIFileMetadata.cpp:323** - `onFailed()` called AFTER `resetProcessing()`: If `resetProcessing()` throws, `onFailed()` never called \u2192 failure not recorded, retry count not incremented, but `processing_id` reset.",
+        "path": "src/Storages/ObjectStorageQueue/ObjectStorageQueueIFileMetadata.cpp",
+        "start_line": 323,
+        "end_line": 323,
+        "observation_id": "dfa98912c4b9fa2e",
+        "claimed_path": "ObjectStorageQueueIFileMetadata.cpp",
+        "path_resolution": "basename",
+        "merged_from": []
+      },
+      {
+        "content": "10. **ObjectStorageQueueIFileMetadata.cpp:383** - `setFailedNonRetriable()` doesn't clear `processing_id_version`: Stale version remains \u2192 subsequent `setProcessing()` uses wrong version \u2192 ZooKeeper errors.",
+        "path": "src/Storages/ObjectStorageQueue/ObjectStorageQueueIFileMetadata.cpp",
+        "start_line": 383,
+        "end_line": 383,
+        "observation_id": "0b1db0e59c2376c5",
+        "claimed_path": "ObjectStorageQueueIFileMetadata.cpp",
+        "path_resolution": "basename",
+        "merged_from": []
+      },
+      {
+        "content": "11. **ObjectStorageQueueSource.cpp:511** - `setProcessing()` never called on metadata: `ProcessedFile` constructor sets state=Processing but metadata's `setProcessing()` not invoked. Later `setFailed()` calls `resetProcessing()` which throws \"Cannot reset non-processing state\".",
+        "path": "src/Storages/ObjectStorageQueue/ObjectStorageQueueSource.cpp",
+        "start_line": 511,
+        "end_line": 511,
+        "observation_id": "b87623e16194a584",
+        "claimed_path": "ObjectStorageQueueSource.cpp",
+        "path_resolution": "basename",
+        "merged_from": []
+      },
+      {
+        "content": "12. **ObjectStorageQueueSource.cpp:518-530** - Read errors deferred to `commit()`: `ErrorOnRead` state set but `setFailed()` not called immediately. If query cancelled before commit, file never marked failed in ZooKeeper \u2192 infinite reprocessing (no retry increment).",
+        "path": "src/Storages/ObjectStorageQueue/ObjectStorageQueueSource.cpp",
+        "start_line": 518,
+        "end_line": 518,
+        "observation_id": "8d1ea6654e107136",
+        "claimed_path": "ObjectStorageQueueSource.cpp",
+        "path_resolution": "basename",
+        "merged_from": []
+      },
+      {
+        "content": "13. **ObjectStorageQueueSource.cpp:527** - `return {}` on read error loses partial data: Already-read rows from current file discarded, file retried from start.",
+        "path": "src/Storages/ObjectStorageQueue/ObjectStorageQueueSource.cpp",
+        "start_line": 527,
+        "end_line": 527,
+        "observation_id": "5e7d434a00433ae0",
+        "claimed_path": "ObjectStorageQueueSource.cpp",
+        "path_resolution": "basename",
+        "merged_from": []
+      },
+      {
+        "content": "14. **ObjectStorageQueueSource.cpp:674** - Cancelled files don't reduce retry count: `setFailed(exception_message, false)` \u2192 `reduce_retry_count=false` \u2192 infinite retry loop on cancellation.",
+        "path": "src/Storages/ObjectStorageQueue/ObjectStorageQueueSource.cpp",
+        "start_line": 674,
+        "end_line": 674,
+        "observation_id": "e7abe47811258fdc",
+        "claimed_path": "ObjectStorageQueueSource.cpp",
+        "path_resolution": "basename",
+        "merged_from": []
+      },
+      {
+        "content": "15. **ObjectStorageQueueUnorderedFileMetadata.cpp:122-165** - `resetProcessing()` uses base class logic (Ordered-style) but Unordered has different node structure: Cleanup fails or leaves stale nodes.\n\n### Medium (Logic/State Issues)",
+        "path": "src/Storages/ObjectStorageQueue/ObjectStorageQueueUnorderedFileMetadata.cpp",
+        "start_line": 122,
+        "end_line": 122,
+        "observation_id": "5dade1d9057cfc55",
+        "claimed_path": "ObjectStorageQueueUnorderedFileMetadata.cpp",
+        "path_resolution": "basename",
+        "merged_from": [
+          "83e8b5c85945efbe"
+        ]
+      },
+      {
+        "content": "16. **ObjectStorageQueueIFileMetadata.h:59** - `setFailed()` signature changed (removed `overwrite_status`): External callers (not in diff) will fail to compile or pass wrong args.",
+        "path": "src/Storages/ObjectStorageQueue/ObjectStorageQueueIFileMetadata.h",
+        "start_line": 59,
+        "end_line": 59,
+        "observation_id": "6f06df210d8a5ff4",
+        "claimed_path": "ObjectStorageQueueIFileMetadata.h",
+        "path_resolution": "basename",
+        "merged_from": []
+      },
+      {
+        "content": "17. **ObjectStorageQueueOrderedFileMetadata.cpp:248-280** - MULTI_READ path: Empty processed node (ZOK, empty data) \u2192 `processed_node` stays nullopt \u2192 check-not-exists request added \u2192 fails with ZNODEEXISTS.",
+        "path": "src/Storages/ObjectStorageQueue/ObjectStorageQueueOrderedFileMetadata.cpp",
+        "start_line": 248,
+        "end_line": 248,
+        "observation_id": "b64c78215c597568",
+        "claimed_path": "ObjectStorageQueueOrderedFileMetadata.cpp",
+        "path_resolution": "basename",
+        "merged_from": []
+      },
+      {
+        "content": "18. **ObjectStorageQueueOrderedFileMetadata.cpp:431-436** - `setProcessedRequests()` removes check request before remove: Same version mismatch issue as #7.",
+        "path": "src/Storages/ObjectStorageQueue/ObjectStorageQueueOrderedFileMetadata.cpp",
+        "start_line": 431,
+        "end_line": 431,
+        "observation_id": "9021e32b2d6e8c6c",
+        "claimed_path": "ObjectStorageQueueOrderedFileMetadata.cpp",
+        "path_resolution": "basename",
+        "merged_from": []
+      },
+      {
+        "content": "19. **ObjectStorageQueueSource.cpp:481** - `chassert(processed_rows > 0)` on cancelled file: File marked Processing but 0 rows read \u2192 assertion failure.",
+        "path": "src/Storages/ObjectStorageQueue/ObjectStorageQueueSource.cpp",
+        "start_line": 481,
+        "end_line": 481,
+        "observation_id": "92a8149525021caf",
+        "claimed_path": "ObjectStorageQueueSource.cpp",
+        "path_resolution": "basename",
+        "merged_from": []
+      },
+      {
+        "content": "20. **ObjectStorageQueueSource.cpp:497-501** - `shutdown_called` breaks immediately mid-file: Comment says \"process fully then shutdown\" but code breaks at line 500.",
+        "path": "src/Storages/ObjectStorageQueue/ObjectStorageQueueSource.cpp",
+        "start_line": 497,
+        "end_line": 497,
+        "observation_id": "65387464b8f53a43",
+        "claimed_path": "ObjectStorageQueueSource.cpp",
+        "path_resolution": "basename",
+        "merged_from": []
+      },
+      {
+        "content": "21. **ObjectStorageQueueSource.cpp:39** - `QUERY_WAS_CANCELLED` declared but not defined in diff: Linker error if not in ErrorCodes.cpp.",
+        "path": "src/Storages/ObjectStorageQueue/ObjectStorageQueueSource.cpp",
+        "start_line": 39,
+        "end_line": 39,
+        "observation_id": "2d856351dc14b410",
+        "claimed_path": "ObjectStorageQueueSource.cpp",
+        "path_resolution": "basename",
+        "merged_from": []
+      },
+      {
+        "content": "22. **ObjectStorageQueueUnorderedFileMetadata.cpp:141-146** - `SET_PROCESSED_PATH` request index mismatch: Set to 3 in if-branch but actual index 2.",
+        "path": "src/Storages/ObjectStorageQueue/ObjectStorageQueueUnorderedFileMetadata.cpp",
+        "start_line": 141,
+        "end_line": 141,
+        "observation_id": "8766a8280134c824",
+        "claimed_path": "ObjectStorageQueueUnorderedFileMetadata.cpp",
+        "path_resolution": "basename",
+        "merged_from": []
+      },
+      {
+        "content": "23. **ObjectStorageQueueUnorderedFileMetadata.cpp:198** - Session expiry errors logged as WARNING instead of TRACE: Log spam on cluster restarts.\n\n### Test Defects",
+        "path": "src/Storages/ObjectStorageQueue/ObjectStorageQueueUnorderedFileMetadata.cpp",
+        "start_line": 198,
+        "end_line": 198,
+        "observation_id": "bfe7d921dee4b7d3",
+        "claimed_path": "ObjectStorageQueueUnorderedFileMetadata.cpp",
+        "path_resolution": "basename",
+        "merged_from": [
+          "ea2150f49f804d50"
+        ]
+      },
+      {
+        "content": "24. **tests/integration/test_storage_s3_queue/configs/merge_tree.xml:4** - `parts_to_throw_insert=3` breaks all tests inserting >3 parts.",
+        "path": "tests/integration/test_storage_s3_queue/configs/merge_tree.xml",
+        "start_line": 4,
+        "end_line": 4,
+        "observation_id": "7c7d59a07f9d282a",
+        "claimed_path": "tests/integration/test_storage_s3_queue/configs/merge_tree.xml",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "25. **tests/integration/test_storage_s3_queue/test.py:1903-1913** - `test_exception_during_insert`: `expected_rows[0]` = 33M (3 generates) but only 22M waited for \u2192 `wait_for_rows` times out.",
+        "path": "tests/integration/test_storage_s3_queue/test.py",
+        "start_line": 1903,
+        "end_line": 1903,
+        "observation_id": "ce3d17c080dd859b",
+        "claimed_path": "tests/integration/test_storage_s3_queue/test.py",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "26. **tests/integration/test_storage_s3_queue/test.py:1893** - Random file names (`use_random_names=1`) but `test_commit_on_limit` expects `test_9999.csv` \u2192 non-deterministic failure.",
+        "path": "tests/integration/test_storage_s3_queue/test.py",
+        "start_line": 1893,
+        "end_line": 1893,
+        "observation_id": "7f5a574c820732a1",
+        "claimed_path": "tests/integration/test_storage_s3_queue/test.py",
+        "path_resolution": "exact",
+        "merged_from": []
+      }
+    ]
+  },
+  "rundir": "/home/mjarnold/.cache/llm-panel/runs/aacr-up-3kn972dw-d67211d0658c/20260829-143146-4036075",
+  "extractor": "3",
+  "unlocated": [
+    {
+      "content": "**8. `tests/integration/test_storage_s3_queue/configs/merge_tree.xml` \u2014 `parts_to_throw_insert` changed 0 \u2192 3 for the whole module.**\nThis config is node-wide for every test in the suite, not scoped to the edited test. The old code deliberately kept it at 0 globally and raised it per-test. Any other test in `test_storage_s3_queue` whose destination accumulates more than 3 unmerged parts (e.g. test",
+      "observation_id": "1d7b17671ed16834",
+      "claimed_path": "tests/integration/test_storage_s3_queue/configs/merge_tree.xml",
+      "path_resolution": "exact"
+    }
+  ]
+}

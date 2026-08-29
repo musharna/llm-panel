@@ -1,0 +1,206 @@
+{
+  "review": {
+    "comments": [
+      {
+        "content": "1. **High \u2014 Real defect / data-loss and authorization risk**  \n   **`api/db/services/document_service.py:336`** \u2014 The batch query is scoped only by document name and returns *every* matching document ID. If two tenants or knowledge bases both contain `manual.pdf`, one removal request will iterate over and remove both records; the visible caller does not compare each document\u2019s tenant with the initially authorized tenant. Scope the query to the authorized tenant/knowledge base and reject ambiguous matches.",
+        "path": "api/db/services/document_service.py",
+        "start_line": 336,
+        "end_line": 336,
+        "observation_id": "7b292a1bbae4f47b",
+        "claimed_path": "api/db/services/document_service.py",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "2. **High \u2014 Real defect / crash**  \n   **`api/db/services/document_service.py:339`** and **`api/apps/api_app.py:618`** \u2014 `get_doc_ids_by_doc_names()` returns `None` when the input is empty or has no matches, but the caller treats the result as a list. For example, `{\"doc_names\": [], \"doc_ids\": [\"abc\"]}` reaches `if doc_id not in doc_ids` and raises `TypeError: argument of type 'NoneType' is not iterable`. Return an empty list consistently.",
+        "path": "api/db/services/document_service.py",
+        "start_line": 339,
+        "end_line": 339,
+        "observation_id": "c26b1d602eea2b79",
+        "claimed_path": "api/db/services/document_service.py",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "3. **Medium \u2014 Real defect / silently incomplete validation**  \n   **`api/db/services/document_service.py:340`** \u2014 Partial matches silently discard unknown names. Given `[\"existing.pdf\", \"typo.pdf\"]`, only the existing document\u2019s ID is returned, so the caller cannot trigger its \u201cDocument not found\u201d check for `typo.pdf` and may report success after processing only part of the request. Preserve name-to-ID correspondence or explicitly verify that every requested name matched.",
+        "path": "api/db/services/document_service.py",
+        "start_line": 340,
+        "end_line": 340,
+        "observation_id": "38cc66c2d78d451b",
+        "claimed_path": "api/db/services/document_service.py",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "4. **Low \u2014 Maintainability / future abstraction defect**  \n   **`api/db/services/user_canvas_version.py:38`** \u2014 This classmethod hard-codes `UserCanvasVersionService` instead of using `cls`. An inherited service or test subclass could select IDs from its own model and then delete those IDs from the base service\u2019s model. Use `cls.delete_by_ids(delete_ids)`.\n\nVerification scope: I checked the supplied diff; the workspace contained no repository checkout, so surrounding model constraints and service implementations were unavailable.",
+        "path": "api/db/services/user_canvas_version.py",
+        "start_line": 38,
+        "end_line": 38,
+        "observation_id": "29dd23e679f3c5de",
+        "claimed_path": "api/db/services/user_canvas_version.py",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "**1. Missing `doc_names` are now silently dropped \u2014 delete becomes partially successful.**\nFile: `api/apps/api_app.py:618` (resolution), `643-644` (the guard)\nKind: real defect \u2014 silent partial operation on a delete endpoint\nThe old per-name lookup put a `None` into `doc_ids` for an unknown name, which then hit an error path in the per-id loop. The new `WHERE name IN (...)` only returns ids that exist, so a misspelled or already-deleted name never reaches the `if doc_id not in doc_dic` guard \u2014 that check can only ever fire for the request-supplied `doc_ids`, since the name-derived ids come from the same table the dict was built from. Concrete scenario: client calls with `doc_names: [\"A\", \"B\"]`, `B` was already removed; the API deletes `A` and returns success, so the client can never learn `B` was missing. The author's own `\"Document not found!\"` branch shows the intent was to error on missing docs; names now bypass it.",
+        "path": "api/apps/api_app.py",
+        "start_line": 618,
+        "end_line": 618,
+        "observation_id": "6ebb5e2013779291",
+        "claimed_path": "api/apps/api_app.py",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "**2. Request `doc_ids` are not type-normalized before the dict lookup.**\nFile: `api/apps/api_app.py:643` (membership test), `636-639` (dict built with DB int keys)\nKind: real defect for common input\nJSON clients very often serialize ids as strings. Old code passed `\"123\"` straight into peewee, whose int column coerces it. The new strict `\"123\" in {1, 2, 3}` is always False, so an existing document is rejected with a spurious `\"Document not found!\"`. Cast request ids to `int` before building/testing `doc_dic` (and decide what a non-numeric value should do).",
+        "path": "api/apps/api_app.py",
+        "start_line": 643,
+        "end_line": 643,
+        "observation_id": "bfdd7b14aa0807e5",
+        "claimed_path": "api/apps/api_app.py",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "**3. Empty or absent `doc_names` turns into `IN ()`, which most SQL dialects reject.**\nFile: `api/apps/api_app.py:618`, `api/db/services/document_service.py:336`\nKind: probable crash; missing validation (conditional on backend \u2014 peewee/DB not inspectable here)\n`req.get(\"doc_names\", [])` explicitly tolerates the field being absent, and the old comprehension short-circuited to `[]` without touching the DB. The new code sends `name IN ()` in that case \u2014 a syntax error on SQLite/MySQL/Postgres in my experience. Scenario: any `document_rm` call that omits `doc_names` (falling back to `doc_ids` alone) now 500s. Guard the empty case in the service before building the query.",
+        "path": "api/apps/api_app.py",
+        "start_line": 618,
+        "end_line": 618,
+        "observation_id": "3cbb4e927009b4c4",
+        "claimed_path": "api/apps/api_app.py",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "**4. The rewritten loop still indexes a lazy, one-shot query wrapper.**\nFile: `api/db/services/user_canvas_version.py:35-36` (and the uncaught path at `40`)\nKind: real defect \u2014 wrong rows deleted, then a crash once >21 versions exist (pre-existing pattern, but this PR rewrites exactly these lines without fixing it)\npeewee's `QueryResultWrapper.__getitem__(i)` is `next(islice(wrapper, i, i+1))` over the *shared, already-advancing* cursor, so successive accesses drift \u2014 `[20]` returns row 20, `[21]` returns row ~42, etc. Two consequences: the \"keep newest 20 versions\" invariant is never actually enforced (old versions keep accumulating), and for any canvas with more than 21 versions an access raises `IndexError`, which `except DoesNotExist` (line 40) does not catch \u2014 the endpoint 500s on every subsequent save. Fix in this same rewrite: `rows = list(user_canvas_version)` once, then `rows[20:]`. (Also note `count()` runs twice, lines 33 and 35 \u2014 a redundant COUNT query with a TOCTOU window against concurrent inserts/deletes; materializing the list once removes both.)",
+        "path": "api/db/services/user_canvas_version.py",
+        "start_line": 35,
+        "end_line": 35,
+        "observation_id": "ed8af6460cbaa0ff",
+        "claimed_path": "api/db/services/user_canvas_version.py",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "**5. Dead emptiness guard with a None-return contract the caller can't consume.**\nFile: `api/db/services/document_service.py:338-339`\nKind: dead code + latent crash\n`dicts()` returns a `QueryResultWrapper`, which has no `__bool__`/`__len__`, so `if not doc_ids` never fires; the empty case only works by accident, falling through to `[]` \u2014 which is exactly what the caller needs. But the dead branch advertises `None`, and the moment anyone materializes the wrapper (which #4 shows this codebase keeps being tempted to do), the guard fires, `get_doc_ids_by_doc_names` returns `None`, and `api/apps/api_app.py:620` does `doc_ids.append(...)` \u2192 `AttributeError` \u2192 500. Delete the branch or make it an explicit `return []` with a comment.",
+        "path": "api/db/services/document_service.py",
+        "start_line": 338,
+        "end_line": 338,
+        "observation_id": "0f56313bb416e174",
+        "claimed_path": "api/db/services/document_service.py",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "**6. New `delete_by_ids` helper has no empty-input or type guard.**\nFile: `api/db/services/common_service.py:269` (def), `275` (the delete)\nKind: missing validation on a new public helper\n`cls.model.id.in_([])` renders `IN ()` \u2014 the same syntax error class as #3, currently survivable only because both call sites happen to guard. It also silently misbehaves for a scalar `pids` (a bare int instead of a list). One-line fix: `if not pids: return 0`, at minimum. Keep in mind this helper is the shape of the bug in #3-adjacent paths once anyone calls it with a filtered-down list.",
+        "path": "api/db/services/common_service.py",
+        "start_line": 269,
+        "end_line": 269,
+        "observation_id": "14c9a757eee689a6",
+        "claimed_path": "api/db/services/common_service.py",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "**7. Hard-coded `UserCanvasVersionService` instead of `cls.`.**\nFile: `api/db/services/user_canvas_version.py:38`\nKind: maintainability\nEvery other call in this class uses `cls.`; hardcoding the concrete class bypasses any subclass override of `delete_by_ids` and invites copy-paste into sibling services where the class name differs. `cls.delete_by_ids(delete_ids)`.",
+        "path": "api/db/services/user_canvas_version.py",
+        "start_line": 38,
+        "end_line": 38,
+        "observation_id": "5abff3e99208b75d",
+        "claimed_path": "api/db/services/user_canvas_version.py",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "**8. Trailing whitespace on the added blank lines.**\nFile: `api/db/services/common_service.py:266`, `api/db/services/document_service.py:330`, `api/db/services/user_canvas_version.py:37`\nKind: lint nit \u2014 will trip flake8 W293 in CI.\n\n---\n\nItems 1\u20132 and 4\u20135 are, in my view, must-fix before merge (1\u20132 are regressions on a delete endpoint; 4 is a live crash once a canvas passes 21 versions). Items 3 and 6 need the empty-input guard regardless of backend behavior.",
+        "path": "api/db/services/common_service.py",
+        "start_line": 266,
+        "end_line": 266,
+        "observation_id": "96238ea66a69a147",
+        "claimed_path": "api/db/services/common_service.py",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "### 1. `api/apps/api_app.py:618` \u2014 **Potential N+1 query / missing error handling** (Defect)\n\n```python\ndoc_ids = DocumentService.get_doc_ids_by_doc_names(req.get(\"doc_names\", []))\nfor doc_id in req.get(\"doc_ids\", []):\n    if doc_id not in doc_ids:\n        doc_ids.append(doc_id)\n```\n\nIf `get_doc_ids_by_doc_names` returns `None` (when no docs found), the `for doc_id in req.get(\"doc_ids\", [])` loop will still execute, but the subsequent lookup `doc_id not in doc_ids` will raise `TypeError: argument of type 'NoneType' is not iterable`. The new method returns `None` on empty result (line 339 in document_service.py), but the caller doesn't guard against it.\n\n**Failure scenario**: Request with `doc_names=[\"nonexistent\"]` and no `doc_ids` \u2192 `doc_ids = None` \u2192 crash on `doc_id not in doc_ids`.\n\n---",
+        "path": "api/apps/api_app.py",
+        "start_line": 618,
+        "end_line": 618,
+        "observation_id": "d9dc652b01c26121",
+        "claimed_path": "api/apps/api_app.py",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "### 2. `api/apps/api_app.py:636-645` \u2014 **Stale tenant_id after loop** (Logic bug)\n\n```python\nfor doc_id in doc_ids:\n    ...\n    tenant_id = DocumentService.get_tenant_id(doc_id)  # Overwrites on each iteration\n```\n\nThe original `tenant_id` from `objs[0].tenant_id` (line 614) is used for `FileService.init_knowledgebase_docs(pf_id, tenant_id)` at line 634. But inside the loop, `tenant_id` is reassigned per document. If documents belong to different tenants, the last document's tenant_id leaks into any code after the loop (though none visible here). More critically, the per-document tenant check validates against *that document's* tenant, but the initial `pf_id` lookup used the first document's tenant \u2014 inconsistent authorization.\n\n---",
+        "path": "api/apps/api_app.py",
+        "start_line": 636,
+        "end_line": 636,
+        "observation_id": "60ecf91fe2c94d65",
+        "claimed_path": "api/apps/api_app.py",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "### 3. `api/db/services/document_service.py:333-342` \u2014 **Returns `None` instead of empty list** (API inconsistency / defect)\n\n```python\ndoc_ids = cls.model.select(*fields).where(cls.model.name.in_(doc_names))\ndoc_ids = doc_ids.dicts()\nif not doc_ids:\n    return\nreturn [doc[\"id\"] for doc in doc_ids]\n```\n\nReturns `None` when no matches, but the caller (`api_app.py:618`) treats it as a list. Should return `[]` for consistency with Python conventions and to avoid the crash in item 1.\n\n---",
+        "path": "api/db/services/document_service.py",
+        "start_line": 333,
+        "end_line": 333,
+        "observation_id": "0203456529217547",
+        "claimed_path": "api/db/services/document_service.py",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "### 4. `api/db/services/common_service.py:266-276` \u2014 **Missing empty-list guard** (Defect)\n\n```python\n@classmethod\n@DB.connection_context()\ndef delete_by_ids(cls, pids):\n    return cls.model.delete().where(cls.model.id.in_(pids)).execute()\n```\n\nIf `pids=[]`, Peewee generates `WHERE id IN ()` which is invalid SQL (syntax error in PostgreSQL, MySQL; returns 0 rows in SQLite but non-portable). Should guard: `if not pids: return 0`.\n\n---",
+        "path": "api/db/services/common_service.py",
+        "start_line": 266,
+        "end_line": 266,
+        "observation_id": "56533ae77088cdf2",
+        "claimed_path": "api/db/services/common_service.py",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "### 5. `api/db/services/user_canvas_version.py:35-40` \u2014 **Race condition / TOCTOU** (Defect)\n\n```python\nuser_canvas_version = cls.model.select().where(...).order_by(...)\nif user_canvas_version.count() > 20:\n    delete_ids = []\n    for i in range(20, user_canvas_version.count()):\n        delete_ids.append(user_canvas_version[i].id)\n    UserCanvasVersionService.delete_by_ids(delete_ids)\n```\n\nTwo problems:\n- **Double count()**: `user_canvas_version.count()` executes twice. If rows are deleted between the two calls by another process, the range indexes may be wrong.\n- **Non-atomic**: The select + delete are separate queries. Another process could insert versions between them, causing wrong versions to be deleted (or missing deletions).\n- **Materialization**: `user_canvas_version[i]` executes a query per iteration (N+1). Should use `.limit().offset()` or slice the queryset once.\n\n---",
+        "path": "api/db/services/user_canvas_version.py",
+        "start_line": 35,
+        "end_line": 35,
+        "observation_id": "fcd0b9fc800c45c4",
+        "claimed_path": "api/db/services/user_canvas_version.py",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "### 6. `api/db/services/user_canvas_version.py:35` \u2014 **Inefficient query pattern** (Performance)\n\n```python\nuser_canvas_version = cls.model.select().where(...).order_by(...)\nif user_canvas_version.count() > 20:\n    for i in range(20, user_canvas_version.count()):\n```\n\nThe queryset is re-evaluated on each `count()` and each `__getitem__`. Peewee doesn't cache queryset results. This executes 2 + (N-20) queries. Should materialize once: `versions = list(user_canvas_version)` then operate on the list.\n\n---",
+        "path": "api/db/services/user_canvas_version.py",
+        "start_line": 35,
+        "end_line": 35,
+        "observation_id": "b8a08aeca4fc872d",
+        "claimed_path": "api/db/services/user_canvas_version.py",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "### 7. `api/apps/api_app.py:638` \u2014 **Variable name typo** (Style / misleading)\n\n```python\ndoc_dic = {}\n```\n\nShould be `doc_dict` (standard abbreviation). Minor but misleading.\n\n---",
+        "path": "api/apps/api_app.py",
+        "start_line": 638,
+        "end_line": 638,
+        "observation_id": "854c37e541712998",
+        "claimed_path": "api/apps/api_app.py",
+        "path_resolution": "exact",
+        "merged_from": []
+      }
+    ]
+  },
+  "rundir": "/home/mjarnold/.cache/llm-panel/runs/aacr-up-48ajb_zj-fe73cfef4722/20260829-155704-4127009",
+  "extractor": "3",
+  "unlocated": [
+    {
+      "content": "### Summary by severity\n\n| Severity | File | Line | Issue |\n|----------|------|------|-------|\n| **Crash** | api_app.py | 618 | `None` not guarded from `get_doc_ids_by_doc_names` |\n| **Crash** | common_service.py | 276 | `IN ()` SQL syntax error on empty list |\n| **Logic bug** | api_app.py | 634-645 | `tenant_id` overwritten in loop, inconsistent auth |\n| **Race/TOCTOU** | user_canvas_version.py |",
+      "observation_id": "4c02952eb1507479",
+      "claimed_path": "api_app.py",
+      "path_resolution": "basename"
+    }
+  ]
+}

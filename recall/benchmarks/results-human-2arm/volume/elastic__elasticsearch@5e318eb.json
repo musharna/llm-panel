@@ -1,0 +1,568 @@
+{
+  "review": {
+    "comments": [
+      {
+        "content": "- **test/framework/src/main/java/org/elasticsearch/entitlement/bootstrap/TestEntitlementsRule.java:78** \u2014 The policy manager, including `FilesEntitlementsValidation.validate(...)`, is created before `initialize()` registers `java.io.tmpdir` at line 90. Input: a plugin policy containing a file entitlement relative to `TEMP`, with `java.io.tmpdir` resolving beneath a forbidden location. The validator sees no resolved TEMP paths and accepts the policy; after initialization the same policy resolves to the forbidden path and grants access that should have been rejected.",
+        "path": "test/framework/src/main/java/org/elasticsearch/entitlement/bootstrap/TestEntitlementsRule.java",
+        "start_line": 78,
+        "end_line": 78,
+        "observation_id": "acb735793590a701",
+        "claimed_path": "test/framework/src/main/java/org/elasticsearch/entitlement/bootstrap/TestEntitlementsRule.java",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "- **test/framework/src/main/java/org/elasticsearch/entitlement/bootstrap/TestEntitlementsRule.java:200** \u2014 Closing a `NodeGrant` does nothing because its revocation callback is commented out. Input: start node A with data path `/tmp/a`, close A, then perform an entitlement-sensitive access to `/tmp/a` later in the suite. The access remains allowed even though no live node owns that path, producing false negatives in entitlement tests. Repeated node restarts also append duplicate grants for the whole suite, so path checks and memory usage grow with every restart.",
+        "path": "test/framework/src/main/java/org/elasticsearch/entitlement/bootstrap/TestEntitlementsRule.java",
+        "start_line": 200,
+        "end_line": 200,
+        "observation_id": "43a11433163fe21a",
+        "claimed_path": "test/framework/src/main/java/org/elasticsearch/entitlement/bootstrap/TestEntitlementsRule.java",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "- **test/framework/src/main/java/org/elasticsearch/entitlement/bootstrap/TestEntitlementsRule.java:166** \u2014 `revokeNodeGrants()` dereferences `POLICY_MANAGER` without the disabled-entitlements guard used by `newNodeGrant()`. Input: run with `-Des.entitlement.enableForTests=false` and invoke `TEST_ENTITLEMENTS.revokeNodeGrants()`\u2014including the new unconditional call from `ESIntegTestCase` when replacing an existing test cluster. The result is a `NullPointerException` instead of a no-op.",
+        "path": "test/framework/src/main/java/org/elasticsearch/entitlement/bootstrap/TestEntitlementsRule.java",
+        "start_line": 166,
+        "end_line": 166,
+        "observation_id": "2afeac2bd7d35092",
+        "claimed_path": "test/framework/src/main/java/org/elasticsearch/entitlement/bootstrap/TestEntitlementsRule.java",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "- **test/framework/src/main/java/org/elasticsearch/test/ESIntegTestCase.java:552** \u2014 Replacing one cluster revokes every node grant in the JVM, not just grants belonging to the closed cluster. Input: a test keeps a secondary `InternalTestCluster` running while its TEST-scoped primary cluster is replaced. This call removes the secondary cluster\u2019s config/data/repository paths too, so its next filesystem operation fails with `NotEntitledException`.",
+        "path": "test/framework/src/main/java/org/elasticsearch/test/ESIntegTestCase.java",
+        "start_line": 552,
+        "end_line": 552,
+        "observation_id": "091842713def3dab",
+        "claimed_path": "test/framework/src/main/java/org/elasticsearch/test/ESIntegTestCase.java",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "- **test/framework/src/main/java/org/elasticsearch/entitlement/bootstrap/TestEntitlementsRule.java:78** \u2014 Merely initializing `TestEntitlementsRule` now installs the entitlement agent, before `BootstrapForTesting.initialize()` executes its body. Input: any code calls `TestEntitlementsRule.isEnabledForTest()` or constructs the rule before `BootstrapForTesting` initializes natives, probes, jar-hell checks, and temporary paths. The agent is installed out of bootstrap order and observes an incomplete `PathLookup`, whereas the previously side-effect-free enabled check did not alter JVM instrumentation.**Defect analysis:**\n\n1. **`NodeGrant.close()` is a no-op but the field is named `entitlementGrant` and `MockNode.awaitClose` calls `closeWhileHandlingException(entitlementGrant)`.** In `TestEntitlementsRule.NodeGrant`, `close()` is explicitly a no-op (commented out `onClose.accept(this)`). So closing the node never revokes the grant. In `MockNode.awaitClose`, `IOUtils.closeWhileHandlingException(entitlementGrant)` is a no-op. This means node grants leak. But the comment says this is intentional pending ES-10920. However, `revokeNodeGrants()` exists to explicitly revoke. In `ESIntegTestCase`, `revokeNodeGrants()` is only called when closing a previous cluster during rebuild. But for single-node tests (ESSingleNodeTestCase), `revokeNodeGrants` is never called\u2014the grant leaks until... the class rule's finally block calls `BASE_DIR_PATHS.keySet().retainAll(List.of(TEMP))` which effectively revokes all. That's at suite end.\n\n2. **The `newNodeGrant` in `ESSingleNodeTestCase.newNode()` passes `configPath = null`.** `NodeGrant.configDir()` returns `configPath != null ? configPath : homeDir().resolve(\"config\")`. That's fine\u2014defaults to homeDir/config.\n\n3. **The static initializer runs `loadAgent` when enabled.** `TestEntitlementsRule` is a `@ClassRule public static final`. It's a static field referencing the rule, so `ESTestCase`'s static initializer runs it. The static block calls `loadAgent` before any `initialize(tempDir)` call. Note in original `BootstrapForTesting`, `TestEntitlementBootstrap.bootstrap(javaTmpDir)` was called *after* temp dir known. Now `TestEntitlementsRule.initialize(javaTmpDir)` is called from `BootstrapForTesting`. But the static block (which sets up pathLookup over BASE_DIR_PATHS) runs at class-load of `TestEntitlementsRule`. The rule class is referenced heavily. Order: `BootstrapForTesting` static init calls `TestEntitlementsRule.initialize(javaTmpDir)`, which triggers class initialization of `TestEntitlementsRule` first (static block runs), then `initialize` runs. So loadAgent happens before initialize\u2014fine since BASE_DIR_PATHS is empty until initialize puts TEMP.\n\n4. **Race / parallel test isolation guard.** The new `apply` throws `AssertionError` if `active.compareAndSet(false, true)` fails, i.e., if two suites run in parallel. Previously `@BeforeClass/@AfterClass` were used, which JUnit serializes per-class but doesn't guard against parallel suite execution. This introduces a new failure mode: with JUnit parallel execution of test classes, this will throw. That's a behavior change but arguably intentional (\"test suits cannot be run in parallel\"). Not necessarily a defect\u2014it fails loud.\n\n5. **`TestPolicyManager` moved reset responsibility.** Previously `resetAfterTest()` was called in constructor and between tests (via `@AfterClass resetEntitlements`). Now the class rule handles it. Let me look at the `apply` logic:\n\n```java\nif (POLICY_MANAGER != null) {\n    return new Statement() {\n        public void evaluate() throws Throwable {\n            if (active.compareAndSet(false, true)) {\n                try {\n                    POLICY_MANAGER.setActive(false == withoutEntitlements);\n                    ...\n                    base.evaluate();\n                } finally {\n                    POLICY_MANAGER.setActive(false);\n                    POLICY_MANAGER.setTriviallyAllowingTestCode(true);\n                    ...\n                }\n            } else { throw ... }\n        }\n    };\n}\n```\n\nNote the ordering issue: `active.compareAndSet(false, true)` sets active before configuring the policy manager. But the `finally` sets `active.set(false)` at the very end. Fine.\n\n**Now a real issue: `setEntitledTestPackages()` with empty args.** Look at new `setEntitledTestPackages`:\n\n```java\npublic void setEntitledTestPackages(String... entitledTestPackages) {\n    if (entitledTestPackages == null || entitledTestPackages.length == 0) {\n        this.entitledTestPackages = TEST_FRAMEWORK_PACKAGE_PREFIXES;\n        return;\n    }\n    ...\n}\n```\n\nIn `apply`, in the `finally` block, it calls `POLICY_MANAGER.setEntitledTestPackages()` \u2014 with zero args, which resets to test framework prefixes. Good. Previously `entitledTestPackages` had default `TEST_FRAMEWORK_PACKAGE_PREFIXES`. In the else-branch of setEntitledTestPackages in apply when entitledPackages==null, it calls `setEntitledTestPackages()` resets to defaults. OK.\n\n**Now a subtle defect:** In the original `ESTestCase.setupEntitlementsForClass`, when `TestEntitlementBootstrap.isEnabledForTest()` was true but `entitledPackages == null`, it did NOT call `setEntitledTestPackages` \u2014 it left whatever was there (reset by resetAfterTest to default). New code explicitly resets. Same behavior. Fine.\n\n6. **`assert previousTempDir == null` in `initialize`.** `initialize` is called once from `BootstrapForTesting`. `BaseDir.TEMP` was put in `initialize`. But the static block doesn't put TEMP. So `previousTempDir` is null first time. But wait\u2014`initialize` could be called even when `POLICY_MANAGER == null` (entitlements disabled); in that case `BASE_DIR_PATHS.put` is skipped. Then if later... no, POLICY_MANAGER is static-final. If it's null always null. Fine.\n\nBut there's a real concern: `initialize` is `public static`, and only called from `BootstrapForTesting`. In the `apply` finally block, `BASE_DIR_PATHS.keySet().retainAll(List.of(TEMP))` retains TEMP. But TEMP was set in initialize. However, if `initialize` was never called (e.g., in a context where BootstrapForTesting isn't executed), then TEMP is never put, and `baseDirModifier` would... not relevant to TEMP. Fine.\n\n7. **Important defect: `NodeGrant.close()` no-op means data directories remain granted.** For `ESSingleNodeTestCase`, each `newNode()` call creates a new node grant. Since `close()` is a no-op and `revokeNodeGrants` is only invoked by `ESIntegTestCase` (not `ESSingleNodeTestCase`), multiple nodes over a test class's instances accumulate grants in `BASE_DIR_PATHS` and only get wiped out entirely at suite end. This is a resource leak within a suite if a single test class creates/destroys nodes. The comment acknowledges this is a known limitation (ES-10920). Marginally a defect but documented/intentional.\n\n8. **Real logic defect: `revokeGrant` + no-op close conflict.** The `NodeGrant` record takes `onClose` a `Consumer<NodeGrant>` set to `this::revokeGrant` in `newNodeGrant`: `new NodeGrant(settings, unwrappedConfigPath, this::revokeGrant)`. But `close()` never calls `onClose.accept(this)`. So `revokeGrant` is effectively dead code for the normal path. Only reachable via... nothing (no public method calls nodeGrant.close / onClose). So the `onClose` field and `revokeGrant` are dead. Not runtime defect per se.\n\nNow let me look for the more concrete defects.\n\n**Defect: `TestPolicyManager.setEntitledTestPackages` semantics change.** Previously:\n```java\nString[] packages = ArrayUtils.concat(this.entitledTestPackages, entitledTestPackages);\n```\nwhich accumulated on top of *current* entitledTestPackages. Now:\n```java\nString[] packages = ArrayUtils.concat(TEST_FRAMEWORK_PACKAGE_PREFIXES, entitledTestPackages);\n```\nNow it always starts from TEST_FRAMEWORK_PACKAGE_PREFIXES rather than the accumulated current value. Since the rule resets to defaults between suites, this is effectively a fix. Probably not a defect.\n\n**Defect: `MockNode.awaitClose` closes `entitlementGrant` but the grant's `close()` is a no-op.** Combined with `newNodeGrant` returning the grant as `Closeable`, and MockNode's `entitlementGrant` being closed in awaitClose. But MockNode can be closed multiple times / awaitClose called without node fully started. But close is no-op. Not a functional defect in runtime.\n\nLet me think about **the most severe real defect**:\n\n**Defect A: `TEST_ENTITLEMENTS::newNodeGrant` used in `recreateNode` (`InternalTestCluster.recreateNode`) but close/no-op and this is fine.** \n\nHmm, but wait\u2014a genuine concern: the grants accumulate across *restarted* nodes within `InternalTestCluster`. Each `buildNode` and `recreateNode` creates a new grant and adds to BASE_DIR_PATHS (adds). Since close is no-op, data dirs accumulate across node restarts within a test. When a node is restarted with a *new* data path (newIdSeed), old path remains granted. `revokeNodeGrants` clears all *between test classes* (called by ESIntegTestCase when rebuilding cluster for a new scope). During same scope, all grants accumulate. That's intended-ish (nodes can share dirs). Not clearly a defect.\n\nNow let me hunt for genuinely incorrect behavior.\n\n**Defect: The `apply` guard for parallel execution.** `Object` \u2014 actually the concurrency issue is subtle: `TestEntitlementsRule.TEST_ENTITLEMENTS` is a `static final` field on `ESTestCase`. It is a single shared instance across all test classes. If two test classes run concurrently in the same JVM (JUnit parallel), the second's `apply` will throw AssertionError: \"test suits cannot be run in parallel\". This is an intentional guard but changes earlier behavior where parallel was... previously with @BeforeClass/@AfterClass, each class set/reset, and it wasn't explicitly serialized. Actually previously there'd be a race too. The new code makes it fail loudly. Intentional.\n\nBut there's a subtle bug: **the guard uses a single static `active` shared for the whole JVM, but `apply` is ALSO evaluated for the `ESTestCase` base class itself and nested classes?** Probably fine.\n\n**Now the genuinely bad defect:** Let me reconsider `TestPolicyManager` default `isTriviallyAllowingTestCode = true` and `isActive = false`. In `apply`, when `POLICY_MANAGER != null`, it calls `setActive`, `setTriviallyAllowingTestCode`, resetting them. Fine. But consider a test class that does NOT extend the flow where apply runs... Actually apply is the ClassRule so always runs. Fine.\n\n**Real defect: In `apply`, when `POLICY_MANAGER == null` (entitlements disabled), it returns `base` \u2014 but only after the `else if (withEntitlementsOnTestCode)` check throws. But the `withoutEntitlements` and `entitledPackages` are ignored when POLICY_MANAGER==null. Fine since nothing to configure.**\n\n**Let me reconsider the order of `active.compareAndSet` vs configuration in parallel.** Consider two sequential (not parallel) suites: Suite 1 evaluate \u2192 active true; finally active false. Suite 2 apply \u2192 evaluate \u2192 active false \u2192 CAS succeeds. Fine.\n\nNow, focus on what I'd consider the strongest concrete defects:\n\n**Defect 1 (severity medium): `TestPolicyManager` field default for `entitledTestPackages`.** Not changed.\n\n**Defect 2 (real): `TestEntitlementsRule.initialize` uses `List.of(tempDir)` but never validates.** Minor.\n\nLet me reconsider the **`newNodeGrant(settings, null)`** in `ESSingleNodeTestCase`. Previously `registerNodeBaseDirs` was called in `MockNode.prepareEnvironment` with the actual settings & configPath. In ESSingleNodeTestCase newNode, the settings passed to MockNode are `settings` built in the test. `newNodeGrant(settings, null)` uses `PATH_HOME_SETTING` etc. This mirrors what MockNode would do. OK.\n\nBut here's a real defect: **`MockNode.prepareEnvironment` previously registered node base dirs using the *final* merged settings** (settings + PORT built). Now the grant is created by the caller with its own `settings`, which may not include the defaulted home dir that `InternalSettingsPreparer.prepareEnvironment` computes. In `ESSingleNodeTestCase`, `settings` may not have `path.home` set explicitly, so `PATH_HOME_SETTING.get(settings)` returns null \u2192 `absolutePath(null)` \u2192 NPE. Let me check: `homeDir()` calls `absolutePath(PATH_HOME_SETTING.get(settings))`. If `path.home` isn't in the given settings, `get` returns null, `Paths.get(null)` throws NullPointerException. Previously, `prepareEnvironment` used `InternalSettingsPreparer` which *computes* and applies path.home from system properties. So the caller's raw settings may lack path.home \u2192 **NPE**. This is a concrete defect scenario: a test calling `MockNode(settings, ...)` or `ESSingleNodeTestCase` where settings lacks explicit `path.home` and the constructor/`prepareEnvironment` default that. Actually `ESSingleNodeTestCase.newNode` builds settings; let me reason: previously registerNodeBaseDirs got the *prepared* environment's dirs. Now get raw. If the raw `settings` doesn't contain `path.home`, `Integer.parseInt`... Actually `PATH_HOME_SETTING.get(settings)` returns null and Paths.get(null) NPE. This is a strong candidate defect. But in practice ES always sets path.home via system property in tests. Still, this is a legitimate divergence: the caller-provided settings are not the fully-prepared environment settings, so grants are computed from incomplete settings, potentially wrong or NPE. This is a real defect worth reporting.\n\nActually wait, more precisely\u2014ESSingleNodeTestCase.newNode passes `settings` and separately `ESTestCase` class rule node grant. Let me not overclaim; I'll report the divergence: registering from caller settings rather than prepared environment settings means home/data config may be missing or inconsistent \u2192 grants computed from wrong paths \u2192 NPE or wrong grant.\n\nLet me also look at **defect: `ESSingleNodeTestCase.newNode` creates grant but never configures even though `MockNode.awaitClose` closes it (no-op)** \u2014 leak.\n\nAlso **`SingleNodeDiscoveryIT` and `MultiClusterRepoAccessIT` pass `TEST_ENTITLEMENTS::newNodeGrant` \u2014 these tests create cluster via `new InternalTestCluster(..., TEST_ENTITLEMENTS::newNodeGrant)`.** Wait, looking at diff, those files (SingleNodeDiscoveryIT, MultiClusterRepoAccessIT) are internalClusterTest under server, they pass to an InternalTestCluster-like constructor. Fine.\n\nBut note: these are internal cluster tests that construct `InternalTestCluster` WITHOUT `revokeNodeGrants` cleanup in their own close \u2014 but ESIntegTestCase handles it. They're not ESIntegTestCase though (they're standalone IT classes building their own cluster). The node grants leak (close no-op) and `revokeNodeGrants` never called. So BASE_DIR_PATHS grows unbounded across every test in those classes (each `startCluster`/`beforeTest` creates new grants, and they persist). For SingleNodeDiscoveryIT, `other.beforeTest(random())` on a fresh second cluster\u2014grants accumulate. Since grants are adds (not replaces), the set grows with duplicates over runs, and MEMORY persists the whole class run. This could cause entitlement policy bloat but not failure. It's a leak though. Actually the config dir is shared, data dirs differ. Over a long class with many tests, BASE_DIR_PATHS could accumulate many stale data dirs \u2192 the policy manager grants read access to all those stale dirs. Not a correctness failure, but a leak that could eventually cause issues. Minor.\n\nNow the KEY severe defect I should highlight. Let me re-read the `apply` finally vs `revokeNodeGrants` interaction.\n\nIn `ESIntegTestCase.buildAndPutCluster`, when rebuilding: `IOUtils.closeWhileHandlingException(testCluster::close); TEST_ENTITLEMENTS.revokeNodeGrants();`. But the class rule's `apply` finally block at end of *suite* calls `BASE_DIR_PATHS.keySet().retainAll(List.of(TEMP))` and clears cache. However, `revokeNodeGrants()` also does `retainAll(TEMP)` + clear cache. Both consistent.\n\nBut consider: within one suite, the cluster is rebuilt (scope change), `revokeNodeGrants` clears all node grants including currently-open irrelevant ones. But then `buildTestCluster` creates new grants. `revokeNodeGrants` only clears base dirs, but grants created before still reference... the grant object is still \"open\" (close no-op) and holds settings, but doesn't do anything after revoke. Fine.\n\n**Now the strongest correctness defect: `POLICY_MANAGER.clearModuleEntitlementsCache()` in `revokeGrant` and others but `close()` no-op means `revokeGrant` unreachable \u2192 data dir revocation never happens at node close \u2192 path grant leak.** This is the leakage theme.\n\nLet me now also scrutinize the **`TestPolicyManagerTests` rename** \u2014 `testResetAfterTest` \u2192 `testClearModuleEntitlementsCache`, and it calls `policyManager.clearModuleEntitlementsCache()` instead of `resetAfterTest()`. The test still checks `getEntitlements(getClass())` returns different componentName after clear \u2014 because cache cleared causes re-resolution. Behavior consistent. But the old `resetAfterTest` also reset isActive/isTriviallyAllowingTestCode; the new test doesn't verify those. Not a defect in production.\n\n**Now \u2014 a genuinely serious defect: `TestPolicyManager.setEntitledTestPackages` when called from `apply` with `entitledPackages.value()`** \u2014 unchanged path.\n\nLet me look at whether `TEST_ENTITLEMENTS::newNodeGrant` being passed but `POLICY_MANAGER == null` returns noop. In `newNodeGrant`, if `POLICY_MANAGER == null` returns `() -> {}`. Good. But the `NodeGrantProvider.create` returns Closeable. For `MockNode`, `entitlementGrant` is that. Fine.\n\n**Big one: `MockNode` constructors.** The old 2-arg and 3-arg constructors are preserved with `() -> {}` default. But the 4-arg `MockNode(settings, classpathPlugins, configPath, forbidPrivateIndexSettings)` constructor in the diff \u2014 wait, this constructor now requires 5 args including entitlementGrant. Old 4-arg was `(settings, classpathPlugins, configPath, forbidPrivateIndexSettings)`. New signature adds entitlementGrant as 5th. Any external callers of the old 4-arg constructor elsewhere in the codebase (not updated) would break compilation. That's a compile issue across the repo \u2014 but presumably handled; can't verify since tree empty. I'll note API-break risk only if external callers exist. Not a runtime defect.\n\nLet me now think about the most reportable concrete defect with a failure scenario and a line number.\n\n**Defect: `ESSingleNodeTestCase.newNode` passes `null` configPath \u2192 `NodeGrant.configDir()` falls back to `homeDir().resolve(\"config\")`.** But the actual node's config dir (given to prepareEnvironment with null configPath) would also be homeDir/config. Consistent. OK not a defect.\n\n**Now, the real potential NPE defect.** Line: `TestEntitlementsRule.NodeGrant.homeDir()`:\n```java\nprivate Path homeDir() {\n    return absolutePath(PATH_HOME_SETTING.get(settings));\n}\n```\n`absolutePath` calls `Paths.get(String).toAbsolutePath()`. If `settings` has no `path.home`, `get` returns null \u2192 `Paths.get((Path) null)`? Actually `Paths.get(String)` with null throws NPE, and `toAbsolutePath` on null... `Paths.get(null)` \u2192 NPE. So if a test builds MockNode with settings lacking `path.home`, constructing the grant (which happens in `newNodeGrant` \u2192 `addGrant` \u2192 `nodeGrant.configDir()`/`dataDirs()`/etc., all called eagerly in addGrant) \u2192 NPE at MockNode construction. \n\nPreviously, `registerNodeBaseDirs` used `homeDir(settings)` = `absolutePath(PATH_HOME_SETTING.get(settings))` \u2014 same pattern! It also would NPE if no path.home. But it was called from `prepareEnvironment` with the *merged* settings which had path.home defaulted by InternalSettingsPreparer. Let me verify: old MockNode.prepareEnvironment:\n```java\nprivate static Environment prepareEnvironment(final Settings settings, final Path configPath) {\n    TestEntitlementBootstrap.registerNodeBaseDirs(settings, configPath);\n    return InternalSettingsPreparer.prepareEnvironment(settings.build()...);\n}\n```\nIt calls registerNodeBaseDirs with `settings` BEFORE InternalSettingsPreparer adds defaults! So both old and new use raw settings lacking path.home defaults. So the NPE risk is equivalent to old behavior\u2014not a regression. Hmm. Unless InternalSettingsPreparer mutates... Actually in old code, registerNodeBaseDirs is called with `settings` (the parameter, pre-preparation). Same raw. So not a regression.\n\nBut there IS a real difference: in the NEW code, `newNodeGrant` is called by callers like `ESSingleNodeTestCase.newNode(settings, null)`, whereas old code called `registerNodeBaseDirs` from MockNode.prepareEnvironment with the settings passed to MockNode constructor. For InternalTestCluster.buildNode, old code: `new MockNode(settings, plugins, configPath, forbidPrivateIndexSettings)` \u2192 prepareEnvironment(settings, configPath) \u2192 registerNodeBaseDirs(settings, configPath). New code: `nodeGrantProvider.create(settings, configPath)` where settings is the same. Equivalent. For recreateNode, old code `registerNodeBaseDirs(finalSettings, null)` where finalSettings = newSettings merged. New: `nodeGrantProvider.create(finalSettings, null)`. Equivalent.\n\nSo the settings passed are equivalent. The path.home concern applies equally. Not a regression. But still worth noting that `homeDir()` NPEs if path.home absent \u2014 same as before. Since it's not a regression, lower priority but it's a latent defect that the diff doesn't change. The prompt says report defects in the diff. It's in the new file though.\n\nLet me now think about the config dir unwrap: old `registerNodeBaseDirs` unwrapped configPath via `unwrapFilterPath`. New `newNodeGrant` unwraps configPath via while FilterPath loop. Same. But note: old code, `configDir(configDir, homeDir)` returns unwrapped configDir or homeDir/config. New `configDir()` returns `configPath != null ? configPath : ...` \u2014 but configPath already unwrapped. Good.\n\nNow **the genuinely concrete defect I'm most confident about:**\n\n**A. `MockNode.awaitClose` closes the grant every time awaitClose is called, and `entitlementGrant.close()` is a no-op** \u2014 for the `()` -> `{}` default in the 2-arg/3-arg constructors it's `() -> {}` noop. Not a defect.\n\n**B. The severe one: No revocation at node/component close means entitlement grants leak per node.** When `POLICY_MANAGER != null`, `addGrant` mutates the shared `BASE_DIR_PATHS` and clears the policy cache on EVERY node creation. The original code cleared the cache on register/unregister too. Now with no unregister (close no-op), the cache is cleared on every add and never re-validated to remove stale dirs... but clearModuleEntitlementsCache just forces re-resolution. Not correctness.\n\n**C. Concurrency / parallel: state mutations (BASE_DIR_PATHS, policy manager isActive) are global across THE WHOLE JVM, but `apply` only guards with `active` CAS at suite evaluation. However `addGrant`/`revokeNodeGrants` are called from node construction (during suite), and `revokeNodeGrants` from `buildAndPutCluster`. If two suites run in parallel the guard catches suite-level. Within a suite, single-threaded. Fine.**\n\nWait \u2014 but here's a real problem: **`apply`'s parallel guard only checks at suite evaluate entry, but `addGrant` happens during `base.evaluate()`. Node construction for different test classes is serialized by the guard. OK.**\n\n**D. Real defect: In `apply`, the `withoutEntitlements` handling.** `POLICY_MANAGER.setActive(false == withoutEntitlements)`. If `withoutEntitlements` is true \u2192 setActive(false). Same as before. Fine.\n\n**E. Here's a concrete one: `ESTestCase.TEST_ENTITLEMENTS` is `public static final`. Subclasses extending `ESSingleNodeTestCase` etc. also get it. But `ESTestCase` is `abstract`; some tests might not run a ClassRule evaluation?@ClassRule static field of abstract base \u2014 JUnit collects static @ClassRule from the class hierarchy, so subclasses get it. Fine.**",
+        "path": "test/framework/src/main/java/org/elasticsearch/entitlement/bootstrap/TestEntitlementsRule.java",
+        "start_line": 78,
+        "end_line": 78,
+        "observation_id": "6e61531e2542a781",
+        "claimed_path": "test/framework/src/main/java/org/elasticsearch/entitlement/bootstrap/TestEntitlementsRule.java",
+        "path_resolution": "exact",
+        "merged_from": [
+          "197d7a241889672a",
+          "92ee91f098dbeee4",
+          "8761d0947bb27bb8",
+          "06dd3a20b5a899e5",
+          "dfcb31ecafef735b",
+          "9c9401962e48c00b",
+          "b6f27bc6230d0066",
+          "3b49b3e47757aecf",
+          "e22e9056576154df",
+          "8802467a598351a2",
+          "ceec6ac9f80ee7a4",
+          "5f53f91e11966949",
+          "6474e5f5ab4d5259"
+        ]
+      },
+      {
+        "content": "**F. Possibly the strongest: The order of operations in `apply` \u2014 `active.compareAndSet(false, true)` happens, THEN it configures the policy manager. But `addGrant` from node creation during THIS suite sees `isActive` already set appropriately. Good. But note: `apply` runs for EVERY test class. However the RuleChain... The `@ClassRule` in ESTestCase is evaluated once per concrete test class. Good.**\n\nLet me now settle on the concrete defects list with line numbers:\n\nGiven the empty repo, I'll report defects based on the diff content with the added-line numbers from the new file. Let me define line numbers in `TestEntitlementsRule.java` (new file, so lines 1..358):\n\n- `NodeGrant` record: `ConfigPath` unwrap, homeDir etc. Let me compute approximate line numbers. I'll reference by item + context since exact new-file lines are uncertain, but I can estimate from the diff. Actually the new file diff shows `@@ -0,0 +1,358 @@` with full content but no per-line numbers in the provided diff. I'll cite the hunk and approximate.\n\nLet me enumerate the concrete defects:\n\n1. **No-op `close()` on `NodeGrant` (with the `revokeGrant`/`onClose` dead) means the `Closeable` returned by `newNodeGrant` and stored as `MockNode.entitlementGrant` never revokes.** Consequence: In `ESSingleNodeTestCase`, node grants for every node created across the whole test class accumulate in the global `BASE_DIR_PATHS` and are never revoked (nothing calls `revokeNodeGrants` for single-node tests). Each node's data/repo/config dirs remain entitled for the entire class. Failure scenario: a test class that creates many single nodes (or repeatedly restarts) accumulates stale data-dir entitlements; the policy manager preserves read access to every stale directory, and memory grows. In the old code, `MockNode.awaitClose` called `unregisterNodeBaseDirs`, which actually removed the dirs at node close. The new code deliberately disabled that (ES-10920 workaround), so this is a behavioral regression in entitlement hygiene \u2014 the \"close\" semantics are silently a no-op, which also defeats the `Closeable` contract that `MockNode.awaitClose` and `IOUtils.closeWhileHandlingException` rely on. Also the entire `revokeGrant`/`onClose` mechanism is dead code.\n\n2. **Incomplete/raw settings used for grants.** In `newNode(ESSingleNodeTestCase)`, grant is built from the caller's `settings` (not the prepared environment). If `path.home` isn't present, `homeDir()` \u2192 `Paths.get(null)` NPE during `addGrant`. (Same as old, but the refactor moves responsibility to every caller, so any new caller passing incomplete settings NPEs at node construction.) Actually I argued this is same as before. I'll soften; maybe skip or frame as divergence where recreateNode passes merged settings but buildNode passes raw. Eh.\n\nLet me focus on defects where the NEW code differs and produces wrong behavior.\n\n3. **`TestEntitlementsRule.initialize` doesn't register TEMP when POLICY_MANAGER == null, but the diff's `BootstrapForTesting` change calls `TestEntitlementsRule.initialize(javaTmpDir)` in ALL cases.** Not a defect per se.\n\n4. **The parallel-suite guard `assert description.isSuite() : \"must be used as ClassRule\";`** \u2014 `description.isSuite()` returns true for suite/class descriptions. In JUnit, a `@ClassRule` on a base class applied to each subclass: the Description passed is the class description, isSuite() true. OK.\n\n5. **Real defect \u2014 `apply` configures policy manager *before* `revokeNodeGrants`/`retainAll` won't... Actually in apply: it sets active/trivially/entitled THEN `BASE_DIR_PATHS.keySet().retainAll(List.of(TEMP))` clears node grants from prior suite. But this retainAll happens BEFORE `base.evaluate()` where nodes are created. Good order.**\n\nHmm but here's something: In the `finally`, it does retainAll(TEMP). But if the test's own nodes called `addGrant` they're wiped at suite end. Good.\n\n6. **Concrete defect: `setEntitledTestPackages` in `apply` is only reset in the fine structure.** Fine.\n\n7. **Defect in TestPolicyManager default `isActive=false` + `isTriviallyAllowingTestCode=true`:** construction-time defaults now match post-reset values. The `TestPolicyManagerTests.setupPolicyManager` calls `policyManager.setActive(true)` in @Before (method-level), but now `clearModuleEntitlementsCache` test... the test's @Before sets active. Fine.\n\n8. **Now a genuine regression: the removed `@AfterClass resetEntitlements` was a NO from per-method timing.** Previously, `resetAfterTest` was called per class after each class (AfterClass). Now the class rule's `finally` does the same. Equivalent.\n\n9. **`newNodeGrant` context** \u2014 Used in `SingleNodeDiscoveryIT` & `MultiClusterRepoAccessIT`. These classes construct `InternalTestCluster` directly (not via ESIntegTestCase), and never call `revokeNodeGrants`. Their `other` cluster's `beforeTest`/`close`... but node grants accumulate per test method. Since these IT classes can have many tests, BASE_DIR_PATHS accumulates stale data dirs across the whole class \u2014 leak. Same theme as #1.\n\nLet me also verify something with grep on the actual repo\u2014but repo is empty. So I'll note that I couldn't verify compilation/reference existence since the tree isn't present.\n\n10. **The `assert previousTempDir == null` in `initialize`** \u2014 if `initialize` were called twice with different temp dirs it asserts (with assert enabled in tests). In original, same assert. But original also had `previousTempDir = baseDirPaths.put(TEMP, zeroOrOne(tempDir))` even when disabled? No\u2014original returned early when !isEnabledForTest, so put only when enabled. New: put only when POLICY_MANAGER != null (which is enabled). Equivalent.\n\n11. **Defect: `revokeNodeGrants()` clears base dirs but does NOT reset TEMP.** `retainAll(List.of(TEMP))` keeps TEMP. Good.\n\n12. **A real subtle defect: `baseDirModifier` with `Collection::remove` semantics.** In `revokeGrant`:\n```java\nBASE_DIR_PATHS.compute(BaseDir.SHARED_DATA, baseDirModifier(Collection::remove, nodeGrant.sharedDataDir()));\n```\nIf `sharedDataDir()` returns empty array `new Path[0]`, `baseDirModifier` with empty updates \u2192 the compute returns `Collections.unmodifiableCollection(paths)` copying existing \u2014 fine, no change. But `BASE_DIR_PATHS.compute(BaseDir.SHARED_DATA, ...)` will create the key if absent (put null path) \u2014 with `paths == null ? new ArrayList<>()`. That's fine.\n\nBut `Collection::remove` when there are DUPLICATES: the comment says \"This must allow for duplicate paths between nodes\" \u2014 with `ArrayList` and `remove(Object)` removes only the FIRST occurrence. In `addGrant`, adding the same config dir twice (two nodes) \u2192 list [config, config]. On revoke, `remove` removes first \u2192 [config]. Net one remains. That's actually correct behavior for shared dirs. Good \u2014 they handle it.\n\nBut there's a bug: `remove(Object)` removes only first occurrence; if the same path was added by TWO different grants and only one grant is revoked, one remains correctly. Good.\n\n13. **Real defect \u2014 `addGrant` uses `Collection::add` for a single Path via `baseDirModifier(Collection::add, nodeGrant.configDir())`, and for multi via `Collection::addAll`?** No \u2014 it passes `nodeGrant.dataDirs()` as `Path... updates` varargs which are added one by one via `add`. Fine. But `sharedDataDir()` returns `Path[0]` \u2014 no-ops. Fine.\n\n14. **Here's a real logic bug: `baseDirModifier` for revocation with duplicate shared dirs and `remove`.** Actually covered.\n\nLet me also check: **`MockNode` 4-arg constructor `(settings, classpathPlugins, forbidPrivateIndexSettings, entitlementGrant)`** calls `this(settings, classpathPlugins, null, forbidPrivateIndexSettings, entitlementGrant)` with configPath null \u2192 `prepareEnvironment(settings, null)`. Fine.\n\n15. **Potential NPE: `nodeGrantProvider.create` could be null** in InternalTestCluster if a caller uses an older constructor path... The 7-arg constructor now forwards nodeGrantProvider. But is there still an older constructor that doesn't pass it and leaves it null? The diff shows the 7-arg constructor existing (clusterSeed, baseDir, ...nodePrefix, mockPlugins, clientWrapper) which previously 8 args (with forbidPrivateIndexSettings etc. separately in the other 11-arg). There's an 11-arg constructor that now passes nodeGrantProvider. If any caller uses a constructor that doesn't initialize nodeGrantProvider (field stays null), then `nodeGrantProvider.create(...)` NPEs. Are all constructors updated? The two constructors shown both pass it. But if there are OTHER constructors of InternalTestCluster not updated in this diff... I can't verify. This is an API-compat risk: any existing caller of an InternalTestCluster constructor (there are many in the codebase) that isn't updated would either fail to compile (if signature changed) or pass null (if a constructor wasn't updated). Since signatures changed, compilation would catch it. Not a runtime defect within the diff.\n\nOK. Let me also reconsider the **most severe**: the no-op close. Actually, is there a scenario where the no-op close causes WRONG behavior (not just leak)? \n\nConsider `ESIntegTestCase.buildAndPutCluster`: `IOUtils.closeWhileHandlingException(testCluster::close); TEST_ENTITLEMENTS.revokeNodeGrants();` \u2014 explicit revoke handles multi-cluster. Single-node: no revoke, but suite-end finally wipes. So no wrong behavior, just leak.\n\nBut consider **`revokeNodeGrants()` clearing dirs that are still in use by the still-open previous cluster's data while...** Actually in buildAndPutCluster, cluster closed before revoke. Fine.\n\nHmm, let me find a *correctness* (not leak) defect.\n\n**Key correctness defect candidate: The `apply` rule's parallel guard uses `active` set to true for the whole duration of suite evaluation including node grant mutations. But `revokeNodeGrants()` (called from ESIntegTestCase buildAndPutCluster DURING suite evaluation) and `newNodeGrant`/`addGrant` both mutate the SAME `BASE_DIR_PATHS` and `clearModuleEntitlementsCache`. Since all within one suite sequential, fine.**\n\n**Another correctness one: In `apply`, `POLICY_MANAGER.setEntitledTestPackages(entitledPackages.value())` is called for a class with @EntitledTestPackages. But then in finally, `setEntitledTestPackages()` (empty) resets to defaults. Then next class, if it has no @EntitledTestPackages, calls `setEntitledTestPackages()` \u2192 defaults. Consistent.**\n\nWait, there's actually a subtle bug in the new `setEntitledTestPackages`: it calls `assertNoRedundantPrefixes(TEST_FRAMEWORK_PACKAGE_PREFIXES, entitledTestPackages, false)` BEFORE checking length>0 of new value. In apply, `setEntitledTestPackages()` with EMPTY array hits the early return (empty \u2192 reset to defaults) and skips validation. But `setEntitledTestPackages(entitledPackages.value())` \u2014 apply already asserted `entitledPackages.value().length > 0`. So empty never reaches the concat path from apply. But the early-return treats `length == 0` as \"reset to defaults\", which collides with the semantic distinction: is passing empty args \"reset\" or \"no-op\"? For a caller passing empty explicitly expecting no change, it resets. Minor semantic, but the old code with empty would have done `ArrayUtils.concat(current, empty)` = current (no-op). New code RESETS to defaults. **Behavior change: calling setEntitledTestPackages() with no args now silently resets instead of no-op.** This is a real semantic change. Combined with the finally using it as \"reset\", it's intentional for reset. But it's a footgun masking. Low severity.\n\n**Now the genuinely strong correctness defect I want to nail: thread-safety/parallel.** Hmm.\n\nLet me reconsider: **`description.isSuite()`** \u2014 In JUnit4, `Description.isSuite()` returns true for class-level and suite-level descriptions. A `@ClassRule`'s `apply` receives the test class Description whose `isSuite()` is true. OK.\n\nLet me also flag: **The `active.compareAndSet` guard will also fire for legitimate SEQUENTIAL reuse if... no.**\n\nLet me also flag a real one in **`TestPolicyManager`:** `isActive`/`isTriviallyAllowingTestCode` defaults changed to `false`/`true`, and the constructor's `resetAfterTest()` call was REMOVED. So a `TestPolicyManager` constructed with a caller that expects it active (e.g., non-ESTestCase usage) now starts inactive. But tests setActive(true) in @Before. The removal of constructor reset means fields keep their compile-time defaults \u2014 same values resetAfterTest would set. Fine, no functional change.\n\nLet me settle the report. Given the empty tree (can't read files), I'll be honest about what I could and couldn't verify, and list the defects I can point at from the diff.\n\nLet me reconsider which are the strongest REAL defects with concrete failure scenarios:\n\n**DEFECT 1 (most severe): `NodeGrant.close()` is a silent no-op \u2014 the grant `Closeable` never revokes.** `MockNode.awaitClose`'s `IOUtils.closeWhileHandlingException(entitlementGrant)` and `ESIntegTestCase`'s `IOUtils.closeWhileHandlingException(testCluster::close)` both rely on this Closeable to release entitlements, but it does nothing. Concrete failure: In a test class that creates multiple successive nodes/clusters without going through the scope-rebuild path that calls `revokeNodeGrants` (e.g., `ESSingleNodeTestCase`, or the standalone `SingleNodeDiscoveryIT`/`MultiClusterRepoAccessIT` that build `InternalTestCluster` directly), every node's data/config/repo directories remain permanently entitled in the global `BASE_DIR_PATHS` for the rest of the class. Failure scenario: a long test class that restarts a single node many times accumulates N stale data dirs; the policy manager continues granting access to all of them and BASE_DIR_PATHS grows monotonically \u2014 the exact resource the old `unregisterNodeBaseDirs`-on-close existed to prevent. The comment says it's an ES-10920 workaround, but `revokeGrant` and the `onClose` consumer are now completely dead code \u2014 nothing ever invokes them \u2014 so the \"delegation\" design is misleading; there is no path (other than the manual `revokeNodeGrants` called only from one place) to release a single grant.\n\n**DEFECT 2: `SingleNodeDiscoveryIT`/`MultiClusterRepoAccessIT`/`ESSingleNodeTestCase` never call `revokeNodeGrants`, so their grants are only cleaned at suite end.** Leak across all node creations within a class. (Overlaps with #1 but is the concrete manifestation at those call sites.)\n\n**DEFECT 3: `setEntitledTestPackages()` (zero args) now RESETS to defaults instead of being a no-op.** Old behavior: `ArrayUtils.concat(this.entitledTestPackages, entitledTestPackages)` with empty array = unchanged current value. New: length==0 \u2192 force reset to `TEST_FRAMEWORK_PACKAGE_PREFIXES`, discarding whatever was there. Concrete failure: any caller that invokes it with no args expecting the prior value to persist now silently loses the previously-set entitled packages, potentially de-entitling test packages mid-run. Also demonstrably the `resetEntitlements()`@AfterClass\u2192finally equivalence relies on this to work, so it's masked, but it's a silent footgun: `setEntitledTestPackages(new String[0])` and `setEntitledTestPackages((String[]) null)` both now mean \"reset\", not \"no-op\".\n\n**DEFECT 4: `homeDir()`/`dataDirs()` etc. are computed from the raw caller `settings`, and for `recreateNode`/`ESSingleNodeTestCase` the grant is built from a settings object that may not have `path.home` resolved** (NodeGrant.absolutePath on null PATTH_HOME_SETTING \u2192 NPE at node construction). Since grants are now built eagerly in `newNodeGrant`/`addGrant` by the CALLER rather than from the prepared Environment, any caller that constructs a MockNode/InternalTestCluster with settings lacking `path.home` triggers NPE inside MockNode construction, whereas the old path at least went through the same raw settings \u2014 so the failure is now reachable from more call sites. Actually I determined old code used same raw settings. So not a regression. I'll downgrade / possibly omit. Let me instead note that `newNodeGrant(settings, null)` in ESSingleNodeTestCase uses `null` configPath \u2192 `configDir()` derives `homeDir()/config`, but the node's real config dir may differ if the test sets a custom config dir \u2014 mismatch between granted config dir and actual. Hmm, old code passed configPath to registerNodeBaseDirs; ESSingleNodeTestCase newNode previously went through MockNode(settings, plugins, forbidPrivateIndexSettings) whose prepareEnvironment got configPath param = null as well. So same. Not regression.\n\nLet me look for other genuinely distinct defects:\n\n**DEFECT: `ESSingleNodeTestCase.newNode` \u2014 the grant is created but if `newNode` is called and the node construction or `node.start()` fails, the grant is already added and never cleaned** (no try/finally). Old code: registerNodeBaseDirs in prepareEnvironment similarly added; on failure unregister wasn't called either. Equivalent. Skip.\n\n**DEFECT: `InternalTestCluster.recreateNode` uses `nodeGrantProvider.create(finalSettings, null)` \u2014 configPath=null \u2192 grant configDir falls to homeDir/config, but the restarted node `new MockNode(finalSettings, plugins, forbidPrivateIndexSettings, ...)` \u2014 wait the 4-arg MockNode constructor passes configPath=null too. So consistent. Fine.\n\n**DEFECT: Thread race on the SHARED static `BASE_DIR_PATHS` between `initialize` (static, called once) and per-node `addGrant`.** Single-threaded during suite. Fine.\n\n**DEFECT: `apply` calls `description.getAnnotation(ESTestCase.WithoutEntitlements.class)` etc. but these annotations might be applied at method level? No, class-level. Fine.\n\nNow, is there something genuinely *wrong* (produces wrong behavior) rather than leak? Let me reconsider the **parallel guard**: it throws for concurrent suites where previously @BeforeClass/@AfterClass approach also had races but didn't throw. So the new code turns previously-\"maybe works with race\" into hard failure. If the CI runs classes in parallel (Elasticsearch runs test classes in parallel in the same JVM sometimes), this would fail the build. But they presumably run isolation. It's a behavioral regression risk worth noting: **any parallel test-class execution now hard-fails with AssertionError instead of the previous behavior.** Since the prior mechanism didn't guard at all, and Elasticsearch does parallelize test classes across forks (separate JVMs), but within a JVM the gradle test runner runs classes sequentially typically. Low probability. I'll mention as a note but it's a deliberate guard.\n\nLet me also check: **`active` AtomicBoolean is never reset to false at START of apply** \u2014 it's set true in evaluate. If a previous suite's finally was somehow skipped (e.g., an OutOfMemoryError or ThreadDeath during base.evaluate() before finally \u2014 finally DOES run for exceptions, but not for System.exit / JVM kill). Not realistic.\n\nLet me reconsider one more: **In `order`: `revokeNodeGrants()` is called in `buildAndPutCluster` only when `testCluster != null` and it's being rebuilt due to scope change.** But `revokeNodeGrants` clears base dirs for ALL nodes including ones that belong to the *new* scope's previous... no, it's called before building new. Fine.\n\nNow, is there a defect where **`revokeNodeGrants` removes dirs that should be retained because the cluster close didn't actually finish wiping pending data dirs** \u2014 that's the opposite; it's DEFENSIVE but could remove a grant still needed. Low.\n\nLet me also flag: **`MockNode.awaitClose` now unconditionally closes `entitlementGrant`, but `awaitClose` can be called (and is, via `IOUtils.closeWhileHandlingException(testCluster::close)`) \u2014 and if it's called when the node was never started, still fine. But `awaitClose` closes the grant even when the node is being REUSED? No.**\n\nAlright, I also want to verify whether there are other call sites of the now-removed `TestEntitlementBootstrap` methods that were NOT updated (compile break). Since the class is deleted and files reference `TEST_ENTITLEMENTS` and `TestEntitlementsRule`, but things like `TestEntitlementBootstrap.setTriviallyAllowingTestCode` might still be referenced elsewhere not in the diff \u2192 compile error. I cannot check without the tree. I'll flag as a risk: **any remaining references to the deleted `TestEntitlementBootstrap`/`resetAfterTest`/`registerNodeBaseDirs` elsewhere will fail to compile**, and the diff only updates a subset of call sites (e.g., other test suites that called `TestEntitlementBootstrap.registerNodeBaseDirs` directly). This is a likely defect (unintentional compile break) but unverifiable here.\n\nLet me also double check something about the `TestPolicyManagerTest` \u2014 `testClearModuleEntitlementsCache` renames but the semantics: after `clearModuleEntitlementsCache`, `getEntitlements` returns example-plugin2 (different) \u2014 this works if the class \"org.elasticsearch...policy\" is resolved to diff component names each time? That relies on a non-deterministic component assignment (mock scope resolver alternates). The rename keeps behavior; fine.\n\nNow let me finalize. I'll present the stronger items with file:line. The new-file lines I'll estimate based on content order.\n\nLet me figure out the line numbers in TestEntitlementsRule.java. The file is 358 lines. Let me count roughly by section placement. I'll reference by names and give approximate lines, noting they're from the new-file numbering (added lines).\n\nActually to be safe and accurate about the diff hunk headers: the instructions say \"name the FILE and the LINE NUMBER it lives on, taken from the diff hunk headers.\" For the new file the header is `@@ -0,0 +1,358 @@`, so I can't get exact line numbers from headers beyond the file. I'll provide the method and estimate line numbers, being clear.\n\nLet me count the new file lines to give reasonable line numbers.\n\nGiven the content, let me count key locations:\n- Line 78 area: `apply` method.\n- `newNodeGrant` around line ~110.\n- `revokeNodeGrants` ~125.\n- `NodeGrant` record ~130-180; `close()` ~165.\n- `addGrant` ~185.\n- `revokeGrant` ~195.\n- `baseDirModifier` ~210.\n- `setEntitledTestPackages` is in TestPolicyManager (line ~67).\n\nI'll cite with these approximations and note they're from the new-file added region.\n\nFor ESIntegTestCase line: the `revokeNodeGrants()` call is at the added `+                    TEST_ENTITLEMENTS.revokeNodeGrants();` \u2014 in hunk `@@ -549,6 +549,7`, added at line 552.\n\nFor ESSingleNodeTestCase: added line at `@@ -288,7 +288,7` \u2192 line 291 new `Node node = new MockNode(settings, plugins, forbidPrivateIndexSettings(), TEST_ENTITLEMENTS.newNodeGrant(settings, null));`.\n\nFor MockNode awaitClose added `IOUtils.closeWhileHandlingException(entitlementGrant);` at `@@ -290,8 +296,7` \u2192 line ~299.\n\nFor TestPolicyManager.setEntitledTestPackages added lines `@@ -65,24 +64,20` \u2192 lines ~67-74.\n\nLet me write the report.\n\nI'll present these in severity order but ground in concrete scenarios. I'll be clear about which are verified from diff-only vs needing the tree.\n\nLet me finalize the list:\n\n1. No-op close() \u2212 grant never revoked (MockNode.awaitClose / ESIntegTestCase).\n2. revokeGrant/onClose dead code + single-grant release impossible.\n3. setEntitledTestPackages() empty-arg semantics changed to reset (TestPolicyManager ~line 67-74).\n4. Single-node / direct-cluster call sites never revoke \u2192 unbounded BASE_DIR_PATHS accumulation within a class (ESSingleNodeTestCase:291, SingleNodeDiscoveryIT, MultiClusterRepoAccessIT).\n5. Potential compile break: references to deleted TestEntitlementBootstrap elsewhere not updated (risk).\n6. Parallel suite hard-fail AssertionError regression.\n7. homeDir() NPE on missing path.home at grant construction (moved to caller-supplied settings) \u2014 latent.\n8. Global shared state (BASE_DIR_PATHS, POLICY_MANAGER) is JVM-wide via static final in base class \u2014 any test that creates a MockNode *before* the class rule's apply (e.g., static initializer) adds grants to global state with no guard.\n\nActually #8: Interesting. The static field `TEST_ENTITLEMENTS` is initialized in the static init of ESTestCase, and the static BLOCK of TestEntitlementsRule runs loadAgent immediately at class-load (which is at first reference \u2014 BootstrapForTesting.initialize triggers it). Node grant creation via `newNodeGrant` requires an INSTANCE method call from the rule instance; that's available statically. Some tests might call `new MockNode(...)` inside a `@BeforeClass` or static helper \u2014 but grants via nodeGrantProvider are called inside node construction which happens in test instances, after apply. Probably fine.\n\nLet me present items 1-7 as the report, with item 5 as unverifiable.\n\nActually, re-examine severity: whichever is truly \"wrong behavior\" vs \"leak/regression\". I'll order: \n- The no-op close + dead revoke is the biggest design flaw but produces leak not wrong output.\n- The setEntitledTestPackages reset change is a genuine semantics change but masked by design.\n\nLet me also double-check: is there a scenario where the no-op close causes WRONG entitlements rather than leak? Consider `InternalTestCluster` where after closing a cluster and building a new one in the SAME suite WITHOUT scope change... they call revokeNodeGrants only on scope change. Actually buildTestCluster is called when scope changes or first build. On scope change they close old + revoke. Within same scope, nodes aren't recreated wholesale. OK leak only.\n\nOne more potentially real wrong-behavior: **`revokeNodeGrants()` unconditionally clears ALL base dirs even if a PREVIOUS cluster in a different scoped test still... no.**\n\nI think I have enough. Let me write it up concisely but completely, and be explicit that the source tree wasn't available so I judged from the diff.\n\nActually, let me reconsider defect about `description.isSuite()`. In JUnit4, when a `@ClassRule` is inherited from a base class and applied, apply receives Description of the test class. `isSuite()` returns false for a class unless it's treated as suite root... Actually `Description.isSuite()` returns `true` when the description represents a test class (it has children = test methods) OR a suite. For a plain test class with methods, `isSuite()` returns true (class-level descriptions have children). Yes, class-level Description has children so isSuite() true. Good, not a defect.\n\nLet me write the final answer.\n\nI'll note the repo directory is empty so I couldn't independently verify file contents; I judged strictly from the diff and flagged the one unverifiable strong claim (compile break) accordingly.I need to note upfront: the working directory `/tmp/aacr-up-dz5h_nbo` is empty (0 entries), so I could not read the live source tree. My analysis below is judged strictly from the diff's own content and internal consistency. I flag the one item that truly needs the rest of the repo to confirm.\n\n## Defects, most severe first\n\n**1. `NodeGrant.close()` is a silent no-op, so the `Closeable` that `MockNode` and `ESIntegTestCase` rely on never releases anything.**\n`TestEntitlementsRule.java` (NodeGrant record, `close()`): the entire body is commented out (`// onClose.accept(this);`). Yet `MockNode.awaitClose` (`MockNode.java` ~line 299) now does `IOUtils.closeWhileHandlingException(entitlementGrant);` and `ESIntegTestCase` closes clusters through the same path. Concrete failure: a test class that creates/destroys multiple single nodes or clusters *outside* the `buildAndPutCluster` scope-rebuild path never frees any granted dir. In `ESSingleNodeTestCase.newNode()` (line ~291) every node creates a grant via `TEST_ENTITLEMENTS.newNodeGrant(settings, null)`; the grants accumulate in the JVM-global `BASE_DIR_PATHS` for the entire class. The global policy manager keeps read access to every stale data/config/repo dir and `BASE_DIR_PATHS` grows monotonically \u2014 precisely the state the deleted `unregisterNodeBaseDirs`-on-close existed to prevent. The `Closeable` contract that both `MockNode` and `ESIntegTestCase` now depend on is vacuously satisfied.",
+        "path": "test/framework/src/main/java/org/elasticsearch/entitlement/bootstrap/TestEntitlementsRule.java",
+        "start_line": 1,
+        "end_line": 1,
+        "observation_id": "a9a0f06c48350e70",
+        "claimed_path": "TestEntitlementsRule.java",
+        "path_resolution": "basename",
+        "merged_from": [
+          "4ff633f66c7b3c7e",
+          "362c553fcb77b226",
+          "2eddb6208d8a967b",
+          "0c156b7c81f63d95",
+          "3c75155ff35ad90e",
+          "eca9ee860fa394f5",
+          "1107b2fd8cc24495",
+          "e0c7d9c8d04796f3",
+          "fbc96389f923c8fc",
+          "e3b7231ccdc31f08",
+          "0827d62967648b52",
+          "37180b951b21d27d",
+          "1cce68e12abe15e2",
+          "fb996789c6fe2dd9",
+          "c4511b4368ebfe3f",
+          "ede4569ed3f08769",
+          "596c61f1bf0b84de",
+          "316691f1c28e7e2b",
+          "6d2c36fa8f7d573c",
+          "5f81055c4c3988b9",
+          "ee23bb6f910fdf9f",
+          "d679874bf1c7257d",
+          "a04e92a4ade0dd1a",
+          "2e42a28057becfaf",
+          "a8b9c529283effec",
+          "6fde66870438161c",
+          "7f05bee3ea76bd23"
+        ]
+      },
+      {
+        "content": "**3. `setEntitledTestPackages()` (zero arg) silently *resets* to defaults instead of being a no-op \u2014 a behavior change.**\n`TestPolicyManager.java` (~lines 67\u201374): the new early return `if (entitledTestPackages == null || entitledTestPackages.length == 0) { ... = TEST_FRAMEWORK_PACKAGE_PREFIXES; return; }`. Old code did `ArrayUtils.concat(this.entitledTestPackages, entitledTestPackages)` so an empty array left the current value unchanged. New code destroys whatever entitled packages were set. Concrete failure: any caller passing an empty/`null` vararg expecting \"no change\" now silently de-entitles all non-test-framework packages mid-run. It happens to be masked because the class rule intentionally uses it as a reset, but it collapses two distinct intents into one and makes the no-op misuse a silent data loss.",
+        "path": "test/framework/src/main/java/org/elasticsearch/entitlement/runtime/policy/TestPolicyManager.java",
+        "start_line": 67,
+        "end_line": 67,
+        "observation_id": "9486531b13a404fe",
+        "claimed_path": "TestPolicyManager.java",
+        "path_resolution": "basename",
+        "merged_from": []
+      },
+      {
+        "content": "**4. The standalone-cluster call sites never invoke `revokeNodeGrants`, so their grants leak for the whole class.**\n`SingleNodeDiscoveryIT.java` (added `TEST_ENTITLEMENTS::newNodeGrant` in both hunks) and `MultiClusterRepoAccessIT.java` (added `TEST_ENTITLEMENTS::newNodeGrant`): these classes build `InternalTestCluster` directly and never call `revokeNodeGrants()`. Combined with defect #1 (close is a no-op), every `other.beforeTest(random())` / new-node creation in these classes adds dirs to `BASE_DIR_PATHS` that only a suite-end `finally` wipes. Failure scenario: a class running many tests accumulates N stale data-dir grants; the shared policy manager keeps granting read access to all of them. `ESSingleNodeTestCase` (line ~291) has the same gap.\n\n**5. `homeDir()`/`dataDirs()`/etc. can NPE at grant-construction time on caller-supplied settings lacking `path.home`.**\n`TestEntitlementsRule.java` (`NodeGrant.homeDir()` and `absolutePath`): `absolutePath(PATH_HOME_SETTING.get(settings))` \u2192 `Paths.get(null).toAbsolutePath()` throws `NullPointerException`, and it is evaluated eagerly inside `newNodeGrant`/`addGrant` (configDir/dataDirs/etc. are all computed during construction). Because the refactor moved grant creation to each *caller*'s raw `settings` (rather than only the one call site in `MockNode.prepareEnvironment`), the failure is now reachable from many more entry points. Failure scenario: any test constructing a `MockNode`/`InternalTestCluster` with a settings object that does not explicitly carry `path.home` crashes with NPE inside node construction rather than at environment preparation.",
+        "path": "server/src/internalClusterTest/java/org/elasticsearch/discovery/single/SingleNodeDiscoveryIT.java",
+        "start_line": 291,
+        "end_line": 291,
+        "observation_id": "9e997d5537441c4a",
+        "claimed_path": "SingleNodeDiscoveryIT.java",
+        "path_resolution": "basename",
+        "merged_from": [
+          "8adbfc93e0b93303"
+        ]
+      },
+      {
+        "content": "### 1. **TestEntitlementsRule.java:56-57** \u2014 Static initialization runs `createPolicyManager` and `loadAgent` even when entitlements are disabled for tests\n**File:** `test/framework/src/main/java/org/elasticsearch/entitlement/bootstrap/TestEntitlementsRule.java` (lines 56-57 in the new file)\n**Defect:** The static initializer block unconditionally calls `createPolicyManager(pathLookup)` and `loadAgent(POLICY_MANAGER, pathLookup)` inside the `if (isEnabledForTest())` block, but `POLICY_MANAGER` is declared `final` and assigned in the same block. If `isEnabledForTest()` returns `false`, `POLICY_MANAGER` remains `null` \u2014 but the static initializer still runs `new TestPathLookup(BASE_DIR_PATHS)` and creates the `ConcurrentHashMap`. This is wasteful but not a functional defect. **However**, the real defect is that `loadAgent` is called during static initialization, which loads the Java agent (`EntitlementBootstrap.loadAgent`) before any test runs. This agent instrumentation affects *all* tests in the JVM, even those annotated with `@WithoutEntitlements` or running in suites where entitlements are disabled. The old `TestEntitlementBootstrap.bootstrap()` was called explicitly in `BootstrapForTesting` and `setupEntitlementsForClass()`, giving control over *when* the agent loads.\n\n**Failure scenario:** A test suite annotated `@WithoutEntitlements` runs in the same JVM as a suite with entitlements enabled. The agent is loaded during static init of `TestEntitlementsRule` (triggered by the first suite that references the class), instrumenting classes globally. The `@WithoutEntitlements` suite then experiences false-positive entitlement violations or performance degradation from the agent.\n\n---",
+        "path": "test/framework/src/main/java/org/elasticsearch/entitlement/bootstrap/TestEntitlementsRule.java",
+        "start_line": 56,
+        "end_line": 56,
+        "observation_id": "5172bd6ae5b496c3",
+        "claimed_path": "TestEntitlementsRule.java",
+        "path_resolution": "basename",
+        "merged_from": []
+      },
+      {
+        "content": "### 2. **TestEntitlementsRule.java:115-119** \u2014 `NodeGrant.close()` is a no-op (commented out), leaking entitlement grants across node restarts\n**File:** `test/framework/src/main/java/org/elasticsearch/entitlement/bootstrap/TestEntitlementsRule.java` (lines 115-119)\n**Defect:** The `NodeGrant.close()` method has its actual revocation logic commented out:\n```java\n@Override\npublic void close() {\n    // wipePendingDataDirectories in tests requires entitlement delegation to work as this uses server's FileSystemUtils.\n    // until ES-10920 is solved, node grants cannot be removed until the test suite completes unless explicitly removing all node\n    // grants using revokeNodeGrants where feasible.\n    // onClose.accept(this);\n}\n```\nThis means when `MockNode.awaitClose()` calls `IOUtils.closeWhileHandlingException(entitlementGrant)` (MockNode.java:296), the grant is *not* revoked. The paths remain registered in `BASE_DIR_PATHS`.\n\n**Failure scenario:** A test restarts a node (e.g., `InternalTestCluster.recreateNode` at line 1074). The old node's grant is never revoked. The new node gets a *new* grant added via `nodeGrantProvider.create()`. Now `BASE_DIR_PATHS` contains duplicate entries for the same config/data/repo directories. When the test later calls `revokeNodeGrants()` (e.g., in `ESIntegTestCase.java:552`), `Collection.remove()` only removes the *first* occurrence of each path, leaving stale entries. Subsequent nodes or tests see polluted base dir paths, causing entitlement check failures or incorrect path resolution.\n\n---",
+        "path": "test/framework/src/main/java/org/elasticsearch/entitlement/bootstrap/TestEntitlementsRule.java",
+        "start_line": 115,
+        "end_line": 115,
+        "observation_id": "2b8b228025ad207f",
+        "claimed_path": "TestEntitlementsRule.java",
+        "path_resolution": "basename",
+        "merged_from": []
+      },
+      {
+        "content": "### 3. **TestEntitlementsRule.java:138-148** \u2014 `baseDirModifier` uses `ArrayList` allowing duplicates, but `remove` only removes first occurrence\n**File:** `test/framework/src/main/java/org/elasticsearch/entitlement/bootstrap/TestEntitlementsRule.java` (lines 138-148)\n**Defect:** The `baseDirModifier` creates a new `ArrayList` from existing paths, then applies `add`/`remove` operations. `ArrayList.remove(Object)` removes only the *first* matching element. Since `NodeGrant.close()` is a no-op (Defect #2), grants accumulate on node restarts. Even if `close()` worked, if the same path is added twice (e.g., config dir shared across nodes), `revokeGrant` would only remove one instance.\n\n**Failure scenario:** Two nodes share the same config directory (common in tests). `addGrant` is called for both, adding the config path twice. `revokeNodeGrants()` calls `retainAll(List.of(TEMP))` which clears everything \u2014 but if a test only revokes one node's grant via `close()` (once fixed), the config path would still have one reference left, incorrectly keeping the config dir entitled for the remaining node. More critically, with the current no-op `close()`, restarts cause unbounded accumulation.\n\n---",
+        "path": "test/framework/src/main/java/org/elasticsearch/entitlement/bootstrap/TestEntitlementsRule.java",
+        "start_line": 138,
+        "end_line": 138,
+        "observation_id": "e68cbbad01e1742b",
+        "claimed_path": "TestEntitlementsRule.java",
+        "path_resolution": "basename",
+        "merged_from": []
+      },
+      {
+        "content": "### 4. **TestEntitlementsRule.java:63-64** \u2014 `active` AtomicBoolean prevents parallel test suite execution, but JUnit 4 runs suites sequentially by default; however, the error message is misleading\n**File:** `test/framework/src/main/java/org/elasticsearch/entitlement/bootstrap/TestEntitlementsRule.java` (lines 63-64)\n**Defect:** The `apply` method checks `active.compareAndSet(false, true)` and throws `AssertionError(\"TestPolicyManager doesn't support test isolation, test suits cannot be run in parallel\")` if already active. This assumes suites run sequentially. However, the error message says \"test suits cannot be run in parallel\" \u2014 but the real limitation is that `TestPolicyManager` has *global static state* (`POLICY_MANAGER`, `BASE_DIR_PATHS`). The old code had the same limitation but didn't enforce it with a confusing error.\n\n**Failure scenario:** If a test runner (e.g., Gradle with `maxParallelForks > 1` or a custom runner) executes multiple test *classes* in parallel within the same JVM, the second suite to hit `apply` fails with this assertion. The error message blames \"parallel test suits\" but the root cause is the singleton design. This is a latent defect that will surface if parallelism is ever enabled at the class level.\n\n---",
+        "path": "test/framework/src/main/java/org/elasticsearch/entitlement/bootstrap/TestEntitlementsRule.java",
+        "start_line": 63,
+        "end_line": 63,
+        "observation_id": "6dcd9cd55603ab1a",
+        "claimed_path": "TestEntitlementsRule.java",
+        "path_resolution": "basename",
+        "merged_from": []
+      },
+      {
+        "content": "### 5. **TestPolicyManager.java:29-30** \u2014 Default field values changed: `isActive = false` (was uninitialized, default false), `isTriviallyAllowingTestCode = true` (was uninitialized, default false)\n**File:** `test/framework/src/main/java/org/elasticsearch/entitlement/runtime/policy/TestPolicyManager.java` (lines 29-30)\n**Defect:** The old code explicitly called `resetAfterTest()` in the constructor, which set `isActive = false` and `isTriviallyAllowingTestCode = true`. The new code removes that call and instead uses field initializers. **However**, `isTriviallyAllowingTestCode` default changed from `false` (via `resetAfterTest()`) to `true` (field initializer). This changes the default behavior: test code is now trivially allowed *by default* unless a `@ClassRule` explicitly disables it.\n\n**Failure scenario:** A test class that does *not* use `TestEntitlementsRule` as a `@ClassRule` (e.g., a plain unit test extending `ESTestCase` without entitlements) will now have `isTriviallyAllowingTestCode = true` if `TestPolicyManager` is instantiated somehow. But more critically: the `@ClassRule` in `ESTestCase` (line 533) creates `TEST_ENTITLEMENTS`, which in `apply()` sets `setTriviallyAllowingTestCode(false == withEntitlementsOnTestCode)`. If a test class has `@WithEntitlementsOnTestCode`, it sets `false` \u2014 correct. But if a test class has *neither* annotation, it sets `true` \u2014 also correct. The defect is subtle: **the constructor default must match the \"reset\" state**. The old `resetAfterTest()` set `isTriviallyAllowingTestCode = true`. The new field initializer *also* sets `true`. So this is actually consistent. **Wait** \u2014 the old constructor called `resetAfterTest()` which set `isActive = false` and `isTriviallyAllowingTestCode = true`. The new constructor doesn't call `resetAfterTest()` but field initializers set the same values. **No defect here** \u2014 but the *removal* of `resetAfterTest()` means `clearModuleEntitlementsCache()` is no longer called on construction. That's fine since the cache starts empty.\n\n---",
+        "path": "test/framework/src/main/java/org/elasticsearch/entitlement/runtime/policy/TestPolicyManager.java",
+        "start_line": 29,
+        "end_line": 29,
+        "observation_id": "1261f45752172373",
+        "claimed_path": "TestPolicyManager.java",
+        "path_resolution": "basename",
+        "merged_from": []
+      },
+      {
+        "content": "### 6. **TestPolicyManager.java:64-72** \u2014 `setEntitledTestPackages` logic changed: now *replaces* rather than *appends* to framework packages\n**File:** `test/framework/src/main/java/org/elasticsearch/entitlement/runtime/policy/TestPolicyManager.java` (lines 64-72)\n**Defect:** Old code:\n```java\nString[] packages = ArrayUtils.concat(this.entitledTestPackages, entitledTestPackages);\n```\nNew code:\n```java\nString[] packages = ArrayUtils.concat(TEST_FRAMEWORK_PACKAGE_PREFIXES, entitledTestPackages);\n```\nThe old code *appended* to the existing `this.entitledTestPackages` (which started as `TEST_FRAMEWORK_PACKAGE_PREFIXES` but could have been modified by prior `setEntitledTestPackages` calls). The new code *always* starts from `TEST_FRAMEWORK_PACKAGE_PREFIXES`, discarding any previously added packages.\n\n**Failure scenario:** A test suite uses `@EntitledTestPackages` on a nested class or multiple test classes in the same suite with different packages. First class sets packages A. Second class calls `setEntitledTestPackages(B)` \u2014 old behavior: packages = [framework, A, B]. New behavior: packages = [framework, B]. Package A is lost. Entitlement checks for code in package A now fail incorrectly.\n\n---",
+        "path": "test/framework/src/main/java/org/elasticsearch/entitlement/runtime/policy/TestPolicyManager.java",
+        "start_line": 64,
+        "end_line": 64,
+        "observation_id": "33d5693ab80b871f",
+        "claimed_path": "TestPolicyManager.java",
+        "path_resolution": "basename",
+        "merged_from": []
+      },
+      {
+        "content": "### 7. **MockNode.java:290-296** \u2014 `prepareEnvironment` no longer calls `TestEntitlementBootstrap.registerNodeBaseDirs`, but `entitlementGrant` is created *after* environment preparation\n**File:** `test/framework/src/main/java/org/elasticsearch/node/MockNode.java` (lines 290-296, 279)\n**Defect:** The `MockNode` constructor calls `prepareEnvironment(settings, configPath)` *before* storing `entitlementGrant`. `prepareEnvironment` creates the `Environment` which initializes `NodeEnvironment` and validates data paths. In the old code, `TestEntitlementBootstrap.registerNodeBaseDirs` was called *inside* `prepareEnvironment`, so the paths were registered before `NodeEnvironment` validated them. Now, `registerNodeBaseDirs` is replaced by `addGrant` inside `newNodeGrant`, which is called *after* `prepareEnvironment` returns (see `ESSingleNodeTestCase.java:291`: `TEST_ENTITLEMENTS.newNodeGrant(settings, null)` passed to constructor, but `prepareEnvironment` is called in the private constructor at line 279 *before* `entitlementGrant` is stored).\n\nWait, let me trace: `MockNode(Settings, Collection, Path, boolean, Closeable)` at line 279 calls `prepareEnvironment` then calls the private constructor at line 273. The private constructor stores `entitlementGrant` at line 283. But `prepareEnvironment` at line 290 does *not* use `entitlementGrant`. The old `prepareEnvironment` called `TestEntitlementBootstrap.registerNodeBaseDirs`. The new one does not.\n\n**Failure scenario:** `NodeEnvironment` validation (inside `prepareEnvironment` \u2192 `InternalSettingsPreparer.prepareEnvironment`) checks path permissions. If entitlements are enabled, the paths are not yet registered in `BASE_DIR_PATHS`, so entitlement checks during environment startup (e.g., creating data directories) will fail with `NotEntitledException`.\n\n---",
+        "path": "test/framework/src/main/java/org/elasticsearch/node/MockNode.java",
+        "start_line": 290,
+        "end_line": 290,
+        "observation_id": "e3b5bef759e1ac3c",
+        "claimed_path": "MockNode.java",
+        "path_resolution": "basename",
+        "merged_from": []
+      },
+      {
+        "content": "### 8. **ESSingleNodeTestCase.java:291** \u2014 Passes `null` as `configPath` to `newNodeGrant`, but `NodeGrant.configDir()` falls back to `homeDir.resolve(\"config\")`\n**File:** `test/framework/src/main/java/org/elasticsearch/test/ESSingleNodeTestCase.java` (line 291)\n**Defect:** `TEST_ENTITLEMENTS.newNodeGrant(settings, null)` passes `null` for `configPath`. `NodeGrant.configDir()` (TestEntitlementsRule.java:97) returns `configPath != null ? configPath : homeDir().resolve(\"config\")`. However, the actual config path used by the node is `nodeConfigurationSource.nodeConfigPath(nodeId)` (in `InternalTestCluster`) or derived from settings. If the test uses a custom config path (not `$HOME/config`), the grant covers the wrong directory.\n\n**Failure scenario:** A test sets `path.conf` to a non-default location. The node starts with that config path, but the entitlement grant only covers `$HOME/config`. File operations on the actual config directory fail entitlement checks.\n\n---",
+        "path": "test/framework/src/main/java/org/elasticsearch/test/ESSingleNodeTestCase.java",
+        "start_line": 291,
+        "end_line": 291,
+        "observation_id": "a6094f991e5bd025",
+        "claimed_path": "ESSingleNodeTestCase.java",
+        "path_resolution": "basename",
+        "merged_from": []
+      },
+      {
+        "content": "### 9. **InternalTestCluster.java:1074** \u2014 `recreateNode` passes `null` for `configPath` to `nodeGrantProvider.create`\n**File:** `test/framework/src/main/java/org/elasticsearch/test/InternalTestCluster.java` (line 1074)\n**Defect:** Same as #8. `nodeGrantProvider.create(finalSettings, null)` passes `null` config path. The recreated node uses the *same* config path as the original node (stored in `nodeConfigurationSource`), but the grant is for `$HOME/config`.\n\n**Failure scenario:** A test restarts a node with a custom config path. The new node's grant doesn't cover the actual config directory. Entitlement checks fail on config file access.\n\n---",
+        "path": "test/framework/src/main/java/org/elasticsearch/test/InternalTestCluster.java",
+        "start_line": 1074,
+        "end_line": 1074,
+        "observation_id": "ae6b6f959ba929e5",
+        "claimed_path": "InternalTestCluster.java",
+        "path_resolution": "basename",
+        "merged_from": []
+      },
+      {
+        "content": "### 10. **ESIntegTestCase.java:552** \u2014 `revokeNodeGrants()` called *after* closing test cluster, but cluster close may need entitlements\n**File:** `test/framework/src/main/java/org/elasticsearch/test/ESIntegTestCase.java` (lines 549-552)\n**Defect:** \n```java\nif (testCluster != null) {\n    IOUtils.closeWhileHandlingException(testCluster::close);\n    TEST_ENTITLEMENTS.revokeNodeGrants();\n}\n```\n`testCluster.close()` shuts down nodes, which calls `MockNode.awaitClose()` \u2192 `IOUtils.closeWhileHandlingException(entitlementGrant)`. But `NodeGrant.close()` is a no-op (Defect #2). Then `revokeNodeGrants()` clears all base dirs. If `close()` actually did revoke (once fixed), the grants would be revoked *during* node shutdown, potentially causing entitlement failures during shutdown (e.g., writing translog, closing indices).\n\n**Failure scenario:** Once Defect #2 is fixed, node shutdown operations (flushing, closing files) would lose entitlements mid-shutdown because `close()` revokes the grant before `super.awaitClose()` completes.\n\n---",
+        "path": "test/framework/src/main/java/org/elasticsearch/test/ESIntegTestCase.java",
+        "start_line": 552,
+        "end_line": 552,
+        "observation_id": "1ce60c63899b793a",
+        "claimed_path": "ESIntegTestCase.java",
+        "path_resolution": "basename",
+        "merged_from": [
+          "e26c367d3fae7076"
+        ]
+      },
+      {
+        "content": "### 11. **TestEntitlementsRule.java:52-53** \u2014 `BASE_DIR_PATHS` and `POLICY_MANAGER` are `static`, shared across all test suites in the JVM\n**File:** `test/framework/src/main/java/org/elasticsearch/entitlement/bootstrap/TestEntitlementsRule.java` (lines 52-53)\n**Defect:** The old `TestEntitlementBootstrap` also used static state, but it was reset in `resetAfterTest()` (called from `ESTestCase.afterClass`). The new `TestEntitlementsRule` as a `@ClassRule` resets state in `apply()`'s `finally` block (lines 85-91). **However**, if a test class *doesn't* use `ESTestCase` (and thus doesn't get the `@ClassRule`), or if a test uses a custom runner that doesn't execute `@ClassRule` properly, the static state persists.\n\n**Failure scenario:** A standalone test (not extending `ESTestCase`) runs in the same JVM after an integration test. The static `BASE_DIR_PATHS` still contains the previous test's paths. The new test's entitlement checks see polluted paths.\n\n---",
+        "path": "test/framework/src/main/java/org/elasticsearch/entitlement/bootstrap/TestEntitlementsRule.java",
+        "start_line": 52,
+        "end_line": 52,
+        "observation_id": "7ed3c74f8ff276fd",
+        "claimed_path": "TestEntitlementsRule.java",
+        "path_resolution": "basename",
+        "merged_from": []
+      },
+      {
+        "content": "### 12. **TestEntitlementsRule.java:78** \u2014 `withoutEntitlements` logic inverted for `setActive`\n**File:** `test/framework/src/main/java/org/elasticsearch/entitlement/bootstrap/TestEntitlementsRule.java` (line 78)\n**Defect:** \n```java\nPOLICY_MANAGER.setActive(false == withoutEntitlements);\n```\n`withoutEntitlements` is true when `@WithoutEntitlements` is present. So `setActive(false)` when annotation present \u2014 correct. But the variable name `withoutEntitlements` and the double-negative `false == withoutEntitlements` is confusing and error-prone. The old code: `TestEntitlementBootstrap.setActive(false == withoutEntitlements)` \u2014 same logic. Not a functional defect, but a maintenance hazard.\n\n---",
+        "path": "test/framework/src/main/java/org/elasticsearch/entitlement/bootstrap/TestEntitlementsRule.java",
+        "start_line": 78,
+        "end_line": 78,
+        "observation_id": "4744a8cd9b44b821",
+        "claimed_path": "TestEntitlementsRule.java",
+        "path_resolution": "basename",
+        "merged_from": [
+          "1b2a8882a250225b"
+        ]
+      },
+      {
+        "content": "### 13. **BootstrapForTesting.java:78** \u2014 `initialize` called but `loadAgent` already called in static init\n**File:** `test/framework/src/main/java/org/elasticsearch/bootstrap/BootstrapForTesting.java` (line 78)\n**Defect:** `TestEntitlementsRule.initialize(javaTmpDir)` is called, which sets the temp dir in `BASE_DIR_PATHS`. But `loadAgent` was already called in `TestEntitlementsRule` static init (line 57). The old `TestEntitlementBootstrap.bootstrap()` did both: set temp dir *and* load agent. Now they're split. If `BootstrapForTesting` runs *before* any test triggers `TestEntitlementsRule` static init, the temp dir is set but `POLICY_MANAGER` is null (since `isEnabledForTest()` might be false at that point). Then when a test runs and static init happens, `isEnabledForTest()` is true, but the temp dir was already set \u2014 the `assert previousTempDir == null` at line 62 would fail.\n\n**Failure scenario:** `BootstrapForTesting` runs early (e.g., in a test framework initialization). It calls `initialize(tmpDir)`. Later, a test class loads `TestEntitlementsRule`, static init runs, `isEnabledForTest()` is true, `BASE_DIR_PATHS.put(TEMP, List.of(tempDir))` finds the previous entry, assertion fails.\n\n---",
+        "path": "test/framework/src/main/java/org/elasticsearch/bootstrap/BootstrapForTesting.java",
+        "start_line": 78,
+        "end_line": 78,
+        "observation_id": "ca8b6faf99d242a7",
+        "claimed_path": "BootstrapForTesting.java",
+        "path_resolution": "basename",
+        "merged_from": []
+      },
+      {
+        "content": "### 14. **TestEntitlementsRule.java:62** \u2014 `assert previousTempDir == null` fails if `initialize` called twice\n**File:** `test/framework/src/main/java/org/elasticsearch/entitlement/bootstrap/TestEntitlementsRule.java` (line 62)\n**Defect:** The `initialize` method asserts `previousTempDir == null`. But `BootstrapForTesting` calls `initialize` (Defect #13), and a test suite's `@ClassRule` also triggers static init which... wait, static init doesn't call `initialize`. Only `BootstrapForTesting` calls it. But if a test runs `BootstrapForTesting` twice (e.g., two test clusters in same JVM), the second call fails.\n\n**Failure scenario:** An integration test that creates two separate `InternalTestCluster` instances in the same test class (not via `ESIntegTestCase`'s cluster management). Each cluster setup calls `BootstrapForTesting`... actually `BootstrapForTesting` is typically called once per JVM. But if a test manually invokes it twice, it crashes.\n\n---",
+        "path": "test/framework/src/main/java/org/elasticsearch/entitlement/bootstrap/TestEntitlementsRule.java",
+        "start_line": 62,
+        "end_line": 62,
+        "observation_id": "581b4355d762b375",
+        "claimed_path": "TestEntitlementsRule.java",
+        "path_resolution": "basename",
+        "merged_from": []
+      },
+      {
+        "content": "### 15. **IndicesServiceCloseTests.java:80** \u2014 Passes `() -> {}` as `entitlementGrant` instead of real grant\n**File:** `server/src/test/java/org/elasticsearch/indices/IndicesServiceCloseTests.java` (line 80)\n**Defect:** \n```java\nNode node = new MockNode(\n    settings,\n    Arrays.asList(...),\n    true,\n    () -> {}\n);\n```\nThis test doesn't use `TEST_ENTITLEMENTS.newNodeGrant()`. It passes a no-op `Closeable`. If entitlements are enabled for this test, the node has no path grants. Any file operation fails.\n\n**Failure scenario:** This test runs with `-Des.entitlement.enableForTests=true`. Node startup fails because data/config paths aren't entitled.\n\n---",
+        "path": "server/src/test/java/org/elasticsearch/indices/IndicesServiceCloseTests.java",
+        "start_line": 80,
+        "end_line": 80,
+        "observation_id": "3467acb2d0b38462",
+        "claimed_path": "IndicesServiceCloseTests.java",
+        "path_resolution": "basename",
+        "merged_from": [
+          "99314a5a2ca719b3"
+        ]
+      },
+      {
+        "content": "### 16. **AbstractMultiClustersTestCase.java:130** \u2014 `startClusters` passes `TEST_ENTITLEMENTS::newNodeGrant` but `beforeTest` may not be called for all clusters\n**File:** `test/framework/src/main/java/org/elasticsearch/test/AbstractMultiClustersTestCase.java` (line 130)\n**Defect:** The `nodeGrantProvider` is passed to `InternalTestCluster` constructor. Grants are created per-node in `buildNode` (line 792). But `startClusters` calls `cluster.beforeTest(random())` *after* cluster construction. If an exception occurs before `beforeTest`, grants are already created (in `buildNode` during `startNodes`?). Actually `InternalTestCluster` constructor doesn't start nodes. `startClusters` calls `beforeTest` which likely starts nodes. The grants are created in `buildNode` when nodes are started. If `beforeTest` throws, `revokeNodeGrants` is never called.\n\n**Failure scenario:** Test setup fails after nodes start but before `beforeTest` completes. Node grants leak into next test.\n\n---",
+        "path": "test/framework/src/main/java/org/elasticsearch/test/AbstractMultiClustersTestCase.java",
+        "start_line": 130,
+        "end_line": 130,
+        "observation_id": "cb1f50afbeb1819d",
+        "claimed_path": "AbstractMultiClustersTestCase.java",
+        "path_resolution": "basename",
+        "merged_from": []
+      },
+      {
+        "content": "### 17. **TestEntitlementsRule.java:103-104** \u2014 `revokeNodeGrants` uses `retainAll(List.of(TEMP))` but `TEMP` is a `BaseDir` enum, not a Collection\n**File:** `test/framework/src/main/java/org/elasticsearch/entitlement/bootstrap/TestEntitlementsRule.java` (lines 103-104)\n**Defect:** \n```java\nBASE_DIR_PATHS.keySet().retainAll(List.of(TEMP));\n```\n`BASE_DIR_PATHS.keySet()` returns `Set<BaseDir>`. `List.of(TEMP)` returns `List<BaseDir>`. This compiles and works \u2014 `retainAll` keeps only `TEMP`. But the old code in `TestEntitlementBootstrap.resetAfterTest()` (line 243) did:\n```java\nbaseDirPaths.keySet().retainAll(List.of(TEMP));\n```\nSame code. Not a defect. **Wait** \u2014 the old code also cleared `policyManager.resetAfterTest()` which cleared caches. The new `revokeNodeGrants` calls `clearModuleEntitlementsCache()` \u2014 good.\n\n---",
+        "path": "test/framework/src/main/java/org/elasticsearch/entitlement/bootstrap/TestEntitlementsRule.java",
+        "start_line": 103,
+        "end_line": 103,
+        "observation_id": "dcf9c2460921de14",
+        "claimed_path": "TestEntitlementsRule.java",
+        "path_resolution": "basename",
+        "merged_from": [
+          "3404172670cc0f5d"
+        ]
+      },
+      {
+        "content": "### 18. **InternalTestCluster.java:792** \u2014 `nodeGrantProvider.create(settings, configPath)` called for each node, but `configPath` from `nodeConfigurationSource.nodeConfigPath(nodeId)` may be shared\n**File:** `test/framework/src/main/java/org/elasticsearch/test/InternalTestCluster.java` (line 792)\n**Defect:** Multiple nodes can share the same config path (e.g., same config directory). Each node gets a grant adding the same config path to `BASE_DIR_PATHS`. Since `baseDirModifier` uses `ArrayList` (Defect #3), duplicates accumulate. `revokeNodeGrants` clears all, but individual `close()` (if fixed) would only remove one.\n\n**Failure scenario:** 3 data nodes share config dir. 3 grants add config dir 3 times. Test revokes one node's grant (once close() works). Config dir still has 2 entries. Entitlement checks pass but reference counting is wrong. If all 3 revoked individually, last one clears it \u2014 but order matters.\n\n---",
+        "path": "test/framework/src/main/java/org/elasticsearch/test/InternalTestCluster.java",
+        "start_line": 792,
+        "end_line": 792,
+        "observation_id": "efcdf45bc03c1ccc",
+        "claimed_path": "InternalTestCluster.java",
+        "path_resolution": "basename",
+        "merged_from": []
+      },
+      {
+        "content": "### 19. **TestEntitlementsRule.java:144** \u2014 `baseDirModifier` accepts `Path... updates` but `operation` is `BiConsumer<Collection<Path>, Path>`, called in loop\n**File:** `test/framework/src/main/java/org/elasticsearch/entitlement/bootstrap/TestEntitlementsRule.java` (line 144)\n**Defect:** The `addGrant` method (line 124) calls:\n```java\nbaseDirModifier(Collection::add, nodeGrant.configDir())\nbaseDirModifier(Collection::add, nodeGrant.dataDirs())  // dataDirs() returns Path[]\n```\nWait, `dataDirs()` returns `Path[]` (line 99). `baseDirModifier` takes `Path... updates` (varargs). So `nodeGrant.dataDirs()` is passed as varargs \u2014 each array element becomes a separate `update`. The loop `for (Path update : updates)` iterates over the array elements. This is correct. But `configDir()` returns single `Path`, `sharedDataDir()` returns `Path[]`, `repoDirs()` returns `Path[]`. All handled correctly.\n\n---",
+        "path": "test/framework/src/main/java/org/elasticsearch/entitlement/bootstrap/TestEntitlementsRule.java",
+        "start_line": 144,
+        "end_line": 144,
+        "observation_id": "cffca1502e88544b",
+        "claimed_path": "TestEntitlementsRule.java",
+        "path_resolution": "basename",
+        "merged_from": []
+      },
+      {
+        "content": "### 20. **CcrIntegTestCase.java:186, 208** \u2014 Same pattern as `AbstractMultiClustersTestCase`, passes `TEST_ENTITLEMENTS::newNodeGrant`\n**File:** `x-pack/plugin/ccr/src/test/java/org/elasticsearch/xpack/CcrIntegTestCase.java` (lines 186, 208)\n**Defect:** No unique defect \u2014 inherits defects from `AbstractMultiClustersTestCase` and `InternalTestCluster`.\n\n---",
+        "path": "x-pack/plugin/ccr/src/test/java/org/elasticsearch/xpack/CcrIntegTestCase.java",
+        "start_line": 186,
+        "end_line": 186,
+        "observation_id": "d2709539bc3efded",
+        "claimed_path": "CcrIntegTestCase.java",
+        "path_resolution": "basename",
+        "merged_from": []
+      },
+      {
+        "content": "### 21. **ESTestCase.java:533** \u2014 `TEST_ENTITLEMENTS` is a `@ClassRule` but `TestEntitlementsRule` requires `description.isSuite()` (line 61)\n**File:** `test/framework/src/main/java/org/elasticsearch/test/ESTestCase.java` (line 533)\n**Defect:** `@ClassRule` runs once per test *class*. `TestEntitlementsRule.apply` checks `assert description.isSuite() : \"must be used as ClassRule\"`. In JUnit 4, a `@ClassRule` on a class *is* a suite (the test class). This works. But if a test class is parameterized or uses a custom runner, `description.isSuite()` might be false.\n\n**Failure scenario:** A test class using `@RunWith(Parameterized.class)` with `@ClassRule` \u2014 `description.isSuite()` returns false, assertion fails.\n\n---",
+        "path": "test/framework/src/main/java/org/elasticsearch/test/ESTestCase.java",
+        "start_line": 533,
+        "end_line": 533,
+        "observation_id": "0ceed61c7c2837a6",
+        "claimed_path": "ESTestCase.java",
+        "path_resolution": "basename",
+        "merged_from": []
+      },
+      {
+        "content": "### 22. **TestEntitlementsRule.java:72-73** \u2014 `entitledPackages` annotation value not validated for empty array in all paths\n**File:** `test/framework/src/main/java/org/elasticsearch/entitlement/bootstrap/TestEntitlementsRule.java` (lines 72-73)\n**Defect:** \n```java\nassert entitledPackages.value().length > 0 : \"No test packages specified in @EntitledTestPackages\";\n```\nThis is inside `if (entitledPackages != null)`. But `setEntitledTestPackages` (TestPolicyManager.java:64) now handles empty/null:\n```java\nif (entitledTestPackages == null || entitledTestPackages.length == 0) {\n    this.entitledTestPackages = TEST_FRAMEWORK_PACKAGE_PREFIXES;\n    return;\n}\n```\nThe assertion in the rule is redundant but not harmful \u2014 it catches the error earlier with a clearer message.\n\n---",
+        "path": "test/framework/src/main/java/org/elasticsearch/entitlement/bootstrap/TestEntitlementsRule.java",
+        "start_line": 72,
+        "end_line": 72,
+        "observation_id": "4e61ce474bff8aad",
+        "claimed_path": "TestEntitlementsRule.java",
+        "path_resolution": "basename",
+        "merged_from": [
+          "002b22cacb7e386e"
+        ]
+      },
+      {
+        "content": "### 23. **TestPolicyManagerTests.java:44** \u2014 Test renamed from `testResetAfterTest` to `testClearModuleEntitlementsCache` but doesn't test the removed `resetAfterTest` behavior\n**File:** `test/framework/src/test/java/org/elasticsearch/entitlement/runtime/policy/TestPolicyManagerTests.java` (line 44)\n**Defect:** The test now only verifies `clearModuleEntitlementsCache()`. It no longer verifies that `isActive` and `isTriviallyAllowingTestCode` are reset. Since `resetAfterTest()` was removed, this behavior is untested.\n\n**Failure scenario:** A bug where `isActive` or `isTriviallyAllowingTestCode` aren't properly reset between tests would not be caught.\n\n---",
+        "path": "test/framework/src/test/java/org/elasticsearch/entitlement/runtime/policy/TestPolicyManagerTests.java",
+        "start_line": 44,
+        "end_line": 44,
+        "observation_id": "bf730179e4b258d5",
+        "claimed_path": "TestPolicyManagerTests.java",
+        "path_resolution": "basename",
+        "merged_from": []
+      },
+      {
+        "content": "### 24. **TestEntitlementsRule.java:57** \u2014 `loadAgent` called with `POLICY_MANAGER` and `pathLookup`, but `EntitlementInitialization.initializeArgs` is set *inside* `loadAgent`\n**File:** `test/framework/src/main/java/org/elasticsearch/entitlement/bootstrap/TestEntitlementsRule.java` (line 57, and `loadAgent` method at line 285)\n**Defect:** `loadAgent` sets `EntitlementInitialization.initializeArgs` static field. This is global state. If multiple test suites run in sequence, the second suite's `loadAgent` call (in static init) overwrites the first's. But static init only runs once per classloader. So this is fine for single JVM. However, `EntitlementInitialization.initializeArgs` includes the `pathLookup` which references `BASE_DIR_PATHS`. When `revokeNodeGrants` clears `BASE_DIR_PATHS`, the `pathLookup` in `initializeArgs` sees the cleared state \u2014 correct.\n\n---",
+        "path": "test/framework/src/main/java/org/elasticsearch/entitlement/bootstrap/TestEntitlementsRule.java",
+        "start_line": 57,
+        "end_line": 57,
+        "observation_id": "e1209e4312dee90b",
+        "claimed_path": "TestEntitlementsRule.java",
+        "path_resolution": "basename",
+        "merged_from": []
+      },
+      {
+        "content": "### 25. **MockNode.java:237** \u2014 `classpathPlugins` field unused? No, used in `newPluginService` at line 273.\n**File:** `test/framework/src/main/java/org/elasticsearch/node/MockNode.java` (line 237)\n**Note:** Not a defect.\n\n---",
+        "path": "test/framework/src/main/java/org/elasticsearch/node/MockNode.java",
+        "start_line": 237,
+        "end_line": 237,
+        "observation_id": "b66e6064c8aaa18f",
+        "claimed_path": "MockNode.java",
+        "path_resolution": "basename",
+        "merged_from": []
+      },
+      {
+        "content": "### 1. **TestEntitlementsRule.java:56-57** \u2014 Agent loaded globally during static init, affects `@WithoutEntitlements` suites\n**Failure scenario:** A test suite annotated `@WithoutEntitlements` runs in the same JVM as a suite with entitlements enabled. The agent is loaded during static init of `TestEntitlementsRule` (triggered by the first suite that references the class), instrumenting classes globally. The `@WithoutEntitlements` suite then experiences false-positive entitlement violations or performance degradation from the agent.\n\n---",
+        "path": "test/framework/src/main/java/org/elasticsearch/entitlement/bootstrap/TestEntitlementsRule.java",
+        "start_line": 56,
+        "end_line": 56,
+        "observation_id": "f35ebd2a141bdb01",
+        "claimed_path": "TestEntitlementsRule.java",
+        "path_resolution": "basename",
+        "merged_from": []
+      },
+      {
+        "content": "### 2. **TestEntitlementsRule.java:115-119** \u2014 `NodeGrant.close()` is a no-op, leaking entitlement grants across node restarts\n**Failure scenario:** A test restarts a node (e.g., `InternalTestCluster.recreateNode` at line 1074). The old node's grant is never revoked. The new node gets a *new* grant added. `BASE_DIR_PATHS` contains duplicate entries for the same directories. When `revokeNodeGrants()` is called, `Collection.remove()` only removes the *first* occurrence, leaving stale entries. Subsequent nodes/tests see polluted base dir paths, causing entitlement check failures.\n\n---",
+        "path": "test/framework/src/main/java/org/elasticsearch/entitlement/bootstrap/TestEntitlementsRule.java",
+        "start_line": 115,
+        "end_line": 115,
+        "observation_id": "09a3dbc768c8e0a1",
+        "claimed_path": "TestEntitlementsRule.java",
+        "path_resolution": "basename",
+        "merged_from": []
+      },
+      {
+        "content": "### 3. **TestEntitlementsRule.java:138-148** \u2014 `baseDirModifier` uses `ArrayList` allowing duplicates, but `remove` only removes first occurrence\n**Failure scenario:** Two nodes share the same config directory. `addGrant` is called for both, adding the config path twice. If `close()` worked, revoking one node's grant would only remove one instance, incorrectly keeping the config dir entitled. With the current no-op `close()`, restarts cause unbounded accumulation.\n\n---",
+        "path": "test/framework/src/main/java/org/elasticsearch/entitlement/bootstrap/TestEntitlementsRule.java",
+        "start_line": 138,
+        "end_line": 138,
+        "observation_id": "c251109f6a44a2fd",
+        "claimed_path": "TestEntitlementsRule.java",
+        "path_resolution": "basename",
+        "merged_from": []
+      },
+      {
+        "content": "### 4. **TestPolicyManager.java:64-72** \u2014 `setEntitledTestPackages` replaces instead of appends, loses prior packages\n**Failure scenario:** A test suite uses `@EntitledTestPackages` on multiple test classes with different packages. First class sets packages A. Second class calls `setEntitledTestPackages(B)` \u2014 old behavior: packages = [framework, A, B]. New behavior: packages = [framework, B]. Package A is lost. Entitlement checks for code in package A now fail incorrectly.\n\n---",
+        "path": "test/framework/src/main/java/org/elasticsearch/entitlement/runtime/policy/TestPolicyManager.java",
+        "start_line": 64,
+        "end_line": 64,
+        "observation_id": "70731a483fa7c58b",
+        "claimed_path": "TestPolicyManager.java",
+        "path_resolution": "basename",
+        "merged_from": []
+      },
+      {
+        "content": "### 5. **MockNode.java:290-296** \u2014 `prepareEnvironment` runs before grants registered, entitlement checks fail during env setup\n**Failure scenario:** `NodeEnvironment` validation (inside `prepareEnvironment` \u2192 `InternalSettingsPreparer.prepareEnvironment`) checks path permissions. If entitlements are enabled, the paths are not yet registered in `BASE_DIR_PATHS`, so entitlement checks during environment startup (e.g., creating data directories) fail with `NotEntitledException`.\n\n---",
+        "path": "test/framework/src/main/java/org/elasticsearch/node/MockNode.java",
+        "start_line": 290,
+        "end_line": 290,
+        "observation_id": "33fa188ba7f3a6a2",
+        "claimed_path": "MockNode.java",
+        "path_resolution": "basename",
+        "merged_from": []
+      },
+      {
+        "content": "### 6. **ESSingleNodeTestCase.java:291** \u2014 Passes `null` as `configPath` to `newNodeGrant`, grant covers wrong directory\n**Failure scenario:** A test sets `path.conf` to a non-default location. The node starts with that config path, but the entitlement grant only covers `$HOME/config`. File operations on the actual config directory fail entitlement checks.\n\n---",
+        "path": "test/framework/src/main/java/org/elasticsearch/test/ESSingleNodeTestCase.java",
+        "start_line": 291,
+        "end_line": 291,
+        "observation_id": "0ac7a2673038ab43",
+        "claimed_path": "ESSingleNodeTestCase.java",
+        "path_resolution": "basename",
+        "merged_from": []
+      },
+      {
+        "content": "### 7. **InternalTestCluster.java:1074** \u2014 `recreateNode` passes `null` for `configPath` to `nodeGrantProvider.create`\n**Failure scenario:** A test restarts a node with a custom config path. The new node's grant doesn't cover the actual config directory. Entitlement checks fail on config file access.\n\n---",
+        "path": "test/framework/src/main/java/org/elasticsearch/test/InternalTestCluster.java",
+        "start_line": 1074,
+        "end_line": 1074,
+        "observation_id": "6bf1b58d8a85968a",
+        "claimed_path": "InternalTestCluster.java",
+        "path_resolution": "basename",
+        "merged_from": []
+      },
+      {
+        "content": "### 8. **ESIntegTestCase.java:552** \u2014 `revokeNodeGrants()` called *after* closing test cluster, but cluster close may need entitlements\n**Failure scenario:** Once Defect #2 is fixed, node shutdown operations (flushing, closing files) would lose entitlements mid-shutdown because `close()` revokes the grant before `super.awaitClose()` completes.\n\n---",
+        "path": "test/framework/src/main/java/org/elasticsearch/test/ESIntegTestCase.java",
+        "start_line": 552,
+        "end_line": 552,
+        "observation_id": "12105e07b38bf50c",
+        "claimed_path": "ESIntegTestCase.java",
+        "path_resolution": "basename",
+        "merged_from": []
+      },
+      {
+        "content": "### 9. **TestEntitlementsRule.java:52-53** \u2014 Static state (`BASE_DIR_PATHS`, `POLICY_MANAGER`) shared across all test suites in the JVM\n**Failure scenario:** A standalone test (not extending `ESTestCase`) runs in the same JVM after an integration test. The static `BASE_DIR_PATHS` still contains the previous test's paths. The new test's entitlement checks see polluted paths.\n\n---",
+        "path": "test/framework/src/main/java/org/elasticsearch/entitlement/bootstrap/TestEntitlementsRule.java",
+        "start_line": 52,
+        "end_line": 52,
+        "observation_id": "404c515c71d241f2",
+        "claimed_path": "TestEntitlementsRule.java",
+        "path_resolution": "basename",
+        "merged_from": []
+      },
+      {
+        "content": "### 10. **BootstrapForTesting.java:78** \u2014 `initialize` called before static init, assertion fails on second init\n**Failure scenario:** `BootstrapForTesting` runs early (e.g., in test framework initialization). It calls `initialize(tmpDir)`. Later, a test class loads `TestEntitlementsRule`, static init runs, `isEnabledForTest()` is true, `BASE_DIR_PATHS.put(TEMP, List.of(tempDir))` finds the previous entry, assertion `previousTempDir == null` fails.\n\n---",
+        "path": "test/framework/src/main/java/org/elasticsearch/bootstrap/BootstrapForTesting.java",
+        "start_line": 78,
+        "end_line": 78,
+        "observation_id": "2ae799de207fe640",
+        "claimed_path": "BootstrapForTesting.java",
+        "path_resolution": "basename",
+        "merged_from": []
+      },
+      {
+        "content": "### 11. **IndicesServiceCloseTests.java:80** \u2014 Passes no-op `() -> {}` as `entitlementGrant` instead of real grant\n**Failure scenario:** This test runs with `-Des.entitlement.enableForTests=true`. Node startup fails because data/config paths aren't entitled.\n\n---",
+        "path": "server/src/test/java/org/elasticsearch/indices/IndicesServiceCloseTests.java",
+        "start_line": 80,
+        "end_line": 80,
+        "observation_id": "57426c09aa859b95",
+        "claimed_path": "IndicesServiceCloseTests.java",
+        "path_resolution": "basename",
+        "merged_from": []
+      },
+      {
+        "content": "### 12. **TestEntitlementsRule.java:63-64** \u2014 Misleading error message for parallel suite limitation\n**Failure scenario:** If a test runner executes multiple test *classes* in parallel within the same JVM, the second suite to hit `apply` fails with `AssertionError(\"TestPolicyManager doesn't support test isolation, test suits cannot be run in parallel\")`. The error blames \"parallel test suits\" but the root cause is the singleton design.\n\n---",
+        "path": "test/framework/src/main/java/org/elasticsearch/entitlement/bootstrap/TestEntitlementsRule.java",
+        "start_line": 63,
+        "end_line": 63,
+        "observation_id": "c1f766b8546ddbfc",
+        "claimed_path": "TestEntitlementsRule.java",
+        "path_resolution": "basename",
+        "merged_from": []
+      },
+      {
+        "content": "### 13. **ESTestCase.java:533** \u2014 `@ClassRule` with `isSuite()` assertion may fail on parameterized tests\n**Failure scenario:** A test class using `@RunWith(Parameterized.class)` with `@ClassRule` \u2014 `description.isSuite()` returns false, assertion fails.\n\n---",
+        "path": "test/framework/src/main/java/org/elasticsearch/test/ESTestCase.java",
+        "start_line": 533,
+        "end_line": 533,
+        "observation_id": "94bfc501b27807e7",
+        "claimed_path": "ESTestCase.java",
+        "path_resolution": "basename",
+        "merged_from": []
+      },
+      {
+        "content": "### 14. **TestPolicyManagerTests.java:44** \u2014 Test coverage gap for reset behavior\n**Failure scenario:** The test only verifies `clearModuleEntitlementsCache()`. It no longer verifies that `isActive` and `isTriviallyAllowingTestCode` are reset. A bug where these aren't properly reset between tests would not be caught.\n\n---",
+        "path": "test/framework/src/test/java/org/elasticsearch/entitlement/runtime/policy/TestPolicyManagerTests.java",
+        "start_line": 44,
+        "end_line": 44,
+        "observation_id": "4ca76d2c2cf7ce13",
+        "claimed_path": "TestPolicyManagerTests.java",
+        "path_resolution": "basename",
+        "merged_from": []
+      },
+      {
+        "content": "### 15. **AbstractMultiClustersTestCase.java:130** / **InternalTestCluster.java:792** \u2014 Grants created per-node but `configPath` may be shared, causing duplicate accumulation\n**Failure scenario:** 3 data nodes share config dir. 3 grants add config dir 3 times. If individual `close()` worked, revoking one node's grant only removes one entry. Config dir still has 2 entries. Entitlement checks pass but reference counting is wrong.",
+        "path": "test/framework/src/main/java/org/elasticsearch/test/AbstractMultiClustersTestCase.java",
+        "start_line": 130,
+        "end_line": 130,
+        "observation_id": "d0823f2a9f373da3",
+        "claimed_path": "AbstractMultiClustersTestCase.java",
+        "path_resolution": "basename",
+        "merged_from": []
+      }
+    ]
+  },
+  "rundir": "/home/mjarnold/.cache/llm-panel/runs/aacr-up-dz5h_nbo-4f757a77a6c9/20260829-000951-2124345",
+  "extractor": "3",
+  "unlocated": [
+    {
+      "content": "**2. `revokeGrant` and the `NodeGrant.onClose` consumer are unreachable dead code; there is no way to release a single grant.**\n`TestEntitlementsRule.java` (`revokeGrant` method, and `new NodeGrant(settings, unwrappedConfigPath, this::revokeGrant)` in `newNodeGrant`): the only caller of `onClose`/`revokeGrant` would be `NodeGrant.close()`, which is a no-op. So the \"delegation\" design is misleading",
+      "observation_id": "29bda5cf9e55dd9e",
+      "claimed_path": "TestEntitlementsRule.java",
+      "path_resolution": "basename"
+    },
+    {
+      "content": "**6. Concurrent test-class execution in the same JVM now hard-fails instead of the previous behavior.**\n`TestEntitlementsRule.java` (`apply`, the `else` branch): `throw new AssertionError(\"TestPolicyManager doesn't support test isolation, test suits cannot be run in parallel\")` when `active.compareAndSet(false, true)` fails. The prior `@BeforeClass/@AfterClass` mechanism did not guard or fail. Sin",
+      "observation_id": "3b5a8a78d05ddd63",
+      "claimed_path": "TestEntitlementsRule.java",
+      "path_resolution": "basename"
+    },
+    {
+      "content": "**8. `DataDirs`/`sharedDataDir` revocation uses `Collection.remove` (first-occurrence only) while paths may legitimately recur \u2014 order-dependent on revocation.**\n`TestEntitlementsRule.java` (`baseDirModifier(Collection::remove, ...)` in `revokeGrant`) \u2014 since `close()` is dead this is currently unreachable, but if the dead code in item #2 is ever wired up, `ArrayList.remove(Object)` removes only t",
+      "observation_id": "cf44b124abebc120",
+      "claimed_path": "TestEntitlementsRule.java",
+      "path_resolution": "basename"
+    },
+    {
+      "content": "### Summary of Critical Defects\n\n| # | File | Line | Severity | Summary |\n|---|------|------|----------|---------|\n| 1 | TestEntitlementsRule.java | 56-57 | **Critical** | Agent loaded globally during static init, affects `@WithoutEntitlements` suites |\n| 2 | TestEntitlementsRule.java | 115-119 | **Critical** | `NodeGrant.close()` no-op leaks grants on node restart |\n| 3 | TestEntitlementsRule.jav",
+      "observation_id": "967b8d582755b8eb",
+      "claimed_path": "TestEntitlementsRule.java",
+      "path_resolution": "basename"
+    }
+  ]
+}

@@ -1,0 +1,313 @@
+{
+  "review": {
+    "comments": [
+      {
+        "content": "1. **[P1] `src/joystick/hidapi/SDL_hidapi_8bitdo.c:116` \u2014 Feature-report request can disable Pro 2 input on Linux.** Connect a Pro 2 (`2dc8:6003` or `2dc8:6006`) in DirectInput mode and initialize SDL on an affected Linux HID stack \u2192 `HIDIOCGFEATURE` for report `0x06` succeeds or blocks at this call, after which the controller emits no input until it is power-cycled. This exact failure is documented in [SDL issue #14549](https://github.com/libsdl-org/sdl/issues/14549).",
+        "path": "src/joystick/hidapi/SDL_hidapi_8bitdo.c",
+        "start_line": 116,
+        "end_line": 116,
+        "observation_id": "fa5a13a6f32d45db",
+        "claimed_path": "src/joystick/hidapi/SDL_hidapi_8bitdo.c",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "2. **[P1] `src/joystick/hidapi/SDL_hidapi_8bitdo.c:259` \u2014 Legacy nine-byte reports are treated as enhanced reports.** Connect an SN30/SF30 running firmware that emits the old nine-byte USB layout \u2192 byte 0 contains button bits rather than a report ID. A neutral packet beginning with `0x00` is discarded, while a packet beginning with `0x01` after pressing South passes the filter and is parsed using entirely wrong offsets, including unread bytes 9 and 10. Inputs are therefore absent or turn into phantom buttons. SDL\u2019s immediate [follow-up correction](https://discourse.libsdl.org/t/sdl-cleanup-8bitdo-hidapi-support-for-sf30-pro-and-sn30-pro/59590) added a separate size-nine parser.",
+        "path": "src/joystick/hidapi/SDL_hidapi_8bitdo.c",
+        "start_line": 259,
+        "end_line": 259,
+        "observation_id": "9ba543138fd3bbaf",
+        "claimed_path": "src/joystick/hidapi/SDL_hidapi_8bitdo.c",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "3. **[P1] `src/joystick/SDL_joystick.c:3179` \u2014 The generated gamepad mapping expects D-pad buttons although this driver emits a hat.** Open any newly listed controller through `SDL_OpenGamepad()` without a user mapping and press D-pad Up \u2192 the HID driver updates hat 0, but the inherited generic mapping binds D-pad directions to buttons 11\u201314, so no `SDL_GAMEPAD_BUTTON_DPAD_UP` event is produced. The subsequent SDL correction added `dpup:h0.1`, `dpdown:h0.4`, etc. specifically for these IDs.",
+        "path": "src/joystick/SDL_joystick.c",
+        "start_line": 3179,
+        "end_line": 3179,
+        "observation_id": "cdf355064a2d0e34",
+        "claimed_path": "src/joystick/SDL_joystick.c",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "4. **[P1] `src/joystick/SDL_joystick.c:3179` \u2014 macOS can enumerate the same controller through both HIDAPI and GameController.framework.** Pair an SN30 Pro or Pro 2 on macOS \u2192 the expanded predicate makes HIDAPI claim it, but the platform duplicate-suppression list is not updated, so SDL can publish two joysticks for one physical controller and deliver duplicate input. SDL added the missing suppression in a [follow-up commit](https://discourse.libsdl.org/t/sdl-prefer-the-hidapi-driver-for-8bitdo-controllers-on-macos/59605).",
+        "path": "src/joystick/SDL_joystick.c",
+        "start_line": 3179,
+        "end_line": 3179,
+        "observation_id": "e0bf5457396abe5d",
+        "claimed_path": "src/joystick/SDL_joystick.c",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "5. **[P2] `src/joystick/usb_ids.h:65` \u2014 Bluetooth SF30 Pro is omitted.** Pair an SF30 Pro in B+Start Bluetooth mode, where it enumerates as `2dc8:6100` \u2192 it does not match any constant or the support predicate, so this HIDAPI driver never provides its rumble or motion support. Only the USB PID `6000` is included; SDL\u2019s correction added `6100`.",
+        "path": "src/joystick/usb_ids.h",
+        "start_line": 65,
+        "end_line": 65,
+        "observation_id": "a7ee9141f8043b6c",
+        "claimed_path": "src/joystick/usb_ids.h",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "6. **[P2] `src/joystick/hidapi/SDL_hidapi_8bitdo.c:149` \u2014 Feature negotiation is attempted only once.** Hot-plug a controller whose first feature-report request occurs before it is ready, returning an error, while a request 10 ms later would succeed \u2192 the context permanently leaves rumble, sensors, and battery disabled until reconnection. SDL later changed this to five attempts in [\u201cEnsure that report 06 command reads normally\u201d](https://discourse.libsdl.org/t/sdl-ensure-that-report-06-command-reads-normally/59878).",
+        "path": "src/joystick/hidapi/SDL_hidapi_8bitdo.c",
+        "start_line": 149,
+        "end_line": 149,
+        "observation_id": "b98938990aab0d6f",
+        "claimed_path": "src/joystick/hidapi/SDL_hidapi_8bitdo.c",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "7. **[P2] `src/joystick/SDL_joystick.c:3179` \u2014 Face-button positions use the wrong generated mapping.** Set `SDL_GAMECONTROLLER_USE_BUTTON_LABELS=0`, open an SN30/SF30/Pro 2 through HIDAPI, and press the bottom physical B button \u2192 the generic identity mapping reports East rather than South because these controllers require `a:b1,b:b0,x:b3,y:b2`.",
+        "path": "src/joystick/SDL_joystick.c",
+        "start_line": 3179,
+        "end_line": 3179,
+        "observation_id": "b4d3c5d6e4ca5c52",
+        "claimed_path": "src/joystick/SDL_joystick.c",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "8. **[P2] `src/joystick/SDL_joystick.c:3181` \u2014 Pro 2 rear paddles are exposed under the wrong paddle numbers.** Press either Pro 2 rear paddle \u2192 the inherited Ultimate 2 mapping binds buttons 14 and 13 to Paddle 3 and Paddle 4, so applications listening for Paddle 1 or Paddle 2 receive nothing. It also advertises nonexistent Paddle 1/2 bindings at buttons 12/11.",
+        "path": "src/joystick/SDL_joystick.c",
+        "start_line": 3181,
+        "end_line": 3181,
+        "observation_id": "1788bdbb6d679e14",
+        "claimed_path": "src/joystick/SDL_joystick.c",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "9. **[P2] `src/joystick/SDL_joystick.c:3179` \u2014 SN30/SF30 advertise four nonexistent extra buttons.** Open either controller through the raw joystick API \u2192 the shared driver path sets the existing 15-button Ultimate 2 count instead of 11, and the shared mapping exposes buttons 11\u201314 as four paddles. `SDL_GetNumJoystickButtons()` and `SDL_GamepadHasButton()` consequently claim controls that can never generate input.",
+        "path": "src/joystick/SDL_joystick.c",
+        "start_line": 3179,
+        "end_line": 3179,
+        "observation_id": "4764cdc0345cf81c",
+        "claimed_path": "src/joystick/SDL_joystick.c",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "10. **[P2] `src/joystick/SDL_joystick.c:3181` \u2014 SF30 Pro falsely exposes a Guide-button binding.** Open an SF30 Pro as a gamepad \u2192 the generic mapping includes `guide:b5`, so `SDL_GamepadHasButton(...GUIDE)` returns true even though this model has no Guide button; an application that prompts for that advertised control cannot proceed.",
+        "path": "src/joystick/SDL_joystick.c",
+        "start_line": 3181,
+        "end_line": 3181,
+        "observation_id": "6bb3b98a7fea48c7",
+        "claimed_path": "src/joystick/SDL_joystick.c",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "11. **[P2] `src/joystick/hidapi/SDL_hidapi_8bitdo.c:151` \u2014 Sensor rates and generated timestamps are wrong for every newly enabled model.** Connect a Pro 2 over USB without device timestamps, where reports arrive at 100 Hz \u2192 SDL registers the sensor at the existing 125 Hz rate and advances timestamps by 8 ms per packet, so after 100 packets the reported sensor clock advances only 800 ms instead of one second. SN30/SF30 and Bluetooth modes have other non-125-Hz rates as documented by SDL\u2019s [polling-rate correction](https://discourse.libsdl.org/t/sdl-8-bitdo-polling-rate-corrections-13221/60066).",
+        "path": "src/joystick/hidapi/SDL_hidapi_8bitdo.c",
+        "start_line": 151,
+        "end_line": 151,
+        "observation_id": "f485141116809528",
+        "claimed_path": "src/joystick/hidapi/SDL_hidapi_8bitdo.c",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "12. **[P3] `src/joystick/hidapi/SDL_hidapi_8bitdo.c:151` \u2014 Gyroscope magnitudes are scaled 2.4% too high.** Feed a maximum positive gyro sample (`32767`) from any newly enabled controller \u2192 the existing scale reports 2048\u00b0/s rather than the hardware\u2019s 2000\u00b0/s range, corrupting motion integration. SDL later corrected the range to 2000\u00b0/s in [#13147](https://discourse.libsdl.org/t/sdl-gyro-degrees-per-second-is-2000-across-all-8bitdo-controllers-13147/59919).## Defects",
+        "path": "src/joystick/hidapi/SDL_hidapi_8bitdo.c",
+        "start_line": 151,
+        "end_line": 151,
+        "observation_id": "3e23d278e37b7ce8",
+        "claimed_path": "src/joystick/hidapi/SDL_hidapi_8bitdo.c",
+        "path_resolution": "exact",
+        "merged_from": [
+          "94b7bb1b4d5dad31"
+        ]
+      },
+      {
+        "content": "**1. `src/joystick/hidapi/SDL_hidapi_8bitdo.c:151` \u2014 one nonzero feature-report read flips on sensors, rumble AND battery for the whole new device family.**\n`if (size > 0)` (line 151) promotes \"the control transfer returned *something*\" to \"this device has gyro, rumble, and battery\". `SDL_hid_get_feature_report` returns the byte count on any successful read; the code never checks the report ID echoed back, the size, or the content. Concrete failure: a 8BitDo Pro 2 connected in D-input mode (the mode the new `usb_ids.h` comment at line 66 explicitly says PID 0x6003 is) responds to 0x06 with a status/zero-padded packet \u2192 `sensors_supported`/`powerstate_supported` become true \u2192 apps now see `SDL_GAMEPAD_SENSOR_*` and a battery level while the state packets the driver actually parses contain no IMU or battery bytes \u2014 `SDL_GetGamepadSensorData` returns never-updated/zero data and power level reports garbage for the life of the connection. Conversely a transient failure on a capable device (busy bus, bad mode) leaves a functioning controller stripped of rumble with only a debug log. A single probe read cannot validate three independent capabilities.",
+        "path": "src/joystick/hidapi/SDL_hidapi_8bitdo.c",
+        "start_line": 151,
+        "end_line": 151,
+        "observation_id": "2f07b27acbdf7794",
+        "claimed_path": "src/joystick/hidapi/SDL_hidapi_8bitdo.c",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "**2. `src/joystick/hidapi/SDL_hidapi_8bitdo.c:259` \u2014 report type 0x04 is accepted as a state packet, and nothing in this diff shows the parser understands its layout.**\nThe hunk changes only the guard; the parse logic below it is not in the diff, so the claim \"0x04's byte layout matches what the function reads (axis offsets, button masks, hat nibbles)\" is unverified. If 0x04 packets from the newly-added SN30 Pro / SF30 Pro use a different layout than 0x01/0x03 (e.g., 8-bit axes at different offsets, buttons in different bytes), then every 0x04 packet now passes the guard and is parsed against the wrong offsets \u2192 sticks read garbage (or are clamped at extreme values), buttons map to the wrong faces, hat reads noise. This mis-parse silently feeds invalid data straight into the SDL event queue \u2014 no way for an app to detect it. Pre-change behaviour was the correct one for unknown reports (drop). Note what's missing to adjudicate: the body of `HIDAPI_Driver8BitDo_HandleStatePacket` and a sample 0x04 frame from one of the new devices.",
+        "path": "src/joystick/hidapi/SDL_hidapi_8bitdo.c",
+        "start_line": 259,
+        "end_line": 259,
+        "observation_id": "f873649d222db9a4",
+        "claimed_path": "src/joystick/hidapi/SDL_hidapi_8bitdo.c",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "**3. `src/joystick/hidapi/SDL_hidapi_8bitdo.c:150` \u2014 the feature-report probe is applied to the Bluetooth PIDs this same PR adds (`SN30_Pro_BT` 0x6101, `Pro_2_BT` 0x6006).**\n`ReadFeatureReport(device->dev, 0x06, ...)` over a Bluetooth HID link: hidapi documents feature-report reads as unsupported on Windows Bluetooth HID transports and unreliable elsewhere. Concrete failure: user connects SN30 Pro over Bluetooth \u2014 the exact scenario the 0x6101 entry exists for \u2014 the 0x06 read fails or hangs; if it fails, the controller connects with `rumble_supported`/`powerstate_supported`/`sensors_supported` permanently false (the BT variants can never get the features the USB variants get, so the two new BT IDs are dead entries); if it blocks, controller init stalls until the transport times out. The probe is a USB-mode test being used to gate features for BT-mode devices \u2014 the PID branch doesn't distinguish transports.",
+        "path": "src/joystick/hidapi/SDL_hidapi_8bitdo.c",
+        "start_line": 150,
+        "end_line": 150,
+        "observation_id": "1b8a7fe6dc7e9941",
+        "claimed_path": "src/joystick/hidapi/SDL_hidapi_8bitdo.c",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "**4. `src/joystick/SDL_joystick.c:3180-3182` + `src/joystick/hidapi/SDL_hidapi_8bitdo.c:145-148` \u2014 mode-restricted PIDs are treated as mode-independent claims on a single protocol driver.**\nThe header comments in this very diff encode the restriction: 0x6001 = \"B+START\" (X-input-style HID) and 0x6003/0x6006 = \"mode switch to D\" (DirectInput-style HID). `HIDAPI_Driver8BitDo_IsSupportedDevice` now returns true for all of them with no transport/mode discrimination, so a D-input-mode Pro 2's packets \u2014 which are not 0x01/0x03/0x04 X-input-style reports \u2014 pass line 259's guard on the *other* side and get dropped every time: controller is claimed by this driver, enumerated as a gamepad, and then produces zero input (no axis, no button, no hat ever), where the generic HID path (or the XInput driver, for the X-input-mode PIDs) would have driven it. The mirror-image failure is under-claiming: the same physical controller in any *other* mode (different PID) no longer matches, so support silently appears/disappears depending on what mode the user left the controller in \u2014 behaviour keyed to a mode-dependent PID table with no way to know the mode.",
+        "path": "src/joystick/SDL_joystick.c",
+        "start_line": 3180,
+        "end_line": 3180,
+        "observation_id": "32aa8399bef714e0",
+        "claimed_path": "src/joystick/SDL_joystick.c",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "**5. `src/joystick/hidapi/SDL_hidapi_8bitdo.c:121` \u2014 `report[0] = report_id` writes unconditionally, with no `length >= 1` / non-NULL precondition in `ReadFeatureReport`.**\nWith `length == 0` the memset at line 120 is a no-op and line 121 writes out of bounds; with `report == NULL` it is UB regardless of length. The current sole call site (line 150) passes `USB_PACKET_LENGTH` bytes of stack array, so it is not triggered today \u2014 this is a latent defect in the helper as written (no guard, and the failure mode if a later caller passes a computed/zero length is a silent heap/stack smash inside a driver). Low probability; listed for completeness.\n\n## What I could not verify (no source present)\n\n- Body of `HIDAPI_Driver8BitDo_HandleStatePacket` (items 2's trigger), definition of `USB_PACKET_LENGTH`, whether `device->dev` is guaranteed non-NULL at InitDevice time, other callers/priority of `SDL_IsJoystick8BitDoController` and driver ordering in `SDL_hidapi.c`, and whether 0x6000/0x6001/0x6003/0x6006/0x6101 collide with other 8BitDo products' PIDs across protocol modes. Items 2 and 4 hinge on those; if you can paste the parser body I can confirm or drop them.",
+        "path": "src/joystick/hidapi/SDL_hidapi_8bitdo.c",
+        "start_line": 121,
+        "end_line": 121,
+        "observation_id": "7cacd07ef8b51644",
+        "claimed_path": "src/joystick/hidapi/SDL_hidapi_8bitdo.c",
+        "path_resolution": "exact",
+        "merged_from": [
+          "8778fc040c2748d7"
+        ]
+      },
+      {
+        "content": "### 1. `src/joystick/hidapi/SDL_hidapi_8bitdo.c:116` \u2014 Buffer overflow in `ReadFeatureReport` when `length == 0`\n\n**Failure scenario:** Caller passes `length = 0`. `SDL_memset(report, 0, 0)` is a no-op, then `report[0] = report_id` writes one byte past the allocated buffer \u2192 heap corruption / ASAN failure.\n\n---",
+        "path": "src/joystick/hidapi/SDL_hidapi_8bitdo.c",
+        "start_line": 116,
+        "end_line": 116,
+        "observation_id": "c237305366d0e1e8",
+        "claimed_path": "src/joystick/hidapi/SDL_hidapi_8bitdo.c",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "### 2. `src/joystick/hidapi/SDL_hidapi_8bitdo.c:117` \u2014 NULL pointer dereference in `ReadFeatureReport` when `dev == NULL`\n\n**Failure scenario:** `device->dev` is NULL (e.g., device not fully opened, or error path). `SDL_hid_get_feature_report(NULL, ...)` dereferences NULL \u2192 immediate crash.\n\n---",
+        "path": "src/joystick/hidapi/SDL_hidapi_8bitdo.c",
+        "start_line": 117,
+        "end_line": 117,
+        "observation_id": "2cfba5cf6bbe495f",
+        "claimed_path": "src/joystick/hidapi/SDL_hidapi_8bitdo.c",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "### 3. `src/joystick/hidapi/SDL_hidapi_8bitdo.c:145` \u2014 NULL pointer dereference passing `device->dev` unchecked to `ReadFeatureReport`\n\n**Failure scenario:** Same as #2. `HIDAPI_Driver8BitDo_InitDevice` calls `ReadFeatureReport(device->dev, ...)` without validating `device->dev != NULL` first.\n\n---",
+        "path": "src/joystick/hidapi/SDL_hidapi_8bitdo.c",
+        "start_line": 145,
+        "end_line": 145,
+        "observation_id": "14b33a9485693809",
+        "claimed_path": "src/joystick/hidapi/SDL_hidapi_8bitdo.c",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "### 4. `src/joystick/hidapi/SDL_hidapi_8bitdo.c:236` \u2014 NULL pointer dereference accessing `data[0]` in `HIDAPI_Driver8BitDo_HandleStatePacket`\n\n**Failure scenario:** HIDAPI layer passes `data = NULL` (e.g., error path, zero-length report). `data[0]` dereferences NULL \u2192 crash.\n\n---",
+        "path": "src/joystick/hidapi/SDL_hidapi_8bitdo.c",
+        "start_line": 236,
+        "end_line": 236,
+        "observation_id": "9f3607cb6e3d488b",
+        "claimed_path": "src/joystick/hidapi/SDL_hidapi_8bitdo.c",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "### 5. `src/joystick/hidapi/SDL_hidapi_8bitdo.c:236` \u2014 Buffer underflow when `data` points to zero-length buffer\n\n**Failure scenario:** Valid `data` pointer but `length == 0` (empty report). `data[0]` reads out of bounds \u2192 ASAN failure / garbage value \u2192 misrouted packet handling.\n\n---",
+        "path": "src/joystick/hidapi/SDL_hidapi_8bitdo.c",
+        "start_line": 236,
+        "end_line": 236,
+        "observation_id": "1c312de9d03d64d1",
+        "claimed_path": "src/joystick/hidapi/SDL_hidapi_8bitdo.c",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "### 6. `src/joystick/hidapi/SDL_hidapi_8bitdo.c:236` \u2014 Assumes report ID `0x04` has identical packet layout as `0x01`/`0x03`\n\n**Failure scenario:** New controller sends report `0x04` with different byte layout (e.g., different axis ordering, extra fields). Parser reads wrong bytes as axes/buttons \u2192 ghost inputs, inverted axes, or stuck buttons. No validation of packet length or format before parsing.\n\n---",
+        "path": "src/joystick/hidapi/SDL_hidapi_8bitdo.c",
+        "start_line": 236,
+        "end_line": 236,
+        "observation_id": "0ae7e9ca2d728e06",
+        "claimed_path": "src/joystick/hidapi/SDL_hidapi_8bitdo.c",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "### 7. `src/joystick/hidapi/SDL_hidapi_8bitdo.c:153` \u2014 Debug log omits `product_id` and actual error code\n\n**Failure scenario:** Feature report 0x06 fails intermittently on specific hardware. Log shows only \"Couldn't read feature report 0x06\" \u2014 impossible to correlate with controller model or distinguish transient vs permanent failure without recompiling.\n\n---",
+        "path": "src/joystick/hidapi/SDL_hidapi_8bitdo.c",
+        "start_line": 153,
+        "end_line": 153,
+        "observation_id": "cfd37444f6237e02",
+        "claimed_path": "src/joystick/hidapi/SDL_hidapi_8bitdo.c",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "### 8. `src/joystick/hidapi/SDL_hidapi_8bitdo.c:145` \u2014 `sizeof(data)` uses `USB_PACKET_LENGTH` which may not match feature report 0x06 size\n\n**Failure scenario:** Device expects feature report 0x06 to be 64 bytes but `USB_PACKET_LENGTH` is 32 (or vice versa). `SDL_hid_get_feature_report` truncates or pads \u2192 parsing reads garbage or misses data \u2192 `sensors_supported` incorrectly set true/false.\n\n---",
+        "path": "src/joystick/hidapi/SDL_hidapi_8bitdo.c",
+        "start_line": 145,
+        "end_line": 145,
+        "observation_id": "44a4683cd3aa8f62",
+        "claimed_path": "src/joystick/hidapi/SDL_hidapi_8bitdo.c",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "### 9. `src/joystick/hidapi/SDL_hidapi_8bitdo.c:142\u2013160` \u2014 `else if` chain duplicates product ID list from `SDL_IsJoystick8BitDoController`; adding a new 8BitDo PID to one but not the other causes silent feature loss\n\n**Failure scenario:** New 8BitDo controller added to `SDL_IsJoystick8BitDoController` (line 3180) but forgotten in this `else if`. Controller enumerates but `sensors_supported = rumble_supported = powerstate_supported = false` \u2192 no motion, no vibration, no battery \u2014 user sees \"broken\" controller with no error.\n\n---",
+        "path": "src/joystick/hidapi/SDL_hidapi_8bitdo.c",
+        "start_line": 142,
+        "end_line": 142,
+        "observation_id": "bfd3fef9559d5ec0",
+        "claimed_path": "src/joystick/hidapi/SDL_hidapi_8bitdo.c",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "### 10. `src/joystick/usb_ids.h:63\u201367` \u2014 Product ID values unverified against hardware specs; `Pro_2_BT = 0x6006` same \"mode switch to D\" comment as `Pro_2 = 0x6003` suggests copy-paste error\n\n**Failure scenario:** If `0x6006` is wrong for Pro 2 BT, that controller won't match `SDL_IsJoystick8BitDoController` \u2192 not recognized at all. Or worse, collides with another vendor's PID \u2192 misidentification.\n\n---",
+        "path": "src/joystick/usb_ids.h",
+        "start_line": 63,
+        "end_line": 63,
+        "observation_id": "74e077c048454904",
+        "claimed_path": "src/joystick/usb_ids.h",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "### 11. `src/joystick/SDL_joystick.c:3180` \u2014 Missing whitespace in `||product_id` (token `||product_id`)\n\n**Failure scenario:** Purely cosmetic, but indicates lack of formatting consistency; if preprocessor or tooling splits tokens oddly, could mask a missing `||` in future edits.\n\n---",
+        "path": "src/joystick/SDL_joystick.c",
+        "start_line": 3180,
+        "end_line": 3180,
+        "observation_id": "1b75421cf679366a",
+        "claimed_path": "src/joystick/SDL_joystick.c",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "### 12. `src/joystick/hidapi/SDL_hidapi_8bitdo.c:112\u2013118` \u2014 `ReadFeatureReport` zeros entire buffer then sets `report[0] = report_id`, but `SDL_hid_get_feature_report` may not echo report ID in response\n\n**Failure scenario:** Device returns feature report *without* leading report ID (common in HID). Caller expects `report[0] == 0x06` but gets payload byte 0 \u2192 parsing logic (not shown) misinterprets first payload byte as report ID \u2192 wrong feature detection.\n\n---",
+        "path": "src/joystick/hidapi/SDL_hidapi_8bitdo.c",
+        "start_line": 112,
+        "end_line": 112,
+        "observation_id": "be00435222ba0e45",
+        "claimed_path": "src/joystick/hidapi/SDL_hidapi_8bitdo.c",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "### 13. `src/joystick/hidapi/SDL_hidapi_8bitdo.c:149\u2013152` \u2014 Feature flags set *only* on successful report 0x06 read; transient I/O error permanently disables sensors/rumble/power for session\n\n**Failure scenario:** Controller momentarily busy (e.g., Bluetooth reconnect). `ReadFeatureReport` returns \u22640 once. Flags stay `false` until re-enumeration. User loses rumble/motion/battery until re-pair. No retry or fallback.",
+        "path": "src/joystick/hidapi/SDL_hidapi_8bitdo.c",
+        "start_line": 149,
+        "end_line": 149,
+        "observation_id": "da0fdd7bd4dfbc08",
+        "claimed_path": "src/joystick/hidapi/SDL_hidapi_8bitdo.c",
+        "path_resolution": "exact",
+        "merged_from": []
+      }
+    ]
+  },
+  "rundir": "/home/mjarnold/.cache/llm-panel/runs/aacr-up-vkn2k7zl-a6d8b17f1708/20260829-010355-2330806",
+  "extractor": "3",
+  "unlocated": []
+}

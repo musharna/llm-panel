@@ -1,0 +1,261 @@
+{
+  "review": {
+    "comments": [
+      {
+        "content": "1. **High \u2014 build defect:** `src/Makefile:527` and `src/Makefile:531` place `libvalkey_rdma.a` after `libvalkey.a`. With one-pass static linking, symbols pulled from the RDMA archive cannot resolve additional symbols from the already-scanned core archive, causing RDMA-enabled CLI and benchmark builds to fail with undefined references. Link `libvalkey_rdma.a` before `libvalkey.a`, or use an explicit linker group.",
+        "path": "src/Makefile",
+        "start_line": 527,
+        "end_line": 527,
+        "observation_id": "bed0d0cb337c86eb",
+        "claimed_path": "src/Makefile",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "2. **High \u2014 runtime defect:** `src/valkey-benchmark.c:395` and `src/valkey-benchmark.c:833` select event handling from global `config.rdma`, even though individual contexts can still be TCP or Unix-socket contexts. For example, cluster clients explicitly connect with `rdma == 0`, but `--cluster --rdma` invokes `writeHandler` immediately instead of waiting for TCP writability; a connection still in progress can fail or stall. Store the actual transport per client or reject unsupported option combinations.",
+        "path": "src/valkey-benchmark.c",
+        "start_line": 395,
+        "end_line": 395,
+        "observation_id": "abba0df67039f32a",
+        "claimed_path": "src/valkey-benchmark.c",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "3. **Medium \u2014 wrong transport:** `src/valkey-benchmark.c:2079` hardcodes the FCALL setup connection to TCP. Running an FCALL benchmark against an RDMA-only endpoint makes setup fail before the benchmark starts, despite `--rdma`. This should pass `config.rdma`.",
+        "path": "src/valkey-benchmark.c",
+        "start_line": 2079,
+        "end_line": 2079,
+        "observation_id": "76f5b29c8ffe07da",
+        "claimed_path": "src/valkey-benchmark.c",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "4. **Medium \u2014 missing validation:** `src/valkey-cli.c:1644` lets a configured Unix socket override `--rdma`, silently creating a Unix connection while reporting that RDMA was requested. Reject `--rdma` together with a socket path, or make the selected transport unambiguous.",
+        "path": "src/valkey-cli.c",
+        "start_line": 1644,
+        "end_line": 1644,
+        "observation_id": "e0dc556b582a12d4",
+        "claimed_path": "src/valkey-cli.c",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "5. **Low \u2014 erroneous dependency:** `src/Makefile:519` links `$(RDMA_CLIENT_LIBS)` into `valkey-tls.so`. When TLS and RDMA are both module builds, the TLS module can acquire unnecessary runtime dependencies on RDMA libraries and fail to load where those libraries are unavailable. The RDMA client libraries belong only on targets that call the RDMA client API.",
+        "path": "src/Makefile",
+        "start_line": 519,
+        "end_line": 519,
+        "observation_id": "a498ead6955b1aaa",
+        "claimed_path": "src/Makefile",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "6. **Low \u2014 duplicated build state:** `src/Makefile:344` adds `$(RDMA_LIBS)` a second time; the preceding line already adds it. Besides producing redundant linker arguments, this makes library ordering harder to reason about around the newly added static archive.",
+        "path": "src/Makefile",
+        "start_line": 344,
+        "end_line": 344,
+        "observation_id": "bda0447be62e3f11",
+        "claimed_path": "src/Makefile",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "**1. src/valkey-benchmark.c:1323 (in parseOptions) \u2014 Preprocessor syntax error**\nExtra `#endif` before `#ifdef USE_RDMA` with no matching `#if`. When `USE_TLS` is defined but `USE_RDMA` is not, this produces an unmatched `#endif` \u2192 compilation failure.\n```c\n             config.sslconfig.ciphersuites = strdup(argv[++i]);\n #endif\n+#endif          // <-- extra, no matching #if\n+#ifdef USE_RDMA\n```",
+        "path": "src/valkey-benchmark.c",
+        "start_line": 1323,
+        "end_line": 1323,
+        "observation_id": "60c58cb0cacccb06",
+        "claimed_path": "src/valkey-benchmark.c",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "**2. src/valkey-cli.c:2830 (in parseOptions) \u2014 Same preprocessor syntax error**\nIdentical extra `#endif` before `#ifdef USE_RDMA` in the TLS option block.",
+        "path": "src/valkey-cli.c",
+        "start_line": 2830,
+        "end_line": 2830,
+        "observation_id": "6a1cff4152dc5f71",
+        "claimed_path": "src/valkey-cli.c",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "**3. src/Makefile:344 \u2014 Duplicate `$(RDMA_LIBS)` in FINAL_LIBS**\nLine 343 adds `$(RDMA_LIBS)`, line 344 adds `../deps/libvalkey/lib/libvalkey_rdma.a $(RDMA_LIBS)` \u2192 `RDMA_LIBS` linked twice. Wasteful and potential symbol conflicts.",
+        "path": "src/Makefile",
+        "start_line": 344,
+        "end_line": 344,
+        "observation_id": "6da93b5c8c7d8165",
+        "claimed_path": "src/Makefile",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "**4. src/Makefile:354,519,525,530 \u2014 `RDMA_CLIENT_LIBS` used unconditionally but only defined when `BUILD_RDMA=module`**\n- Defined only inside `ifeq ($(BUILD_RDMA),module)` (line 354)\n- Used in TLS module (line 519), CLI (line 525), benchmark (line 530) unconditionally\n\u2192 Build fails when `BUILD_RDMA=yes` (static) because variable is undefined.",
+        "path": "src/Makefile",
+        "start_line": 354,
+        "end_line": 354,
+        "observation_id": "f3c77b32c07c48c6",
+        "claimed_path": "src/Makefile",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "**5. src/Makefile:519 \u2014 TLS module incorrectly links `RDMA_CLIENT_LIBS`**\n`valkey-tls.so` has no reason to depend on RDMA libraries. Unnecessary bloat and potential symbol collision.\n\n---\n\n### High Severity",
+        "path": "src/Makefile",
+        "start_line": 519,
+        "end_line": 519,
+        "observation_id": "0a77cf5fe1b11d5b",
+        "claimed_path": "src/Makefile",
+        "path_resolution": "exact",
+        "merged_from": [
+          "33063f2f9aac9622"
+        ]
+      },
+      {
+        "content": "**6. deps/CMakeLists.txt:19 \u2014 `USE_RDMA` never defined as CMake option**\n```cmake\nif (USE_RDMA)  # checks variable, but no option() or set() defines it\n```\nUser cannot enable RDMA via CMake (`-DUSE_RDMA=ON` does nothing). Should be `option(USE_RDMA \"Enable RDMA support\" OFF)`.",
+        "path": "deps/CMakeLists.txt",
+        "start_line": 19,
+        "end_line": 19,
+        "observation_id": "8633f5c3634017c9",
+        "claimed_path": "deps/CMakeLists.txt",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "**7. src/cli_common.h:56 / src/cli_common.c:433 \u2014 Breaking API change to `valkeyConnectWrapper`**\nSignature changes from 4 to 5 parameters. Any external consumer of `cli_common.h` (plugins, tools) breaks at compile time. No backward-compat shim or versioned symbol.",
+        "path": "src/cli_common.h",
+        "start_line": 56,
+        "end_line": 56,
+        "observation_id": "c763201e50166d73",
+        "claimed_path": "src/cli_common.h",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "**8. src/valkey-benchmark.c:1104,1217,1832,2079 \u2014 Cluster operations hardcode `rdma=0`**\n`fetchClusterConfiguration`, `fetchClusterSlotsConfiguration`, cluster node config fetch, and fcall test all pass `0` for rdma even when `config.rdma=1`. User expects `--rdma` to apply everywhere; cluster discovery silently falls back to TCP with no warning.\n\n---\n\n### Medium Severity",
+        "path": "src/valkey-benchmark.c",
+        "start_line": 1104,
+        "end_line": 1104,
+        "observation_id": "0e0a3d754f695d8c",
+        "claimed_path": "src/valkey-benchmark.c",
+        "path_resolution": "exact",
+        "merged_from": [
+          "f6bff5432932af90"
+        ]
+      },
+      {
+        "content": "**9. src/valkey-benchmark.c:1610 \u2014 Format string/argument count mismatch risk**\n`printf(\"%s%s%s%s\", ...)` now has 4 `%s` placeholders. Diff shows only `tls_usage, rdma_usage` added as arguments. Original had 3 `%s` \u2014 need to verify the full call site has 4 arguments matching (the concatenated format string literals may contribute).",
+        "path": "src/valkey-benchmark.c",
+        "start_line": 1610,
+        "end_line": 1610,
+        "observation_id": "9a28ca04eaa57e89",
+        "claimed_path": "src/valkey-benchmark.c",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "**10. cmake/Modules/ValkeySetup.cmake:92,125 \u2014 Link order `valkey::valkey_rdma valkey::valkey`**\nIf `valkey_rdma` depends on `valkey`, the dependent should come *first* (linker resolves left-to-right). Current order may fail on static builds. Verify dependency direction.",
+        "path": "cmake/Modules/ValkeySetup.cmake",
+        "start_line": 92,
+        "end_line": 92,
+        "observation_id": "9a4dd7aedfeb644c",
+        "claimed_path": "cmake/Modules/ValkeySetup.cmake",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "**11. src/valkey-benchmark.c:395-400,829-834 \u2014 Event loop bypass for RDMA**\n```c\nif (config.rdma) {\n    writeHandler(el, c->context->fd, c, 0);  // direct call, no AE_WRITABLE\n}\n```\nComment claims \"RDMA context always writable\". If false, writes block/stall. No error handling if `writeHandler` fails. At minimum needs a comment referencing the libvalkey RDMA design doc guaranteeing this.\n\n---\n\n### Low Severity / Code Quality",
+        "path": "src/valkey-benchmark.c",
+        "start_line": 395,
+        "end_line": 395,
+        "observation_id": "515c26b66e2a35d8",
+        "claimed_path": "src/valkey-benchmark.c",
+        "path_resolution": "exact",
+        "merged_from": [
+          "c00823ed2ea7e6b7"
+        ]
+      },
+      {
+        "content": "**12. src/valkey-benchmark.c:1323 / src/valkey-cli.c:2830 \u2014 Copy-paste artifact**\nThe extra `#endif` appears to be a duplicated line from the TLS `#endif` above. Suggests insufficient review of the diff before submission.",
+        "path": "src/valkey-benchmark.c",
+        "start_line": 1323,
+        "end_line": 1323,
+        "observation_id": "8d2ce9cd374c5cc9",
+        "claimed_path": "src/valkey-benchmark.c",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "**13. src/cli_common.c:437-441 \u2014 `rdma` parameter used without `USE_RDMA` guard at call sites**\nFunction accepts `int rdma` unconditionally, but `VALKEY_OPTIONS_SET_RDMA` is inside `#ifdef USE_RDMA`. Caller passing `rdma=1` without `USE_RDMA` defined \u2192 silently falls back to TCP. Should `#error` or assert.",
+        "path": "src/cli_common.c",
+        "start_line": 437,
+        "end_line": 437,
+        "observation_id": "ed65dcdec2ecaa29",
+        "claimed_path": "src/cli_common.c",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "**14. deps/CMakeLists.txt:39 \u2014 `unset(ENABLE_RDMA CACHE)` but variable is `ENABLE_RDMA` not `USE_RDMA`**\nInconsistent naming: option is `USE_RDMA`, cache var is `ENABLE_RDMA`. TLS uses `ENABLE_TLS` for both. Confusing for users.\n\n---\n\n### Summary\n| Severity | Count |\n|----------|-------|\n| Critical (build break / silent wrong behavior) | 5 |\n| High (API break / feature gap) | 3 |\n| Medium (potential runtime issues) | 2 |\n| Low (maintainability) | 4 |\n\n**Top 3 to fix before merge:**",
+        "path": "deps/CMakeLists.txt",
+        "start_line": 39,
+        "end_line": 39,
+        "observation_id": "5118b9340d9f9169",
+        "claimed_path": "deps/CMakeLists.txt",
+        "path_resolution": "exact",
+        "merged_from": [
+          "4da13f3623f5bed3",
+          "eaddc02553a1c74f"
+        ]
+      }
+    ]
+  },
+  "rundir": "/home/mjarnold/.cache/llm-panel/runs/aacr-up-o8ver0ra-11f80794d04d/20260829-012234-2378077",
+  "extractor": "3",
+  "unlocated": [
+    {
+      "content": "**1. RDMA client libs linked into ALL binaries including when USE_RDMA is `module` but not `yes`:**\n\nIn `src/Makefile`, the `RDMA_CLIENT_LIBS` variable is only set inside `ifeq ($(BUILD_RDMA),module)`. Then it's used in the `valkey-cli`, `valkey-benchmark`, and `tls.so` link lines. So when `BUILD_RDMA=no`, `RDMA_CLIENT_LIBS` is undefined/empty \u2014 the link lines just have empty `$(RDMA_CLIENT_LIBS)`",
+      "observation_id": "689f935acbc3b674",
+      "claimed_path": "src/Makefile",
+      "path_resolution": "exact"
+    },
+    {
+      "content": "**5. `cli_common.c` \u2014 the `rdma` parameter with `#ifdef USE_RDMA` guard but no else:**\n\n```c\nvalkeyContext *valkeyConnectWrapper(const char *ip, int port, const struct timeval tv, int nonblock, int rdma) {\n    valkeyOptions options = {0};\n    if (rdma) {\n#ifdef USE_RDMA\n        VALKEY_OPTIONS_SET_RDMA(&options, ip, port);\n#endif\n    } else {\n        VALKEY_OPTIONS_SET_TCP(&options, ip, port);\n    ",
+      "observation_id": "614cc400437c074b",
+      "claimed_path": "cli_common.c",
+      "path_resolution": "basename"
+    },
+    {
+      "content": "1. **Missing error handling / silent wrong transport** (`cli_common.c`): without `#else`, building without USE_RDMA and passing rdma=1 yields an uninitialized `valkeyOptions` (no transport) \u2192 connection fails confusingly. Even with USE_RDMA, a caller passing rdma=1 before RDMA init gets zeroed options. Missing validation.\n\n2. **Cluster-mode inconsistency in valkey-benchmark** (`createClient`): TCP",
+      "observation_id": "fe1218141f83c14c",
+      "claimed_path": "cli_common.c",
+      "path_resolution": "basename"
+    },
+    {
+      "content": "3. **Duplicate `$(RDMA_LIBS)`** in src/Makefile `yes` branch. Minor defect.\n\n4. **TLS module/CMake over-coupling to RDMA** \u2014 tls.so and every CMake module/bin link rdma libs when USE_RDMA. Fragile abstraction.\n\n5. **RDMA state initialized in parseOptions only**, but `--rdma` doesn't validate/also not plumbed into the usage-help path... skip.\n\nLet me give 4 solid items. I'll write concise.\n\nLet me ",
+      "observation_id": "0a2e596e2457466e",
+      "claimed_path": "src/Makefile",
+      "path_resolution": "exact"
+    },
+    {
+      "content": "1. Remove extra `#endif` in both `valkey-benchmark.c` and `valkey-cli.c`",
+      "observation_id": "7026a97f4d7adaed",
+      "claimed_path": "valkey-benchmark.c",
+      "path_resolution": "basename"
+    },
+    {
+      "content": "2. Define `USE_RDMA` as a proper CMake option in `deps/CMakeLists.txt`",
+      "observation_id": "a7607713b12dbcff",
+      "claimed_path": "deps/CMakeLists.txt",
+      "path_resolution": "exact"
+    },
+    {
+      "content": "3. Fix `RDMA_CLIENT_LIBS` scope in `src/Makefile` (define for all `BUILD_RDMA` modes, remove from TLS module)",
+      "observation_id": "05b3ad9437c325be",
+      "claimed_path": "src/Makefile",
+      "path_resolution": "exact"
+    }
+  ]
+}

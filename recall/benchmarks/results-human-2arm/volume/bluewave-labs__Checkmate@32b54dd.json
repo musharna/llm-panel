@@ -1,0 +1,687 @@
+{
+  "review": {
+    "comments": [
+      {
+        "content": "1. **Critical \u2014 `server/src/service/infrastructure/networkService.js:160`**: User-controlled regexes execute synchronously against attacker-controlled response bodies. Input: `expectedValue=\"^(a+)+$\"` and a response containing many `a` characters followed by `!` \u2192 catastrophic backtracking blocks the Node event loop, stopping every check and API request. This exact execution pattern is vulnerable to ReDoS, as documented in the project\u2019s [security advisory](https://github.com/bluewave-labs/Checkmate/security/advisories/GHSA-4c6j-p2cv-wf56).",
+        "path": "server/src/service/infrastructure/networkService.js",
+        "start_line": 160,
+        "end_line": 160,
+        "observation_id": "7ec88407c31a639d",
+        "claimed_path": "server/src/service/infrastructure/networkService.js",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "2. **High \u2014 `server/src/service/infrastructure/networkService.js:156`**: Supplying both `expectedValue` and `jsonPath` makes the JSON-path branch unreachable. Input: payload `{\"status\":\"ok\"}`, `jsonPath=\"status\"`, `expectedValue=\"ok\"`, `matchMethod=\"equal\"` \u2192 the entire JSON string is compared with `\"ok\"`, so a valid endpoint is marked failed with code 500.",
+        "path": "server/src/service/infrastructure/networkService.js",
+        "start_line": 156,
+        "end_line": 156,
+        "observation_id": "505110f4cecf410c",
+        "claimed_path": "server/src/service/infrastructure/networkService.js",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "3. **High \u2014 `server/src/db/mongo/migration/0001_migrateStatusWindowThreshold.js:14`; `server/src/db/mongo/migration/index.js:4`**: Migration failures are converted to `false`, and that result is ignored, so startup continues with unmigrated fractional thresholds. Input: a transient write failure while converting `0.6` \u2192 monitor remains at `0.6`; afterward a 20% failure rate is compared against `0.6` and incorrectly marks the monitor down instead of waiting for 60%.",
+        "path": "server/src/db/mongo/migration/0001_migrateStatusWindowThreshold.js",
+        "start_line": 14,
+        "end_line": 14,
+        "observation_id": "8d6e2082891d4cc1",
+        "claimed_path": "server/src/db/mongo/migration/0001_migrateStatusWindowThreshold.js",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "4. **High \u2014 `server/src/service/infrastructure/networkService.js:278`**: Partial-ID ambiguity is never detected because `find()` retains only one match. Input: two container IDs start with `abc`, and the monitor identifier is `abc` \u2192 whichever container appears first is inspected, so the monitor can report the state of the wrong container.",
+        "path": "server/src/service/infrastructure/networkService.js",
+        "start_line": 278,
+        "end_line": 278,
+        "observation_id": "b729fdfea0df0ff2",
+        "claimed_path": "server/src/service/infrastructure/networkService.js",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "5. **High \u2014 `server/src/service/infrastructure/SuperSimpleQueue/SuperSimpleQueue.js:91`**: The scheduler\u2019s `updateJob()` promise is neither awaited nor returned, even though its API returns `Promise<boolean>` ([scheduler API](https://github.com/ajhollid/super-simple-scheduler)). Input: updating a monitor while the scheduler store rejects or cannot find the job \u2192 `await SuperSimpleQueue.updateJob()` resolves successfully with `undefined`, while the job keeps its old interval and the rejection can become unhandled.",
+        "path": "server/src/service/infrastructure/SuperSimpleQueue/SuperSimpleQueue.js",
+        "start_line": 91,
+        "end_line": 91,
+        "observation_id": "00ae4d64ebcdf4ad",
+        "claimed_path": "server/src/service/infrastructure/SuperSimpleQueue/SuperSimpleQueue.js",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "6. **Medium \u2014 `server/src/service/infrastructure/networkService.js:160`**: Invalid regex syntax is not handled. Input: `matchMethod=\"regex\"` and `expectedValue=\"[\"` \u2192 `new RegExp()` throws instead of returning a normal failed-check response, so the scheduled check aborts without the expected status result.",
+        "path": "server/src/service/infrastructure/networkService.js",
+        "start_line": 160,
+        "end_line": 160,
+        "observation_id": "5c3d26ef96a2bf06",
+        "claimed_path": "server/src/service/infrastructure/networkService.js",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "7. **Medium \u2014 `client/src/Pages/Incidents/Components/IncidentTable/index.jsx:29`; `client/src/Components/Table/index.jsx:113`**: `GetTooltip` calls `useTheme()`, but DataTable invokes it as an ordinary function once per row. Input: navigate from a page with one incident check to a page with ten \u2192 the number of hooks attributed to `DataTable` changes and React reports a hook-order violation during rendering.",
+        "path": "client/src/Pages/Incidents/Components/IncidentTable/index.jsx",
+        "start_line": 29,
+        "end_line": 29,
+        "observation_id": "35d2a7d15dc06726",
+        "claimed_path": "client/src/Pages/Incidents/Components/IncidentTable/index.jsx",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "8. **Medium \u2014 `server/src/service/infrastructure/networkService.js:272`**: Container names are forcibly compared case-insensitively even though the accepted syntax preserves case. Input: the daemon contains `/Web` and `/web` with different states, and the monitor specifies `web` \u2192 `find()` may select `/Web` first and report the wrong container\u2019s status.",
+        "path": "server/src/service/infrastructure/networkService.js",
+        "start_line": 272,
+        "end_line": 272,
+        "observation_id": "e48539eca0809ee1",
+        "claimed_path": "server/src/service/infrastructure/networkService.js",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "9. **Medium \u2014 `server/src/service/infrastructure/networkService.js:305`**: \u201cAmbiguity\u201d is calculated from matching methods rather than distinct containers. Input: a container is named with a prefix of its own ID, so it is both the exact-name and partial-ID match \u2192 two match types are recorded even though only one container matched, and the healthy container is reported as failed.",
+        "path": "server/src/service/infrastructure/networkService.js",
+        "start_line": 305,
+        "end_line": 305,
+        "observation_id": "a1a96856b361e2d9",
+        "claimed_path": "server/src/service/infrastructure/networkService.js",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "10. **Medium \u2014 `server/src/service/infrastructure/networkService.js:312`**: The ambiguity branch assigns `404` to `status` and immediately overwrites it with `false`, leaving `code` undefined. Input: an exact-name/partial-ID collision \u2192 downstream receives `{status:false, code:undefined}` instead of a correctly coded failure, producing missing status codes in stored checks and incident output.",
+        "path": "server/src/service/infrastructure/networkService.js",
+        "start_line": 312,
+        "end_line": 312,
+        "observation_id": "57121392a8c99875",
+        "claimed_path": "server/src/service/infrastructure/networkService.js",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "11. **Medium \u2014 `client/src/Pages/Incidents/Components/IncidentTable/index.jsx:239`**: Passing `{tooltipContent: GetTooltip}` replaces the whole default config rather than merging it, so `emptyView` becomes undefined. Input: an incident has no checks \u2192 the table renders a blank empty state instead of \u201cNo data.\u201d",
+        "path": "client/src/Pages/Incidents/Components/IncidentTable/index.jsx",
+        "start_line": 239,
+        "end_line": 239,
+        "observation_id": "0df7944f612e5917",
+        "claimed_path": "client/src/Pages/Incidents/Components/IncidentTable/index.jsx",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "12. **Medium \u2014 `client/src/Components/Table/index.jsx:112`**: The new title calculation dereferences `config` without optional chaining. Input: an existing caller renders `<DataTable config={null}>` \u2192 rendering now throws `Cannot read properties of null (reading 'tooltipContent')`.",
+        "path": "client/src/Components/Table/index.jsx",
+        "start_line": 112,
+        "end_line": 112,
+        "observation_id": "e6b5790e901e69dd",
+        "claimed_path": "client/src/Components/Table/index.jsx",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "13. **Low \u2014 `server/src/service/infrastructure/SuperSimpleQueue/SuperSimpleQueue.js:144`**: The displayed interval comes from copied job data rather than the scheduler\u2019s authoritative `repeat` field. Input: a persisted pre-upgrade job had its repeat changed from 60,000 to 120,000 while its data still contains `interval:60000` \u2192 the queue page reports 60,000 ms although it actually runs every 120,000 ms.",
+        "path": "server/src/service/infrastructure/SuperSimpleQueue/SuperSimpleQueue.js",
+        "start_line": 144,
+        "end_line": 144,
+        "observation_id": "b30eb04771d2aa8f",
+        "claimed_path": "server/src/service/infrastructure/SuperSimpleQueue/SuperSimpleQueue.js",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "14. **Low \u2014 `client/src/Pages/Logs/Queue/components/JobTable/index.jsx:52`**: Missing interval data is rendered literally as `\"null ms\"`. Input: a job has no `data.interval`, which the server explicitly maps to `null` \u2192 users see \u201cnull ms\u201d rather than an absent/unknown interval.",
+        "path": "client/src/Pages/Logs/Queue/components/JobTable/index.jsx",
+        "start_line": 52,
+        "end_line": 52,
+        "observation_id": "612752e9a3148438",
+        "claimed_path": "client/src/Pages/Logs/Queue/components/JobTable/index.jsx",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "15. **Low \u2014 `server/src/service/infrastructure/networkService.js:314`**: The ambiguity response says it is \u201cUsing\u201d a selected match, but the function immediately returns without inspecting any container. Input: a name/ID collision \u2192 the user is told an exact-name match was used while the check is actually forced to failed.",
+        "path": "server/src/service/infrastructure/networkService.js",
+        "start_line": 314,
+        "end_line": 314,
+        "observation_id": "2532c8b3e49ebf63",
+        "claimed_path": "server/src/service/infrastructure/networkService.js",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "16. **Low \u2014 `client/src/Pages/Incidents/Components/IncidentTable/index.jsx:46`**: All tooltip labels are hard-coded English despite this page using `useTranslation`. Input: select a non-English locale and hover an incident \u2192 \u201cStatus code,\u201d \u201cResponse time,\u201d and \u201cRequest timing\u201d remain English.",
+        "path": "client/src/Pages/Incidents/Components/IncidentTable/index.jsx",
+        "start_line": 46,
+        "end_line": 46,
+        "observation_id": "c2dec83025aa4ccc",
+        "claimed_path": "client/src/Pages/Incidents/Components/IncidentTable/index.jsx",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "17. **Low \u2014 `client/src/Pages/Incidents/Components/IncidentTable/index.jsx:51`**: Any truthy `phases` value displays the request-timing section, including an empty object. Input: `timings.phases={}` \u2192 the tooltip displays \u201cRequest timing:\u201d followed by an empty table.",
+        "path": "client/src/Pages/Incidents/Components/IncidentTable/index.jsx",
+        "start_line": 51,
+        "end_line": 51,
+        "observation_id": "0a71c19eedd83c83",
+        "claimed_path": "client/src/Pages/Incidents/Components/IncidentTable/index.jsx",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "18. **Low \u2014 `server/src/service/infrastructure/networkService.js:1`**: The added `match` import is unused. Input: run the server ESLint check with the project\u2019s unused-variable rule \u2192 lint/CI fails on this import.",
+        "path": "server/src/service/infrastructure/networkService.js",
+        "start_line": 1,
+        "end_line": 1,
+        "observation_id": "93a8f5f9156be073",
+        "claimed_path": "server/src/service/infrastructure/networkService.js",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "**1. `server/src/service/infrastructure/networkService.js:156-168` \u2014 expected-value check fails every check whose `matchMethod` is not exactly `\"equal\"`/`\"include\"`/`\"regex\"`**\nThe new block sets `ok = false` and only flips it for those three literal strings. Any monitor with a different stored `matchMethod` (a legacy monitor created before the field existed, an empty string from an unset form default, or any other spelling like `\"contains\"`) gets `ok === false` \u2192 `code = 500; status = false` on **every** check, even when the payload matches. The removed code never failed a check on value mismatch (it only logged), so this is a hard regression: an existing monitor with `expectedValue` set and any non-whitelisted `matchMethod` flips to permanently DOWN with zero user-visible cause.",
+        "path": "server/src/service/infrastructure/networkService.js",
+        "start_line": 156,
+        "end_line": 156,
+        "observation_id": "7bc4be38fe19a3d9",
+        "claimed_path": "server/src/service/infrastructure/networkService.js",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "**2. `server/src/service/infrastructure/networkService.js:160` \u2014 uncaught `SyntaxError` / event-loop blocking from user-supplied regex**\n`new RegExp(expectedValue)` throws synchronously on an invalid pattern (e.g. a monitor with expectedValue `\"[\"` or `\"(unclosed\"` and `matchMethod: \"regex\"`). The throw is not caught here, and `httpResponse` is left half-built (no `code`, no `status`) \u2014 the check job dies with an exception instead of producing a structured failed response. Worse, the regex is applied synchronously on the main thread: expectedValue `\"(a+)+$\"` against a long payload causes catastrophic backtracking that blocks the entire Node event loop \u2014 all monitors stop checking for seconds/minutes. Same failure class: `payload.includes(...)` (line 159) throws `TypeError` if `payload` is not a string (cannot be ruled out from the diff; payload type comes from code not shown).",
+        "path": "server/src/service/infrastructure/networkService.js",
+        "start_line": 160,
+        "end_line": 160,
+        "observation_id": "b95318a43a19baad",
+        "claimed_path": "server/src/service/infrastructure/networkService.js",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "**3. `server/src/service/infrastructure/networkService.js:162-163` \u2014 matched expectedValue now skips the `jsonPath` assertion**\nWhen a monitor sets **both** `expectedValue` and `jsonPath`, the new `return httpResponse` on match bypasses the `jsonPath` block below. The old code ran the `jsonPath` branch for exactly this configuration (it was gated only on `!expectedValue`). Concrete: monitor expects body to contain `\"ok\"` *and* JSON path `$.status == \"up\"`; a 200 response containing `\"ok\"` anywhere but missing the JSON node now reports SUCCESS \u2014 wrong success.",
+        "path": "server/src/service/infrastructure/networkService.js",
+        "start_line": 162,
+        "end_line": 162,
+        "observation_id": "2a909b02d2a4e029",
+        "claimed_path": "server/src/service/infrastructure/networkService.js",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "**4. `server/src/service/infrastructure/networkService.js:312-313` \u2014 dead assignment; `code` never set on ambiguous match**\n`dockerResponse.status = 404;` is immediately overwritten by `dockerResponse.status = false;` \u2014 `status` is a boolean field (cf. line 322) and the intended `dockerResponse.code = 404` (as written in the not-found branch at line 293) is missing. The ambiguous-match response therefore has `code === undefined`. Any consumer that branches on `code === 404` \u2014 the same convention this function itself establishes at line 323 (`code: 200`) \u2014 treats an ambiguous match as an unclassified failure, e.g. the UI no longer shows the \"not found\" message that `code: 404` triggers.",
+        "path": "server/src/service/infrastructure/networkService.js",
+        "start_line": 312,
+        "end_line": 312,
+        "observation_id": "e00a803a569042e7",
+        "claimed_path": "server/src/service/infrastructure/networkService.js",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "**5. `server/src/service/infrastructure/networkService.js:282 vs 305-316` \u2014 ambiguity check contradicts the deterministic priority selection**\n`targetContainer` is resolved by explicit priority (`exactIdMatch || exactNameMatch || partialIdMatch`, line 282), but the \"ambiguous\" reject fires whenever more than one match *type* exists \u2014 including the realistic case where the input exactly matches a container **name** and is also a **prefix of another container's ID** (e.g. a container literally named `a1b2c3d4e5f6`, which is also a valid 12-char partial ID). The code logs \"Using exact name match\" and then still returns a failure, so a perfectly resolvable, previously-working monitor (old code matched by `Id.startsWith`) now reports a failed check forever.",
+        "path": "server/src/service/infrastructure/networkService.js",
+        "start_line": 282,
+        "end_line": 282,
+        "observation_id": "9ef434ec0fb93791",
+        "claimed_path": "server/src/service/infrastructure/networkService.js",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "**6. `server/src/db/mongo/migration/0001_migrateStatusWindowThreshold.js:5-14` + `migration/index.js:4` \u2014 partial migration silently swallowed**\nThe loop does per-document `monitor.save()`; the first monitor whose `save()` throws (schema validation, connection blip) aborts the whole loop, `migrateStatusWindowThreshold` returns `false`, and `runMigrations` (index.js:4) ignores the return value. Consequence: all monitors after the failing one keep their old 0.x ratio thresholds, which the new code interprets as percentages (0.6 \u2192 0.6%). Those monitors go DOWN on any window with \u2265~1% failure and flap continuously, with only a `console.error` that nobody sees. Migration never completes until the failing monitor is fixed, and nothing detects that it didn't.",
+        "path": "server/src/db/mongo/migration/0001_migrateStatusWindowThreshold.js",
+        "start_line": 5,
+        "end_line": 5,
+        "observation_id": "8d15379087dc92fb",
+        "claimed_path": "server/src/db/mongo/migration/0001_migrateStatusWindowThreshold.js",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "**7. `server/src/db/mongo/migration/0001_migrateStatusWindowThreshold.js:4` \u2014 a stored threshold of exactly `1.0` is not migrated**\nThe selector `$lt: 1` misses monitors whose threshold is exactly 1 (under the old ratio semantics this was a legitimate user setting meaning \"only mark down at 100% failure\"). After the model default/unit change (Monitor.js:40), an unmigrated `1` now reads as **1%**: a monitor that was effectively never down now goes down whenever \u22651% of the window's checks fail \u2014 silently corrupted configuration, never corrected by re-runs.",
+        "path": "server/src/db/mongo/migration/0001_migrateStatusWindowThreshold.js",
+        "start_line": 4,
+        "end_line": 4,
+        "observation_id": "54f182f36ec22b6b",
+        "claimed_path": "server/src/db/mongo/migration/0001_migrateStatusWindowThreshold.js",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "**8. `server/src/db/models/Monitor.js:40` + `server/src/service/infrastructure/statusService.js:161` \u2014 the whole threshold rescaling depends on `failureRate` already being on a 0\u2013100 scale, which the diff never shows**\nThe migration multiplies stored values by 100 and the default jumps 0.6 \u2192 60, but the only comparison side in this diff is `failureRate < monitor.statusWindowThreshold`. If `failureRate` is (or still is) computed as a 0\u20131 ratio anywhere in statusService, then with the new default 60: `failureRate < 60` is always true and the failure branch `>=` never fires \u2014 no monitor ever goes down (or, for the recovery branch, every down monitor instantly recovers). The diff contains no change to the `failureRate` computation, so this needs verification before merge; as-is the units are inconsistent by inspection.",
+        "path": "server/src/db/models/Monitor.js",
+        "start_line": 40,
+        "end_line": 40,
+        "observation_id": "505783cb662f5417",
+        "claimed_path": "server/src/db/models/Monitor.js",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "**9. `server/src/service/infrastructure/SuperSimpleQueue/SuperSimpleQueue.js:144` + `client/src/Pages/Logs/Queue/components/JobTable/index.jsx:54` \u2014 \"null ms\" rendered for pre-upgrade jobs**\n`monitorInterval: job?.data?.interval || null` collapses to `null` for any queue job whose stored `data` predates this change (or was created under the old scheduler API shape, which the package bump `super-simple-scheduler` 1.3.0 \u2192 1.4.0 at package.json:49 changed \u2014 the `updateJob` signature itself was rewritten at SuperSimpleQueue.js:89). The client column renders the value unconditionally: `${row.monitorInterval} ms` \u2192 the row literally displays `null ms` / `undefined ms` for existing jobs.",
+        "path": "server/src/service/infrastructure/SuperSimpleQueue/SuperSimpleQueue.js",
+        "start_line": 144,
+        "end_line": 144,
+        "observation_id": "b0c5a6d180cabd95",
+        "claimed_path": "server/src/service/infrastructure/SuperSimpleQueue/SuperSimpleQueue.js",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "**10. `client/src/Pages/Incidents/Components/IncidentTable/index.jsx:238` \u2014 explicit `config` discards the DataTable defaults**\n`config={{ tooltipContent: GetTooltip }}` replaces the whole default config (Table/index.jsx:43-47), so `emptyView: \"No data\"` no longer applies. The previous caller passed no `config` and got the default. With `checks` empty (no checks/incidents for the team), the DataTable's empty state now receives `config.emptyView === undefined` \u2192 blank table where \"No data\" previously rendered.",
+        "path": "client/src/Pages/Incidents/Components/IncidentTable/index.jsx",
+        "start_line": 238,
+        "end_line": 238,
+        "observation_id": "bda50cde7f0aaf85",
+        "claimed_path": "client/src/Pages/Incidents/Components/IncidentTable/index.jsx",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "**11. `client/src/Pages/Incidents/Components/IncidentTable/index.jsx:28-29` + `client/src/Components/Table/index.jsx:113` \u2014 `GetTooltip` calls `useTheme()` but is invoked as a plain function, not a component**\n`config.tooltipContent(row)` calls `GetTooltip` directly inside DataTable's render, so its `useTheme()` runs in the parent's render context. This passes today only by accident of always being called synchronously during DataTable's render; it is a Rules-of-Hooks violation that throws `Invalid hook call` the moment the function is re-used in any non-render context (an event handler, a memoized callback, a different consumer of `tooltipContent`), and it is invisible to the hooks lint only because the function name is capitalized.",
+        "path": "client/src/Pages/Incidents/Components/IncidentTable/index.jsx",
+        "start_line": 28,
+        "end_line": 28,
+        "observation_id": "9aa807315f072908",
+        "claimed_path": "client/src/Pages/Incidents/Components/IncidentTable/index.jsx",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "**12. `server/src/controllers/statusPageController.js:97` \u2014 `this.db.statusPageModule.deleteStatusPage(...)` \u2014 unverifiable rename**\nThe diff shows no other reference establishing that the MongoDB wrapper exposes a `statusPageModule` property. If the module refactor didn't land in this PR, every DELETE status-page request throws `TypeError: this.db.statusPageModule is undefined` \u2192 500. Needs verification against `server/src/db/mongo/MongoDB.js`, which is not part of the diff.",
+        "path": "server/src/controllers/statusPageController.js",
+        "start_line": 97,
+        "end_line": 97,
+        "observation_id": "f5c8f6d8323dbe95",
+        "claimed_path": "server/src/controllers/statusPageController.js",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "**13. `client/src/Validation/validation.js:134` \u2014 validator rejects Docker-valid names ending in `_`, `-`, or `.`**\nDocker's own name rule (`[a-zA-Z0-9][a-zA-Z0-9_.-]+`) permits trailing separator characters, but the name alternative here (`[a-zA-Z0-9][a-zA-Z0-9_.-]*[a-zA-Z0-9]`) requires the final character to be alphanumeric. A user with a container legitimately named e.g. `web-` or `ci_` cannot save the monitor and gets \"Please enter a valid container name or ID\" for a name Docker accepts (and which the server-side matcher at networkService.js:271-276 would handle fine). Conversely, single-character names are accepted here though Docker rejects them at container creation \u2014 such a monitor passes validation and then 404s on every check.",
+        "path": "client/src/Validation/validation.js",
+        "start_line": 134,
+        "end_line": 134,
+        "observation_id": "aed6d3f6ca7ef0b4",
+        "claimed_path": "client/src/Validation/validation.js",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "**14. `server/src/service/infrastructure/networkService.js:1` \u2014 dead, potentially breaking import**\n`import { match } from \"assert\"` is never used. If the project enforces no-unused-vars in CI, this fails the build; harmless otherwise. The import itself becomes a hazard only via lint, but it is clearly leftover debris.\n\nCould not verify from the available material (would need the repo): whether `this.db.statusPageModule` exists (item 12), the scale/units of `failureRate` (item 8), whether `payload` fed to `includes` can be non-string (item 2), and the actual v1.4.0 `super-simple-scheduler` API contract for `updateJob`/job `data` shape (item 9).### 1. `.gitignore` (new file, line 1)\n**Defect: Missing newline at end of file**\nThe diff shows `\\ No newline at end of file`. This violates POSIX text file standards and can cause issues with some tools (e.g., `cat`, `grep`, diff tools). Some linters and CI pipelines will fail on this.\n\n---",
+        "path": "server/src/service/infrastructure/networkService.js",
+        "start_line": 1,
+        "end_line": 1,
+        "observation_id": "583db19a54fec85c",
+        "claimed_path": "server/src/service/infrastructure/networkService.js",
+        "path_resolution": "exact",
+        "merged_from": [
+          "c4ed94864b468e3d",
+          "c831f083594ade7f"
+        ]
+      },
+      {
+        "content": "### 3. `client/src/Hooks/logHooks.js` (line 15-21)\n**Defect: Removed success toast on log fetch \u2014 silent failure mode**\nThe `createToast` for `logsPage.toast.fetchLogsSuccess` was removed. Now on successful log fetch, user gets no feedback. If logs are empty, user cannot distinguish \"no logs\" from \"fetch succeeded but empty\" vs \"fetch failed silently\" (error toast remains). This is a UX regression, not a crash, but a defect in user-facing behavior.\n\n---",
+        "path": "client/src/Hooks/logHooks.js",
+        "start_line": 15,
+        "end_line": 15,
+        "observation_id": "13f7c42ee65bdab5",
+        "claimed_path": "client/src/Hooks/logHooks.js",
+        "path_resolution": "exact",
+        "merged_from": [
+          "e3c912e35fcdb72d"
+        ]
+      },
+      {
+        "content": "### 5. `client/src/Pages/Logs/Queue/components/JobTable/index.jsx` (line 46-51)\n**Defect: Added `interval` column but no translation key fallback**\nNew header uses `t(\"queuePage.jobTable.intervalHeader\")`. If the translation key is missing (e.g., in a language file not updated), `react-i18next` returns the key as string (\"queuePage.jobTable.intervalHeader\") \u2014 ugly but not a crash. However, the render function `(row) => `${row.monitorInterval} ms`` assumes `row.monitorInterval` exists and is a number. If `monitorInterval` is `undefined` (old data, or monitor type without interval), it renders `\"undefined ms\"`. Should guard: `row.monitorInterval ? `${row.monitorInterval} ms` : \"\u2014\"`.\n\n---",
+        "path": "client/src/Pages/Logs/Queue/components/JobTable/index.jsx",
+        "start_line": 46,
+        "end_line": 46,
+        "observation_id": "e52a82045b95d66f",
+        "claimed_path": "client/src/Pages/Logs/Queue/components/JobTable/index.jsx",
+        "path_resolution": "exact",
+        "merged_from": [
+          "de0cd9978a226afa"
+        ]
+      },
+      {
+        "content": "### 6. `client/src/Validation/validation.js` (line 130-138)\n**Defect: Regex allows invalid container names/IDs \u2014 over-permissive**\nNew regex: `/^(\\/+)?([a-zA-Z0-9][a-zA-Z0-9_.-]*[a-zA-Z0-9]|[a-zA-Z0-9]+|[a-f0-9]{12,64})$/`\nProblems:\n- `[a-zA-Z0-9]+` allows any alphanumeric string (e.g., \"a\", \"123\", \"abc\") \u2014 Docker container names must be `[a-zA-Z0-9][a-zA-Z0-9_.-]*` (no leading/trailing separators, no consecutive separators). This regex allows \"a-b-c\" (valid), but also \"a--b\" (invalid, consecutive hyphens) because `[a-zA-Z0-9_.-]*` allows any sequence.\n- `[a-f0-9]{12,64}` allows 12-64 hex chars \u2014 Docker short IDs are 12 chars, full IDs are 64. But it also allows 13-63 hex strings which are **not valid Docker IDs** (no such length). A user could enter a 20-char hex string that looks like an ID but doesn't exist.\n- `(\\/+)?` allows leading slashes (e.g., `///my-container`) \u2014 Docker names never start with `/` (CLI strips it), but container *references* in API can have leading `/`. The validation is for user input field \u2014 should it allow `/my-container`? Probably not; the backend should normalize.\n- **No check for reserved names** (e.g., \"pause\", \"host\", \"none\" \u2014 Docker network modes).\n- **No length limit on name part** \u2014 Docker names max 255 chars (with `/` prefix). The regex has no upper bound on the name alternative.\n\n**Concrete failure**: User enters `my--container` (double hyphen) \u2192 passes validation \u2192 backend `docker inspect` fails with \"No such container\" \u2192 confusing error.\n\n---",
+        "path": "client/src/Validation/validation.js",
+        "start_line": 130,
+        "end_line": 130,
+        "observation_id": "0ffdb12c59101b0b",
+        "claimed_path": "client/src/Validation/validation.js",
+        "path_resolution": "exact",
+        "merged_from": [
+          "f9177a1f8ede887e"
+        ]
+      },
+      {
+        "content": "### 7. `client/src/locales/en.json` (lines 440, 740, 1014)\n**Defect: Translation keys changed but other locale files not updated**\nThe diff only shows `en.json`. If other locales (e.g., `fr.json`, `es.json`) exist, they now have missing keys:\n- `uptimeGeneralInstructions.docker` text changed\n- `queuePage.jobTable.intervalHeader` new key\n- `monitorType.docker.label` and `placeholder` changed\nMissing keys fall back to English or show key names. Not a crash, but i18n defect.\n\n---",
+        "path": "client/src/locales/en.json",
+        "start_line": 440,
+        "end_line": 440,
+        "observation_id": "9242c8800925d145",
+        "claimed_path": "client/src/locales/en.json",
+        "path_resolution": "exact",
+        "merged_from": [
+          "c64f4d9d3f8c1e9e"
+        ]
+      },
+      {
+        "content": "### 9. `server/src/controllers/statusPageController.js` (line 95)\n**Defect: `this.db.statusPageModule.deleteStatusPage` \u2014 assumes `statusPageModule` exists**\nChanged from `this.db.deleteStatusPage(req.params.url)` to `this.db.statusPageModule.deleteStatusPage(req.params.url)`. If `MongoDB` class (or whatever `this.db` is) doesn't have a `statusPageModule` property with a `deleteStatusPage` method, this throws `TypeError: Cannot read property 'deleteStatusPage' of undefined`. The diff doesn't show `MongoDB` class having `statusPageModule`. This is a **runtime crash** if the module isn't attached.\n\n---",
+        "path": "server/src/controllers/statusPageController.js",
+        "start_line": 95,
+        "end_line": 95,
+        "observation_id": "1300b13c10b1cd85",
+        "claimed_path": "server/src/controllers/statusPageController.js",
+        "path_resolution": "exact",
+        "merged_from": [
+          "ff19d9356e08b629"
+        ]
+      },
+      {
+        "content": "### 10. `server/src/db/models/Monitor.js` (line 38-41)\n**Defect: `statusWindowThreshold` default changed from `0.6` to `60` \u2014 unit mismatch**\nOld default: `0.6` (fraction, 60%). New default: `60` (appears to be percentage integer). The migration (next item) multiplies existing values `< 1` by 100. But **new monitors created after this change get `60`** (meaning 60% if code treats it as percentage, or 6000% if code treats it as fraction). The `statusService.js` comparison (line 165) uses `failureRate < monitor.statusWindowThreshold`. `failureRate` is a fraction (0-1) or percentage (0-100)? Let's check `statusService.js` \u2014 it compares `failureRate <= monitor.statusWindowThreshold`. If `failureRate` is 0-1 (fraction), then `60` is never reached (max 1). Monitor never recovers. If `failureRate` is 0-100 (percentage), then old default `0.6` meant 0.6% \u2014 absurdly sensitive. **Unit inconsistency between model default, migration, and consumer**.\n\n---",
+        "path": "server/src/db/models/Monitor.js",
+        "start_line": 38,
+        "end_line": 38,
+        "observation_id": "23cd000932dba140",
+        "claimed_path": "server/src/db/models/Monitor.js",
+        "path_resolution": "exact",
+        "merged_from": [
+          "de2f37c0ad8e7480"
+        ]
+      },
+      {
+        "content": "**Defect in migration `0001_migrateStatusWindowThreshold.js` (line 5-6):**\n```js\nconst monitors = await Monitor.find({ statusWindowThreshold: { $lt: 1 } });\nfor (const monitor of monitors) {\n    monitor.statusWindowThreshold = monitor.statusWindowThreshold * 100;\n    await monitor.save();\n}\n```\n- Uses `monitor.save()` which triggers middleware/validators. If `Monitor` schema has `pre('save')` hooks that modify `statusWindowThreshold` or validate it, this could loop or fail.\n- No batch update \u2014 N round trips for N monitors. For 10k monitors, 10k writes.\n- `console.log`/`console.error` \u2014 not using the app's logger. Logs lost in production.\n\n**Defect: Migration runs `Monitor.find` but `Monitor` model may not be registered yet**\n`import Monitor from \"../../models/Monitor.js\"` \u2014 if `MongoDB.connect()` runs before models are imported/registered (circular dependency), `Monitor` is undefined. The import is at top level, so it should be fine, but depends on module load order.\n\n---",
+        "path": "server/src/db/mongo/migration/0001_migrateStatusWindowThreshold.js",
+        "start_line": 5,
+        "end_line": 5,
+        "observation_id": "3f7dce9e1cb9b9cc",
+        "claimed_path": "0001_migrateStatusWindowThreshold.js",
+        "path_resolution": "basename",
+        "merged_from": [
+          "f72d19597ac7a128"
+        ]
+      },
+      {
+        "content": "### 14. `server/src/service/infrastructure/statusService.js` (line 158, 161)\n\n**Defect at line 158: Changed `<=` to `<` for failure threshold \u2014 changes recovery boundary**\nOld: `failureRate <= monitor.statusWindowThreshold` \u2192 recover if failure rate **at or below** threshold.\nNew: `failureRate < monitor.statusWindowThreshold` \u2192 recover only if **strictly below** threshold.\nIf `failureRate === threshold` (e.g., exactly 60%), monitor stays down. This is a behavioral change: monitors at exact threshold no longer recover. Whether intentional or not, it's a defect if not documented \u2014 changes SLA semantics.\n\n**Defect at line 161: Same change for down transition \u2014 `failureRate > monitor.statusWindowThreshold`**\nOld: `failureRate > monitor.statusWindowThreshold` (strictly above).\nNew: `failureRate > monitor.statusWindowThreshold` (same). Wait, line 155 shows:\n```js\nif (failureRate > monitor.statusWindowThreshold && monitor.status === true) {\n```\nThat's unchanged. Only the recovery condition changed. Asymmetric: down at `> threshold`, up at `< threshold`. At `== threshold`, no state change (hysteresis). This may be intentional hysteresis, but the old code had `<=` for recovery (no hysteresis). **Inconsistent hysteresis introduced without comment**.\n\n---\n\nLet me update the todo and compile the final list.\n\n## DEFECTS FOUND (19 total, ordered by severity)\n\n---\n\n### CRITICAL (Runtime Crashes / DoS / Data Corruption)",
+        "path": "server/src/service/infrastructure/statusService.js",
+        "start_line": 158,
+        "end_line": 158,
+        "observation_id": "bf664a1f01a894cc",
+        "claimed_path": "server/src/service/infrastructure/statusService.js",
+        "path_resolution": "exact",
+        "merged_from": [
+          "f0dbbbadb1c744ea",
+          "8b706265e78b451a",
+          "43edcbb16c2d68fc",
+          "504c0a9ef96e79b3"
+        ]
+      },
+      {
+        "content": "**1. `client/src/Pages/Incidents/Components/IncidentTable/index.jsx:21` \u2014 Hook called outside component**\n`GetTooltip` uses `useTheme()` but is a plain function passed as `tooltipContent` prop. `DataTable` calls it during render \u2192 **React throws \"Invalid hook call\"** on first table render.\n> Input: Navigate to Incidents page \u2192 Table renders \u2192 Crash.",
+        "path": "client/src/Pages/Incidents/Components/IncidentTable/index.jsx",
+        "start_line": 21,
+        "end_line": 21,
+        "observation_id": "3b970e7a73c0e1e5",
+        "claimed_path": "client/src/Pages/Incidents/Components/IncidentTable/index.jsx",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "**2. `server/src/controllers/statusPageController.js:95` \u2014 Undefined module access**\n`this.db.statusPageModule.deleteStatusPage()` assumes `statusPageModule` exists on `db`. If `MongoDB` class doesn't expose it \u2192 **TypeError: Cannot read property 'deleteStatusPage' of undefined**.\n> Input: DELETE `/api/status-pages/:url` \u2192 500 crash.",
+        "path": "server/src/controllers/statusPageController.js",
+        "start_line": 95,
+        "end_line": 95,
+        "observation_id": "3e8f32eeb675dd84",
+        "claimed_path": "server/src/controllers/statusPageController.js",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "**3. `server/src/service/infrastructure/networkService.js:158-160` \u2014 ReDoS via user-controlled regex**\n`new RegExp(expectedValue)` with no sanitization/timeout. User sets `expectedValue` to `\"(a+)+\"` or similar \u2192 **Event loop blocked indefinitely** on check execution.\n> Input: Create HTTP monitor with `matchMethod: \"regex\"`, `expectedValue: \"(a+)+\"` \u2192 Worker hangs.",
+        "path": "server/src/service/infrastructure/networkService.js",
+        "start_line": 158,
+        "end_line": 158,
+        "observation_id": "cf74b0ede916255c",
+        "claimed_path": "server/src/service/infrastructure/networkService.js",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "**4. `server/src/service/infrastructure/networkService.js:170-176` \u2014 Uncaught JSON.parse crash**\n`JSON.parse(payload)` in `jsonPath` branch throws on non-JSON response \u2192 **Uncaught exception crashes check worker**.\n> Input: HTTP monitor with `jsonPath: \"$.status\"` hitting endpoint returning HTML \u2192 Worker dies.",
+        "path": "server/src/service/infrastructure/networkService.js",
+        "start_line": 170,
+        "end_line": 170,
+        "observation_id": "fd11673f9dab74f4",
+        "claimed_path": "server/src/service/infrastructure/networkService.js",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "**5. `server/src/service/infrastructure/networkService.js:319` \u2014 Wrong HTTP code on ambiguous match**\n```js\ndockerResponse.status = 404;  // BUG: should be .code\ndockerResponse.status = false;\n```\n`code` remains `undefined`/`200` \u2192 **Client sees 200 OK for \"ambiguous container\" error**.\n> Input: Docker monitor with name matching multiple containers \u2192 False positive (monitor appears healthy).",
+        "path": "server/src/service/infrastructure/networkService.js",
+        "start_line": 319,
+        "end_line": 319,
+        "observation_id": "7054e61076cc1241",
+        "claimed_path": "server/src/service/infrastructure/networkService.js",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "**6. `server/src/db/models/Monitor.js:41` + `statusService.js:161` \u2014 Unit mismatch: threshold default 60 vs failureRate 0-1**\nModel default `statusWindowThreshold: 60` (looks like percentage). `statusService` compares `failureRate < 60`. If `failureRate` is fraction (0-1), **monitor never recovers** (1 < 60 always true, but logic inverted). If `failureRate` is percentage (0-100), old default `0.6` meant 0.6% \u2014 absurdly sensitive.\n> Input: Create new monitor \u2192 Stays down forever or flaps at 0.6%.\n\n---\n\n### HIGH (Incorrect Behavior / Logic Errors)",
+        "path": "server/src/db/models/Monitor.js",
+        "start_line": 41,
+        "end_line": 41,
+        "observation_id": "f92fa75a4f6c5898",
+        "claimed_path": "server/src/db/models/Monitor.js",
+        "path_resolution": "exact",
+        "merged_from": [
+          "4ad7864ce2b42bb3"
+        ]
+      },
+      {
+        "content": "**7. `server/src/service/infrastructure/networkService.js:152-165` \u2014 `jsonPath` skipped when `expectedValue` matches**\nIf both `expectedValue` and `jsonPath` configured, `expectedValue` match returns early \u2192 **`jsonPath` never evaluated**. Monitor passes even if JSON path would fail.\n> Input: Monitor with `expectedValue: \"ok\"` AND `jsonPath: \"$.status\"` \u2192 Returns \"ok\" but `$.status` is \"error\" \u2192 False positive.",
+        "path": "server/src/service/infrastructure/networkService.js",
+        "start_line": 152,
+        "end_line": 152,
+        "observation_id": "231bc15d393605a7",
+        "claimed_path": "server/src/service/infrastructure/networkService.js",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "**8. `server/src/service/infrastructure/networkService.js:163-165` \u2014 Wrong status code on content mismatch**\nReturns `code: 500` for content mismatch \u2192 **Alerting treats check failure as server error**.\n> Input: HTTP monitor expects \"healthy\", gets \"unhealthy\" \u2192 500 logged instead of 200 with `status: false`.",
+        "path": "server/src/service/infrastructure/networkService.js",
+        "start_line": 163,
+        "end_line": 163,
+        "observation_id": "e11609f9194a651f",
+        "claimed_path": "server/src/service/infrastructure/networkService.js",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "**9. `server/src/service/infrastructure/networkService.js:181-185` \u2014 `jsonPath` comparison against undefined**\nIf only `jsonPath` provided (no `expectedValue`), comparison uses `expectedValue === undefined` \u2192 **Always fails unless extracted value is undefined**.\n> Input: Monitor with `jsonPath: \"$.status\"` only \u2192 Extracted \"healthy\" \u2260 undefined \u2192 Check fails incorrectly.",
+        "path": "server/src/service/infrastructure/networkService.js",
+        "start_line": 181,
+        "end_line": 181,
+        "observation_id": "0c9b27eb7b11ff59",
+        "claimed_path": "server/src/service/infrastructure/networkService.js",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "**10. `server/src/service/infrastructure/SuperSimpleQueue/SuperSimpleQueue.js:88-90` \u2014 Incompatible scheduler API call**\n`updateJob(id, { repeat: interval, data: ... })` assumes `super-simple-scheduler@1.4.0` new signature. If library expects `(id, interval)` \u2192 **Jobs not rescheduled / TypeError**.\n> Input: Update monitor interval \u2192 Scheduler ignores or crashes.",
+        "path": "server/src/service/infrastructure/SuperSimpleQueue/SuperSimpleQueue.js",
+        "start_line": 88,
+        "end_line": 88,
+        "observation_id": "d2a8e839c77a4573",
+        "claimed_path": "server/src/service/infrastructure/SuperSimpleQueue/SuperSimpleQueue.js",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "**11. `server/src/service/infrastructure/statusService.js:158,161` \u2014 Asymmetric hysteresis introduced silently**\nDown at `failureRate > threshold`, up at `failureRate < threshold`. At `== threshold`: **No state change** (hysteresis). Old code recovered at `<=`. Behavioral change without documentation.\n> Input: Monitor at exactly 60% failure rate \u2192 Stays in current state indefinitely (no recovery, no alert).",
+        "path": "server/src/service/infrastructure/statusService.js",
+        "start_line": 158,
+        "end_line": 158,
+        "observation_id": "2f66bd13dad92525",
+        "claimed_path": "server/src/service/infrastructure/statusService.js",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "**12. `server/src/db/mongo/migration/0001_migrateStatusWindowThreshold.js:5-11` \u2014 Migration runs on every connect**\n`runMigrations()` called in `MongoDB.connect()` \u2192 **Runs on every reconnect/pool creation**. Wasteful; if migration fails mid-run, app crashes on startup.\n> Input: DB connection blip \u2192 App restarts \u2192 Migration runs again \u2192 Startup delay/crash.",
+        "path": "server/src/db/mongo/migration/0001_migrateStatusWindowThreshold.js",
+        "start_line": 5,
+        "end_line": 5,
+        "observation_id": "f5a44de4f095a2fc",
+        "claimed_path": "server/src/db/mongo/migration/0001_migrateStatusWindowThreshold.js",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "**13. `server/src/db/mongo/migration/0001_migrateStatusWindowThreshold.js:8` \u2014 N+1 saves, no batch, no logger**\n`for (monitor of monitors) { await monitor.save() }` \u2192 **N round-trips**. `console.log` not captured in production logging.\n> Input: 10,000 monitors \u2192 10,000 sequential writes \u2192 Migration takes minutes, blocks startup.\n\n---\n\n### MEDIUM (Validation / UX / Data Quality)",
+        "path": "server/src/db/mongo/migration/0001_migrateStatusWindowThreshold.js",
+        "start_line": 8,
+        "end_line": 8,
+        "observation_id": "94fdb02c2dd29e45",
+        "claimed_path": "server/src/db/mongo/migration/0001_migrateStatusWindowThreshold.js",
+        "path_resolution": "exact",
+        "merged_from": [
+          "0ca06841173761d6"
+        ]
+      },
+      {
+        "content": "**14. `client/src/Validation/validation.js:133-135` \u2014 Over-permissive Docker name regex**\nRegex `/^(\\/+)?([a-zA-Z0-9][a-zA-Z0-9_.-]*[a-zA-Z0-9]|[a-zA-Z0-9]+|[a-f0-9]{12,64})$/` allows:\n- `\"a--b\"` (consecutive hyphens \u2014 invalid Docker name)\n- `\"abc\"` (3-char alphanumeric \u2014 not a valid container ID)\n- `\"///name\"` (leading slashes)\n- 20-char hex strings (no such Docker ID length)\n> Input: User enters `my--container` \u2192 Passes validation \u2192 Backend `docker inspect` fails with cryptic error.",
+        "path": "client/src/Validation/validation.js",
+        "start_line": 133,
+        "end_line": 133,
+        "observation_id": "1d40db3bf0ff3650",
+        "claimed_path": "client/src/Validation/validation.js",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "**15. `client/src/Components/Table/index.jsx:117-122` \u2014 Tooltip offset uses uninitialized popper dimensions**\n`offset: ({ popper }) => [popper.width / 2 + 20, -popper.height / 8]` runs before layout \u2192 `width`/`height` = 0 \u2192 **Tooltip appears at wrong position on first show**.\n> Input: Hover table row first time \u2192 Tooltip offset wrong; subsequent hovers correct.",
+        "path": "client/src/Components/Table/index.jsx",
+        "start_line": 117,
+        "end_line": 117,
+        "observation_id": "4cb246b8fd38bd83",
+        "claimed_path": "client/src/Components/Table/index.jsx",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "**16. `client/src/Components/Table/index.jsx:103` \u2014 Tooltip wraps TableRow \u2192 Invalid HTML**\n`<Tooltip><TableRow>...</TableRow></Tooltip>` renders `<div><tr>...</tr></div>` \u2192 **Browser hoists `<tr>`, breaking tooltip attachment and table structure**.\n> Input: Render DataTable with tooltip \u2192 Tooltip detached, row styling broken.",
+        "path": "client/src/Components/Table/index.jsx",
+        "start_line": 103,
+        "end_line": 103,
+        "observation_id": "fab21bee79b02051",
+        "claimed_path": "client/src/Components/Table/index.jsx",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "**17. `client/src/Pages/Logs/Queue/components/JobTable/index.jsx:50` \u2014 `undefined ms` rendered for missing interval**\n`render: (row) => `${row.monitorInterval} ms`` \u2192 If `monitorInterval` undefined \u2192 **Displays \"undefined ms\"**.\n> Input: Old monitor without `interval` field \u2192 Queue table shows \"undefined ms\".",
+        "path": "client/src/Pages/Logs/Queue/components/JobTable/index.jsx",
+        "start_line": 50,
+        "end_line": 50,
+        "observation_id": "488a796349951685",
+        "claimed_path": "client/src/Pages/Logs/Queue/components/JobTable/index.jsx",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "**18. `client/src/Hooks/logHooks.js:18-20` \u2014 Success toast removed \u2192 Silent success**\nNo feedback on successful log fetch \u2192 **User cannot distinguish \"no logs\" from \"loaded empty\"**.\n> Input: Open Logs page with empty result \u2192 No indication fetch succeeded.\n\n---\n\n### LOW (Maintenance / Process)\n\n**19. `.gitignore:1` \u2014 Missing newline at end of file**\nPOSIX violation; some linters/CI fail.\n> Input: Run `git diff` or linter \u2192 Warning/error.",
+        "path": "client/src/Hooks/logHooks.js",
+        "start_line": 18,
+        "end_line": 18,
+        "observation_id": "7b5d05f3e64b921c",
+        "claimed_path": "client/src/Hooks/logHooks.js",
+        "path_resolution": "exact",
+        "merged_from": [
+          "59ff8dd003e7adb1",
+          "2e02ddf3b0565ed1"
+        ]
+      },
+      {
+        "content": "**20. `server/package.json:49` + `package-lock.json` \u2014 Major dependency upgrades without verification**\n`super-simple-scheduler 1.3.0\u21921.4.0`, `mongoose 8.16\u21928.18`, `mongodb 6.17\u21926.19`, `ioredis 5.6\u21925.7`, `eslint 9.31\u21929.34` \u2014 **No test evidence, breaking changes likely** (see #10).\n> Input: Deploy \u2192 Runtime failures in scheduler, DB, Redis.",
+        "path": "server/package.json",
+        "start_line": 49,
+        "end_line": 49,
+        "observation_id": "e6672b42bb4f647c",
+        "claimed_path": "server/package.json",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "**22. `server/src/service/infrastructure/networkService.js:1` \u2014 Unused import**\n`import { match } from \"assert\";` \u2014 Dead code, indicates incomplete refactor.\n\n---",
+        "path": "server/src/service/infrastructure/networkService.js",
+        "start_line": 1,
+        "end_line": 1,
+        "observation_id": "56a259623bdeedde",
+        "claimed_path": "server/src/service/infrastructure/networkService.js",
+        "path_resolution": "exact",
+        "merged_from": []
+      }
+    ]
+  },
+  "rundir": "/home/mjarnold/.cache/llm-panel/runs/aacr-up-48c5i0er-b15f40042aa0/20260829-060909-2998673",
+  "extractor": "3",
+  "unlocated": [
+    {
+      "content": "### 2. `client/src/Components/Table/index.jsx`\n\n**Defect at line 103 (hunk `@@ -101,24 +103,54 @@`): Tooltip wraps TableRow, breaking HTML table structure**\nThe `<Tooltip>` component wraps `<TableRow>` directly. In HTML, `<tr>` (TableRow) must be a direct child of `<tbody>`/`<table>`. Wrapping it in a `<div>` (what Tooltip renders) produces invalid DOM: `<div><tr>...</tr></div>`. Browsers will hoi",
+      "observation_id": "74298060bb7a4466",
+      "claimed_path": "client/src/Components/Table/index.jsx",
+      "path_resolution": "exact"
+    },
+    {
+      "content": "### 4. `client/src/Pages/Incidents/Components/IncidentTable/index.jsx`\n\n**Defect at line 18-21 (hunk `@@ -1,5 +1,10 @@`): Import collision \u2014 `Table` imported twice**\n```js\nimport DataTable from \"../../../../Components/Table\";\nimport Table from \"@mui/material/Table\";\n```\nThe local `Table` component (aliased as `DataTable`) and MUI `Table` are both imported. The component uses `<DataTable ... />` at",
+      "observation_id": "3be78aeb77de3a42",
+      "claimed_path": "client/src/Pages/Incidents/Components/IncidentTable/index.jsx",
+      "path_resolution": "exact"
+    },
+    {
+      "content": "### 8. `server/package-lock.json` + `server/package.json` (super-simple-scheduler 1.3.0 \u2192 1.4.0)\n**Defect: Dependency upgrade without changelog review / breaking change check**\n`super-simple-scheduler` minor version bump (1.3.0 \u2192 1.4.0). The `package-lock.json` shows massive transitive dependency changes (eslint 9.31\u21929.34, mongodb 6.17\u21926.18, mongoose 8.16\u21928.18, ioredis 5.6\u21925.7, etc.). **No test re",
+      "observation_id": "bd2e721c52e40a37",
+      "claimed_path": "server/package-lock.json",
+      "path_resolution": "exact"
+    },
+    {
+      "content": "### 11. `server/src/db/mongo/MongoDB.js` + migration files\n**Defect at line 67-68: `await runMigrations()` runs on every connection**\n`runMigrations()` is called inside `connect()` after successful connection. If the app uses a connection pool or reconnects, migrations run repeatedly. The migration `migrateStatusWindowThreshold` uses `Monitor.find({ statusWindowThreshold: { $lt: 1 } })` \u2014 after fi",
+      "observation_id": "1fdd00fb6d28f915",
+      "claimed_path": "server/src/db/mongo/MongoDB.js",
+      "path_resolution": "exact"
+    },
+    {
+      "content": "### 12. `server/src/service/infrastructure/SuperSimpleQueue/SuperSimpleQueue.js`\n\n**Defect at line 88-90: `updateJob` signature changed incompatibly**\nOld: `this.scheduler.updateJob(monitor._id.toString(), monitor.interval)`\nNew: `this.scheduler.updateJob(monitor._id.toString(), { repeat: monitor.interval, data: monitor.toObject() })`\nThe `super-simple-scheduler` library's `updateJob` method signa",
+      "observation_id": "de644d8aff07523e",
+      "claimed_path": "server/src/service/infrastructure/SuperSimpleQueue/SuperSimpleQueue.js",
+      "path_resolution": "exact"
+    },
+    {
+      "content": "### 13. `server/src/service/infrastructure/networkService.js` \u2014 **MOST DEFECTS HERE**\n\n**Defect at line 1: `import { match } from \"assert\";` \u2014 UNUSED IMPORT**\n`match` is imported but never used. Dead code. Not a runtime defect but indicates sloppy change.\n\n**Defect at line 152-165: HTTP response matching logic rewritten \u2014 breaks `jsonPath` matching**\nOld code: if `expectedValue` OR `jsonPath`, log",
+      "observation_id": "b4afe0a3844e232a",
+      "claimed_path": "server/src/service/infrastructure/networkService.js",
+      "path_resolution": "exact"
+    },
+    {
+      "content": "**21. `client/src/locales/en.json` \u2014 Translation keys changed, other locales not updated**\nKeys `uptimeGeneralInstructions.docker`, `queuePage.jobTable.intervalHeader`, `monitorType.docker.label/placeholder` changed/added \u2192 **Missing keys in other languages show key names**.\n> Input: Switch to French \u2192 \"queuePage.jobTable.intervalHeader\" displayed.",
+      "observation_id": "ad54f073d905aef2",
+      "claimed_path": "client/src/locales/en.json",
+      "path_resolution": "exact"
+    },
+    {
+      "content": "### Summary by File\n\n| File | Critical | High | Medium | Low |\n|------|----------|------|--------|-----|\n| `client/src/Pages/Incidents/Components/IncidentTable/index.jsx` | 1 | - | - | - |\n| `server/src/controllers/statusPageController.js` | 1 | - | - | - |\n| `server/src/service/infrastructure/networkService.js` | 3 | 3 | 2 | 1 |\n| `server/src/db/models/Monitor.js` + `statusService.js` | 1 | 1 | -",
+      "observation_id": "642ae739f2ba5304",
+      "claimed_path": "client/src/Pages/Incidents/Components/IncidentTable/index.jsx",
+      "path_resolution": "exact"
+    }
+  ]
+}
