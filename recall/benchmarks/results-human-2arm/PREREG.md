@@ -32,3 +32,15 @@ harness timeout once; codex quota exhaustion is waited out, never counted. A slo
 degraded after that stands and is reported. No instance is dropped for its result.
 
 **Stopping rule.** All 35 PRs × 2 arms, then score once. No interim looks at recall.
+
+**Deviation, recorded 2026-08-29 before any further panel ran.** After 14 of 35 PRs (both
+arms complete, 28 panels) the codex judge hit its ChatGPT *weekly* usage cap (06:29 EDT,
+reset Sep 3 12:26 PM EDT). For the remaining 21 PRs (plus ClickHouse@d67628c's volume arm,
+whose codex slot was the refusal) the codex slot is filled by `or-gpt` = the same model,
+`openai/gpt-5.6-sol`, reached through OpenRouter under the opencode transport instead of the
+codex CLI. Same prompt, effort, timeout, `--cwd-mode empty`; what differs is the harness
+(opencode's tool loop and `--variant high` instead of codex's `model_reasoning_effort`), and
+billing (per-token instead of subscription). Roster note: `~/.config/llm-panel/roster.json`
+`judges.or-gpt`. The analysis treats codex and or-gpt as one slot; the README reports the
+split (14 codex / 21 or-gpt PRs) and a per-slot descriptive cut so the substitution's effect
+is visible rather than assumed nil. Hypothesis, sample, test and stopping rule unchanged.
