@@ -48,6 +48,23 @@ Paired on the same 123 references (`../../aacr-mcnemar`):
 4. **No discrimination, again.** Valid 25.2% vs rejected 19.4%, ratio 1.30, Fisher p = 0.66.
    On rejected PRs the arm emits 220 findings and matches 7 of them.
 
+## The human-authored cut, across every arm
+
+| arm | human-authored (n=38) | AI-authored (n=85) |
+| --- | --------------------: | -----------------: |
+| defect (clean) | 5 (13.2%) | 10 (11.8%) |
+| checkout | 4 (10.5%) | 15 (17.6%) |
+| broad | **10 (26.3%)** | 22 (25.9%) |
+| volume | 5 (13.2%) | **26 (30.6%)** |
+
+Human-only paired tests: broad vs clean 5/0 (p = 0.06), vs checkout 6/0 (p = 0.03), vs
+clean2j 8/0 (p = 0.008), vs volume 5/0 (p = 0.06) — broad never loses a human-authored
+match to any arm. Volume vs clean on human references is 2/2, p = 1.0: the exhaustiveness
+instruction's gain is entirely on AI-authored references. A powered test of "broad > volume
+on human-authored references" (26% vs 13%) needs ~144 human references per arm; the
+benchmark holds 391 across 178 PRs (48 PRs carry ≥3), so ~48 PRs chosen for human
+references, two arms. Not run.
+
 ## Roster and retries
 
 53/54 positive slots, 27/27 negative, after four passes. Under this prompt nemotron
