@@ -44,3 +44,21 @@ billing (per-token instead of subscription). Roster note: `~/.config/llm-panel/r
 `judges.or-gpt`. The analysis treats codex and or-gpt as one slot; the README reports the
 split (14 codex / 21 or-gpt PRs) and a per-slot descriptive cut so the substitution's effect
 is visible rather than assumed nil. Hypothesis, sample, test and stopping rule unchanged.
+
+**Run-time deviations, recorded before scoring (2026-08-29).**
+1. *Bridge crash on the largest diff.* ollama@498792c's diff (839 KB) exceeded Linux's
+   128 KB per-argument limit; the bridge passed the prompt as argv and raised E2BIG at exec,
+   and the driver — which had no cap on "bridge produced nothing" — relaunched it 569 times
+   before being stopped. Fixed by sending the prompt on stdin (commit ea38c1c) and capping
+   no-result relaunches at 2; PRs 31–35 ran on the fixed bridge. No judge was ever reached
+   during the loop, so no panel was consumed or discarded.
+2. *Retry counters reset on the restart.* three.js@7388f60's volume arm had stood degraded
+   (nemotron `unavailable` ×4); the restarted driver retried it once more and nemotron
+   answered, so that panel is 3/3 rather than 2/3. One retry beyond the fixed policy.
+3. *Whole-panel burst on the last instance.* SDL@96dfef3's volume arm lost all three judges in
+   the same minute (or-gpt and nemotron "stopped on tool-calls before text", big-pickle 429)
+   on four attempts. Because the failure was a shared burst rather than three independent
+   refusals — the same PR's broad arm had three full reviews 30 min earlier and the diff is
+   14 KB — one further attempt was made before any score was computed: or-gpt and nemotron
+   answered, big-pickle 429'd again. The panel stands at 2/3. One retry beyond the policy.
+Final slot count: broad 105/105, volume 104/105.
