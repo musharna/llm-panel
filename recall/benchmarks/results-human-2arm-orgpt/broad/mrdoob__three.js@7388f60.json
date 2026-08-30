@@ -1,0 +1,294 @@
+{
+  "review": {
+    "comments": [
+      {
+        "content": "2. **[Documentation defect] `src/cameras/PerspectiveCamera.js:116-117`** \u2014 `minTarget` and `maxTarget` are documented as numbers, but the method writes the resulting bounds into `Vector2`-like targets. Following this signature and passing numbers will fail when the implementation invokes vector methods; both types should be `Vector2`.",
+        "path": "src/cameras/PerspectiveCamera.js",
+        "start_line": 116,
+        "end_line": 116,
+        "observation_id": "ee94b93f27bd3ef0",
+        "claimed_path": "src/cameras/PerspectiveCamera.js",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "3. **[Documentation defect] `src/extras/PMREMGenerator.js:166`** \u2014 `renderTarget` is typed as `{null}`, even though callers may supply a `WebGLRenderTarget`. Generated API/type information will reject the supported reuse-render-target path. This should be `{WebGLRenderTarget}` with the existing nullable/default annotation.",
+        "path": "src/extras/PMREMGenerator.js",
+        "start_line": 166,
+        "end_line": 166,
+        "observation_id": "7595c4b38602e3b9",
+        "claimed_path": "src/extras/PMREMGenerator.js",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "4. **[Machine-readable contract regression] `src/nodes/core/Node.js:535`** \u2014 The return contract for `updateBefore` is moved from `@return` into prose; the same occurs for `updateAfter` at line 548 and `update` at line 561. Documentation/type generators will now describe these hooks as returning nothing even though subclasses may signal whether they updated. Keep a formal return declaration, using an accepted type such as `{boolean|undefined}`, rather than weakening the API contract to satisfy the lint rule.",
+        "path": "src/nodes/core/Node.js",
+        "start_line": 535,
+        "end_line": 535,
+        "observation_id": "4554e7ac1cd1dacb",
+        "claimed_path": "src/nodes/core/Node.js",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "5. **[Documentation defect] `src/extras/PMREMGenerator.js:107-109`** \u2014 `sigma`, `near`, and `far` have defaults and may be omitted, but the new declarations mark all three as required. Generated signatures will incorrectly require callers to provide them; they should be `[sigma=0]`, `[near=0.1]`, and `[far=100]`.",
+        "path": "src/extras/PMREMGenerator.js",
+        "start_line": 107,
+        "end_line": 107,
+        "observation_id": "85dc161ab1bae727",
+        "claimed_path": "src/extras/PMREMGenerator.js",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "6. **[Documentation defect] `src/nodes/utils/StorageArrayElementNode.js:47`** \u2014 The setter parameter is declared as the broad `{Node}` while the property immediately below is declared `{StorageBufferNode}`. This contradictory signature advertises unsupported assignments and loses the useful subtype constraint; the parameter should also be `{StorageBufferNode}`.\n\nI checked the supplied diff; the workspace contains no repository files with which to verify additional surrounding code or the installed ESLint version.",
+        "path": "src/nodes/utils/StorageArrayElementNode.js",
+        "start_line": 47,
+        "end_line": 47,
+        "observation_id": "7f8dc78e6859b818",
+        "claimed_path": "src/nodes/utils/StorageArrayElementNode.js",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "**1. ScreenNode.js:95 vs 98 \u2014 stale JSDoc that contradicts the signature, right in a file the PR touches (missing validation / abstraction that will not hold).**\nThe block documents `@param {NodeFrame} frame - A reference to the current node frame.`, but the context line right below is `update( { renderer } ) {` \u2014 the parameter is a destructured renderer, not a frame, and its name is not `frame`. This PR's headline change is enabling `valid-jsdoc` at error level, which is *supposed* to catch exactly this (documented param name not in the signature). Either the newly-enabled rule fails lint on this block and the PR is incomplete (it edits this very comment \u2014 removing `@return` \u2014 without fixing the stale `@param`), or the rule silently skips destructured parameters, in which case the guarantee the PR claims to add is demonstrably hollow on the first destructured signature it encounters. Either way this needs resolving, and the doc is wrong for readers regardless: the parameter is the renderer.",
+        "path": "src/nodes/display/ScreenNode.js",
+        "start_line": 95,
+        "end_line": 95,
+        "observation_id": "1b3b02b2067f31e6",
+        "claimed_path": "ScreenNode.js",
+        "path_resolution": "basename",
+        "merged_from": []
+      },
+      {
+        "content": "**2. src/cameras/PerspectiveCamera.js:116-117 \u2014 wrong param types on a public API (misleading docs \u2192 wrong API-surface output).**\n`getViewBounds( distance, minTarget, maxTarget )` \u2014 the diff annotates `minTarget` and `maxTarget` as `{number}`, but this file's own doc text says \"Sets minTarget and maxTarget to the coordinates of the lower-left and upper-right corners\" \u2014 they are mutated set targets, not numbers (in the reference implementation they are `Vector3` objects assigned via `.set(...).add(position)`; even read as 2D they can't be `number`). This is a public camera method whose docs are published from these comments, so downstream API docs will tell users to pass numbers. Note also this page exactly exposes what `requireParamType: true` does *not* do: it only checks that a type token exists, not that it's the right type, so this wrong type sails through the validation this PR adds.",
+        "path": "src/cameras/PerspectiveCamera.js",
+        "start_line": 116,
+        "end_line": 116,
+        "observation_id": "ac28e528a410d4b4",
+        "claimed_path": "src/cameras/PerspectiveCamera.js",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "**3. src/extras/PMREMGenerator.js:164 \u2014 `@param {null}` \u2014 type literal is wrong (misleading docs).**\n`fromCubemap`'s optional render target is documented as `{null}`, while the structurally identical `fromEquirectangular` six lines above (line 148) says `{WebGLRenderTarget}`, and the added `@return {WebGLRenderTarget}` on the same block says the method returns one. The API takes `renderTarget = null` \u2014 the type is `WebGLRenderTarget` (nullable/optional), not `null`.\n\n**4. .eslintrc.json:67 \u2014 `valid-jsdoc` is deprecated core ESLint (dead-end tooling).**\nThe rule has been deprecated in ESLint core since v5.10.0 and was removed in v9 \u2014 this PR hard-wires the entire repo's documentation compliance to a rule the ecosystem has abandoned (the migration path is `eslint-plugin-jsdoc`, whose semantics differ). At error level this is a time bomb: on an ESLint \u22659 the config itself fails to parse, and on v8 it runs but logs deprecation warnings on every lint pass. Enabling a deprecated rule as a new enforcement gate is a maintenance commitment to a dead API.",
+        "path": "src/extras/PMREMGenerator.js",
+        "start_line": 164,
+        "end_line": 164,
+        "observation_id": "19a5a9811b3a7e32",
+        "claimed_path": "src/extras/PMREMGenerator.js",
+        "path_resolution": "exact",
+        "merged_from": [
+          "856e473f83af4443"
+        ]
+      },
+      {
+        "content": "**5. src/nodes/core/Node.js:534, 547, 560 \u2014 the update-return contract is demoted from a tag to prose (weakened validation).**\n`updateBefore`, `updateAfter`, and `update` previously carried `@return {Boolean?} An optional bool that indicates whether the implementation actually performed an update or not`. The PR replaces that tag with an untagged sentence (\"This method should return an optional bool...\"). The sentence is then invisible to the very validation this PR adds \u2014 `requireReturn: false` was configured, so nothing checks it, and docs generators no longer emit the return. These methods' whole contract *is* the optional-bool return (subclasses implement caching behavior around it); a docs-enforcement PR should keep that in a checkable tag (`@return {boolean}` with the nullable split), not delete the tag and keep the sentence where the linter can't see it.",
+        "path": "src/nodes/core/Node.js",
+        "start_line": 534,
+        "end_line": 534,
+        "observation_id": "276041d647d92067",
+        "claimed_path": "src/nodes/core/Node.js",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "**6. src/nodes/core/Node.js:128 and src/nodes/utils/StorageArrayElementNode.js:47 \u2014 `@param` grafted onto accessor/property docs (duplicated/incoherent state).**\n`needsUpdate`'s doc block is a property doc (`@type {Boolean}` / `@default false`), and the PR appends `@param {boolean} value` to it \u2014 adjacent lines now disagree on capitalization (`Boolean` vs `boolean`) and mix property semantics with parameter semantics. Same pattern at StorageArrayElementNode.js:47, where `@param {Node} value` contradicts the block's own `@type {StorageBufferNode}` (line 48) \u2014 the setter's value is declared `{Node}` while the property is a `StorageBufferNode`. These look like docs contorted to satisfy the linter rather than describe the API; the type contradiction is the kind of thing the rule was supposed to catch and doesn't.",
+        "path": "src/nodes/core/Node.js",
+        "start_line": 128,
+        "end_line": 128,
+        "observation_id": "5f2f647db5e790c1",
+        "claimed_path": "src/nodes/core/Node.js",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "**7. src/nodes/pmrem/PMREMNode.js:107 \u2014 copy-paste description left in a block this PR edits (misleading docs).**\n\"Constructs a new function overloading node.\" \u2014 this is `PMREMNode`'s constructor (the diff edits the very next line, renaming the param at 109, so the block is in scope). A docs-compliance PR that touches this block without fixing the class description conveys the wrong API to readers.\n\n**8. Consistency, low severity but undercutting the PR's stated goal (style/unclear logic).**\n- `{Number}` capital vs `{number}` lowercase within the same PR: src/extras/TextureUtils.js:73-77 and src/renderers/common/extras/PMREMGenerator.js:133-135 use `Number`; PerspectiveCamera.js:115-117 and Node.js:128 use lowercase. `valid-jsdoc` has a `preferType` option for exactly this and it isn't configured, so the rule blesses both.\n- `{RenderTarget?}` (src/renderers/common/extras/PMREMGenerator.js:136) and the pre-existing `{Node?}` (src/nodes/display/NormalMapNode.js:60) use the Closure nullable-`?` suffix redundantly on params already marked optional with `[x=null]` \u2014 `?` on an optional param is meaningless and inconsistent with the `{WebGLRenderTarget}` style used two lines above in the same file.\n- `@return` (PMREMGenerator.js, TextureUtils.js) vs `@returns` (PerspectiveCamera.js:136) mixed across the same PR.",
+        "path": "src/nodes/pmrem/PMREMNode.js",
+        "start_line": 107,
+        "end_line": 107,
+        "observation_id": "3ae918cb06238333",
+        "claimed_path": "src/nodes/pmrem/PMREMNode.js",
+        "path_resolution": "exact",
+        "merged_from": [
+          "00a19d88a5ccd0ed"
+        ]
+      },
+      {
+        "content": "- src/extras/PMREMGenerator.js:107-109 documents `fromScene`'s defaults (`sigma`, `near`, `far`) without the `[sigma=0]`/`[near=0.1]`/`[far=100]` markers its twin in src/renderers/common/extras/PMREMGenerator.js:133-135 uses \u2014 the two near-identical files now document the same API differently.",
+        "path": "src/extras/PMREMGenerator.js",
+        "start_line": 107,
+        "end_line": 107,
+        "observation_id": "50e2c9ef22fd18a3",
+        "claimed_path": "src/extras/PMREMGenerator.js",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "- src/extras/PMREMGenerator.js:488 marks `_blur`'s `poleAxis` as optional `[poleAxis]`, but every internal call site passes it; the optional marker is wrong.",
+        "path": "src/extras/PMREMGenerator.js",
+        "start_line": 488,
+        "end_line": 488,
+        "observation_id": "2185325d116d12a2",
+        "claimed_path": "src/extras/PMREMGenerator.js",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "- src/cameras/PerspectiveCamera.js:66 \u2014 `setFocalLength`'s `@param` description is a unit-precondition (\"Values for focal length and film gauge must have the same unit.\"), not a description of the parameter.\n\nNothing here is a runtime defect (the diff changes no executable code), so no crash/leak/race items. The substantive issues are items 1-3: an enforcement rule that is either broken by or blind to the file it touches, and two wrong public API type annotations.**Defects (Documentation Bugs - Fixed in This PR)**",
+        "path": "src/cameras/PerspectiveCamera.js",
+        "start_line": 66,
+        "end_line": 66,
+        "observation_id": "071235ec10adad76",
+        "claimed_path": "src/cameras/PerspectiveCamera.js",
+        "path_resolution": "exact",
+        "merged_from": [
+          "9b4f8e74b53df897"
+        ]
+      },
+      {
+        "content": "1. **src/nodes/utils/RemapNode.js:24** \u2014 **DOCUMENTATION BUG**: Duplicate `@param` name `inLowNode` for both lower and upper bound. The second should be `inHighNode`. This misleads anyone reading the docs.",
+        "path": "src/nodes/utils/RemapNode.js",
+        "start_line": 24,
+        "end_line": 24,
+        "observation_id": "d1aea609e49093a9",
+        "claimed_path": "src/nodes/utils/RemapNode.js",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "2. **src/nodes/code/ExpressionNode.js:22** \u2014 **DOCUMENTATION BUG**: JSDoc named the second parameter `includes` but the actual parameter is `nodeType`. Fixed.",
+        "path": "src/nodes/code/ExpressionNode.js",
+        "start_line": 22,
+        "end_line": 22,
+        "observation_id": "e766476f8b57cb7b",
+        "claimed_path": "src/nodes/code/ExpressionNode.js",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "3. **src/nodes/core/IndexNode.js:28** \u2014 **DOCUMENTATION BUG**: JSDoc named parameter `value` but actual parameter is `scope`. Fixed.",
+        "path": "src/nodes/core/IndexNode.js",
+        "start_line": 28,
+        "end_line": 28,
+        "observation_id": "05654b937aafc269",
+        "claimed_path": "src/nodes/core/IndexNode.js",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "4. **src/nodes/display/NormalMapNode.js:60** \u2014 **DOCUMENTATION BUG**: JSDoc named parameter `textureNode` but actual parameter is `node`. Fixed.",
+        "path": "src/nodes/display/NormalMapNode.js",
+        "start_line": 60,
+        "end_line": 60,
+        "observation_id": "1775c0bed61e3169",
+        "claimed_path": "src/nodes/display/NormalMapNode.js",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "5. **src/nodes/utils/MaxMipLevelNode.js:26** \u2014 **DOCUMENTATION BUG**: JSDoc named parameter `node` but actual parameter is `textureNode`. Fixed.",
+        "path": "src/nodes/utils/MaxMipLevelNode.js",
+        "start_line": 26,
+        "end_line": 26,
+        "observation_id": "48578b2d1627e800",
+        "claimed_path": "src/nodes/utils/MaxMipLevelNode.js",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "6. **src/nodes/utils/StorageArrayElementNode.js:26** \u2014 **DOCUMENTATION BUG**: JSDoc named parameter `node` but actual parameter is `storageBufferNode`. Fixed.",
+        "path": "src/nodes/utils/StorageArrayElementNode.js",
+        "start_line": 26,
+        "end_line": 26,
+        "observation_id": "e288716636d6eb19",
+        "claimed_path": "src/nodes/utils/StorageArrayElementNode.js",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "7. **src/nodes/utils/Oscillators.js:6,15,24,33** \u2014 **DOCUMENTATION BUG**: Four functions (`oscSine`, `oscSquare`, `oscTriangle`, `oscSawtooth`) had JSDoc parameter `time` but actual parameter is `t`. Fixed.",
+        "path": "src/nodes/utils/Oscillators.js",
+        "start_line": 6,
+        "end_line": 6,
+        "observation_id": "0bf7a0ccc0251dce",
+        "claimed_path": "src/nodes/utils/Oscillators.js",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "8. **src/nodes/utils/Packing.js:18** \u2014 **DOCUMENTATION BUG**: JSDoc named parameter `color` but actual parameter is `node`. Fixed.\n\n**Potential Regression**",
+        "path": "src/nodes/utils/Packing.js",
+        "start_line": 18,
+        "end_line": 18,
+        "observation_id": "70d599afa35a2bb1",
+        "claimed_path": "src/nodes/utils/Packing.js",
+        "path_resolution": "exact",
+        "merged_from": [
+          "4a88ef1b6600c768"
+        ]
+      },
+      {
+        "content": "9. **src/nodes/display/ScreenNode.js:96** \u2014 **DOCUMENTATION REGRESSION RISK**: Removed `@return {Boolean?}` tag from `update()` override. Base class `Node.update` (src/nodes/core/Node.js:558) documents a `Boolean?` return. If `ScreenNode.update` returns a boolean (e.g., for caching), this removal hides that contract. Verify the implementation returns `void` intentionally.\n\n**Style / Maintainability**",
+        "path": "src/nodes/display/ScreenNode.js",
+        "start_line": 96,
+        "end_line": 96,
+        "observation_id": "f13295c6e0e5abf7",
+        "claimed_path": "src/nodes/display/ScreenNode.js",
+        "path_resolution": "exact",
+        "merged_from": [
+          "8f45c95079d68df6"
+        ]
+      },
+      {
+        "content": "10. **src/nodes/core/Node.js:128** \u2014 **UNCONVENTIONAL JSDOC**: Added `@param {boolean} value` to setter `needsUpdate`. Setters implicitly receive `value`; documenting it is redundant but not harmful.",
+        "path": "src/nodes/core/Node.js",
+        "start_line": 128,
+        "end_line": 128,
+        "observation_id": "f709d4ec3a601004",
+        "claimed_path": "src/nodes/core/Node.js",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "11. **src/nodes/core/Node.js:535,548,561** \u2014 **STYLE**: Moved `@return` description before `@param` in `updateBefore`, `updateAfter`, `update`. Consistent with JSDoc convention (tags ordered: description, @param, @return).\n\n12. **.eslintrc.json:66-75** \u2014 **NEW LINT RULE**: Added `valid-jsdoc` with `requireReturnType: true`, `requireParamType: true`. This will error on missing JSDoc types going forward. Ensure all existing code passes (this PR appears to add coverage for touched files).",
+        "path": "src/nodes/core/Node.js",
+        "start_line": 535,
+        "end_line": 535,
+        "observation_id": "ad2ad1f3727718cb",
+        "claimed_path": "src/nodes/core/Node.js",
+        "path_resolution": "exact",
+        "merged_from": [
+          "0b129082bc2a3f6a"
+        ]
+      },
+      {
+        "content": "- `PMREMNode.js:110` parameter `texture` \u2192 `value` (matches setter parameter name at line 206).\n\n---\n\n**Summary**: This PR fixes 8 documentation bugs (mismatched/duplicate parameter names) and adds missing JSDoc coverage. Only item **9** needs verification \u2014 confirm `ScreenNode.update` intentionally returns `void`.",
+        "path": "src/nodes/pmrem/PMREMNode.js",
+        "start_line": 110,
+        "end_line": 110,
+        "observation_id": "134101adc610168d",
+        "claimed_path": "PMREMNode.js",
+        "path_resolution": "basename",
+        "merged_from": []
+      }
+    ]
+  },
+  "rundir": "/home/user/.cache/llm-panel/runs/aacr-up-o6fxul_s-a0f3f1971998/20260829-122152-3778372",
+  "extractor": "3",
+  "unlocated": [
+    {
+      "content": "1. **[Future compatibility] `.eslintrc.json:67`** \u2014 `valid-jsdoc` is a deprecated ESLint core rule and was removed in ESLint 9. A dependency upgrade will fail lint configuration with \u201cDefinition for rule 'valid-jsdoc' was not found.\u201d Use the maintained `eslint-plugin-jsdoc` equivalent instead.",
+      "observation_id": "aef76bd075330c98",
+      "claimed_path": "eslintrc.json",
+      "path_resolution": "not-in-diff"
+    },
+    {
+      "content": "**Positive Changes (No Issues)**\n\n- Comprehensive JSDoc added to `PerspectiveCamera.js`, both `PMREMGenerator.js` files, `TextureUtils.js`, `PointLightNode.js`, `RangeNode.js`, `WebXRManager.js`, and various node files.\n- Parameter names in `NodeBuilder.js` corrected for consistency (`Node` \u2192 `node`, `type` \u2192 `array`, etc.).",
+      "observation_id": "cc5d40c71522c93d",
+      "claimed_path": "PerspectiveCamera.js",
+      "path_resolution": "basename"
+    }
+  ]
+}

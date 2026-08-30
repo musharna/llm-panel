@@ -1,0 +1,339 @@
+{
+  "review": {
+    "comments": [
+      {
+        "content": "1. **High \u2014 `src/valkey-benchmark.c:397`**  \n   `resetClient()` invokes `writeHandler()` before resetting `c->written` and `c->pending` at lines 401\u2013402.  \n   **Failure scenario:** `valkey-benchmark --rdma -c 1 -n 2 PING` completes its first request with `c->written` still equal to the previous command length. The synchronous handler sees the old completed-write state and does not send the second request; afterward `c->written` becomes zero, but no writable event remains to restart the write, so the benchmark stalls.",
+        "path": "src/valkey-benchmark.c",
+        "start_line": 397,
+        "end_line": 397,
+        "observation_id": "9a79766feeadaa6b",
+        "claimed_path": "src/valkey-benchmark.c",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "2. **High \u2014 `src/valkey-benchmark.c:834`**  \n   The event strategy is selected using global `config.rdma`, even though individual clients may have been created as TCP clients.  \n   **Failure scenario:** with `--cluster --rdma`, line 662 leaves the per-client `rdma` value zero, creating a nonblocking TCP connection, but line 834 immediately invokes its write handler as if it were an always-writable RDMA context. If the TCP connection is still in progress, the initial write fails or the client is dropped instead of waiting for `AE_WRITABLE`.",
+        "path": "src/valkey-benchmark.c",
+        "start_line": 834,
+        "end_line": 834,
+        "observation_id": "36c07b1c366cebc0",
+        "claimed_path": "src/valkey-benchmark.c",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "3. **High \u2014 `src/valkey-benchmark.c:655`**  \n   Cluster clients always retain `rdma = 0`; only non-cluster clients copy `config.rdma` at line 662.  \n   **Failure scenario:** `valkey-benchmark --cluster --rdma` against nodes accepting both TCP and RDMA completes successfully but sends the measured workload over TCP, producing TCP measurements despite the requested RDMA transport.",
+        "path": "src/valkey-benchmark.c",
+        "start_line": 655,
+        "end_line": 655,
+        "observation_id": "54ca3bb15e6b9367",
+        "claimed_path": "src/valkey-benchmark.c",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "4. **High \u2014 `src/valkey-benchmark.c:1104`**  \n   Initial cluster discovery explicitly passes `rdma = 0`.  \n   **Failure scenario:** `valkey-benchmark --cluster --rdma -h node -p <rdma-port>` against an RDMA-only seed node attempts a TCP connection to the RDMA listener and exits with \u201cFailed to fetch cluster configuration\u201d before running any benchmark.",
+        "path": "src/valkey-benchmark.c",
+        "start_line": 1104,
+        "end_line": 1104,
+        "observation_id": "f7736df131b02562",
+        "claimed_path": "src/valkey-benchmark.c",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "5. **High \u2014 `src/valkey-benchmark.c:1217`**  \n   Cluster-slot refreshes explicitly use TCP even in RDMA mode.  \n   **Failure scenario:** a benchmark starts while its seed node temporarily has TCP enabled, then the topology changes and only RDMA endpoints remain available. The next slot refresh attempts TCP, fails, and leaves the benchmark unable to update routing.",
+        "path": "src/valkey-benchmark.c",
+        "start_line": 1217,
+        "end_line": 1217,
+        "observation_id": "c00c8ffccf99d8ec",
+        "claimed_path": "src/valkey-benchmark.c",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "6. **High \u2014 `src/valkey-benchmark.c:2079`**  \n   The setup connection used by the `fcall` test explicitly disables RDMA.  \n   **Failure scenario:** `valkey-benchmark --rdma -t fcall -p <rdma-port>` can retrieve server configuration over RDMA, but function installation is attempted over TCP and fails on an RDMA-only server, so the selected benchmark never runs.",
+        "path": "src/valkey-benchmark.c",
+        "start_line": 2079,
+        "end_line": 2079,
+        "observation_id": "709b1b889c5ca988",
+        "claimed_path": "src/valkey-benchmark.c",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "7. **Medium \u2014 `src/valkey-benchmark.c:1832`**  \n   Per-node server configuration is fetched with TCP regardless of `--rdma`.  \n   **Failure scenario:** cluster discovery succeeds through a dual-transport entry node, but another node exposes only RDMA. Fetching that node\u2019s `CONFIG` fails, leaving `node->redis_config` unset and causing configuration-dependent benchmark decisions to run without that node\u2019s actual settings.",
+        "path": "src/valkey-benchmark.c",
+        "start_line": 1832,
+        "end_line": 1832,
+        "observation_id": "4728b3e869e9b102",
+        "claimed_path": "src/valkey-benchmark.c",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "8. **Medium \u2014 `src/valkey-benchmark.c:1492`**  \n   `--rdma` can be combined with `--tls`, although the subsequent TLS setup operates on the RDMA context as though its descriptor were a stream socket.  \n   **Failure scenario:** `valkey-benchmark --rdma --tls -p <rdma-port>` creates an RDMA context and then passes it to the TLS connection setup; TLS is attached to the RDMA completion/event descriptor rather than a TCP stream, causing connection setup or the first handshake to fail.",
+        "path": "src/valkey-benchmark.c",
+        "start_line": 1492,
+        "end_line": 1492,
+        "observation_id": "4b255f7d7501c6d2",
+        "claimed_path": "src/valkey-benchmark.c",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "9. **Medium \u2014 `src/valkey-cli.c:2831`**  \n   The CLI likewise accepts simultaneous `--rdma` and `--tls` and later applies TLS setup to the RDMA context.  \n   **Failure scenario:** `valkey-cli --rdma --tls -p <rdma-port> PING` establishes/selects RDMA and then attempts a socket-based TLS handshake on that context, failing before the command can be sent.",
+        "path": "src/valkey-cli.c",
+        "start_line": 2831,
+        "end_line": 2831,
+        "observation_id": "fead97ed589105d2",
+        "claimed_path": "src/valkey-cli.c",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "10. **Medium \u2014 `src/valkey-cli.c:1645`**  \n    Cluster redirections reuse `config.rdma` with the host and port advertised in `MOVED` replies. Those advertised ports are ordinary cluster client ports, not separately configured RDMA listener ports.  \n    **Failure scenario:** `valkey-cli -c --rdma -p <rdma-port> GET key` receives `MOVED 1234 node2:6379`; the retry attempts RDMA against `node2:6379`, where node2 is listening for TCP, and the redirected command fails.",
+        "path": "src/valkey-cli.c",
+        "start_line": 1645,
+        "end_line": 1645,
+        "observation_id": "691a4d147b2b783d",
+        "claimed_path": "src/valkey-cli.c",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "11. **Medium \u2014 `src/valkey-cli.c:3991`**  \n    Cluster-manager connections apply RDMA to `node->port`, which is populated from the cluster topology\u2019s advertised client port.  \n    **Failure scenario:** `valkey-cli --rdma --cluster check <entry-rdma-address>` discovers a node as `node2:6379`, then attempts an RDMA connection to that TCP port and reports the healthy node as unreachable.",
+        "path": "src/valkey-cli.c",
+        "start_line": 3991,
+        "end_line": 3991,
+        "observation_id": "5852d20c82715b7b",
+        "claimed_path": "src/valkey-cli.c",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "12. **Low \u2014 `src/valkey-benchmark.c:834`**  \n    `--rdma` combined with a Unix socket still creates a Unix-socket context, but the global RDMA flag selects the immediate-write path.  \n    **Failure scenario:** `valkey-benchmark --rdma -s /tmp/valkey.sock PING` creates a nonblocking Unix connection; if that connection is not immediately ready, `writeHandler()` is called instead of waiting for writability, causing the first request to fail. Even when it succeeds, the requested RDMA transport is silently not used.",
+        "path": "src/valkey-benchmark.c",
+        "start_line": 834,
+        "end_line": 834,
+        "observation_id": "5b9236bb6dd51ff1",
+        "claimed_path": "src/valkey-benchmark.c",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "13. **Low \u2014 `src/valkey-cli.c:1645`**  \n    A configured Unix socket takes precedence over RDMA without rejecting or clearing the RDMA request.  \n    **Failure scenario:** `valkey-cli --rdma -s /tmp/valkey.sock PING` successfully sends the command over the Unix socket, even though `--rdma` promises an RDMA connection, yielding a successful but incorrectly transported command.",
+        "path": "src/valkey-cli.c",
+        "start_line": 1645,
+        "end_line": 1645,
+        "observation_id": "2c52f79ec34d2658",
+        "claimed_path": "src/valkey-cli.c",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "### 1. **src/valkey-benchmark.c:392** \u2014 RDMA event loop bypass breaks all RDMA benchmark traffic\n```c\nif (config.rdma) {\n    writeHandler(el, c->context->fd, c, 0); /* RDMA context always writable, but it can't be invoked by AE_WRITABLE */\n} else {\n    aeCreateFileEvent(el, c->context->fd, AE_WRITABLE, writeHandler, c);\n}\n```\n**Failure scenario**: Run `valkey-benchmark --rdma -t set`. The first `writeHandler` call executes once at client creation, sends one pipeline batch, then **never runs again** because no `AE_WRITABLE` event is registered. Benchmark hangs after initial requests, reporting near-zero throughput.\n\n---",
+        "path": "src/valkey-benchmark.c",
+        "start_line": 392,
+        "end_line": 392,
+        "observation_id": "b6f9694c00465450",
+        "claimed_path": "src/valkey-benchmark.c",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "### 2. **src/valkey-benchmark.c:819** \u2014 Same event loop bypass in `createClient` initial connection\n```c\nif (config.idlemode == 0) {\n    if (config.rdma) {\n        writeHandler(el, c->context->fd, c, 0);\n    } else {\n        aeCreateFileEvent(el, c->context->fd, AE_WRITABLE, writeHandler, c);\n    }\n}\n```\n**Failure scenario**: Same as above \u2014 RDMA benchmark clients send one burst then stall permanently.\n\n---",
+        "path": "src/valkey-benchmark.c",
+        "start_line": 819,
+        "end_line": 819,
+        "observation_id": "da33865ad3c72dd2",
+        "claimed_path": "src/valkey-benchmark.c",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "### 3. **src/Makefile:344** \u2014 Duplicate `$(RDMA_LIBS)` added to `FINAL_LIBS`\n```makefile\nifeq ($(BUILD_RDMA),yes)\n    FINAL_CFLAGS+=-DUSE_RDMA=$(BUILD_YES) -DBUILD_RDMA_MODULE=$(BUILD_NO)\n    FINAL_LIBS += $(RDMA_LIBS)\n+   FINAL_LIBS += ../deps/libvalkey/lib/libvalkey_rdma.a $(RDMA_LIBS)\nendif\n```\n**Failure scenario**: Build with `BUILD_RDMA=yes`. Linker sees `-lrdmacm -libverbs` (or similar) twice. On some linkers (ld.bfd, gold) this succeeds but wastes time; on strict linkers (`-z muldefs` off) it may fail with \"multiple definition\" errors for RDMA library symbols.\n\n---",
+        "path": "src/Makefile",
+        "start_line": 344,
+        "end_line": 344,
+        "observation_id": "e892697560c294c6",
+        "claimed_path": "src/Makefile",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "### 4. **src/Makefile:349** \u2014 `RDMA_CLIENT_LIBS` defined only for `BUILD_RDMA=module` but used unconditionally\n```makefile\nifeq ($(BUILD_RDMA),module)\n    ...\n+   RDMA_CLIENT_LIBS = ../deps/libvalkey/lib/libvalkey_rdma.a $(RDMA_LIBS)\nendif\n```\nUsed at lines 519 (TLS module), 527 (cli), 532 (benchmark).\n**Failure scenario**: Build with `BUILD_RDMA=yes` (not module). `RDMA_CLIENT_LIBS` expands to empty string. `valkey-cli` and `valkey-benchmark` link without `libvalkey_rdma.a` \u2014 RDMA connections fail at runtime with undefined symbols (`valkeyInitiateRdma`, `VALKEY_OPTIONS_SET_RDMA`, etc.).\n\n---",
+        "path": "src/Makefile",
+        "start_line": 349,
+        "end_line": 349,
+        "observation_id": "0f4eddef642119f9",
+        "claimed_path": "src/Makefile",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "### 5. **src/valkey-benchmark.c:1101** \u2014 Cluster config fetch ignores `--rdma` flag\n```c\nctx = getValkeyContext(config.conn_info.hostip, config.conn_info.hostport, config.hostsocket, 0);\n```\n**Failure scenario**: `valkey-benchmark --rdma --cluster -h 10.0.0.1`. Initial cluster slot fetch uses TCP, not RDMA. If TCP port is blocked/firewalled but RDMA port works, benchmark fails to discover cluster with \"Connection refused\" despite `--rdma` working for data connections.\n\n---",
+        "path": "src/valkey-benchmark.c",
+        "start_line": 1101,
+        "end_line": 1101,
+        "observation_id": "e1bf34dc401a8419",
+        "claimed_path": "src/valkey-benchmark.c",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "### 6. **src/valkey-benchmark.c:1214** \u2014 Cluster slots fetch ignores `--rdma` flag\n```c\nctx = getValkeyContext(node->ip, node->port, NULL, 0);\n```\n**Failure scenario**: Same as above \u2014 per-node config fetches during cluster operation use TCP instead of RDMA.\n\n---",
+        "path": "src/valkey-benchmark.c",
+        "start_line": 1214,
+        "end_line": 1214,
+        "observation_id": "518e6951389cdbb0",
+        "claimed_path": "src/valkey-benchmark.c",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "### 7. **src/valkey-benchmark.c:2076** \u2014 FCALL test ignores `--rdma` flag\n```c\nvalkeyContext *ctx = getValkeyContext(config.conn_info.hostip, config.conn_info.hostport, NULL, 0);\n```\n**Failure scenario**: `valkey-benchmark --rdma fcall`. The Lua function upload/test uses TCP connection while main benchmark uses RDMA. Fails if only RDMA path is available.\n\n---",
+        "path": "src/valkey-benchmark.c",
+        "start_line": 2076,
+        "end_line": 2076,
+        "observation_id": "761e2b27f1019208",
+        "claimed_path": "src/valkey-benchmark.c",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "### 8. **src/valkey-benchmark.c:1487** \u2014 Extra `#endif` before `#ifdef USE_RDMA` causes preprocessor error\n```diff\n             config.sslconfig.ciphersuites = strdup(argv[++i]);\n #endif\n+#endif\n+#ifdef USE_RDMA\n```\n**Failure scenario**: Build with `USE_RDMA=1`. Preprocessor sees unmatched `#endif` (closes `USE_TLS` block, then extra `#endif` with no matching `#if`). Compilation fails: `error: #endif without #if`.\n\n---",
+        "path": "src/valkey-benchmark.c",
+        "start_line": 1487,
+        "end_line": 1487,
+        "observation_id": "c7b3f557fe3cde4b",
+        "claimed_path": "src/valkey-benchmark.c",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "### 9. **src/valkey-cli.c:2822** \u2014 Same extra `#endif` preprocessor error\n```diff\n         } else if (!strcmp(argv[i], \"--tls-ciphersuites\") && !lastarg) {\n             config.sslconfig.ciphersuites = argv[++i];\n #endif\n+#endif\n+#ifdef USE_RDMA\n```\n**Failure scenario**: Build `valkey-cli` with `USE_RDMA=1`. Same unmatched `#endif` error.\n\n---",
+        "path": "src/valkey-cli.c",
+        "start_line": 2822,
+        "end_line": 2822,
+        "observation_id": "e985267a27338ce7",
+        "claimed_path": "src/valkey-cli.c",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "### 10. **src/valkey-cli.c:2953** \u2014 Extra `#endif` before `rdma_usage` variable\n```diff\n #endif\n     \\\"\\\";\n+#endif\n+const char *rdma_usage =\n```\n**Failure scenario**: Build `valkey-cli` with `USE_RDMA=1`. Unmatched `#endif` inside function body \u2014 compilation fails.\n\n---",
+        "path": "src/valkey-cli.c",
+        "start_line": 2953,
+        "end_line": 2953,
+        "observation_id": "0f7d012c4dda8384",
+        "claimed_path": "src/valkey-cli.c",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "### 11. **cmake/Modules/ValkeySetup.cmake:125** \u2014 Modules incorrectly link `valkey::valkey` (main library)\n```cmake\nif (USE_RDMA)\n    target_link_libraries(${target} valkey::valkey_rdma valkey::valkey)\nendif ()\n```\n**Failure scenario**: Build `valkey-rdma.so` module with `USE_RDMA=ON`. Module links `valkey::valkey` (the core server library). At runtime, `dlopen(\"valkey-rdma.so\")` loads a second copy of all core symbols \u2192 duplicate symbol conflicts, crashes, or undefined behavior when module calls core functions.\n\n---",
+        "path": "cmake/Modules/ValkeySetup.cmake",
+        "start_line": 125,
+        "end_line": 125,
+        "observation_id": "dba909a24d5fff73",
+        "claimed_path": "cmake/Modules/ValkeySetup.cmake",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "### 12. **src/Makefile:519** \u2014 TLS module links `RDMA_CLIENT_LIBS` unnecessarily\n```makefile\n$(TLS_MODULE_NAME): $(SERVER_NAME)\n    $(QUIET_CC)$(CC) -o $@ tls.c -shared -fPIC $(TLS_MODULE_CFLAGS) $(TLS_CLIENT_LIBS) $(RDMA_CLIENT_LIBS)\n```\n**Failure scenario**: Build with `BUILD_RDMA=module`. `valkey-tls.so` pulls in `libvalkey_rdma.a` and RDMA system libs. Module size bloats; if RDMA hardware absent at load time, `dlopen` may fail with missing `libibverbs.so`/`librdmacm.so` even for pure TLS usage.\n\n---",
+        "path": "src/Makefile",
+        "start_line": 519,
+        "end_line": 519,
+        "observation_id": "65f6c5fbafbfd0bb",
+        "claimed_path": "src/Makefile",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "### 13. **src/valkey-cli.c:2528** \u2014 Reconnection uses RDMA but doesn't re-initialize RDMA state\n```c\nvalkeyFree(c);\nc = valkeyConnectWrapper(config.conn_info.hostip, config.conn_info.hostport, config.connect_timeout, 0, config.rdma);\n```\n**Failure scenario**: `valkey-cli --rdma` running long-term. Server restarts, client reconnects. `valkeyInitiateRdma()` was called once at startup (line 2826). If RDMA library requires per-connection init (e.g., new QP/MR registration), reconnected RDMA context fails silently or crashes.\n\n---",
+        "path": "src/valkey-cli.c",
+        "start_line": 2528,
+        "end_line": 2528,
+        "observation_id": "79d66273a74805b7",
+        "claimed_path": "src/valkey-cli.c",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "### 14. **src/valkey-benchmark.c:392** \u2014 `writeHandler` called with `mask=0` but handler may inspect mask\n```c\nwriteHandler(el, c->context->fd, c, 0); /* 4th arg is mask */\n```\n**Failure scenario**: If `writeHandler` has `if (mask & AE_WRITABLE)` guards (common in ae-based code), the RDMA path skips critical logic. Hard to trigger without seeing `writeHandler` source, but high probability given ae pattern.\n\n---",
+        "path": "src/valkey-benchmark.c",
+        "start_line": 392,
+        "end_line": 392,
+        "observation_id": "f163e1bb10e6a873",
+        "claimed_path": "src/valkey-benchmark.c",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "### 15. **deps/CMakeLists.txt:19** \u2014 `ENABLE_RDMA` set conditionally but unset unconditionally\n```cmake\nif (USE_RDMA)\n    set(ENABLE_RDMA ON CACHE BOOL \"...\")\nendif ()\n...\nunset(ENABLE_RDMA CACHE)\n```\n**Failure scenario**: Configure with `USE_RDMA=OFF`. `ENABLE_RDMA` never defined, but `unset()` runs anyway. Harmless in CMake (no-op), but inconsistent with `ENABLE_TLS` pattern and masks bugs if logic later depends on `ENABLE_RDMA` being defined.\n\n---",
+        "path": "deps/CMakeLists.txt",
+        "start_line": 19,
+        "end_line": 19,
+        "observation_id": "97acfba1962590cf",
+        "claimed_path": "deps/CMakeLists.txt",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "### 16. **src/valkey-benchmark.c:651** \u2014 Local `rdma` variable shadows config but unused in cluster path\n```c\nint rdma = 0;\n...\nif (!is_cluster_client) {\n    rdma = config.rdma;\n} else {\n    // cluster path: rdma stays 0, never set from config.rdma\n}\nc->context = valkeyConnectWrapper(ip, port, tv, 1, rdma);\n```\n**Failure scenario**: `valkey-benchmark --rdma --cluster`. Cluster client connections use `rdma=0` (TCP) because cluster branch doesn't copy `config.rdma`. Data connections use TCP despite `--rdma` flag.\n\n---",
+        "path": "src/valkey-benchmark.c",
+        "start_line": 651,
+        "end_line": 651,
+        "observation_id": "f19abfcd1423467d",
+        "claimed_path": "src/valkey-benchmark.c",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "### 17. **cmake/Modules/ValkeySetup.cmake:92** \u2014 Binaries also link `valkey::valkey` unnecessarily\n```cmake\nif (USE_RDMA)\n    target_link_libraries(${target} valkey::valkey_rdma valkey::valkey)\nendif ()\n```\nApplied to main binary target (`valkey-server`, `valkey-cli`, `valkey-benchmark`). These already link `valkey::valkey` via other paths. Duplicate linkage \u2014 usually harmless but indicates confused dependency graph.\n\n---",
+        "path": "cmake/Modules/ValkeySetup.cmake",
+        "start_line": 92,
+        "end_line": 92,
+        "observation_id": "bbebd833a4f7bc07",
+        "claimed_path": "cmake/Modules/ValkeySetup.cmake",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "### 18. **src/valkey-cli.c:3989** \u2014 `clusterManagerNodeConnect` passes `config.rdma` but cluster import at line 7731 does too \u2014 however cluster import at line 1829 (valkey-benchmark) doesn't\nInconsistent: some cluster code paths respect `rdma`, others hardcode `0`. See defects 5, 6, 7.\n\n---",
+        "path": "src/valkey-cli.c",
+        "start_line": 3989,
+        "end_line": 3989,
+        "observation_id": "bdbc05b314224832",
+        "claimed_path": "src/valkey-cli.c",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "### 19. **src/Makefile:341** \u2014 `BUILD_RDMA=yes` adds `libvalkey_rdma.a` to `FINAL_LIBS` but `BUILD_RDMA=module` doesn't\n```makefile\nifeq ($(BUILD_RDMA),yes)\n    FINAL_LIBS += ../deps/libvalkey/lib/libvalkey_rdma.a $(RDMA_LIBS)\nendif\n```\nBut `BUILD_RDMA=module` adds it to `RDMA_CLIENT_LIBS` only. **Failure scenario**: `BUILD_RDMA=yes` server binary gets RDMA code linked in (correct for built-in), but `valkey-cli`/`valkey-benchmark` also get it via `FINAL_LIBS` \u2014 however if `BUILD_RDMA=module`, server doesn't get it (correct, it's a module), but cli/benchmark get it via `RDMA_CLIENT_LIBS`. The split is intentional but fragile \u2014 any change to one branch breaks the other.\n\n---",
+        "path": "src/Makefile",
+        "start_line": 341,
+        "end_line": 341,
+        "observation_id": "af06d435f96b72b2",
+        "claimed_path": "src/Makefile",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "### 20. **src/valkey-benchmark.c:1306** \u2014 `rdma_usage` string constructed but `parseOptions` has extra `#endif` (defect 8) so `--rdma` flag parsing never compiles\nCombined with defect 8: even if preprocessor error fixed, the `--rdma` flag handling code is inside the broken `#ifdef` block.\n\n---\n\nThese are 20 distinct defects with concrete failure scenarios. The most critical are #1, #2 (RDMA benchmark completely non-functional), #8, #9, #10 (compilation failures with `USE_RDMA=1`), #4 (link failures for `BUILD_RDMA=yes`), and #11 (module load crashes).",
+        "path": "src/valkey-benchmark.c",
+        "start_line": 1306,
+        "end_line": 1306,
+        "observation_id": "4873c2a1b7dd1cf4",
+        "claimed_path": "src/valkey-benchmark.c",
+        "path_resolution": "exact",
+        "merged_from": []
+      }
+    ]
+  },
+  "rundir": "/home/user/.cache/llm-panel/runs/aacr-up-5o93hfgn-59523f640157/20260830-150440-291742",
+  "extractor": "3",
+  "unlocated": []
+}

@@ -1,0 +1,106 @@
+{
+  "review": {
+    "comments": [
+      {
+        "content": "1. **High \u2014 Real defect:** `test/framework/src/main/java/org/elasticsearch/entitlement/bootstrap/TestEntitlementsRule.java:168`  \n   `revokeNodeGrants()` dereferences `POLICY_MANAGER` without checking whether entitlements are enabled. With the default `es.entitlement.enableForTests=false`, `POLICY_MANAGER` is `null`; a test-scoped integration suite rebuilding its cluster reaches the unconditional call at `ESIntegTestCase.java:552` on its second test and fails with `NullPointerException`.",
+        "path": "test/framework/src/main/java/org/elasticsearch/entitlement/bootstrap/TestEntitlementsRule.java",
+        "start_line": 168,
+        "end_line": 168,
+        "observation_id": "29ec68cd34bcd3c2",
+        "claimed_path": "test/framework/src/main/java/org/elasticsearch/entitlement/bootstrap/TestEntitlementsRule.java",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "2. **High \u2014 Real defect / initialization-order bug:** `test/framework/src/main/java/org/elasticsearch/entitlement/bootstrap/TestEntitlementsRule.java:90`  \n   `initialize()` adds `TEMP` only after the policy manager has been created and the agent loaded, and it does not clear the module-entitlements cache afterward. This diff itself documents that cache clearing is required after updating `TestPathLookup`. If agent loading resolves an entitlement before `initialize()` runs, that module remains cached without the temporary-directory grant, causing later access under `java.io.tmpdir` to be denied. Creation-time file-entitlement validation also runs before `TEMP` exists.",
+        "path": "test/framework/src/main/java/org/elasticsearch/entitlement/bootstrap/TestEntitlementsRule.java",
+        "start_line": 90,
+        "end_line": 90,
+        "observation_id": "6338577eb3c7cca4",
+        "claimed_path": "test/framework/src/main/java/org/elasticsearch/entitlement/bootstrap/TestEntitlementsRule.java",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "3. **Medium \u2014 Missing validation / misleading API:** `test/framework/src/main/java/org/elasticsearch/node/MockNode.java:245`  \n   The retained two-argument constructor silently substitutes a no-op grant. Existing callers continue compiling but lose the node-directory registration previously performed automatically by `prepareEnvironment()`. With entitlements active, such a caller can fail during node startup when server code accesses its config or data path. Either require a grant/provider or make omission explicit and reject it when entitlements are enabled.\n\n4. **Low \u2014 Dead/misleading abstraction and bounded leak:** `test/framework/src/main/java/org/elasticsearch/entitlement/bootstrap/TestEntitlementsRule.java:202`  \n   `NodeGrant.close()` does nothing, leaving its `onClose` field and `revokeGrant()` unreachable. Consequently, closing and restarting nodes accumulates duplicate path entries until suite cleanup and leaves closed-node paths entitled, potentially masking unintended late filesystem access. Returning `Closeable` and closing it from `MockNode` misleadingly promises scoped revocation that never occurs.\n\nI checked the provided workspace for the affected sources, but it is empty; call-site verification beyond the supplied diff was therefore unavailable.",
+        "path": "test/framework/src/main/java/org/elasticsearch/node/MockNode.java",
+        "start_line": 245,
+        "end_line": 245,
+        "observation_id": "62feeae846d17ff9",
+        "claimed_path": "test/framework/src/main/java/org/elasticsearch/node/MockNode.java",
+        "path_resolution": "exact",
+        "merged_from": [
+          "5e9e9437c91d542d"
+        ]
+      },
+      {
+        "content": "### CRITICAL: Parallel test execution broken by static `active` flag\n\n**File:** `test/framework/src/main/java/org/elasticsearch/entitlement/bootstrap/TestEntitlementsRule.java`  \n**Lines:** 50, 80\u201385, 100\n\nThe `TestEntitlementsRule` class has a `static final AtomicBoolean active = new AtomicBoolean(false)`. Its `@ClassRule` `apply()` method does `active.compareAndSet(false, true)` and throws `AssertionError(\"test suits cannot be run in parallel\")` if already active.\n\n`ESTestCase` declares `@ClassRule public static final TestEntitlementsRule TEST_ENTITLEMENTS = new TestEntitlementsRule();` \u2014 a **single shared instance** across all test classes extending `ESTestCase`. This serializes **all** entitlement-enabled integration tests across the entire test suite. Previously, `TestEntitlementBootstrap` used per-class static state with no cross-class locking.\n\n**Failure scenario:** Two test classes annotated with `@WithEntitlementsOnTestCode` (or default) run in parallel via `./gradlew test --parallel`. The second class's `@ClassRule` fails immediately with \"TestPolicyManager doesn't support test isolation, test suits cannot be run in parallel\".\n\n---\n\n### CRITICAL: `NodeGrant.close()` is a no-op \u2014 grants accumulate indefinitely\n\n**File:** `test/framework/src/main/java/org/elasticsearch/entitlement/bootstrap/TestEntitlementsRule.java`  \n**Lines:** 195\u2013205\n\n```java\n@Override\npublic void close() {\n    // wipePendingDataDirectories in tests requires entitlement delegation to work as this uses server's FileSystemUtils.\n    // until ES-10920 is solved, node grants cannot be removed until the test suite completes unless explicitly removing all node\n    // grants using revokeNodeGrants where feasible.\n    // onClose.accept(this);\n}\n```\n\n`MockNode.awaitClose()` (line 296 in `MockNode.java`) calls `IOUtils.closeWhileHandlingException(entitlementGrant)`. This invokes the no-op `close()`. Grants are only revoked by explicit `revokeNodeGrants()` calls (suite teardown, or `ESIntegTestCase.buildAndPutCluster` when switching clusters).\n\n**Failure scenario:** A test creates/closes multiple nodes in a loop (e.g., rolling restart test). Each node's `NodeGrant` adds paths to `BASE_DIR_PATHS` but `close()` doesn't remove them. After N iterations:\n- `BASE_DIR_PATHS` grows unboundedly (memory leak)\n- Entitlement checks incorrectly allow access to old node paths\n- Path conflicts if node IDs/dirs are reused\n\n---",
+        "path": "test/framework/src/main/java/org/elasticsearch/entitlement/bootstrap/TestEntitlementsRule.java",
+        "start_line": 50,
+        "end_line": 50,
+        "observation_id": "ea37736f3613f14b",
+        "claimed_path": "test/framework/src/main/java/org/elasticsearch/entitlement/bootstrap/TestEntitlementsRule.java",
+        "path_resolution": "exact",
+        "merged_from": [
+          "f03128324f7e634b"
+        ]
+      },
+      {
+        "content": "### MAJOR: Policy manager initialized before TEMP dir is configured\n\n**File:** `test/framework/src/main/java/org/elasticsearch/entitlement/bootstrap/TestEntitlementsRule.java`  \n**Lines:** 30\u201345 (static initializer) vs 55\u201360 (`initialize()`)\n\nStatic initializer runs at class-load time:\n```java\nstatic {\n    PathLookup pathLookup = new TestPathLookup(BASE_DIR_PATHS);\n    if (isEnabledForTest()) {\n        POLICY_MANAGER = createPolicyManager(pathLookup);  // BASE_DIR_PATHS is EMPTY here\n        loadAgent(POLICY_MANAGER, pathLookup);\n    }\n}\n```\n`initialize(tempDir)` (called from `BootstrapForTesting`) sets `BASE_DIR_PATHS.put(TEMP, ...)` **after** the policy manager is created.\n\n`TestPathLookup` wraps the live `ConcurrentHashMap`, so later additions are visible. However, `createPolicyManager` calls `FilesEntitlementsValidation.validate(pluginPolicies, pathLookup)` and constructs `TestPolicyManager` with this `pathLookup`. If validation or policy manager construction caches path-resolution results (e.g., for TEMP), they'll see an empty TEMP dir.\n\nOld code (`TestEntitlementBootstrap.bootstrap`) set TEMP **before** creating `pathLookup` and `policyManager`.\n\n---",
+        "path": "test/framework/src/main/java/org/elasticsearch/entitlement/bootstrap/TestEntitlementsRule.java",
+        "start_line": 30,
+        "end_line": 30,
+        "observation_id": "a26d59ea18f20830",
+        "claimed_path": "test/framework/src/main/java/org/elasticsearch/entitlement/bootstrap/TestEntitlementsRule.java",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "### MAJOR: `recreateNode` passes `null` configPath, inconsistent with initial node creation\n\n**File:** `test/framework/src/main/java/org/elasticsearch/test/InternalTestCluster.java`  \n**Line:** 1074\n\n```java\nnode = new MockNode(finalSettings, plugins, forbidPrivateIndexSettings, nodeGrantProvider.create(finalSettings, null));\n```\n\nBut `buildNode` (line 792) passes the real config path:\n```java\nPath configPath = nodeConfigurationSource.nodeConfigPath(nodeId);\nMockNode node = new MockNode(settings, plugins, configPath, forbidPrivateIndexSettings, nodeGrantProvider.create(settings, configPath));\n```\n\n`NodeGrant` stores the configPath at creation time. If `close()` ever gets fixed (invoking `revokeGrant`), the revocation will use the wrong configPath (`null` \u2192 defaults to `homeDir.resolve(\"config\")`), failing to remove the correct entry from `BASE_DIR_PATHS`.\n\n---",
+        "path": "test/framework/src/main/java/org/elasticsearch/test/InternalTestCluster.java",
+        "start_line": 1074,
+        "end_line": 1074,
+        "observation_id": "abd543a8efe6145e",
+        "claimed_path": "test/framework/src/main/java/org/elasticsearch/test/InternalTestCluster.java",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "### MODERATE: `setEntitledTestPackages` behavior changed from cumulative to reset\n\n**File:** `test/framework/src/main/java/org/elasticsearch/entitlement/runtime/policy/TestPolicyManager.java`  \n**Lines:** 65\u201373\n\nOld:\n```java\nString[] packages = ArrayUtils.concat(this.entitledTestPackages, entitledTestPackages); // cumulative\n```\nNew:\n```java\nString[] packages = ArrayUtils.concat(TEST_FRAMEWORK_PACKAGE_PREFIXES, entitledTestPackages); // always resets to framework prefixes\n```\n\nIf a test (or test framework) calls `setEntitledTestPackages` multiple times, packages no longer accumulate. Unlikely in practice (only called once from `@ClassRule`), but the method is public and the semantics changed silently.\n\n---",
+        "path": "test/framework/src/main/java/org/elasticsearch/entitlement/runtime/policy/TestPolicyManager.java",
+        "start_line": 65,
+        "end_line": 65,
+        "observation_id": "22e30c451a9990b4",
+        "claimed_path": "test/framework/src/main/java/org/elasticsearch/entitlement/runtime/policy/TestPolicyManager.java",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "### MODERATE: `revokeNodeGrants()` clears grants for ALL clusters, breaking multi-cluster tests\n\n**File:** `test/framework/src/main/java/org/elasticsearch/test/ESIntegTestCase.java`  \n**Line:** 552\n\n```java\nif (testCluster != null) {\n    IOUtils.closeWhileHandlingException(testCluster::close);\n    TEST_ENTITLEMENTS.revokeNodeGrants();  // clears BASE_DIR_PATHS for ALL nodes\n}\n```\n\n`revokeNodeGrants()` does `BASE_DIR_PATHS.keySet().retainAll(List.of(TEMP))` \u2014 wiping grants for **every** node in **every** cluster. If a test runs multiple clusters simultaneously (e.g., CCR tests with leader/follower clusters), closing one cluster revokes the other's grants.\n\n---",
+        "path": "test/framework/src/main/java/org/elasticsearch/test/ESIntegTestCase.java",
+        "start_line": 552,
+        "end_line": 552,
+        "observation_id": "3a34f1e1239e7a90",
+        "claimed_path": "test/framework/src/main/java/org/elasticsearch/test/ESIntegTestCase.java",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "### MINOR: Typo in error message\n\n**File:** `test/framework/src/main/java/org/elasticsearch/entitlement/bootstrap/TestEntitlementsRule.java`  \n**Line:** 100\n\n```java\nthrow new AssertionError(\"TestPolicyManager doesn't support test isolation, test suits cannot be run in parallel\");\n```\n\"test suits\" \u2192 \"test suites\"\n\n---\n\n### MINOR: Dead commented code in `NodeGrant.close()`\n\n**File:** `test/framework/src/main/java/org/elasticsearch/entitlement/bootstrap/TestEntitlementsRule.java`  \n**Lines:** 197\u2013204\n\nThe commented `onClose.accept(this)` and explanatory comment should be removed or the TODO (ES-10920) addressed. Leaving dead code misleads maintainers into thinking grants are revoked on close.\n\n---\n\n### Summary of required fixes\n\n| Severity | Issue | Fix |\n|----------|-------|-----|\n| Critical | Static `active` flag serializes all test classes | Make `active` instance-level; use `@ClassRule` per-class instance (not shared static in `ESTestCase`) |\n| Critical | `NodeGrant.close()` no-op | Implement revocation in `close()` (resolve ES-10920 or use `kill -STOP`/`CONT` workaround for `wipePendingDataDirectories`) |\n| Major | Policy manager created before TEMP dir | Move policy manager creation to `initialize()` or lazy-init on first use |\n| Major | `recreateNode` passes `null` configPath | Pass actual configPath from `nodeConfigurationSource` |\n| Moderate | `revokeNodeGrants()` too broad | Track grants per-cluster; revoke only that cluster's grants |\n| Moderate | `setEntitledTestPackages` semantics changed | Document or restore cumulative behavior if needed |\n| Minor | Typo | \"suits\" \u2192 \"suites\" |\n| Minor | Dead code | Remove or fix |",
+        "path": "test/framework/src/main/java/org/elasticsearch/entitlement/bootstrap/TestEntitlementsRule.java",
+        "start_line": 100,
+        "end_line": 100,
+        "observation_id": "e31528f5a6b742cc",
+        "claimed_path": "test/framework/src/main/java/org/elasticsearch/entitlement/bootstrap/TestEntitlementsRule.java",
+        "path_resolution": "exact",
+        "merged_from": [
+          "a2ce32c7d1d3695f",
+          "0a2144e97e1425e7"
+        ]
+      }
+    ]
+  },
+  "rundir": "/home/user/.cache/llm-panel/runs/aacr-up-wvn5pkgp-60946178c102/20260830-124938-3567131",
+  "extractor": "3",
+  "unlocated": []
+}

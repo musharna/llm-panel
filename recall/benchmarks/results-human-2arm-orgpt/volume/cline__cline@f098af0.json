@@ -1,0 +1,489 @@
+{
+  "review": {
+    "comments": [
+      {
+        "content": "1. **`src/integrations/terminal/TerminalProcess.ts:198, 229` \u2014 the telemetry check performs a second awaited terminal capture that can break command completion.**  \n   Scenario: `returnCurrentTerminalContents()` successfully captures the fallback output, but the terminal is then closed or the clipboard command rejects during the second `getLatestTerminalOutput()` call. Execution exits before `continue`/`completed` is emitted, leaving the task waiting even though the actual fallback already succeeded.",
+        "path": "src/integrations/terminal/TerminalProcess.ts",
+        "start_line": 198,
+        "end_line": 198,
+        "observation_id": "5153faa4a1a06d11",
+        "claimed_path": "src/integrations/terminal/TerminalProcess.ts",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "2. **`src/core/task/index.ts:1609` \u2014 the completion timer is not cleared when `await process` rejects.**  \n   Scenario: terminal execution rejects after 5 seconds without emitting `completed`. Control skips the post-`await` cleanup, retains the task through the timer closure, and emits `WAITING_FOR_COMPLETION` at 60 seconds for a command that already failed.",
+        "path": "src/core/task/index.ts",
+        "start_line": 1609,
+        "end_line": 1609,
+        "observation_id": "29f6fec1d050e459",
+        "claimed_path": "src/core/task/index.ts",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "3. **`src/integrations/terminal/TerminalProcess.ts:198, 229` \u2014 telemetry measures a different capture attempt from the one whose output was actually returned.**  \n   Scenario: `returnCurrentTerminalContents()` captures and delivers output, but the second snapshot is empty, so telemetry records `false/\"none\"`. Conversely, if the first attempt is empty and the second succeeds, telemetry records clipboard success although that second result is never delivered.",
+        "path": "src/integrations/terminal/TerminalProcess.ts",
+        "start_line": 198,
+        "end_line": 198,
+        "observation_id": "995979a6f317eaf3",
+        "claimed_path": "src/integrations/terminal/TerminalProcess.ts",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "4. **`src/integrations/terminal/TerminalProcess.ts:199, 230` \u2014 any nonempty terminal history is treated as successful capture of the current command.**  \n   Scenario: clipboard fallback fails to obtain the new command\u2019s output, but the terminal still contains an old prompt or previous command output. `terminalSnapshot.trim()` is nonempty, so the execution is falsely reported as successfully captured via clipboard.",
+        "path": "src/integrations/terminal/TerminalProcess.ts",
+        "start_line": 199,
+        "end_line": 199,
+        "observation_id": "e04991ecc53ae62d",
+        "claimed_path": "src/integrations/terminal/TerminalProcess.ts",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "5. **`src/core/task/index.ts:1580` \u2014 every normally running command longer than 60 seconds is reported as hung.**  \n   Scenario: `sleep 61`, a build, or a test suite continues making normal progress and completes successfully after 61 seconds. At 60 seconds it emits `WAITING_FOR_COMPLETION`, contaminating hang telemetry despite no hang.",
+        "path": "src/core/task/index.ts",
+        "start_line": 1580,
+        "end_line": 1580,
+        "observation_id": "da86f7fb38edb39b",
+        "claimed_path": "src/core/task/index.ts",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "6. **`src/core/task/index.ts:1513` \u2014 normal user response time is reported as a stuck output buffer.**  \n   Scenario: command output opens the `command_output` prompt and the user takes 31 seconds to click \u201cProcess while Running.\u201d The buffer has already been handed to `this.ask`; nevertheless, `BUFFER_STUCK` is emitted while the code is simply waiting for the user.",
+        "path": "src/core/task/index.ts",
+        "start_line": 1513,
+        "end_line": 1513,
+        "observation_id": "46a724534162955b",
+        "claimed_path": "src/core/task/index.ts",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "7. **`src/core/task/index.ts:1533` \u2014 every `this.ask` exception is classified as a stream timeout.**  \n   Scenario: task cancellation, webview disposal, or another immediate `ask` failure throws. The catch emits `STREAM_TIMEOUT` even though no stream timeout occurred.",
+        "path": "src/core/task/index.ts",
+        "start_line": 1533,
+        "end_line": 1533,
+        "observation_id": "4a5fb0be266a5b89",
+        "claimed_path": "src/core/task/index.ts",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "8. **`src/integrations/terminal/TerminalProcess.ts:195` \u2014 legitimate silent commands are reported as output timeouts.**  \n   Scenario: a shell-integrated `mkdir new-dir`, `true`, or successful redirection produces no output. Because `fullOutput` is empty, telemetry emits `TerminalOutputFailureReason.TIMEOUT`, although execution completed normally and no timeout occurred.",
+        "path": "src/integrations/terminal/TerminalProcess.ts",
+        "start_line": 195,
+        "end_line": 195,
+        "observation_id": "9180df4be82bf65c",
+        "claimed_path": "src/integrations/terminal/TerminalProcess.ts",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "9. **`src/integrations/terminal/TerminalProcess.ts:220` \u2014 absence of shell integration is recorded as an output-capture failure before the fallback outcome is known.**  \n   Scenario: a terminal without shell integration runs `echo hello`, and clipboard fallback captures `hello` successfully. The same execution still emits `TERMINAL_OUTPUT_FAILURE/no_shell_integration`, falsely counting a successful fallback as an output failure.",
+        "path": "src/integrations/terminal/TerminalProcess.ts",
+        "start_line": 220,
+        "end_line": 220,
+        "observation_id": "2897872ae0d24b0d",
+        "claimed_path": "src/integrations/terminal/TerminalProcess.ts",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "10. **`src/integrations/terminal/TerminalProcess.ts:202, 233` \u2014 actual clipboard failures never emit the defined `CLIPBOARD_FAILED` reason.**  \n    Scenario: shell integration is unavailable or produces no output, and clipboard capture returns an empty snapshot. The code records `TERMINAL_EXECUTION(false, \"none\")` but never emits `TERMINAL_OUTPUT_FAILURE/clipboard_failed`, so failure-reason telemetry cannot identify the clipboard failure.\n\nI checked every supplied hunk. The workspace contains no source files, so surrounding implementations and alias configuration were unavailable; I excluded claims that depended on those missing files.## Defects",
+        "path": "src/integrations/terminal/TerminalProcess.ts",
+        "start_line": 202,
+        "end_line": 202,
+        "observation_id": "85be00bd0c893d8d",
+        "claimed_path": "src/integrations/terminal/TerminalProcess.ts",
+        "path_resolution": "exact",
+        "merged_from": [
+          "16a5baccef8e37f6"
+        ]
+      },
+      {
+        "content": "**1. `TerminalProcess.ts:197` and `TerminalProcess.ts:227` (both hunks) \u2014 `getLatestTerminalOutput()` is called but is neither defined nor imported anywhere in this diff.**\nThe diff only adds the import at line 1: `import { TerminalOutputFailureReason, telemetryService } from \"@services/telemetry\"` \u2014 no `getLatestTerminalOutput`. If that helper is not a pre-existing export of this file (I could not verify \u2014 no checkout), this is a compile error, or at runtime a `ReferenceError` thrown inside a fallback path that otherwise works: in the no-shell-integration branch (line 227) the throw happens before `this.emit(\"completed\")` (line 235), so the terminal process never reports completion and the caller stalls. Missing material: the body of `TerminalProcess.ts` to confirm the symbol exists.",
+        "path": "src/integrations/terminal/TerminalProcess.ts",
+        "start_line": 197,
+        "end_line": 197,
+        "observation_id": "020c87bd7b7f5462",
+        "claimed_path": "TerminalProcess.ts",
+        "path_resolution": "basename",
+        "merged_from": []
+      },
+      {
+        "content": "**2. `TerminalProcess.ts:219` \u2014 the new telemetry call sits *before* `terminal.sendText(command, true)`, in the no-shell-integration path; and line 194 sits before `await returnCurrentTerminalContents()`.**\nIf `captureTerminalOutputFailure` throws (telemetry service not initialized, provider error), line 219 means the command is never sent to the terminal at all \u2014 the diff converts a telemetry-only change into a functional break of command execution. Contrast: in `index.ts` the new captures were placed inside an existing `try`, and in the `catch` at line 1533; here they are bare. Unlike #1 this depends only on `capture` being able to throw \u2014 which I could not verify.",
+        "path": "src/integrations/terminal/TerminalProcess.ts",
+        "start_line": 219,
+        "end_line": 219,
+        "observation_id": "8d56f8ba71941ffc",
+        "claimed_path": "TerminalProcess.ts",
+        "path_resolution": "basename",
+        "merged_from": []
+      },
+      {
+        "content": "**7. `TerminalProcess.ts:194` \u2014 `TerminalOutputFailureReason.TIMEOUT` is recorded whenever shell-integration output is empty, regardless of why.**\nFailure scenario: a command that legitimately produces no output (`cd foo`, `export X=1`, `touch f`) completes successfully \u2192 recorded as `terminal_output_failure: timeout`. And because it is recorded *before* the `returnCurrentTerminalContents()` fallback runs, a command whose output the fallback then captures is recorded as *both* a failure (line 194) and a success (line 199) \u2014 contradictory events for one command, inflating the failure metric with silent-but-successful commands.",
+        "path": "src/integrations/terminal/TerminalProcess.ts",
+        "start_line": 194,
+        "end_line": 194,
+        "observation_id": "279ba3f0b85aec9c",
+        "claimed_path": "TerminalProcess.ts",
+        "path_resolution": "basename",
+        "merged_from": []
+      },
+      {
+        "content": "**8. `TerminalProcess.ts:197-201` and `TerminalProcess.ts:227-231` \u2014 the \"did capture succeed\" check is `terminalSnapshot.trim()` non-empty, i.e. \"terminal screen has any non-whitespace text\", not \"this command's output was captured\".**\nFailure scenario A (false success): a terminal that already shows a prompt or stale output from earlier commands always yields a non-empty snapshot, so `captureTerminalExecution(true, \"clipboard\")` fires even when the current command's output was never captured \u2014 in the no-shell path (3 s after `sendText`, line 227) this will be near-always \"success\". Failure scenario B (false failure): a still-running command that hasn't printed yet at the 3 s instant records `(false, \"none\")`, which the output arriving a second later contradicts. Both the success and failure sides of this metric are unreliable.",
+        "path": "src/integrations/terminal/TerminalProcess.ts",
+        "start_line": 197,
+        "end_line": 197,
+        "observation_id": "4772306d4002529a",
+        "claimed_path": "TerminalProcess.ts",
+        "path_resolution": "basename",
+        "merged_from": []
+      },
+      {
+        "content": "**9. `TerminalProcess.ts:1` \u2014 the new import uses the alias `@services/telemetry`, whereas the same module is imported as `@/services/telemetry` in `index.ts:73` (the same diff).**\nIf `@services` is not a configured path alias in this project, the extension fails to compile. I could not verify the tsconfig/alias map (empty checkout); the inconsistency with the sibling import is pointable regardless.\n\n## Items considered and rejected\n- Dead enum members (`CLIPBOARD_FAILED`, `MANUAL_PASTE`, `CANCELLED`) are never emitted \u2014 dead code, no wrong-behavior scenario.\n- `captureTerminalExecution(true, \"clipboard\")` labels the *method* \"clipboard\" while `returnCurrentTerminalContents()` is the mechanism that ran \u2014 label accuracy only, cannot verify the mechanism.\n- The `if (force && !chunkEnroute && outputBuffer.length > 0)` dead branch inside `flushBuffer` \u2014 pre-existing context, not introduced by this diff.### Defects Found",
+        "path": "src/integrations/terminal/TerminalProcess.ts",
+        "start_line": 1,
+        "end_line": 1,
+        "observation_id": "4b41d691d632c752",
+        "claimed_path": "TerminalProcess.ts",
+        "path_resolution": "basename",
+        "merged_from": [
+          "8546dac52f5ef110",
+          "aa4a04808af73e15"
+        ]
+      },
+      {
+        "content": "#### 1. `src/core/task/index.ts:1512` \u2014 `bufferStuckTimer` fires while `flushBuffer` is still awaiting `this.ask()`, causing false \"BUFFER_STUCK\" telemetry\n\nThe timer starts at line 1512 **before** the `await this.ask(...)` at line 1516. If the user takes >30s to respond to the \"command_output\" prompt (e.g., reading output, deciding), the timer fires and emits `TERMINAL_HANG: BUFFER_STUCK` even though the buffer isn't stuck \u2014 it's correctly waiting for user input. The `finally` block clears the timer, but only *after* the hang event has already been captured.\n\n**Failure scenario:** User runs a long command, output buffers, prompt appears. User walks away for 35s. Telemetry records `BUFFER_STUCK` despite no actual stall.\n\n---",
+        "path": "src/core/task/index.ts",
+        "start_line": 1512,
+        "end_line": 1512,
+        "observation_id": "d65be29f695b9c22",
+        "claimed_path": "src/core/task/index.ts",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "#### 2. `src/core/task/index.ts:1523` \u2014 `STREAM_TIMEOUT` hang captured on *any* error from `this.ask()`, including user cancellation\n\nThe `catch` block at line 1523 captures `TERMINAL_HANG: STREAM_TIMEOUT` for **any** thrown error (network error, user cancels prompt, `ask` rejects). A user clicking \"Cancel\" or pressing Escape is not a stream timeout.\n\n**Failure scenario:** User clicks \"Cancel\" on the command output prompt \u2192 telemetry records `STREAM_TIMEOUT` hang.\n\n---",
+        "path": "src/core/task/index.ts",
+        "start_line": 1523,
+        "end_line": 1523,
+        "observation_id": "6b8c4c57c932915e",
+        "claimed_path": "src/core/task/index.ts",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "#### 3. `src/core/task/index.ts:1532-1537` \u2014 `bufferStuckTimer` cleared in `finally` but `completionTimer` not cleared on early exit paths\n\nIf `process` emits `\"completed\"` before the 60s `completionTimer` fires, the handler at line 1562 clears it. But if an exception escapes the `await process` (line 1607), the `completionTimer` is leaked \u2014 it will fire 60s after start even though the task is dead, emitting a spurious `WAITING_FOR_COMPLETION` hang.\n\n**Failure scenario:** Terminal process crashes at 10s. `await process` throws. `completionTimer` still fires at 60s \u2192 false `WAITING_FOR_COMPLETION`.\n\n---",
+        "path": "src/core/task/index.ts",
+        "start_line": 1532,
+        "end_line": 1532,
+        "observation_id": "d1b87323cf6e2a16",
+        "claimed_path": "src/core/task/index.ts",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "#### 4. `src/core/task/index.ts:1562-1568` \u2014 `completionTimer` cleared in `\"completed\"` handler but `bufferStuckTimer` not cleared there\n\nThe `\"completed\"` handler clears `completionTimer` but **not** `bufferStuckTimer`. If a flush is in-flight (`chunkEnroute=true`) when `\"completed\"` fires, `bufferStuckTimer` is still armed and will fire 30s after the last `flushBuffer` call, even though the process has completed.\n\n**Failure scenario:** Last chunk sent at t=0, `bufferStuckTimer` armed. Process completes at t=5s. At t=30s, `BUFFER_STUCK` fires spuriously.\n\n---",
+        "path": "src/core/task/index.ts",
+        "start_line": 1562,
+        "end_line": 1562,
+        "observation_id": "6b072ee6e7262eef",
+        "claimed_path": "src/core/task/index.ts",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "#### 5. `src/core/task/index.ts:1494` \u2014 `BUFFER_STUCK_TIMEOUT_MS = 30000` is a magic constant with no relation to actual command timeouts\n\nA 30s fixed timeout is arbitrary. Legitimate commands (large `git clone`, `npm install`, test suites) can produce no new output for >30s while still running. The timer will fire `BUFFER_STUCK` during normal operation.\n\n**Failure scenario:** `npm install` runs for 45s with no stdout. At 30s, `BUFFER_STUCK` fires despite command proceeding normally.\n\n---",
+        "path": "src/core/task/index.ts",
+        "start_line": 1494,
+        "end_line": 1494,
+        "observation_id": "e9843397fd9ab7ca",
+        "claimed_path": "src/core/task/index.ts",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "#### 6. `src/core/task/index.ts:1547` \u2014 `COMPLETION_TIMEOUT_MS = 60000` same problem: arbitrary 60s timeout\n\nLong-running commands (database migrations, builds) can exceed 60s. The `WAITING_FOR_COMPLETION` hang fires while the command is still legitimately running.\n\n**Failure scenario:** `docker build` takes 90s. At 60s, `WAITING_FOR_COMPLETION` fires.\n\n---",
+        "path": "src/core/task/index.ts",
+        "start_line": 1547,
+        "end_line": 1547,
+        "observation_id": "78f266c2d3f09c35",
+        "claimed_path": "src/core/task/index.ts",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "#### 7. `src/integrations/terminal/TerminalProcess.ts:194-195` \u2014 `captureTerminalOutputFailure(TIMEOUT)` called when `fullOutput.trim()` is empty, but this conflates \"command produced no output\" with \"capture timed out\"\n\nA command like `true` or `cd /tmp` produces zero stdout. The code treats this as a timeout failure and falls back to clipboard, then emits `TERMINAL_OUTPUT_FAILURE: TIMEOUT` for a successful zero-output command.\n\n**Failure scenario:** User runs `true` (exit 0, no output). Telemetry records `TIMEOUT` failure.\n\n---",
+        "path": "src/integrations/terminal/TerminalProcess.ts",
+        "start_line": 194,
+        "end_line": 194,
+        "observation_id": "4090aa38e21b47d0",
+        "claimed_path": "src/integrations/terminal/TerminalProcess.ts",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "#### 8. `src/integrations/terminal/TerminalProcess.ts:196-204` \u2014 Fallback success/failure telemetry uses `getLatestTerminalOutput()` which may capture *next* command's output\n\n`returnCurrentTerminalContents()` requests terminal contents, then `getLatestTerminalOutput()` reads them. But if another command starts in the same terminal before the snapshot is taken, the snapshot contains the *new* command's output, causing false \"clipboard success\" or masking the real failure.\n\n**Failure scenario:** Command A (no shell integration) runs. Fallback triggers. Before snapshot, Command B starts. Snapshot shows B's output \u2192 `captureTerminalExecution(true, \"clipboard\")` for A, but A actually failed.\n\n---",
+        "path": "src/integrations/terminal/TerminalProcess.ts",
+        "start_line": 196,
+        "end_line": 196,
+        "observation_id": "26822d69ce67d77d",
+        "claimed_path": "src/integrations/terminal/TerminalProcess.ts",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "#### 9. `src/integrations/terminal/TerminalProcess.ts:216` \u2014 `captureTerminalOutputFailure(NO_SHELL_INTEGRATION)` emitted **before** attempting clipboard fallback\n\nThe failure is recorded even if the clipboard fallback succeeds (lines 225-231). A terminal without shell integration that works via clipboard is still counted as a failure.\n\n**Failure scenario:** Terminal without shell integration runs `echo hi`. Clipboard fallback captures \"hi\". Telemetry records both `NO_SHELL_INTEGRATION` failure AND `TERMINAL_EXECUTION(true, \"clipboard\")` \u2014 contradictory.\n\n---",
+        "path": "src/integrations/terminal/TerminalProcess.ts",
+        "start_line": 216,
+        "end_line": 216,
+        "observation_id": "47712eedc6099437",
+        "claimed_path": "src/integrations/terminal/TerminalProcess.ts",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "#### 10. `src/integrations/terminal/TerminalProcess.ts:207` \u2014 `terminal.sendText(command, true)` sends command with `true` (submit/enter) but no wait for prompt\n\nFor terminals without shell integration, the code sends the command and immediately waits 3s (`setTimeout` at line 210). If the command takes >3s, `returnCurrentTerminalContents()` captures partial output. The 3s is hardcoded and unconfigurable.\n\n**Failure scenario:** `sleep 5; echo done` runs. At 3s, snapshot captures empty output \u2192 fallback fails \u2192 `TERMINAL_EXECUTION(false, \"none\")` despite command succeeding at 5s.\n\n---",
+        "path": "src/integrations/terminal/TerminalProcess.ts",
+        "start_line": 207,
+        "end_line": 207,
+        "observation_id": "98f1026975ecd87d",
+        "claimed_path": "src/integrations/terminal/TerminalProcess.ts",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "#### 11. `src/integrations/terminal/TerminalProcess.ts:213` \u2014 `this.emit(\"completed\")` fires unconditionally after fallback, even if fallback failed\n\nThe `\"completed\"` event tells the Task that the process is done. But if clipboard capture failed, the Task has no output and no way to know the command might still be running. The Task will proceed assuming completion.\n\n**Failure scenario:** Long command (10s) without shell integration. At 3s, fallback captures nothing. `\"completed\"` emitted. Task thinks command finished with no output. Command actually still running \u2014 subsequent commands collide.\n\n---",
+        "path": "src/integrations/terminal/TerminalProcess.ts",
+        "start_line": 213,
+        "end_line": 213,
+        "observation_id": "8c8945a92d81a321",
+        "claimed_path": "src/integrations/terminal/TerminalProcess.ts",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "#### 12. `src/services/telemetry/TelemetryService.ts:952-958` \u2014 `captureTerminalExecution(success, method)` accepts arbitrary `method` string, not an enum\n\nThe `method` parameter is `string` not a constrained type. Callers pass `\"shell_integration\"`, `\"clipboard\"`, `\"none\"` \u2014 but nothing prevents typos like `\"shell-integration\"` or `\"clip board\"`, fragmenting telemetry.\n\n**Failure scenario:** Typo in caller \u2192 telemetry splits `\"clipboard\"` vs `\"clip board\"` into separate buckets, breaking dashboards.\n\n---",
+        "path": "src/services/telemetry/TelemetryService.ts",
+        "start_line": 952,
+        "end_line": 952,
+        "observation_id": "babf16e6f6068467",
+        "claimed_path": "src/services/telemetry/TelemetryService.ts",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "#### 13. `src/services/telemetry/TelemetryService.ts:960-966` \u2014 `captureTerminalOutputFailure(reason)` uses `TerminalOutputFailureReason` enum but `CLIPBOARD_FAILED` is never emitted\n\nThe enum defines `CLIPBOARD_FAILED` but no code path emits it. The fallback logic emits `TERMINAL_EXECUTION(false, \"none\")` instead. Dead enum value.\n\n**Failure scenario:** Clipboard API throws. Code emits `TERMINAL_EXECUTION(false, \"none\")`. `CLIPBOARD_FAILED` never appears in telemetry \u2014 monitoring alert on it never fires.\n\n---",
+        "path": "src/services/telemetry/TelemetryService.ts",
+        "start_line": 960,
+        "end_line": 960,
+        "observation_id": "a23c800238cd0ff2",
+        "claimed_path": "src/services/telemetry/TelemetryService.ts",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "#### 14. `src/services/telemetry/TelemetryService.ts:976-982` \u2014 `captureTerminalUserIntervention` only used for `PROCESS_WHILE_RUNNING`; `MANUAL_PASTE` and `CANCELLED` never emitted\n\nTwo enum values defined but no call sites. Dead code.\n\n**Failure scenario:** User manually pastes output or cancels \u2014 no telemetry captured despite enum existing for it.\n\n---",
+        "path": "src/services/telemetry/TelemetryService.ts",
+        "start_line": 976,
+        "end_line": 976,
+        "observation_id": "4848d5b8c8bc73da",
+        "claimed_path": "src/services/telemetry/TelemetryService.ts",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "#### 15. `src/core/task/index.ts:1510` \u2014 `TerminalUserInterventionAction.PROCESS_WHILE_RUNNING` captured when user clicks \"yes\" but *before* checking if user provided feedback\n\nThe telemetry fires at line 1510 on `response === \"yesButtonClicked\"`, but the user might click \"yes\" with empty feedback (just wants to continue). The action implies intervention with feedback, but feedback is optional.\n\n**Failure scenario:** User clicks \"Process while Running\" without typing anything. Telemetry records `PROCESS_WHILE_RUNNING` intervention that wasn't really an intervention.\n\n---",
+        "path": "src/core/task/index.ts",
+        "start_line": 1510,
+        "end_line": 1510,
+        "observation_id": "89eacfe87a6bb4ec",
+        "claimed_path": "src/core/task/index.ts",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "#### 16. `src/core/task/index.ts:71` \u2014 Import adds `TerminalHangStage`, `TerminalUserInterventionAction` but `TerminalOutputFailureReason` not imported (unused here, but inconsistent)\n\nMinor: the import pulls two enums but not the third. Not a runtime defect, but signals incomplete wiring.\n\n---",
+        "path": "src/core/task/index.ts",
+        "start_line": 71,
+        "end_line": 71,
+        "observation_id": "8a36172d0ea1c394",
+        "claimed_path": "src/core/task/index.ts",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "#### 17. `src/integrations/terminal/TerminalProcess.ts:1` \u2014 Import uses `@services/telemetry` but other files use `@/services/telemetry` (alias vs relative)\n\nThe import path `@services/telemetry` (no `@/`) works only if TS config has `baseUrl` + `paths` mapping `@services/*`. Other imports use `@/services/telemetry`. If the alias isn't configured, this file fails to compile while others work.\n\n**Failure scenario:** Fresh checkout without TS path aliases \u2192 `TerminalProcess.ts` fails to compile with \"module not found\".\n\n---",
+        "path": "src/integrations/terminal/TerminalProcess.ts",
+        "start_line": 1,
+        "end_line": 1,
+        "observation_id": "6c555fe07bbb4111",
+        "claimed_path": "src/integrations/terminal/TerminalProcess.ts",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "#### 18. `src/core/task/index.ts:1507-1517` \u2014 `chunkEnroute` set to `true` *before* starting `bufferStuckTimer`, but `flushBuffer` can be re-entered if `outputBuffer` accumulates during `await this.ask()`\n\nIf `flushBuffer` is called again while `chunkEnroute=true` (line 1505 returns early), the *new* call doesn't reset `bufferStuckTimer`. The original timer still fires at 30s from *first* flush, not from the re-entry.\n\n**Failure scenario:** Chunk 1 sent at t=0, timer armed. Chunk 2 arrives at t=5s, `flushBuffer` called but returns early (chunkEnroute=true). At t=30s, timer fires for Chunk 1 even though Chunk 2's flush is the one that matters.\n\n---",
+        "path": "src/core/task/index.ts",
+        "start_line": 1507,
+        "end_line": 1507,
+        "observation_id": "093dfdd53e568e0f",
+        "claimed_path": "src/core/task/index.ts",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "#### 19. `src/core/task/index.ts:1530` \u2014 `process.continue()` called in `try` block but errors from it are caught and converted to `STREAM_TIMEOUT`\n\nIf `process.continue()` throws (e.g., process already dead), the `catch` captures `STREAM_TIMEOUT` \u2014 wrong classification.\n\n**Failure scenario:** Process dies between `ask` resolving and `continue()` call. `continue()` throws. Telemetry: `STREAM_TIMEOUT`.\n\n---",
+        "path": "src/core/task/index.ts",
+        "start_line": 1530,
+        "end_line": 1530,
+        "observation_id": "5a23979ed3b7f0b5",
+        "claimed_path": "src/core/task/index.ts",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "#### 20. `src/services/telemetry/TelemetryService.ts:949-950` \u2014 New event names use `task.terminal_*` prefix but existing events use `task.` + camelCase (e.g., `task.autoCondenseToggled`)\n\nInconsistent naming: `TERMINAL_EXECUTION: \"task.terminal_execution\"` (snake_case) vs `AUTO_CONDENSE_TOGGLED: \"task.auto_condense_toggled\"` (snake_case) \u2014 actually both snake_case. Wait, `INITIALIZATION: \"task.initialization\"` \u2014 also snake_case. Never mind, consistent.\n\n---",
+        "path": "src/services/telemetry/TelemetryService.ts",
+        "start_line": 949,
+        "end_line": 949,
+        "observation_id": "807e609d72b1fee8",
+        "claimed_path": "src/services/telemetry/TelemetryService.ts",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "#### 21. `src/integrations/terminal/TerminalProcess.ts:193` \u2014 `if (!this.fullOutput.trim())` treats whitespace-only output as \"no output\"\n\nA command outputting only spaces/newlines (e.g., `printf '   \\n'`) has `fullOutput.trim() === \"\"` \u2192 treated as timeout failure.\n\n**Failure scenario:** Command outputs only padding whitespace. Fallback triggered, `TIMEOUT` recorded.\n\n---",
+        "path": "src/integrations/terminal/TerminalProcess.ts",
+        "start_line": 193,
+        "end_line": 193,
+        "observation_id": "06449fcbe14dfe6a",
+        "claimed_path": "src/integrations/terminal/TerminalProcess.ts",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "#### 22. `src/core/task/index.ts:1572-1578` \u2014 `completionTimer` cleared after `await process` but `bufferStuckTimer` not cleared there either\n\nSame as #4: if `await process` completes normally, `completionTimer` cleared but `bufferStuckTimer` persists if a flush was in-flight.\n\n---",
+        "path": "src/core/task/index.ts",
+        "start_line": 1572,
+        "end_line": 1572,
+        "observation_id": "b30495a9371f2bba",
+        "claimed_path": "src/core/task/index.ts",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "#### 23. `src/core/task/index.ts:1498` \u2014 `chunkTimer` (existing) and `bufferStuckTimer` (new) both manage flush timing but interact unclearly\n\n`chunkTimer` delays flushes (debounce). `bufferStuckTimer` detects stalled flushes. If `chunkTimer` fires and calls `flushBuffer`, which starts `bufferStuckTimer`, but then another chunk arrives before `flushBuffer` completes, `chunkTimer` resets \u2014 but `bufferStuckTimer` from the first flush is still running.\n\n**Failure scenario:** Rapid output chunks. `chunkTimer` fires flush #1 at t=10s, `bufferStuckTimer` armed. Chunk arrives at t=11s, resets `chunkTimer`. Flush #1 still pending at t=40s \u2192 `BUFFER_STUCK` fires even though flush #2 would have included the data.\n\n---",
+        "path": "src/core/task/index.ts",
+        "start_line": 1498,
+        "end_line": 1498,
+        "observation_id": "27d951a909ae2524",
+        "claimed_path": "src/core/task/index.ts",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "#### 24. `src/integrations/terminal/TerminalProcess.ts:225-231` \u2014 `getLatestTerminalOutput()` called without await/timeout; if it hangs, the whole terminal flow hangs\n\nNo timeout on the clipboard read. If the terminal API blocks, `TerminalProcess` never emits `\"completed\"` or `\"continue\"`, deadlocking the Task.\n\n**Failure scenario:** VS Code terminal clipboard API hangs. Task waits forever on `await process`.\n\n---",
+        "path": "src/integrations/terminal/TerminalProcess.ts",
+        "start_line": 225,
+        "end_line": 225,
+        "observation_id": "10655edc3f7c1b1d",
+        "claimed_path": "src/integrations/terminal/TerminalProcess.ts",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "#### 25. `src/services/telemetry/TelemetryService.ts:968-974` \u2014 `captureTerminalHang(stage)` called from multiple sites with no deduplication; same hang stage can fire multiple times per command\n\n`BUFFER_STUCK` can fire from `flushBuffer` timer, `WAITING_FOR_COMPLETION` from completion timer, `STREAM_TIMEOUT` from catch. A single stuck command can emit all three.\n\n**Failure scenario:** Command output stalls. `BUFFER_STUCK` at 30s. User doesn't respond. `STREAM_TIMEOUT` on error. `WAITING_FOR_COMPLETION` at 60s. Three hang events for one root cause.\n\n---",
+        "path": "src/services/telemetry/TelemetryService.ts",
+        "start_line": 968,
+        "end_line": 968,
+        "observation_id": "9c3e3913a635fb7b",
+        "claimed_path": "src/services/telemetry/TelemetryService.ts",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "#### 26. `src/core/task/index.ts:1510` \u2014 `captureTerminalUserIntervention` called with `PROCESS_WHILE_RUNNING` but the user might have clicked \"yes\" *with* feedback (text/images/files)\n\nThe code at 1511-1515 captures feedback into `userFeedback` if provided. But the telemetry at 1510 doesn't include whether feedback was attached. Downstream analysis can't distinguish \"user said continue\" from \"user said continue + here's the error\".\n\n**Failure scenario:** User clicks \"Process while Running\" and pastes error log. Telemetry shows only `PROCESS_WHILE_RUNNING`, losing the fact that feedback was provided.\n\n---",
+        "path": "src/core/task/index.ts",
+        "start_line": 1510,
+        "end_line": 1510,
+        "observation_id": "71a71111e1e2042f",
+        "claimed_path": "src/core/task/index.ts",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "#### 27. `src/integrations/terminal/TerminalProcess.ts:40` \u2014 Comment `// Track that we're using shell integration` but no telemetry emitted for shell integration *success* at this point\n\nShell integration success is only emitted at line 203 (`captureTerminalExecution(true, \"shell_integration\")`) **after** checking `fullOutput.trim()`. If shell integration works but command produces no output, it falls through to the failure path (line 194) and emits `TIMEOUT` instead.\n\n**Failure scenario:** `true` command via shell integration. `fullOutput` empty. Emits `TIMEOUT` failure, then clipboard fallback, then `TERMINAL_EXECUTION(true, \"clipboard\")` \u2014 shell integration success never recorded.\n\n---",
+        "path": "src/integrations/terminal/TerminalProcess.ts",
+        "start_line": 40,
+        "end_line": 40,
+        "observation_id": "b6e41ce59a00aae1",
+        "claimed_path": "src/integrations/terminal/TerminalProcess.ts",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "#### 28. `src/core/task/index.ts:1552` \u2014 `process.once(\"completed\", ...)` uses `once` but `process` might emit `\"completed\"` multiple times (bug in TerminalProcess) \u2192 handler runs only once\n\nIf `TerminalProcess` erroneously emits `\"completed\"` twice (e.g., once from shell integration path, once from fallback), the second emission is ignored. But `completionTimer` is cleared on first emission, so no leak \u2014 just missed duplicate.\n\n**Failure scenario:** Bug in TerminalProcess emits completed twice. Second emission lost. Low severity but inconsistency.\n\n---",
+        "path": "src/core/task/index.ts",
+        "start_line": 1552,
+        "end_line": 1552,
+        "observation_id": "08ef9cdd8ddb6129",
+        "claimed_path": "src/core/task/index.ts",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "#### 29. `src/services/telemetry/index.ts:11-13` \u2014 Exports enums from `./TelemetryService` but `TelemetryService` is imported *after* the export block (line 15)\n\nTS allows this (hoisting), but it's circular: `index.ts` exports from `TelemetryService`, then imports `TelemetryService` for the singleton. If `TelemetryService` imports from `index.ts` (it doesn't appear to), circular dep. Currently safe but fragile.\n\n---",
+        "path": "src/services/telemetry/index.ts",
+        "start_line": 11,
+        "end_line": 11,
+        "observation_id": "0fc77b3d7e27f4e6",
+        "claimed_path": "src/services/telemetry/index.ts",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "#### 30. `src/core/task/index.ts:1494` / `1547` \u2014 Timeouts are `const` inside method, not configurable or based on command type\n\nNo way to adjust for known long-running commands (e.g., `docker build`, test suites). Every command gets 30s/60s regardless.\n\n**Failure scenario:** CI pipeline runs `cargo test` (120s). `BUFFER_STUCK` at 30s, `WAITING_FOR_COMPLETION` at 60s \u2014 noise in telemetry.\n\n---\n\nThese are **30 distinct defects** with concrete failure scenarios, ordered roughly by severity (telemetry correctness \u2192 functional correctness \u2192 dead code \u2192 configurability).",
+        "path": "src/core/task/index.ts",
+        "start_line": 1494,
+        "end_line": 1494,
+        "observation_id": "ae94498670f35e3f",
+        "claimed_path": "src/core/task/index.ts",
+        "path_resolution": "exact",
+        "merged_from": []
+      }
+    ]
+  },
+  "rundir": "/home/user/.cache/llm-panel/runs/aacr-up-j_butkx3-128bcbb23981/20260829-121706-3774945",
+  "extractor": "3",
+  "unlocated": [
+    {
+      "content": "**3. `index.ts:1533` \u2014 `STREAM_TIMEOUT` is recorded in a catch block that catches *any* exception from `this.ask` or `process.continue()`.**\nFailure scenario: the ask succeeds, the user clicks a button, and `process.continue()` throws because the process already ended \u2192 telemetry records `terminal_hang: stream_timeout` even though no timeout occurred. Also: if the 30 s stuck timer (line 1513) alre",
+      "observation_id": "4d5997568f3b36a4",
+      "claimed_path": "index.ts",
+      "path_resolution": "ambiguous"
+    },
+    {
+      "content": "**4. `index.ts:1512-1515` \u2014 the 30 s `BUFFER_STUCK` timer measures time spent waiting for the *user* to respond to the `command_output` prompt, not time the buffer is stuck.**\nFailure scenario: user reviews a large command output for 45 s before clicking (the exact case this ask exists for) \u2192 a `terminal_hang: buffer_stuck` event fires for a completely healthy, user-paced flow. Expected: `ask(\"com",
+      "observation_id": "1d6edb2e808e4322",
+      "claimed_path": "index.ts",
+      "path_resolution": "ambiguous"
+    },
+    {
+      "content": "**5. `index.ts:1578-1583` \u2014 `WAITING_FOR_COMPLETION` fires at a fixed 60 s for any command that legitimately runs longer than 60 s.**\nFailure scenario: `npm run build`, a test suite, or a dev server (`npm run dev`, `python -m http.server`) that runs minutes-to-forever without emitting `completed` \u2192 every healthy long-running command records `terminal_hang: waiting_for_completion`. Note the shell-i",
+      "observation_id": "4617721a62736610",
+      "claimed_path": "index.ts",
+      "path_resolution": "ambiguous"
+    },
+    {
+      "content": "**6. `index.ts:1607-1610` \u2014 the completion-timer clear after `await process` is not in a `finally`; if `await process` rejects, the timer stays armed.**\nFailure scenario: the terminal stream errors and `await process` rejects; the existing error handling resumes a new execution, but the 60 s timer was never cleared and later fires `WAITING_FOR_COMPLETION` \u2014 attributing a hang to an execution that ",
+      "observation_id": "f63d70100b45ca66",
+      "claimed_path": "index.ts",
+      "path_resolution": "ambiguous"
+    }
+  ]
+}

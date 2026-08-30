@@ -1,0 +1,412 @@
+{
+  "review": {
+    "comments": [
+      {
+        "content": "1. **High \u2014 Defect (undefined behavior): `src/Mod/Material/App/ModelManagerLocal.cpp:100`.** The `reinterpret_cast` treats `shared_ptr<list<shared_ptr<ModelLibraryLocal>>>` as a different, unrelated `shared_ptr` specialization. Even iteration is undefined behavior; mutation is worse. For example, a caller can insert a plain `ModelLibrary` through the advertised return type, after which local-loading code treats it as `ModelLibraryLocal` and may access a nonexistent `_modelPathMap`, causing memory corruption or a crash. Return a converted list or expose a read-only view instead.",
+        "path": "src/Mod/Material/App/ModelManagerLocal.cpp",
+        "start_line": 100,
+        "end_line": 100,
+        "observation_id": "9ee420c491f83ccf",
+        "claimed_path": "src/Mod/Material/App/ModelManagerLocal.cpp",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "2. **High \u2014 Defect (local-library lookup fails): `src/Mod/Material/App/ModelManager.cpp:175`.** When external support is enabled, `_externalManager->getLibrary(name)` throws `LibraryNotFound` when the library exists only locally; this method does not catch it, so line 182's local fallback is unreachable. Thus a local-only `System`, `User`, or custom library can appear in `getLibraries()` but fail when retrieved by name.",
+        "path": "src/Mod/Material/App/ModelManager.cpp",
+        "start_line": 175,
+        "end_line": 175,
+        "observation_id": "0d7359150e83ff24",
+        "claimed_path": "src/Mod/Material/App/ModelManager.cpp",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "3. **High \u2014 Defect (data race): `src/Mod/Material/App/ModelManagerExternal.cpp:127`.** The static LRU cache is read and modified without locking; `_mutex` is used only during initialization. Concurrent `getModel()`, `addModel()`, `migrateModel()`, `resetCache()`, or statistics calls can race inside the cache's list/map structures, causing invalid iterators, corruption, or crashes. The `contains()` followed by `lookup()` is also a non-atomic check/use sequence.",
+        "path": "src/Mod/Material/App/ModelManagerExternal.cpp",
+        "start_line": 127,
+        "end_line": 127,
+        "observation_id": "33674e88adf28c00",
+        "claimed_path": "src/Mod/Material/App/ModelManagerExternal.cpp",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "4. **Medium \u2014 Defect (incomplete results): `src/Mod/Material/App/ModelManagerExternal.cpp:146`.** `getModels()` always returns an empty map. Consequently `ModelManager::getModels()` silently omits every external-only model even when external mode is enabled, contradicting its external-precedence merge behavior.",
+        "path": "src/Mod/Material/App/ModelManagerExternal.cpp",
+        "start_line": 146,
+        "end_line": 146,
+        "observation_id": "d64c8d3b1d211b2d",
+        "claimed_path": "src/Mod/Material/App/ModelManagerExternal.cpp",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "5. **Medium \u2014 Defect (transient failures cached permanently): `src/Mod/Material/App/ModelManagerExternal.cpp:141`.** A `ConnectionError` is cached as a successful `nullptr` entry. After a temporary service outage, every later request for that UUID hits the negative cache and never retries, so the remote model remains unavailable after connectivity recovers. Only genuine not-found results should potentially be negative-cached, and those need invalidation semantics.",
+        "path": "src/Mod/Material/App/ModelManagerExternal.cpp",
+        "start_line": 141,
+        "end_line": 141,
+        "observation_id": "708a43c69a3074d6",
+        "claimed_path": "src/Mod/Material/App/ModelManagerExternal.cpp",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "6. **Medium \u2014 Defect (wrong model selected): `src/Mod/Material/App/ModelManager.cpp:274`.** The new library-qualified overload ignores `libraryName` and performs a global lookup. `ModelLibrary::getModelTree()` relies on this overload, so if local and external libraries contain the same UUID, a local library tree can receive the external model\u2014or a model from another library\u2014rather than the model represented by that library\u2019s tuple.",
+        "path": "src/Mod/Material/App/ModelManager.cpp",
+        "start_line": 274,
+        "end_line": 274,
+        "observation_id": "3e475e4091850517",
+        "claimed_path": "src/Mod/Material/App/ModelManager.cpp",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "7. **Medium \u2014 Defect (refresh leaves stale external state): `src/Mod/Material/App/ModelManager.cpp:123`.** `refresh()` refreshes only the local manager even though `ModelManagerExternal::refresh()` exists to clear its cache. After an external model is changed or deleted, calling the public refresh API can continue returning the old cached object indefinitely.",
+        "path": "src/Mod/Material/App/ModelManager.cpp",
+        "start_line": 123,
+        "end_line": 123,
+        "observation_id": "5699fe1bdfa369fb",
+        "claimed_path": "src/Mod/Material/App/ModelManager.cpp",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "8. **Low \u2014 Dead code: `src/Mod/Material/App/ModelManager.cpp:111`.** The unconditional `return ModelManagerLocal::cleanup();` makes the external cleanup block unreachable. Although external cleanup is currently empty, any resources added there later will never be released.\n\n9. **Low \u2014 Abstraction/invariant risk: `src/Mod/Material/App/ModelLoader.cpp:124`; `src/Mod/Material/App/ModelLibrary.h:57`.** `getModelFromPath()` accepts a base `ModelLibrary` and performs an unchecked downcast, while the public mutable `setLocal()` flag can claim that a plain `ModelLibrary` is local without making it a `ModelLibraryLocal`. A future caller passing such an object will obtain an invalid derived pointer and can crash when `addModel()` accesses `_modelPathMap`. Accept `shared_ptr<ModelLibraryLocal>` directly or use a checked cast, and avoid duplicating subtype identity in a mutable Boolean.\n\nChecked the supplied diff; the workspace itself contains no repository files for additional source/context verification.**Critical issue #1: Unreachable code in `ModelManager::cleanup()`**\n\n```cpp\nvoid ModelManager::cleanup()\n{\n    return ModelManagerLocal::cleanup();\n#if defined(BUILD_MATERIAL_EXTERNAL)\n    if (_externalManager) {\n        _externalManager->cleanup();\n    }\n#endif\n}\n```\n\nThe `return` statement on the first line unconditionally exits the function before the `#if` block. The external manager's `cleanup()` is never called, even when `BUILD_MATERIAL_EXTERNAL` is defined. This is a real defect \u2014 the code is dead/unreachable. File: `src/Mod/Material/App/ModelManager.cpp`, line ~109 (the `return ModelManagerLocal::cleanup();` line, immediately before the `#if`).",
+        "path": "src/Mod/Material/App/ModelManager.cpp",
+        "start_line": 111,
+        "end_line": 111,
+        "observation_id": "2e4d7e7c67693a66",
+        "claimed_path": "src/Mod/Material/App/ModelManager.cpp",
+        "path_resolution": "exact",
+        "merged_from": [
+          "acaaceab3e89eaf1",
+          "6fabcb8d89e89301"
+        ]
+      },
+      {
+        "content": "**Critical issue #2: `ModelLoader::getModelFromPath` uses `static_pointer_cast` unsafely**\n\n```cpp\nauto localLibrary = std::static_pointer_cast<ModelLibraryLocal>(library);\n```\n\n`library` is a `std::shared_ptr<ModelLibrary>`. Calling `std::static_pointer_cast<ModelLibraryLocal>` on a pointer that isn't actually a `ModelLibraryLocal` is UB. If any caller passes a non-local `ModelLibrary` (e.g., the new external `ModelLibrary` created in `ModelManagerExternal::getLibraries`), this cast produces undefined behavior \u2014 accessing a `ModelLibrary` through a `ModelLibraryLocal*` and then calling `getModelByPath`/`addModel` off the wrong object. The diff even adds a new non-local `ModelLibrary` subclass usage path (`ModelLibrary::ModelLibrary(const Library& other)` in `ModelManagerExternal`), so this scenario is reachable. File: `src/Mod/Material/App/ModelLoader.cpp`, line ~124 (the `auto localLibrary = std::static_pointer_cast...` line).\n\nActually, `getModelFromPath` is called from ModelLoader internals on local libraries, so it may be OK at runtime, but a `dynamic_pointer_cast` with a null check would be far safer. At minimum this is a latent defect (unsafe cast).",
+        "path": "src/Mod/Material/App/ModelLoader.cpp",
+        "start_line": 124,
+        "end_line": 124,
+        "observation_id": "58148234479a46ad",
+        "claimed_path": "src/Mod/Material/App/ModelLoader.cpp",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "**Issue #12: `ModelLoader::getModelFromPath` signature still takes `ModelLibrary` but static_pointer_casts**\n\nThis ties into #2. Inconsistent.\n\n**Issue #13: `ModelManagerExternal` cache is a static initialized at program load with `DEFAULT_CACHE_SIZE`, then `initCache()` sets capacity from a parameter and calls `monitor()`.** OK.\n\n**Issue #14: Missing newline at end of ModelManagerExternal.h** \u2014 trivial.\n\n**Issue #15: `ModelManager::OnChange` calls `rGrp.GetBool` every change even for unrelated keys, and the `strcmp(Reason, \"UseExternal\")` \u2014 Reason type. If Reason is not a C-string, strcmp is wrong. ParameterGrp::MessageType \u2014 typically it's a `std::string` or `const char*`. strcmp on a std::string would be a compile error, so likely const char*. OK.\n\n**Issue #16: `ModelManager` destructor detaches `_hGrp` but `_hGrp` may be null if `App::GetApplication().GetParameterGroupByPath` \u2014 probably fine.\n\nBut note `_hGrp->Detach(this)` in destructor \u2014 if the manager is destructed after the Application/ParameterGrp is torn down, could this be a use-after-free? The static `_manager` lives as long as the process. Destructor only runs at shutdown when static is destroyed. Ordering vs Application destruction is a potential but not certain issue. Minor.\n\n**Issue #17: `ModelManager::getModelByPath(const QString&, const QString&)` at line ~299 still only calls `_localManager->getModelByPath` \u2014 no external branch.** Callers wanting the external path just throw ModelNotFound. Possibly intended.\n\n**Issue #18: In `ModelManager::libraryModels`, when external is used and returns null or throws, it falls through to local. But when `_useExternal` is false, it skips external entirely. Fine. However when the external lib IS found, return. Good. But if a library exists both places, this returns external models and discards local \u2014 consistent with precedence.\n\n**Issue #19: `ModelManager::getLibraries` / `getModels` \u2014 `_useExternal` may be read without mutex, and `_externalManager` may be null before initManagers.** `getLibraries` dereferences `_externalManager->getLibraries()` under `_useExternal` without checking null. If `_useExternal` becomes true (via OnChange -> param) before initManagers populates `_externalManager`, this is a null deref. initManagers is only called from getManager, which happens before first use typically. But the parameter can be toggled at runtime via OnChange independent of init. Edge case; the modelHitRate() calls initManagers() but other methods don't. Worth flagging as null-safety gap.\n\n**Issue #20: `cleanup` unreachable code (#1) double-weighted \u2014 the `return` also makes the whole external cleanup never run, and static-analyzer-wise the `#if` block is dead.**\n\nLet me also check the `ModelLibrary` operator== \u2014 `ModelLibraryLocal` inherits it. Fine.\n\n**Issue: `getModel` external-first but comment says local preferred.** Contradiction between comment and behavior. The comment \"We really want to return the local model if not found, such as for User folder models\" \u2014 but the code returns external first. If both local and external have same UUID, external wins, contradicting the comment's stated intention. Not necessarily a bug but misleading.\n\nLet me now also double check `getModel(uuid)` cache with null: In `ModelManager::getModel`:\n```cpp\nif (_useExternal) {\n    auto model = _externalManager->getModel(uuid);\n    if (model) {\n        return model;\n    }\n}\nreturn _localManager->getModel(uuid);\n```\nIf external returns a cached nullptr without ever hitting network (because a transient error earlier cached null), it silently returns local model \u2014 which might be stale/different. And it never retries external. Combined with #8, this is the \"poisoned cache\" issue.\n\nNow let me prioritize. The most severe:\n\n1. **Unreachable code in `cleanup()`** (the `return` before `#if`) \u2014 real defect, external cleanup never runs. Highest severity for a real bug.\n2. **`static_pointer_cast<ModelLibraryLocal>` without runtime check** in `getModelFromPath` \u2014 UB if a non-local library ever reaches it; new external ModelLibrary makes it reachable. Plus `addToTree`'s `isLocal()` check is dead because the type guarantees local, providing false confidence.\n3. **Cache poisoned by transient ConnectionError** \u2014 returns nullptr cached permanently; external getModel never retries; combined with local fallback may return wrong/stale model.\n4. **`createLibrary` unconditionally calls `_externalManager` even when `!useExternal`**, and without null check \u2192 potential null deref + creates external libs the user didn't request.\n5. **Data races:** `_cache` in ModelManagerExternal accessed without mutex despite `_mutex` existing; `_useExternal` plain static bool read/written across threads.\n6. **`reinterpret_cast` of `std::shared_ptr`** \u2014 fragile/UB-ish, hack.\n7. **`getModel(libraryName, uuid)` ignores libraryName** \u2014 misleading API; returns wrong library's model if UUID collides.\n8. **`getModel` external-first contradicts its own comment** about preferring local.\n9. **Null deref possibility** in getLibraries/getModels/getLibrary using `_externalManager` without null check when `_useExternal` toggled before `initManagers`.\n10. **Behavior change in `getLibraries` ordering** \u2014 deterministic alphabetical rather than source/system-first.\n11. **Dead check `isLocal()` in addToTree** \u2014 can never fire.\n12. **Missing `<cmath>` include** for `std::isnan`.\n13. **Missing newline at EOF** \u2014 trivial.\n\nAlso worth noting: `ModelManagerLocal::getModelByPath` changed `throw MaterialNotFound()` to `throw ModelNotFound()` \u2014 exception type change; callers catching `MaterialNotFound` would break. Behavior change.\n\nAlso in `ModelLibrary::getModelTree`, the folder-add logic: new code always creates a `child->setFolder(mapPtr)` for folders; the old code for the last-model-component case handled `isModel(itp)` specially. The new code splits on path and treats every path segment as a folder, then appends the model as a leaf under `filename`. This seems fine \u2014 but note the leaf node is added *after* the loop, using the full `filename` as key, whereas the `isModel` check that used to identify the model node inside the loop is gone. The new code consistently treats all path segments except filename as folders. This is a reasonable refactor but it means a model whose filename equals a folder name could collide. Minor.\n\nLet me write the review. I have no source to verify against (dir is empty), but the diff is self-contained so verification isn't critical. I'll note the files/lines from the hunk headers.\n\nLet me determine line numbers precisely from the diff hunks.\n\nFor `ModelManager.cpp cleanup()`: the hunk `@@ -79,6 +109,11 @@` starts the cleanup function region. Line ~109-119. The `return ModelManagerLocal::cleanup();` line: in the new file, `void ModelManager::cleanup()` at line ~111, `return` at ~112, `#if` at ~113.\n\nFor `ModelLoader.cpp static_pointer_cast`: hunk `@@ -121,7 +121,8 @@`, `auto localLibrary = std::static_pointer_cast` at line ~124.\n\nFor `ModelManagerExternal.cpp getModel`: new file lines ~139-160.\n\nFor `ModelManagerLocal.cpp reinterpret_cast`: hunk `@@ -98,7 +98,8 @@` line ~101.\n\nFor `createLibrary` external unconditional: hunk `@@ -97,7 +159,24 @@` area, line ~162-166.\n\nLet me present the review now.The working directory is empty \u2014 there's no source tree to cross-check against. That's fine: this diff is fully self-contained and self-consistent, so I'll review it on its own merits. The line numbers come from the diff hunk headers.\n\nReview follows, most severe first.\n\n---",
+        "path": "src/Mod/Material/App/ModelManagerExternal.h",
+        "start_line": 299,
+        "end_line": 299,
+        "observation_id": "66acc6eb117e02b8",
+        "claimed_path": "ModelManagerExternal.h",
+        "path_resolution": "basename",
+        "merged_from": [
+          "b738e5a8eaa8b13f",
+          "6437915eec079d11",
+          "f74d8356adec8b31",
+          "9ecf259efa279d36",
+          "1eabad1d78e80778",
+          "43722ef4257308ac",
+          "79a48ce202e776c8",
+          "00cb584ff48cfbed",
+          "c97be0b1333f93ab",
+          "8bba30f8d647a76e",
+          "b5a8afcf562f2e32",
+          "ca6d86c326050fed",
+          "4d4f059d174cc2f4",
+          "cbc895b43406d3d6"
+        ]
+      },
+      {
+        "content": "**1. Unreachable code: external cleanup never runs \u2014 REAL DEFECT**\n`src/Mod/Material/App/ModelManager.cpp` (new line ~112, the `return ModelManagerLocal::cleanup();` right before the `#if`)\n```cpp\nvoid ModelManager::cleanup()\n{\n    return ModelManagerLocal::cleanup();\n#if defined(BUILD_MATERIAL_EXTERNAL)\n    if (_externalManager) {\n        _externalManager->cleanup();\n    }\n#endif\n}\n```\nThe unconditional `return` makes the entire `#if BUILD_MATERIAL_EXTERNAL` block dead code \u2014 `_externalManager->cleanup()` can never execute even in external builds. The external cache/state is never torn down. Almost certainly the `return` was meant to be removed or gated. Concrete failure: any external-manager teardown required at shutdown simply never happens.",
+        "path": "src/Mod/Material/App/ModelManager.cpp",
+        "start_line": 112,
+        "end_line": 112,
+        "observation_id": "e4b142a19fc2caf8",
+        "claimed_path": "src/Mod/Material/App/ModelManager.cpp",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "**2. Unsafe `static_pointer_cast` on a base pointer \u2014 REAL DEFECT (UB)**\n`src/Mod/Material/App/ModelLoader.cpp` (new line ~124, `auto localLibrary = std::static_pointer_cast<ModelLibraryLocal>(library);`)\n`library` is a `std::shared_ptr<ModelLibrary>`; `static_pointer_cast` to `ModelLibraryLocal` with no runtime type check is undefined behavior if the pointee isn't actually a `ModelLibraryLocal`. This PR itself makes that reachable: `ModelManagerExternal::getLibraries()` builds and returns plain `ModelLibrary` (via the new `ModelLibrary(const Library&)` ctor) that flow into `getLibraries()`. If any of those ever reach `getModelFromPath`, it's UB. Use `dynamic_pointer_cast` + null check, or narrow the parameter type. The related \"guard\" (`if (!model->getLibrary()->isLocal()) throw InvalidLibrary();` in `addToTree`, new line ~236) is **dead**: every `ModelLibraryLocal` constructor calls `setLocal(true)`, so `isLocal()` can never be false for the typed `ModelLibraryLocal` member \u2014 the guard can never fire while the type system already guarantees locality. It provides false confidence rather than protection.",
+        "path": "src/Mod/Material/App/ModelLoader.cpp",
+        "start_line": 124,
+        "end_line": 124,
+        "observation_id": "956b65918507ed5f",
+        "claimed_path": "src/Mod/Material/App/ModelLoader.cpp",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "**3. Transient network failure permanently poisons the cache \u2014 REAL DEFECT (wrong results)**\n`src/Mod/Material/App/ModelManagerExternal.cpp` (new lines ~143-159, `getModel`)\n```cpp\ncatch (const ConnectionError& e) {\n    _cache.emplace(uuid.toStdString(), nullptr);\n    return nullptr;\n}\n```\nA transient connection error caches `nullptr` for the UUID. In `ModelManager::getModel`, that fall-through returns the *local* model (which may be a stale/different copy) while the external model silently goes unreachable. Worse, `_cache.contains()` is checked *before* the network call, so every subsequent call returns the cached `nullptr` forever (until evicted) and never retries the external source. Don't cache misses for connection-type errors.",
+        "path": "src/Mod/Material/App/ModelManagerExternal.cpp",
+        "start_line": 143,
+        "end_line": 143,
+        "observation_id": "583da531c798ef5d",
+        "claimed_path": "src/Mod/Material/App/ModelManagerExternal.cpp",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "**4. `createLibrary` unconditionally touches the external manager and can null-deref \u2014 REAL DEFECT**\n`src/Mod/Material/App/ModelManager.cpp` (new lines ~161-166)\n```cpp\nvoid ModelManager::createLibrary(...)\n{\n#if defined(BUILD_MATERIAL_EXTERNAL)\n    _externalManager->createLibrary(libraryName, icon, readOnly);\n#endif\n}\n```\nTwo problems: (a) it runs even when `_useExternal` is false \u2014 the **old** behavior was a deliberate no-op (the diff rewrote `{}` to this), so a local-only call now silently creates an external library the user never asked for; (b) `_externalManager` is dereferenced with no null check. `initManagers()` only runs from `getManager()`, but `_useExternal` can be flipped at runtime by `OnChange` independent of that, so `_externalManager` can be null while `_useExternal` paths are live. The same blind deref appears in `getLibraries`, `getModels`, and `getLibrary` (they read `_useExternal` then call `_externalManager->...` without a null guard).",
+        "path": "src/Mod/Material/App/ModelManager.cpp",
+        "start_line": 161,
+        "end_line": 161,
+        "observation_id": "8b83f465a0d607f7",
+        "claimed_path": "src/Mod/Material/App/ModelManager.cpp",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "**5. Data races on the singleton managers \u2014 REAL DEFECT (race)**\n- `src/Mod/Material/App/ModelManagerExternal.cpp` (new lines ~141-159): `_cache` (`static LRU::Cache`) is read/written in `getModel` with **no** lock, even though a static `_mutex` exists and is only held inside `initCache()`. `ModelManager::getModel` / `getModels` / `getLibraries` are reachable from multiple threads (GUI + worker), so this is a genuine race on shared mutable state.\n- `src/Mod/Material/App/ModelManager.cpp` / `.h` (~line 83): `static bool _useExternal` is a plain non-atomic bool written by `OnChange` (GUI thread) and read from `getLibraries`/`getModels`/`getLibrary` on potentially other threads \u2014 torn reads/data race.\n\n**6. `reinterpret_cast` of `std::shared_ptr` \u2014 REAL DEFECT (fragile/UB)**\n`src/Mod/Material/App/ModelManagerLocal.cpp` (new line ~101)\n```cpp\nreturn reinterpret_cast<std::shared_ptr<std::list<std::shared_ptr<ModelLibrary>>>&>(_libraryList);\n```\nCasting `std::shared_ptr` via `reinterpret_cast` is at minimum fragile and non-portable (the control block/aliasing semantics of the two pointer types differ). The clean approach is to build a fresh `std::list<std::shared_ptr<ModelLibrary>>` from the local entries. This is exactly the kind of \"works today, breaks silently\" hack a reviewer should block.",
+        "path": "src/Mod/Material/App/ModelManagerExternal.cpp",
+        "start_line": 141,
+        "end_line": 141,
+        "observation_id": "7b676a43c9c13711",
+        "claimed_path": "src/Mod/Material/App/ModelManagerExternal.cpp",
+        "path_resolution": "exact",
+        "merged_from": [
+          "ca589f474e3ff2bd"
+        ]
+      },
+      {
+        "content": "**7. `getModel(libraryName, uuid)` ignores `libraryName` \u2014 MISLEADING API / wrong results**\n`src/Mod/Material/App/ModelManager.cpp` (new lines ~272-276)\n```cpp\nstd::shared_ptr<Model> ModelManager::getModel(const QString& /*libraryName*/, const QString& uuid) const\n{\n    // TODO: Search a specific library\n    return getModel(uuid);\n}\n```\nThe caller (in `ModelLibrary::getModelTree`) asks for \"the model in *this* library\", and gets \"the model with this UUID, external-first\". If the same UUID exists in both a local and an external library with different content, `ModelLibrary::getModelTree` will display the external copy even when enumerating a local library. `getLibrary` in the same file returns whichever the precedence picks, so a library-specific variant should respect its name argument \u2014 otherwise it should not take the parameter at all.\n\n**8. Comment/behavior contradiction in `getModel` \u2014 MISLEADING**\n`src/Mod/Material/App/ModelManager.cpp` (new lines ~279-291): the code returns the external model first, but the comment says \"We really want to return the local model if not found, such as for User folder models\". Either the precedence is wrong or the comment is wrong; combined with #3 and #7, a model that exists locally and externally will always resolve to the external one, and if the external lookup fails it silently uses a different (local) model. The semantics need to be stated and decided, not contradicted.",
+        "path": "src/Mod/Material/App/ModelManager.cpp",
+        "start_line": 272,
+        "end_line": 272,
+        "observation_id": "64eafcbde668ae1b",
+        "claimed_path": "src/Mod/Material/App/ModelManager.cpp",
+        "path_resolution": "exact",
+        "merged_from": [
+          "3ba24cf967cc0438"
+        ]
+      },
+      {
+        "content": "**9. Exception-type change without mention \u2014 BEHAVIOR CHANGE (potential break)**\n`src/Mod/Material/App/ModelManagerLocal.cpp` (new line ~210): `getModelByPath(const QString&)` now throws `ModelNotFound()` instead of `MaterialNotFound()`. Any caller catching `MaterialNotFound` no longer catches this \u2014 silently changes error handling. Verify all consumers updated.",
+        "path": "src/Mod/Material/App/ModelManagerLocal.cpp",
+        "start_line": 210,
+        "end_line": 210,
+        "observation_id": "46442f017db36088",
+        "claimed_path": "src/Mod/Material/App/ModelManagerLocal.cpp",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "**10. `getLibraries()` iteration order changed \u2014 BEHAVIOR CHANGE**\n`src/Mod/Material/App/ModelManager.cpp` (new lines ~126-152): results are now assembled into a `std::map<QString,...>` (alphabetical by name) rather than preserving source order. Any UI that relied on the \"System\" library appearing first, or on a stable insertion order, will change presentation. If ordering is not an explicit contract, fine, but it's an unannounced change worth confirming.",
+        "path": "src/Mod/Material/App/ModelManager.cpp",
+        "start_line": 126,
+        "end_line": 126,
+        "observation_id": "94eba750698570b4",
+        "claimed_path": "src/Mod/Material/App/ModelManager.cpp",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "**11. `std::isnan` used without `<cmath>` \u2014 MISSING INCLUDE**\n`src/Mod/Material/App/ModelManagerExternal.cpp` (line ~186): `std::isnan(hitRate)` relies on `<cmath>`, which isn't in the non-PreCompiled include block (`<QMutexLocker>`, `<App/Application.h>`). Builds fine only if `PreCompiled.h` supplies it; fragile across build configs.\n\n**12. Trivial:** `ModelManagerExternal.h` missing trailing newline (compile warning on some toolchains).\n\n---\n\nMost worth fixing: **#1 (dead `return`), #2 (UB cast), #3 (poisoned cache), #4 (unconditional + null deref external create)**. Those are the ones that can produce wrong behavior or crashes in external-mode builds.### **CRITICAL: Undefined Behavior / Memory Corruption**",
+        "path": "src/Mod/Material/App/ModelManagerExternal.cpp",
+        "start_line": 186,
+        "end_line": 186,
+        "observation_id": "90ace403835463b8",
+        "claimed_path": "src/Mod/Material/App/ModelManagerExternal.cpp",
+        "path_resolution": "exact",
+        "merged_from": [
+          "f49bde945f9f7c42"
+        ]
+      },
+      {
+        "content": "**1. `src/Mod/Material/App/ModelManagerLocal.cpp:101-103`** \u2014 **Invalid `reinterpret_cast` on `shared_ptr`**\n```cpp\nreturn reinterpret_cast<std::shared_ptr<std::list<std::shared_ptr<ModelLibrary>>>&>(\n    _libraryList);\n```\n`_libraryList` is `shared_ptr<list<shared_ptr<ModelLibraryLocal>>>`. Casting the `shared_ptr` control block to a different template instantiation is UB \u2014 it breaks reference counting, causes double-free or leaks, and violates strict aliasing. This will crash in production.\n\n**Fix:** Change the return type to `shared_ptr<list<shared_ptr<ModelLibraryLocal>>>` and update callers, or store a type-erased base pointer.\n\n---",
+        "path": "src/Mod/Material/App/ModelManagerLocal.cpp",
+        "start_line": 101,
+        "end_line": 101,
+        "observation_id": "6f15817bab87f8c2",
+        "claimed_path": "src/Mod/Material/App/ModelManagerLocal.cpp",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "**2. `src/Mod/Material/App/ModelManagerLocal.cpp:197-206` and `212-218`** \u2014 **Unchecked `static_pointer_cast` to derived type**\n```cpp\nif (library->isLocal()) {\n    auto localLibrary = std::static_pointer_cast<Materials::ModelLibraryLocal>(library);\n    // ...\n}\n```\n`library` is `shared_ptr<ModelLibrary>`. If `isLocal()` returns true but the object isn't actually a `ModelLibraryLocal` (e.g., a future subclass), this is UB. Use `dynamic_pointer_cast` and check for null, or make `getModelByPath` virtual.\n\n---\n\n### **MAJOR: Logic Errors / Incomplete Implementation**",
+        "path": "src/Mod/Material/App/ModelManagerLocal.cpp",
+        "start_line": 197,
+        "end_line": 197,
+        "observation_id": "44dce0da8f8d7da1",
+        "claimed_path": "src/Mod/Material/App/ModelManagerLocal.cpp",
+        "path_resolution": "exact",
+        "merged_from": [
+          "4b72350918886df3"
+        ]
+      },
+      {
+        "content": "**3. `src/Mod/Material/App/ModelManager.cpp:204-206`** \u2014 **`getModel(libraryName, uuid)` ignores `libraryName`**\n```cpp\nstd::shared_ptr<Model> ModelManager::getModel(const QString& /*libraryName*/, const QString& uuid) const\n{\n    // TODO: Search a specific library\n    return getModel(uuid);  // BUG: doesn't search the specified library\n}\n```\nThe parameter is commented out but the function doesn't implement per-library lookup. Callers expecting library-scoped search will get wrong results.\n\n---",
+        "path": "src/Mod/Material/App/ModelManager.cpp",
+        "start_line": 204,
+        "end_line": 204,
+        "observation_id": "f9b85416868cc9b5",
+        "claimed_path": "src/Mod/Material/App/ModelManager.cpp",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "**4. `src/Mod/Material/App/ModelManagerExternal.cpp:120-124`** \u2014 **`getModels()` returns empty map (TODO not implemented)**\n```cpp\nstd::shared_ptr<std::map<QString, std::shared_ptr<Model>>> ModelManagerExternal::getModels()\n{\n    // TODO: Implement an external call\n    return std::make_shared<std::map<QString, std::shared_ptr<Model>>>();\n}\n```\n`ModelManager::getModels()` merges external + local models. External side returns empty, so external models never appear in the combined list.\n\n---",
+        "path": "src/Mod/Material/App/ModelManagerExternal.cpp",
+        "start_line": 120,
+        "end_line": 120,
+        "observation_id": "881aed00f0bae3b3",
+        "claimed_path": "src/Mod/Material/App/ModelManagerExternal.cpp",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "**5. `src/Mod/Material/App/ModelManagerExternal.cpp:56-58` and `70-71`** \u2014 **Object slicing when wrapping external libraries**\n```cpp\nauto library = std::make_shared<ModelLibrary>(*entry);  // entry is Library*\nauto library = std::make_shared<ModelLibrary>(*lib);    // lib is Library*\n```\n`ModelLibrary(const Library&)` slices \u2014 it constructs a base `ModelLibrary`, losing any derived state (e.g., `ModelLibraryLocal` behavior). External libraries should probably wrap a `ModelLibrary` subclass that delegates to the external backend, not slice to base.\n\n---",
+        "path": "src/Mod/Material/App/ModelManagerExternal.cpp",
+        "start_line": 56,
+        "end_line": 56,
+        "observation_id": "a6af4343e769bd52",
+        "claimed_path": "src/Mod/Material/App/ModelManagerExternal.cpp",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "**6. `src/Mod/Material/App/ModelLoader.cpp:231-234`** \u2014 **Throws on non-local libraries during load**\n```cpp\nif (!model->getLibrary()->isLocal()) {\n    throw InvalidLibrary();\n}\n```\nThis prevents loading models from external libraries entirely. If external libraries are meant to be readable, this blocks that path.\n\n---\n\n### **MODERATE: Design / Safety Concerns**",
+        "path": "src/Mod/Material/App/ModelLoader.cpp",
+        "start_line": 231,
+        "end_line": 231,
+        "observation_id": "6148f6e096b55388",
+        "claimed_path": "src/Mod/Material/App/ModelLoader.cpp",
+        "path_resolution": "exact",
+        "merged_from": [
+          "c9846d047e59f20d"
+        ]
+      },
+      {
+        "content": "**7. `src/Mod/Material/App/ModelLibrary.cpp:72-92`** \u2014 **Circular dependency: `ModelLibrary::getModelTree` calls `ModelManager::getManager()`**\n```cpp\nauto models = ModelManager::getManager().libraryModels(getName());\n```\n`ModelManager` owns libraries; libraries calling back into the singleton manager during tree construction creates initialization-order hazards and makes unit testing harder. Pass the model list as a parameter instead.\n\n---",
+        "path": "src/Mod/Material/App/ModelLibrary.cpp",
+        "start_line": 72,
+        "end_line": 72,
+        "observation_id": "0b4c1b7f2598a565",
+        "claimed_path": "src/Mod/Material/App/ModelLibrary.cpp",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "**8. `src/Mod/Material/App/ModelManager.cpp:37-38, 85-90`** \u2014 **Parameter group handle stored but no null check**\n```cpp\n_hGrp = App::GetApplication().GetParameterGroupByPath(...);\n_useExternal = _hGrp->GetBool(\"UseExternal\", false);  // Crash if _hGrp is null\n_hGrp->Attach(this);\n```\nIf the parameter group doesn't exist, `GetParameterGroupByPath` may return null. Dereference crashes. Add null check.\n\n---",
+        "path": "src/Mod/Material/App/ModelManager.cpp",
+        "start_line": 37,
+        "end_line": 37,
+        "observation_id": "67bf74510a684bfc",
+        "claimed_path": "src/Mod/Material/App/ModelManager.cpp",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "**9. `src/Mod/Material/App/ModelManagerExternal.cpp:100-114`** \u2014 **Caches `nullptr` on failure, never retries**\n```cpp\ncatch (const ModelNotFound& e) {\n    _cache.emplace(uuid.toStdString(), nullptr);\n    return nullptr;\n}\ncatch (const ConnectionError& e) {\n    _cache.emplace(uuid.toStdString(), nullptr);\n    return nullptr;\n}\n```\nA transient network error permanently poisons the cache entry. Consider caching only successes, or using a negative-cache TTL.\n\n---",
+        "path": "src/Mod/Material/App/ModelManagerExternal.cpp",
+        "start_line": 100,
+        "end_line": 100,
+        "observation_id": "1069c23354987e54",
+        "claimed_path": "src/Mod/Material/App/ModelManagerExternal.cpp",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "**10. `src/Mod/Material/App/ModelManager.cpp:314-350`** \u2014 **`migrateToExternal`/`validateMigration` only compiled when `BUILD_MATERIAL_EXTERNAL` defined**\nThese are member functions of `ModelManager` (always compiled). If one TU sees the definition and another doesn't, ODR violation. Guard the *declaration* in the header with the same `#if`, or move to a separate external-only class.\n\n---",
+        "path": "src/Mod/Material/App/ModelManager.cpp",
+        "start_line": 314,
+        "end_line": 314,
+        "observation_id": "4d49ec580085dc3a",
+        "claimed_path": "src/Mod/Material/App/ModelManager.cpp",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "**11. `src/Mod/Material/App/ModelManagerExternal.h:47`** \u2014 **`#include <lru/lru.hpp>` \u2014 third-party dependency not verified**\nThe CMake change adds the include path, but the LRU cache implementation (`lru::Cache`) must provide: `contains`, `lookup`, `emplace`, `capacity`, `clear`, `stats().hit_rate()`, `monitor()`. Confirm the actual library matches this API.\n\n---",
+        "path": "src/Mod/Material/App/ModelManagerExternal.h",
+        "start_line": 47,
+        "end_line": 47,
+        "observation_id": "e9d24acfa3c33d99",
+        "claimed_path": "src/Mod/Material/App/ModelManagerExternal.h",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "**12. `src/Mod/Material/App/ModelManagerExternal.cpp:9`** \u2014 **Static member definition uses in-class constant**\n```cpp\nLRU::Cache<std::string, std::shared_ptr<Model>> ModelManagerExternal::_cache(DEFAULT_CACHE_SIZE);\n```\n`DEFAULT_CACHE_SIZE` is `static const int` in-class. This is allowed in C++17 if not odr-used elsewhere, but fragile. Prefer `constexpr` or define in cpp.\n\n---\n\n### **MINOR: API Inconsistencies / Missing Defenses**",
+        "path": "src/Mod/Material/App/ModelManagerExternal.cpp",
+        "start_line": 9,
+        "end_line": 9,
+        "observation_id": "9ceea46fe8373d78",
+        "claimed_path": "src/Mod/Material/App/ModelManagerExternal.cpp",
+        "path_resolution": "exact",
+        "merged_from": [
+          "5a852ffc87d8e781"
+        ]
+      },
+      {
+        "content": "**13. `src/Mod/Material/App/MaterialManager.cpp:205, 247`** \u2014 **Parameters commented out instead of `[[maybe_unused]]`**\n```cpp\nvoid MaterialManager::createLibrary(const QString& /*libraryName*/, const QString& /*icon*/, bool /*readOnly*/)\nbool MaterialManager::isLocalLibrary(const QString& /*libraryName*/)\n```\nUse `[[maybe_unused]]` (C++17) or `(void)param;` to silence warnings cleanly. Commented names are not standard.\n\n---",
+        "path": "src/Mod/Material/App/MaterialManager.cpp",
+        "start_line": 205,
+        "end_line": 205,
+        "observation_id": "397583565ac35f00",
+        "claimed_path": "src/Mod/Material/App/MaterialManager.cpp",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "**14. `src/Mod/Material/App/ModelLibrary.h:64`** \u2014 **Copy constructor deleted but converting constructor from base exists**\n```cpp\nModelLibrary(const ModelLibrary& other) = delete;\nModelLibrary(const Library& other);  // allows implicit Library -> ModelLibrary\n```\nThis allows `ModelLibrary ml = someLibrary;` (slicing) but blocks `ModelLibrary ml2 = ml;`. Inconsistent. Either delete the converting constructor or make it `explicit`.\n\n---",
+        "path": "src/Mod/Material/App/ModelLibrary.h",
+        "start_line": 64,
+        "end_line": 64,
+        "observation_id": "934f638078241f39",
+        "claimed_path": "src/Mod/Material/App/ModelLibrary.h",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "**15. `src/Mod/Material/App/ExternalManager.cpp:119`** \u2014 **Null check added but `_instantiated` not set on null**\n```cpp\nif (!_managerObject.isNull() && _managerObject.hasAttr(\"APIVersion\")) {\n    _instantiated = true;\n}\n```\nIf `_managerObject` is null, `_instantiated` stays false. Is that the intended behavior? If so, add a comment; if not, handle the error.\n\n---",
+        "path": "src/Mod/Material/App/ExternalManager.cpp",
+        "start_line": 119,
+        "end_line": 119,
+        "observation_id": "8213d7391e6b4116",
+        "claimed_path": "src/Mod/Material/App/ExternalManager.cpp",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "**16. `src/Mod/Material/App/ModelManagerLocal.h:80` / `.cpp:101`** \u2014 **Return type mismatch vs actual stored type**\nHeader declares return type `shared_ptr<list<shared_ptr<ModelLibrary>>>` but stores `ModelLibraryLocal`. The reinterpret_cast (issue #1) papers over this. Fix the type system: either make `ModelLibraryLocal` the stored type everywhere, or use a common base interface.\n\n---",
+        "path": "src/Mod/Material/App/ModelManagerLocal.h",
+        "start_line": 80,
+        "end_line": 80,
+        "observation_id": "62e7acb682310a84",
+        "claimed_path": "src/Mod/Material/App/ModelManagerLocal.h",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "**17. `src/Mod/Material/App/CMakeLists.txt:27-31`** \u2014 **Conditional include for third-party lru-cache**\n```cmake\nif(BUILD_MATERIAL_EXTERNAL)\n    include_directories(${CMAKE_SOURCE_DIR}/src/3rdParty/lru-cache/include)\nendif()\n```\nEnsure the lru-cache submodule/vendor directory exists at that path in all build configurations. If missing, build fails silently (wrong include path).\n\n---\n\n### **Summary**\n\n| Severity | Count |\n|----------|-------|\n| Critical (crash/UB) | 2 |\n| Major (wrong behavior) | 4 |\n| Moderate (design/fragility) | 6 |\n| Minor (style/nits) | 5 |\n\n**Top 3 fixes required before merge:**\n1. Replace the `reinterpret_cast` in `ModelManagerLocal::getLibraries()` with a type-safe design.\n2. Implement `ModelManagerExternal::getModels()` or remove it from the merge logic.\n3. Fix `ModelManager::getModel(libraryName, uuid)` to actually use `libraryName`.",
+        "path": "src/Mod/Material/App/CMakeLists.txt",
+        "start_line": 27,
+        "end_line": 27,
+        "observation_id": "239186624f0187c7",
+        "claimed_path": "src/Mod/Material/App/CMakeLists.txt",
+        "path_resolution": "exact",
+        "merged_from": [
+          "dad2be7f5ae0bda1",
+          "52663cc57a1ea670",
+          "ca2286f6f37cfcf4",
+          "11443af6edc32cd0",
+          "dc2b8f5b9afe8ab0"
+        ]
+      }
+    ]
+  },
+  "rundir": "/home/user/.cache/llm-panel/runs/aacr-up-mv3wuygz-bd646d2728aa/20260830-151432-385331",
+  "extractor": "3",
+  "unlocated": [
+    {
+      "content": "**Critical issue #3: Missing `std::isnan` include**\n\n`ModelManagerExternal.cpp` uses `std::isnan(hitRate)` but only includes `<QMutexLocker>` and `<App/Application.h>` in the non-PreCompiled section. `std::isnan` is in `<cmath>`. This may be covered by PreCompiled.h, but it's worth flagging. Minor.\n\n**Critical issue #4: `libraryModels` uses `std::get<0/1/2>` on tuples that may have a different ari",
+      "observation_id": "99d51d232532d028",
+      "claimed_path": "ModelManagerExternal.cpp",
+      "path_resolution": "basename"
+    }
+  ]
+}

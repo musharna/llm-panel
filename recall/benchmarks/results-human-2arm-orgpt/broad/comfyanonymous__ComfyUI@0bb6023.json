@@ -1,0 +1,166 @@
+{
+  "review": {
+    "comments": [
+      {
+        "content": "- **High \u2014 Real defect (runtime crash):** `notebooks/comfyui_colab.ipynb:237` and `:284` remove `time` (and, in the first tunnel cell, `subprocess`, `socket`, and `urllib.request`) even though the cell bodies still reference them\u2014the second hunk visibly retains `time.sleep(0.5)`. In a fresh \u201cRun all\u201d session, the background tunnel thread raises `NameError` before establishing the tunnel, leaving the ComfyUI instance inaccessible. The required imports should remain in each independently runnable cell.",
+        "path": "notebooks/comfyui_colab.ipynb",
+        "start_line": 237,
+        "end_line": 237,
+        "observation_id": "f465af2fa02bd82e",
+        "claimed_path": "notebooks/comfyui_colab.ipynb",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "1. **Notebook (real defect / NameError)** \u2014 `notebooks/comfyui_colab.ipynb` line ~287 (both cells): removed `import time` (and `import socket`) while `time.sleep(0.5)`/socket still used in the same cell. Runtime NameError.",
+        "path": "notebooks/comfyui_colab.ipynb",
+        "start_line": 287,
+        "end_line": 287,
+        "observation_id": "1728e9b8fc98bf81",
+        "claimed_path": "notebooks/comfyui_colab.ipynb",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "### 1. Real defect \u2014 removed imports still used in the same cell (NameError)\n**FILE:** `notebooks/comfyui_colab.ipynb` \u2014 hunk `@@ -288,8 +284,6 @@` (second cell), removed lines ~287\u2013288\n**FILE:** `notebooks/comfyui_colab.ipynb` \u2014 hunk `@@ -237,11 +237,7 @@` (first cell), removed lines ~241\u2013243\n\n`import time` is deleted from the cell while the very next lines still call `time.sleep(0.5)` inside `iframe_thread` (and the second cell's body literally shows `while True: time.sleep(0.5)`). There's no other `import time` in either cell after the edit \u2014 so `time.sleep` raises `NameError` the first time a request lands. The first cell also drops `import socket` and `import urllib.request`, and `import subprocess`; if any of those are referenced further down in that cell (typical for the localtunnel/url-check logic right below), those break too. Concrete: anyone running this colab gets a runtime crash on the tunnel cell.",
+        "path": "notebooks/comfyui_colab.ipynb",
+        "start_line": 287,
+        "end_line": 287,
+        "observation_id": "6feab0fd1c42c6a9",
+        "claimed_path": "notebooks/comfyui_colab.ipynb",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "### 2. Potential defect \u2014 removed `Tensor` import, wide-open if the body still uses it\n**FILE:** `comfy/ldm/modules/sub_quadratic_attention.py` \u2014 hunk `@@ -22,7 +22,6 @@`, removed line 24\n\n`from torch import Tensor` is deleted. This file (sub-quadratic attention math) almost certainly still annotates inputs/outputs with `Tensor` somewhere in its body, which I cannot see from the diff \u2014 if so, that's a `NameError`/`F821` undefined-name. What makes this worth raising distinctly: the same PR flips on the `F` rules (`F821` undefined-name) in `ruff.toml`, which would catch exactly this \u2014 but the import removal appears to have been done without confirming the body is free of `Tensor`. Please grep the file for `Tensor` before merging.\n\n### 3. Misleading/ineffective config \u2014 enabling `F` does nothing while `ALL` is ignored\n**FILE:** `ruff.toml` \u2014 hunk `@@ -4,8 +4,7 @@`\n\n`lint.select` now includes `\"F\"` with `lint.ignore = [\"ALL\"]` still in place. Since the ignore list also ignores `ALL`, and `ignore` takes precedence over `select` in Ruff, **no** `F` rule (including `F401`/`F841`/`F821` that were previously enabled) actually runs. The change presents itself as \"turning on the F series\" but is a silent no-op \u2014 a claim the code doesn't back. Also, the removed `# TODO: Enable F821 \u2026 Remaining errors: 7.` comment implies those 7 undefined-name errors are fixed, but nothing in this diff fixes undefined names; deleting the TODO while the errors and the broken select/ignore pair remain is misleading.",
+        "path": "comfy/ldm/modules/sub_quadratic_attention.py",
+        "start_line": 24,
+        "end_line": 24,
+        "observation_id": "5acf39eae3d54415",
+        "claimed_path": "comfy/ldm/modules/sub_quadratic_attention.py",
+        "path_resolution": "exact",
+        "merged_from": [
+          "2213b72f18f266fc"
+        ]
+      },
+      {
+        "content": "### 4. Minor / cosmetic \u2014 no-op with odd style\n**FILE:** `comfy/controlnet.py` \u2014 hunk `@@ -821,7 +821,7 @@`, changed line 824\n\n`\"adapter.body.{}.\".format(i, )` vs the original `...format(i, j)`. With a single `{}` placeholder, both `format(i, j)` and `format(i, )` produce the identical string (extra positional args are silently ignored), so this is a functional no-op that just drops the dead `j`. No behavior change \u2014 flag only for the weird trailing-comma `(i, )` style and to confirm the loop variable `j`'s non-use here is intentional.",
+        "path": "comfy/controlnet.py",
+        "start_line": 824,
+        "end_line": 824,
+        "observation_id": "54c8723530a2ddd3",
+        "claimed_path": "comfy/controlnet.py",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "## Benign (would not raise):\n- The `get_logs` \u2192 `get_raw_logs` (internal_routes.py `@@ -40,7 +40,7 @@`) and `get_history` \u2192 `get_history_prompt_id` (server.py `@@ -584,7 +584,7 @@`) renames resolve inner-function name shadowing; both handlers are bound at registration so no bug, just cleaner. No defect.\n- `nodes_clip_sdxl.py` (`@@ -22,14 +22,15 @@`) \u2014 removes the duplicate `\"clip\"` dict key and places it first. Dictionary literal duplicate keys already resolved last-wins, so this is a true fix, not a regression. No defect.\n- F-string \u2192 plain-string drops (`patcher_extension.py:116`, `execution.py:763`, `server.py:834`) \u2014 no interpolation, so no behavior change. Fine.\n\n**Bottom line:** the colab notebook change is a real crash (break the tunnels cell), the `Tensor` import removal is a latent `NameError`/`F821` risk that needs a body check, and the `ruff.toml` change doesn't do what it claims. The rest are cosmetic.",
+        "path": "api_server/routes/internal/internal_routes.py",
+        "start_line": 40,
+        "end_line": 40,
+        "observation_id": "3ecbc9dfc23a0612",
+        "claimed_path": "internal_routes.py",
+        "path_resolution": "basename",
+        "merged_from": []
+      },
+      {
+        "content": "### 1. **DEFECT: ruff.toml:7** \u2014 Enabling `\"F\"` (all pyflakes rules) with known 7 F821 errors will break CI\nThe comment explicitly states: `TODO: Enable F821 after all errors has been fixed. Remaining errors: 7.` Switching from `[\"F401\", \"F841\"]` to `\"F\"` enables F821 (undefined-name) immediately. This will cause lint failures on those 7 pre-existing undefined names. Either fix the 7 errors first, or keep F821 disabled.\n\n---",
+        "path": "ruff.toml",
+        "start_line": 7,
+        "end_line": 7,
+        "observation_id": "4ab8fa565e655b89",
+        "claimed_path": "ruff.toml",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "### 2. **BUG FIX: comfy/controlnet.py:827** \u2014 Unused format parameter `j`\n```python\n# Before (buggy):\nprefix_replace[\"adapter.body.{}.\".format(i, j)] = \"body.{}.\".format(i * 2)\n# After (fixed):\nprefix_replace[\"adapter.body.{}.\".format(i, )] = \"body.{}.\".format(i * 2)\n```\nThe original passes `j` to `format()` but the format string `\"adapter.body.{}.\"` has only one placeholder. `j` is silently ignored. The fix is correct.\n\n---",
+        "path": "comfy/controlnet.py",
+        "start_line": 827,
+        "end_line": 827,
+        "observation_id": "0365aeb08b1f61e6",
+        "claimed_path": "comfy/controlnet.py",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "### 3. **BUG FIX: comfy_extras/nodes_clip_sdxl.py:29\u201330** \u2014 Duplicate dict keys in `INPUT_TYPES`\nOriginal has two `\"clip\": (\"CLIP\", )` entries. In a dict literal, the last one wins silently; the first is dead code. The reordering (moving `clip` to first position) also fixes this.\n\n---",
+        "path": "comfy_extras/nodes_clip_sdxl.py",
+        "start_line": 29,
+        "end_line": 29,
+        "observation_id": "64c7cf4b5a9fa36f",
+        "claimed_path": "comfy_extras/nodes_clip_sdxl.py",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "### 4. **BUG FIX: api_server/routes/internal/internal_routes.py:44** \u2014 Duplicate function name `get_logs`\nTwo `async def get_logs(request):` in the same class. The second overwrites the first, so the `/logs` route handler (line 40) is lost. Renaming the second to `get_raw_logs` fixes this.\n\n---",
+        "path": "api_server/routes/internal/internal_routes.py",
+        "start_line": 44,
+        "end_line": 44,
+        "observation_id": "885c434cb0c7daff",
+        "claimed_path": "api_server/routes/internal/internal_routes.py",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "### 5. **BUG FIX: server.py:587** \u2014 Duplicate function name `get_history`\nSame pattern: two `async def get_history(request):` in the same scope. The second overwrites the first, losing the `/history` handler (line 584). Renaming to `get_history_prompt_id` fixes this.\n\n---",
+        "path": "server.py",
+        "start_line": 587,
+        "end_line": 587,
+        "observation_id": "78083b2168028650",
+        "claimed_path": "server.py",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "### 6. **RISK: comfy/ldm/modules/sub_quadratic_attention.py:25** \u2014 Removing `from torch import Tensor` without verification\nThe diff shows `from torch import Tensor` removed. If `Tensor` is used as a type annotation anywhere in this file (common in attention modules), this will cause `NameError` at runtime. Need to verify the full file doesn't reference `Tensor`.\n\n---",
+        "path": "comfy/ldm/modules/sub_quadratic_attention.py",
+        "start_line": 25,
+        "end_line": 25,
+        "observation_id": "74fe9272c0678092",
+        "claimed_path": "comfy/ldm/modules/sub_quadratic_attention.py",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "### 7. **STYLE (no-op): comfy/patcher_extension.py:116**, **execution.py:763**, **server.py:834** \u2014 f-strings without interpolations changed to regular strings\nNo functional impact. The f-strings contained no `{...}` expressions, so this is purely cosmetic.\n\n---",
+        "path": "comfy/patcher_extension.py",
+        "start_line": 116,
+        "end_line": 116,
+        "observation_id": "a0ceeb81f76381b6",
+        "claimed_path": "comfy/patcher_extension.py",
+        "path_resolution": "exact",
+        "merged_from": []
+      }
+    ]
+  },
+  "rundir": "/home/user/.cache/llm-panel/runs/aacr-up-bbraiu6z-5dc2fbda898d/20260829-141152-4010651",
+  "extractor": "3",
+  "unlocated": [
+    {
+      "content": "2. **sub_quadratic_attention.py (potential defect)** \u2014 removing `from torch import Tensor`; if `Tensor` annotations still present in file body \u2192 NameError/F821. Cannot verify body; the very rule the PR just enabled (F821) exists to catch this.",
+      "observation_id": "99bdadcb6a799c43",
+      "claimed_path": "sub_quadratic_attention.py",
+      "path_resolution": "basename"
+    },
+    {
+      "content": "3. **ruff.toml (misleading/ineffective config)** \u2014 enabling `\"F\"` in `select` while `lint.ignore = [\"ALL\"]` remains \u2192 ignore overrides select in ruff, so the F rules never fire; the change claims to enable the F series but it's a no-op. Also removed the F821 TODO comment implying errors were fixed, but they weren't necessarily.",
+      "observation_id": "31e88c2186ddbd68",
+      "claimed_path": "ruff.toml",
+      "path_resolution": "exact"
+    },
+    {
+      "content": "4. **controlnet.py (minor/cosmetic)** \u2014 `format(i, )` trailing-comma and dead `j`; functionally identical to before. Style.\n\n5. The other changes (renames, f-string removals, clip dedup) \u2014 benign. The clip dedup is actually a fix.\n\nLet me reconsider severity ordering. The notebook NameError is the clearest concrete defect. The sub_quadratic Tensor is a genuine risk. The ruff one is a \"not yet wron",
+      "observation_id": "225fb1a593254e28",
+      "claimed_path": "controlnet.py",
+      "path_resolution": "basename"
+    },
+    {
+      "content": "### 8. **CLEANUP: notebooks/comfyui_colab.ipynb** \u2014 Unused imports removed\nNo functional impact.\n\n---\n\n**Summary**: Items 1\u20135 are actual defects (item 1 introduces a new failure; items 2\u20135 fix existing bugs). Item 6 is a risk requiring verification. Items 7\u20138 are noise.",
+      "observation_id": "0010c6d5fc3aebd7",
+      "claimed_path": "notebooks/comfyui_colab.ipynb",
+      "path_resolution": "exact"
+    }
+  ]
+}

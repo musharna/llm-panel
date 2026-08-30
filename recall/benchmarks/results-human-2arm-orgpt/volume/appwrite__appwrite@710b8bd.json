@@ -1,0 +1,249 @@
+{
+  "review": {
+    "comments": [
+      {
+        "content": "1. **Critical \u2014 API domain can be claimed by proxy rules:** `src/Appwrite/Platform/Modules/Proxy/Http/Rules/API/Create.php:82`, `Function/Create.php:87`, `Redirect/Create.php:90`, `Site/Create.php:87`, and `app/controllers/general.php:812`. With `_APP_DOMAIN=api.example.com` and `_APP_CONSOLE_DOMAIN=console.example.com`, `api.example.com` is removed from every denied-domain list and is treated as an external domain by the router. A user can create a redirect, site, function, or project-API rule for `api.example.com`; subsequent requests such as `GET https://api.example.com/v1/account` can be redirected or routed to that user-controlled resource instead of the platform API.",
+        "path": "src/Appwrite/Platform/Modules/Proxy/Http/Rules/API/Create.php",
+        "start_line": 82,
+        "end_line": 82,
+        "observation_id": "7f6536e6d645c912",
+        "claimed_path": "src/Appwrite/Platform/Modules/Proxy/Http/Rules/API/Create.php",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "2. **High \u2014 function API endpoints use the console host:** `app/controllers/general.php:451`, `src/Appwrite/Platform/Modules/Functions/Http/Executions/Create.php:354`, `src/Appwrite/Platform/Modules/Functions/Workers/Builds.php:597`, and `src/Appwrite/Platform/Workers/Functions.php:487`. With `_APP_DOMAIN=api.example.com` and `_APP_CONSOLE_DOMAIN=console.example.com`, these paths inject `https://console.example.com/v1` as the Appwrite API endpoint. If `/v1` is exposed only on `api.example.com`, SDK calls made during builds, synchronous executions, asynchronous executions, or routed executions receive a DNS/TLS/404 failure instead of reaching the API.",
+        "path": "app/controllers/general.php",
+        "start_line": 451,
+        "end_line": 451,
+        "observation_id": "0276d4d8a2697a1d",
+        "claimed_path": "app/controllers/general.php",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "3. **Medium \u2014 executions without an explicit Host header receive the console hostname:** `src/Executor/Executor.php:203`. For a scheduled or event-triggered execution whose headers omit `host`, the executor now supplies `Host: console.example.com` rather than `Host: api.example.com`. A function that validates the API host or uses the Host header to construct callback URLs will reject the invocation or generate console-domain callbacks.",
+        "path": "src/Executor/Executor.php",
+        "start_line": 203,
+        "end_line": 203,
+        "observation_id": "5cd6597fcebe6d3a",
+        "claimed_path": "src/Executor/Executor.php",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "4. **Medium \u2014 an explicitly empty optional console-domain variable defeats every fallback:** `app/config/templates/site.php:10`, `app/controllers/api/console.php:46-47`, `app/controllers/general.php:79,265,451,812,861`, `app/views/general/error.phtml:19`, `src/Appwrite/Platform/Modules/Functions/Http/Executions/Create.php:354`, `src/Appwrite/Platform/Modules/Functions/Workers/Builds.php:597,1444`, `src/Appwrite/Platform/Modules/Proxy/Http/Rules/API/Create.php:82`, `Function/Create.php:87`, `Redirect/Create.php:90`, `Site/Create.php:87`, `src/Appwrite/Platform/Workers/Functions.php:487`, `src/Appwrite/Vcs/Comment.php:90,204`, and `src/Executor/Executor.php:203`. With `_APP_CONSOLE_DOMAIN=` present but empty and `_APP_DOMAIN=api.example.com`, the outer `getEnv` returns the empty value rather than its fallback. The resulting behavior includes malformed URLs such as `https:///v1`, an empty default Host header, invalid VCS links, and failure to recognize or protect `api.example.com` as the main domain.",
+        "path": "app/config/templates/site.php",
+        "start_line": 10,
+        "end_line": 10,
+        "observation_id": "db5bc7115e2c846b",
+        "claimed_path": "app/config/templates/site.php",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "### 1. `app/config/templates/site.php:10`\n**Defect:** New empty-string fallback changes behavior when `_APP_DOMAIN` is unset  \n**Failure scenario:** `_APP_CONSOLE_DOMAIN` unset, `_APP_DOMAIN` unset \u2192 `$hostname = ''` (empty string). Old code: `System::getEnv('_APP_DOMAIN')` likely returns `null`/`false`. Downstream code doing `if ($hostname)` or `strlen($hostname)` now behaves differently. URL construction at line 13 (`$protocol . '://' . $hostname`) produces `https:///` (invalid URL).\n\n---",
+        "path": "app/config/templates/site.php",
+        "start_line": 10,
+        "end_line": 10,
+        "observation_id": "d11467d41f5c6e11",
+        "claimed_path": "app/config/templates/site.php",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "### 2. `app/controllers/api/console.php:46-47`\n**Defect:** Domain validator created with potentially empty string; `!empty()` check inconsistent with validator input  \n**Failure scenario:** `_APP_CONSOLE_DOMAIN=''` (explicitly set to empty string), `_APP_DOMAIN='example.com'`. Line 46: `$validator = new Domain('')` \u2014 if `Domain` constructor throws on empty string or `isKnown()`/`isTest()` misbehave, validation breaks. Line 47: `!empty('')` is `false`, so `$isDomainValid = false`, but validator was already constructed with empty string \u2014 inconsistent state.\n\n---",
+        "path": "app/controllers/api/console.php",
+        "start_line": 46,
+        "end_line": 46,
+        "observation_id": "6c4113a5185b062d",
+        "claimed_path": "app/controllers/api/console.php",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "### 3. `app/controllers/general.php:79`\n**Defect:** URL construction with empty hostname produces invalid URL  \n**Failure scenario:** Both env vars unset \u2192 `$url = 'https:///'` (line 79). Used in error view redirect \u2014 browser receives malformed `Location` header.\n\n---",
+        "path": "app/controllers/general.php",
+        "start_line": 79,
+        "end_line": 79,
+        "observation_id": "2e5175deba10a845",
+        "claimed_path": "app/controllers/general.php",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "### 4. `app/controllers/general.php:265`\n**Defect:** Same invalid URL construction in auth failure redirect  \n**Failure scenario:** Both env vars unset \u2192 redirect to `https:///` with cache-control headers. Browser may treat as current-origin redirect or fail.\n\n---",
+        "path": "app/controllers/general.php",
+        "start_line": 265,
+        "end_line": 265,
+        "observation_id": "b5a161e54f95a99a",
+        "claimed_path": "app/controllers/general.php",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "### 4. `app/controllers/general.php:451`\n**Defect:** Same invalid URL construction for `$endpoint`  \n**Failure scenario:** Both env vars unset \u2192 `$endpoint = 'https:///v1'`. Used for API calls \u2014 HTTP client will reject or misroute.\n\n---",
+        "path": "app/controllers/general.php",
+        "start_line": 451,
+        "end_line": 451,
+        "observation_id": "7e345eed28800741",
+        "claimed_path": "app/controllers/general.php",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "### 5. `app/controllers/general.php:812`\n**Defect:** Router skip logic broken when `$mainDomain === ''`  \n**Failure scenario:** `_APP_CONSOLE_DOMAIN` unset, `_APP_DOMAIN` unset \u2192 `$mainDomain = ''`. Request to host `''` (missing Host header) or `localhost` \u2192 `$host !== ''` is `false`, so router incorrectly skips external-domain logic. Old code: `$mainDomain = null`/`false` \u2192 `$host !== null` is `true`, router runs.\n\n---",
+        "path": "app/controllers/general.php",
+        "start_line": 812,
+        "end_line": 812,
+        "observation_id": "e43ea7aac5e0a63f",
+        "claimed_path": "app/controllers/general.php",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "### 6. `app/controllers/general.php:861`\n**Defect:** `$envDomain = ''` bypasses `$mainDomain` assignment logic  \n**Failure scenario:** Both env vars unset \u2192 `$envDomain = ''`. Condition `!empty($envDomain) && $envDomain !== 'localhost'` is `false` \u2192 `$mainDomain` stays `null`. But old code: `System::getEnv('_APP_DOMAIN', '')` also returns `''` \u2014 wait, old line 858 was `System::getEnv('_APP_DOMAIN', '')` which already had `''` default. **No defect here** \u2014 behavior unchanged.\n\n---",
+        "path": "app/controllers/general.php",
+        "start_line": 861,
+        "end_line": 861,
+        "observation_id": "95c78209792203f6",
+        "claimed_path": "app/controllers/general.php",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "### 7. `app/views/general/error.phtml:18`\n**Defect:** Same invalid URL construction as #3  \n**Failure scenario:** Both env vars unset \u2192 `$hostname = ''` \u2192 error page links become `https:///...`.\n\n---",
+        "path": "app/views/general/error.phtml",
+        "start_line": 18,
+        "end_line": 18,
+        "observation_id": "2eba606ca4a95d7d",
+        "claimed_path": "app/views/general/error.phtml",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "### 8. `src/Appwrite/Platform/Modules/Functions/Http/Executions/Create.php:354`\n**Defect:** Same invalid `$endpoint` construction as #4  \n**Failure scenario:** Both env vars unset \u2192 Function execution API calls use `https:///v1`.\n\n---",
+        "path": "src/Appwrite/Platform/Modules/Functions/Http/Executions/Create.php",
+        "start_line": 354,
+        "end_line": 354,
+        "observation_id": "51f1bdaa7887cc22",
+        "claimed_path": "src/Appwrite/Platform/Modules/Functions/Http/Executions/Create.php",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "### 9. `src/Appwrite/Platform/Modules/Functions/Workers/Builds.php:597`\n**Defect:** Same invalid `$endpoint` construction  \n**Failure scenario:** Build worker uses `https:///v1` for deployment API calls.\n\n---",
+        "path": "src/Appwrite/Platform/Modules/Functions/Workers/Builds.php",
+        "start_line": 597,
+        "end_line": 597,
+        "observation_id": "1c59662272cda23c",
+        "claimed_path": "src/Appwrite/Platform/Modules/Functions/Workers/Builds.php",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "### 10. `src/Appwrite/Platform/Modules/Functions/Workers/Builds.php:1444`\n**Defect:** `$hostname` assigned but not used in URL here (line 1444 only assigns) \u2014 **no defect** at this line alone. However, if used later without check, same issue.\n\n---",
+        "path": "src/Appwrite/Platform/Modules/Functions/Workers/Builds.php",
+        "start_line": 1444,
+        "end_line": 1444,
+        "observation_id": "671527e029848b35",
+        "claimed_path": "src/Appwrite/Platform/Modules/Functions/Workers/Builds.php",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "### 11. `src/Appwrite/Platform/Modules/Proxy/Http/Rules/API/Create.php:79`\n**Defect:** Empty string added to `$deniedDomains`  \n**Failure scenario:** Both env vars unset \u2192 `$mainDomain = ''` \u2192 `$deniedDomains[] = ''`. Later domain matching against denied list: `in_array($domain, $deniedDomains)` matches empty string for requests with missing/empty Host header, incorrectly denying valid requests.\n\n---",
+        "path": "src/Appwrite/Platform/Modules/Proxy/Http/Rules/API/Create.php",
+        "start_line": 79,
+        "end_line": 79,
+        "observation_id": "086100fa04295672",
+        "claimed_path": "src/Appwrite/Platform/Modules/Proxy/Http/Rules/API/Create.php",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "### 12. `src/Appwrite/Platform/Modules/Proxy/Http/Rules/Function/Create.php:84`\n**Defect:** Same empty string in `$deniedDomains` as #11.\n\n---",
+        "path": "src/Appwrite/Platform/Modules/Proxy/Http/Rules/Function/Create.php",
+        "start_line": 84,
+        "end_line": 84,
+        "observation_id": "7c5491566ecbb319",
+        "claimed_path": "src/Appwrite/Platform/Modules/Proxy/Http/Rules/Function/Create.php",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "### 13. `src/Appwrite/Platform/Modules/Proxy/Http/Rules/Redirect/Create.php:87`\n**Defect:** Same empty string in `$deniedDomains` as #11.\n\n---",
+        "path": "src/Appwrite/Platform/Modules/Proxy/Http/Rules/Redirect/Create.php",
+        "start_line": 87,
+        "end_line": 87,
+        "observation_id": "38d8eecd6d45f538",
+        "claimed_path": "src/Appwrite/Platform/Modules/Proxy/Http/Rules/Redirect/Create.php",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "### 14. `src/Appwrite/Platform/Modules/Proxy/Http/Rules/Site/Create.php:84`\n**Defect:** Same empty string in `$deniedDomains` as #11.\n\n---",
+        "path": "src/Appwrite/Platform/Modules/Proxy/Http/Rules/Site/Create.php",
+        "start_line": 84,
+        "end_line": 84,
+        "observation_id": "b254a1a8a9a3d177",
+        "claimed_path": "src/Appwrite/Platform/Modules/Proxy/Http/Rules/Site/Create.php",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "### 15. `src/Appwrite/Platform/Workers/Functions.php:487`\n**Defect:** Same invalid `$endpoint` construction as #4  \n**Failure scenario:** Function worker uses `https:///v1` for internal API calls.\n\n---",
+        "path": "src/Appwrite/Platform/Workers/Functions.php",
+        "start_line": 487,
+        "end_line": 487,
+        "observation_id": "96b40f00ab0133a0",
+        "claimed_path": "src/Appwrite/Platform/Workers/Functions.php",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "### 16. `src/Appwrite/Vcs/Comment.php:90`\n**Defect:** Fallback behavior changed \u2014 previously returned `null`/`false` when both unset, now returns `''`  \n**Failure scenario:** `_APP_CONSOLE_DOMAIN` unset, `_APP_DOMAIN` unset. Old: `System::getEnv('_APP_DOMAIN')` \u2192 `null`/`false`. New: `''`. Comment generation at line 93: `$protocol . '://' . $hostname` \u2192 `https:///` in generated markdown links.\n\n---",
+        "path": "src/Appwrite/Vcs/Comment.php",
+        "start_line": 90,
+        "end_line": 90,
+        "observation_id": "9301861bdd035a40",
+        "claimed_path": "src/Appwrite/Vcs/Comment.php",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "### 17. `src/Appwrite/Vcs/Comment.php:204`\n**Defect:** Same as #16 for image URLs  \n**Failure scenario:** Both unset \u2192 `$imageLight = 'https:///' . $pathLight` \u2014 broken image URLs in VCS comments.\n\n---",
+        "path": "src/Appwrite/Vcs/Comment.php",
+        "start_line": 204,
+        "end_line": 204,
+        "observation_id": "eb489c05d64c5ec1",
+        "claimed_path": "src/Appwrite/Vcs/Comment.php",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "### 18. `src/Executor/Executor.php:203`\n**Defect:** Host header set to empty string  \n**Failure scenario:** Both env vars unset, incoming request has no Host header \u2192 `$headers['host'] = ''`. Downstream HTTP client sends `Host: ` (empty), violating RFC 7230 \u2014 server may reject with 400.\n\n---",
+        "path": "src/Executor/Executor.php",
+        "start_line": 203,
+        "end_line": 203,
+        "observation_id": "f2abd877657f1fea",
+        "claimed_path": "src/Executor/Executor.php",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "### 19. `tests/e2e/Services/Projects/ProjectsCustomServerTest.php:86`\n**Defect:** Test updated to match new (buggy) behavior instead of asserting correct behavior  \n**Failure scenario:** Test now expects `$mainDomain = ''` when both unset, cementing the empty-string bug as expected. No assertion that URLs are valid or deniedDomains excludes empty string.\n\n---\n\n**Total: 18 distinct defects** (items 6 and 10 are non-defects; the rest are concrete failure scenarios).",
+        "path": "tests/e2e/Services/Projects/ProjectsCustomServerTest.php",
+        "start_line": 86,
+        "end_line": 86,
+        "observation_id": "72ba877a67735197",
+        "claimed_path": "tests/e2e/Services/Projects/ProjectsCustomServerTest.php",
+        "path_resolution": "exact",
+        "merged_from": []
+      }
+    ]
+  },
+  "rundir": "/home/user/.cache/llm-panel/runs/aacr-up-9jf461_k-acd776fe6782/20260830-145746-207153",
+  "extractor": "3",
+  "unlocated": []
+}

@@ -1,0 +1,1684 @@
+{
+  "review": {
+    "comments": [
+      {
+        "content": "- **Medium \u2014 `server/src/services/person.service.ts:624`**: `update` is initialized with `id`, so the `Object.keys(update).length > 0` check at line 633 is always true. Merging a person when the primary already has both a name and birth date still issues `UPDATE person SET id = id`; this needlessly fires update triggers and can change `updatedAt`/`updateId`, generating a false synchronization change.",
+        "path": "server/src/services/person.service.ts",
+        "start_line": 624,
+        "end_line": 624,
+        "observation_id": "32fec4331fb47749",
+        "claimed_path": "server/src/services/person.service.ts",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "- **Low \u2014 `server/src/services/person.service.ts:553`**: The error message interpolates the whole `person` object. A missing person logs `person undefined has no face asset`, while an existing person whose face/asset is missing logs `person [object Object] has no face asset`; the affected person ID is lost, making the failed job impossible to identify from this diagnostic.",
+        "path": "server/src/services/person.service.ts",
+        "start_line": 553,
+        "end_line": 553,
+        "observation_id": "8a6f895a5364c938",
+        "claimed_path": "server/src/services/person.service.ts",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "**1. `mergePerson` now performs a DB write on every merge, even when there is nothing to merge**\n`server/src/services/person.service.ts` (hunk at `@@ -634,7 +621,7`), the `update` initialization and the guard that follows.\n- The `Updateable<Person> & { id }` is initialized as `{ id: primaryPerson.id }`, so `Object.keys(update).length > 0` is *always* true (the old code initialized `{}` and could stay empty).\n- Concrete failure: user merges two people where the merge source has no name/birthDate/similarity difference from the primary (the three conditional `if`s in the removed/kept body never append). Old code skipped the DB call; new code always executes `this.personRepository.update({ id })`, which runs `UPDATE person SET id=... WHERE id=...` and `executeTakeFirstOrThrow()`. An unnecessary write on every merge, and it will now throw if the row is concurrently deleted even when no field actually needed updating.",
+        "path": "server/src/services/person.service.ts",
+        "start_line": 621,
+        "end_line": 621,
+        "observation_id": "a6b61722a8fa914f",
+        "claimed_path": "server/src/services/person.service.ts",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "**2. Error log interpolates an object, producing `[object Object]`**\n`server/src/services/person.service.ts` (hunk at `@@ -551,34 +548,24`), the line:\n```js\nthis.logger.error(`Could not generate person thumbnail: person ${person} has no face asset`);\n```\n- `person` is the whole result object (or `undefined` when the query returns no row), not an id. `person` is never printed as a string, so the log reads `person [object Object]` or `person undefined`. Concrete failure: an operator greps the log for the failing person id and cannot find it; the previous code logged `person?.id`. This is both a wrong output and a loss of the identifier.",
+        "path": "server/src/services/person.service.ts",
+        "start_line": 548,
+        "end_line": 548,
+        "observation_id": "da4cf4dc8f65d32b",
+        "claimed_path": "server/src/services/person.service.ts",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "**5. `GetAllPeopleOptions.thumbnailPath` is declared but never filters**\n`server/src/repositories/person.repository.ts` (hunk at `@@ -49,6 +47,19`, the options interface) vs the `getAll` query body (`@@ -142,15 +146,11`).\n- The new dedicated options type adds `thumbnailPath?: string`, but `getAll` only `$if`s on `ownerId`, `faceAssetId`, and `isHidden` \u2014 nothing filters on `thumbnailPath`. Concrete failure: any caller passing `getAll({ thumbnailPath: X })` silently receives *all* people (the option is ignored), so downstream logic that relies on that filter (e.g. a cleanup that unlinks only matching thumbnails) would operate on every person. I could not confirm an in-tree caller because the working directory is empty, so I flag this as a candidate defect: a newly-exposed option that is silently inert.\n\n## Note on what I could not verify\nThe working directory `/tmp/aacr-up-t7ls8sx4` is empty, so I could not read the surrounding bodies of `handleRecognizeFaces` (to confirm the narrowed `asset` selection of only `ownerId/isArchived/fileCreatedAt` is sufficient), `handlePersonCleanup`/`handleQueueDetectFaces` (thumbnail-unlink/`delete` interplay), or `getById`/`mapPerson` consumers (whether the now-required `Person.updateId`/`color`/birthDate-as-`Date` types break any string-birthDate callers). Those hunks may or may not contain additional defects; I am not reporting them as confirmed defects because I cannot point at a concrete wrong behavior from the diff alone.",
+        "path": "server/src/repositories/person.repository.ts",
+        "start_line": 47,
+        "end_line": 47,
+        "observation_id": "c1c12d379efb6440",
+        "claimed_path": "server/src/repositories/person.repository.ts",
+        "path_resolution": "exact",
+        "merged_from": [
+          "4cf75c2ab7cfbe76"
+        ]
+      },
+      {
+        "content": "### 1. `server/src/cores/storage.core.ts:87`\n**Defect:** `getPersonThumbnailPath` now accepts `{ id: string; ownerId: string }` but callers may pass objects with additional properties (like `thumbnailPath`) that the function ignores. More critically, the function signature change breaks any caller passing a full `PersonEntity` (which had `thumbnailPath`, `faceAssetId`, etc.) - TypeScript would catch this, but if there are any dynamic/untyped callers (e.g., from deserialized JSON, RPC, or `any` typed code), they'd silently pass extra properties that get ignored.\n\n**Failure scenario:** A job queue payload contains `{ id: \"p1\", ownerId: \"u1\", thumbnailPath: \"/old/path\", faceAssetId: \"f1\" }` - the function works but ignores `thumbnailPath`. If the caller expected the function to validate/return the existing thumbnail path, it now returns a new computed path instead.\n\n---",
+        "path": "server/src/cores/storage.core.ts",
+        "start_line": 87,
+        "end_line": 87,
+        "observation_id": "5395742d0da21844",
+        "claimed_path": "server/src/cores/storage.core.ts",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "### 2. `server/src/cores/storage.core.ts:137`\n**Defect:** `movePersonFile` parameter changed from `PersonEntity` to `{ id: string; ownerId: string; thumbnailPath: string }`. The function destructures `thumbnailPath` from the parameter but **never uses it** in the visible code (only `entityId` is used in the `switch`). The `thumbnailPath` parameter is dead code.\n\n**Failure scenario:** Caller passes `{ id: \"p1\", ownerId: \"u1\", thumbnailPath: \"/wrong/path\" }` - the wrong path is accepted but ignored. If the `FACE` case (or other cases not shown) was supposed to use `thumbnailPath` for moving the old thumbnail, that logic is now broken.\n\n---",
+        "path": "server/src/cores/storage.core.ts",
+        "start_line": 137,
+        "end_line": 137,
+        "observation_id": "7476c0ac81d53351",
+        "claimed_path": "server/src/cores/storage.core.ts",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "### 3. `server/src/database.ts:215-247`\n**Defect:** New `Person` type includes `thumbnailPath: string` (non-nullable), but the database schema (from SQL queries) shows `thumbnailPath` can be NULL (e.g., `person.thumbnailPath` in `getPersonForThumbnailGenerationJob` left join). The type claims it's always a string.\n\n**Failure scenario:** A person row with `thumbnailPath = NULL` in DB \u2192 TypeScript thinks `person.thumbnailPath` is `string` \u2192 code calls `storage.unlink(person.thumbnailPath)` \u2192 passes `null` to filesystem API \u2192 crash or deletes wrong file.\n\n---",
+        "path": "server/src/database.ts",
+        "start_line": 215,
+        "end_line": 215,
+        "observation_id": "030f860671847b58",
+        "claimed_path": "server/src/database.ts",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "### 4. `server/src/database.ts:249-265`\n**Defect:** `AssetFace.person` is typed as `Person | null` but `Person` requires `thumbnailPath: string` (non-nullable). However, the SQL for `getFaceForFacialRecognitionJob` doesn't join `person` table at all - it only selects `asset_faces.personId`. The `person` property would be `undefined` at runtime, not a `Person` object.\n\n**Failure scenario:** Code accesses `face.person?.ownerId` expecting optional chaining to work \u2192 `face.person` is `undefined` (not `null`) \u2192 TypeScript allows it but runtime value is `undefined` \u2192 `face.person?.ownerId` returns `undefined` instead of string \u2192 facial recognition job fails with \"ownerId undefined\".\n\n---",
+        "path": "server/src/database.ts",
+        "start_line": 249,
+        "end_line": 249,
+        "observation_id": "316424e8415a9fb6",
+        "claimed_path": "server/src/database.ts",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "### 5. `server/src/dtos/asset-response.dto.ts:74`\n**Defect:** Comment says `// TODO: this is inefficient` but the function `peopleWithFaces` now takes `AssetFace[]` (database type) instead of `AssetFaceEntity[]`. The `AssetFace` type has `person?: Person | null` where `Person` has required `thumbnailPath: string`. But the function accesses `face.person` without checking if it exists, and maps it via `mapPerson(face.person)` which expects all `Person` fields.\n\n**Failure scenario:** An `AssetFace` with `person: undefined` (not joined) \u2192 `face.person` is `undefined` \u2192 `mapPerson(undefined)` called \u2192 tries to read `person.id` on undefined \u2192 crash.\n\n---",
+        "path": "server/src/dtos/asset-response.dto.ts",
+        "start_line": 74,
+        "end_line": 74,
+        "observation_id": "a68c6fbeeb145c4f",
+        "claimed_path": "server/src/dtos/asset-response.dto.ts",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "### 6. `server/src/dtos/person.dto.ts:233`\n**Defect:** `mapFacesWithoutPerson` parameter changed from `AssetFaceEntity` to `Selectable<AssetFaces>`. The function accesses `face.deletedAt` but `Selectable<AssetFaces>` includes `deletedAt: Date | null` - however the function returns `deletedAt: face.deletedAt` directly in the DTO. If the database has `deletedAt` as `NULL`, the DTO gets `null`, but the DTO type may expect `Date | null` or `Date`.\n\n**Failure scenario:** Face soft-deleted (`deletedAt = NULL` in DB) \u2192 DTO returns `deletedAt: null` \u2192 frontend expects ISO string \u2192 parsing error.\n\n---",
+        "path": "server/src/dtos/person.dto.ts",
+        "start_line": 233,
+        "end_line": 233,
+        "observation_id": "1d99ed7e4ba7008e",
+        "claimed_path": "server/src/dtos/person.dto.ts",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "### 7. `server/src/dtos/person.dto.ts:248-262`\n**Defect:** `mapFaces` completely rewritten. Old version spread `mapFacesWithoutPerson(face)` then added `person`. New version manually lists fields but **omits `deletedAt`** entirely. The return type `AssetFaceResponseDto` likely expects `deletedAt`.\n\n**Failure scenario:** Any face (deleted or not) \u2192 response DTO missing `deletedAt` field \u2192 frontend crashes or shows wrong state.\n\n---",
+        "path": "server/src/dtos/person.dto.ts",
+        "start_line": 248,
+        "end_line": 248,
+        "observation_id": "630e369e87180488",
+        "claimed_path": "server/src/dtos/person.dto.ts",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "### 8. `server/src/dtos/person.dto.ts:254`\n**Defect:** `mapFaces` accesses `face.person?.ownerId === auth.user.id` but `face.person` is `Person | undefined` (from `AssetFace` type). If `face.person` is `undefined` (not joined), optional chaining returns `undefined`, comparison `undefined === auth.user.id` is `false`, so `person: null` is returned. This silently hides the person data.\n\n**Failure scenario:** Face belongs to current user but `person` relation not loaded \u2192 `person: null` in response \u2192 UI shows \"unknown person\" for user's own face.\n\n---",
+        "path": "server/src/dtos/person.dto.ts",
+        "start_line": 254,
+        "end_line": 254,
+        "observation_id": "9c7c485f05aed787",
+        "claimed_path": "server/src/dtos/person.dto.ts",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "### 9. `server/src/entities/asset.entity.ts:51`\n**Defect:** `AssetEntity.faces` changed from `AssetFaceEntity[]` to `AssetFace[]`. `AssetFace` has optional `person?: Person | null` but `AssetFaceEntity` had required `person!: PersonEntity | null`. Code iterating `asset.faces` and accessing `face.person.id` without optional chaining will now crash if `person` not loaded.\n\n**Failure scenario:** Asset loaded without face-person join \u2192 `asset.faces[0].person` is `undefined` \u2192 code does `face.person.id` \u2192 TypeError.\n\n---",
+        "path": "server/src/entities/asset.entity.ts",
+        "start_line": 51,
+        "end_line": 51,
+        "observation_id": "7cac4f42380dcc64",
+        "claimed_path": "server/src/entities/asset.entity.ts",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "### 10. `server/src/queries/person.repository.sql:98-135`\n**Defect:** `getFaceForFacialRecognitionJob` query selects `asset_faces.personId` and `asset_faces.sourceType` but **does not join the `person` table**. The SQL comment says it returns `person` but the subquery selects from `assets`, not `person`. The returned \"person\" object is actually the asset owner info (`assets.ownerId`, `assets.isArchived`, `assets.fileCreatedAt`), not the person entity.\n\n**Failure scenario:** Facial recognition job calls this \u2192 gets `personId` and an \"asset\" object mislabeled as person \u2192 code tries `face.person.ownerId` but gets asset's `ownerId` (which is the asset owner, not person owner) \u2192 wrong access control decisions.\n\n---",
+        "path": "server/src/queries/person.repository.sql",
+        "start_line": 98,
+        "end_line": 98,
+        "observation_id": "b807c48f6b74d95f",
+        "claimed_path": "server/src/queries/person.repository.sql",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "### 11. `server/src/queries/person.repository.sql:137-195`\n**Defect:** `getPersonForThumbnailGenerationJob` query uses `left join lateral` on `asset_faces` where `asset_faces.id = person.faceAssetId`. If `faceAssetId` is null, the lateral join returns no rows, `face` becomes `NULL`. But the TypeScript return type expects `face` to have `asset` property. The query selects `to_json(\"face\") as \"face\"` where `face` can be null.\n\n**Failure scenario:** Person has `faceAssetId = NULL` \u2192 query returns `face: null` \u2192 TypeScript thinks `person.face` exists \u2192 code accesses `person.face.asset` \u2192 `Cannot read property 'asset' of null`.\n\n---",
+        "path": "server/src/queries/person.repository.sql",
+        "start_line": 137,
+        "end_line": 137,
+        "observation_id": "63394b02ba0b929d",
+        "claimed_path": "server/src/queries/person.repository.sql",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "### 12. `server/src/repositories/person.repository.ts:128-135`\n**Defect:** `getAllFaces` return type changed from `AsyncIterableIterator<AssetFaceEntity>` to `AsyncIterableIterator<Selectable<AssetFaces>>`. The function uses `.stream()` but the type assertion `as AsyncIterableIterator<AssetFaceEntity>` was removed. Kysely's `.stream()` returns `AsyncIterableIterator<Selectable<AssetFaces>>` which is correct, but callers expecting `AssetFaceEntity` methods (like `face.person` being required) will break.\n\n**Failure scenario:** Caller does `for await (const face of personRepo.getAllFaces()) { console.log(face.person.id) }` \u2192 `face.person` is `undefined` \u2192 crash.\n\n---",
+        "path": "server/src/repositories/person.repository.ts",
+        "start_line": 128,
+        "end_line": 128,
+        "observation_id": "3832b2195c5742a5",
+        "claimed_path": "server/src/repositories/person.repository.ts",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "### 13. `server/src/repositories/person.repository.ts:137-148`\n**Defect:** `getAll` return type changed from `AsyncIterableIterator<PersonEntity>` to implicit `AsyncIterableIterator<Selectable<Person>>`. `Selectable<Person>` has `thumbnailPath: string` (non-nullable) but database allows NULL. Same issue as #3.\n\n---",
+        "path": "server/src/repositories/person.repository.ts",
+        "start_line": 137,
+        "end_line": 137,
+        "observation_id": "db9664ba49eb2aa5",
+        "claimed_path": "server/src/repositories/person.repository.ts",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "### 14. `server/src/repositories/person.repository.ts:150-165`\n**Defect:** `getAllForUser` return type changed from `Paginated<PersonEntity>` to implicit. The query does `.innerJoin('asset_faces', ...)` which **duplicates person rows** if a person has multiple faces. The `limit(pagination.take + 1)` and slice logic assumes unique persons, but inner join multiplies rows.\n\n**Failure scenario:** User has 1 person with 5 faces, `take=10` \u2192 query returns 5 rows for same person \u2192 `items.length = 5` (not > 10) \u2192 `hasNextPage: false` but only 1 unique person returned \u2192 pagination broken, duplicates in results.\n\n---",
+        "path": "server/src/repositories/person.repository.ts",
+        "start_line": 150,
+        "end_line": 150,
+        "observation_id": "18af806b97f34f13",
+        "claimed_path": "server/src/repositories/person.repository.ts",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "### 15. `server/src/repositories/person.repository.ts:240-265`\n**Defect:** `getFaceForFacialRecognitionJob` selects `asset_faces.personId` and `asset_faces.sourceType` but the `asset` subquery selects from `assets` table. The returned type has `asset` property containing asset info, but the TypeScript type `AssetFace` expects `person?: Person | null`. The repository returns an object with `asset` but TypeScript expects `person`.\n\n**Failure scenario:** Service calls `getFaceForFacialRecognitionJob` \u2192 gets `{ id, personId, sourceType, asset: {...} }` \u2192 passes to code expecting `face.person` \u2192 `face.person` is `undefined` \u2192 facial recognition fails.\n\n---",
+        "path": "server/src/repositories/person.repository.ts",
+        "start_line": 240,
+        "end_line": 240,
+        "observation_id": "35a562495a282fb0",
+        "claimed_path": "server/src/repositories/person.repository.ts",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "### 16. `server/src/repositories/person.repository.ts:267-310`\n**Defect:** `getPersonForThumbnailGenerationJob` uses `toJson(eb, 'face').as('face')` where `toJson` is a new utility. The lateral join selects `asset_faces.boundingBoxX1` etc. and `asset` subquery. But the `asset` subquery uses `jsonBuildObject` for `exifInfo` and `jsonArrayFrom` for `files`. If `asset_files` has no preview, `files` is `[]` (empty array), not null. The code later checks `asset.files.length === 0` which works, but the `exifInfo` object always has `exifImageWidth/Height` even if EXIF row doesn't exist (inner join on exif).\n\n**Failure scenario:** Asset has no EXIF row \u2192 inner join on `exif` fails \u2192 lateral join returns no rows \u2192 `face` is `null` \u2192 same as #11.\n\n---",
+        "path": "server/src/repositories/person.repository.ts",
+        "start_line": 267,
+        "end_line": 267,
+        "observation_id": "c99fb631db0d3a64",
+        "claimed_path": "server/src/repositories/person.repository.ts",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "### 17. `server/src/repositories/person.repository.ts:325`\n**Defect:** `delete` method changed from accepting `PersonEntity[]` to `string[]` (ids). But the service code (line 244 in person.service.ts) calls `this.personRepository.delete(people.map((person) => person.id))` which is correct. However, any **other caller** of `delete` passing entities will now fail at runtime (TypeScript catches if typed, but not if `any`).\n\n**Failure scenario:** External code calls `personRepo.delete([{ id: \"1\", ... }])` \u2192 tries to use array of objects as string array \u2192 SQL `IN` clause gets `[object Object]` \u2192 deletes nothing or errors.\n\n---",
+        "path": "server/src/repositories/person.repository.ts",
+        "start_line": 325,
+        "end_line": 325,
+        "observation_id": "0126603d266be5d7",
+        "claimed_path": "server/src/repositories/person.repository.ts",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "### 18. `server/src/repositories/person.repository.ts:362`\n**Defect:** `create` return type changed from `Promise<PersonEntity>` to implicit. Uses `executeTakeFirstOrThrow()` which throws if no row returned. Old code used `executeTakeFirst()` with `as Promise<PersonEntity>` (could return undefined). New behavior throws on failure instead of returning undefined.\n\n**Failure scenario:** Insert fails due to constraint (e.g., duplicate unique field) \u2192 throws instead of returning undefined \u2192 unhandled exception if caller expected nullable return.\n\n---",
+        "path": "server/src/repositories/person.repository.ts",
+        "start_line": 362,
+        "end_line": 362,
+        "observation_id": "08b1bab008f50404",
+        "claimed_path": "server/src/repositories/person.repository.ts",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "### 19. `server/src/repositories/person.repository.ts:420`\n**Defect:** `update` parameter changed from `Partial<PersonEntity> & { id: string }` to `Updateable<Person> & { id: string }`. `Updateable<Person>` makes all fields optional except those marked as required in the table. But `Person` type has `thumbnailPath: string` (required), so `Updateable<Person>` allows omitting it. However, the database may require it (NOT NULL). If caller omits `thumbnailPath`, update succeeds but row may violate constraint.\n\n**Failure scenario:** Caller does `update({ id: \"1\", name: \"New\" })` \u2192 `thumbnailPath` not in update \u2192 if DB has NOT NULL constraint and no default, update fails at DB level \u2192 exception.\n\n---",
+        "path": "server/src/repositories/person.repository.ts",
+        "start_line": 420,
+        "end_line": 420,
+        "observation_id": "fb2198ce127f0871",
+        "claimed_path": "server/src/repositories/person.repository.ts",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "### 20. `server/src/services/metadata.service.ts:588`\n**Defect:** `facesToAdd` type changed from `(Partial<AssetFaceEntity> & { assetId: string })[]` to `(Insertable<AssetFaces> & { assetId: string })[]`. `Insertable<AssetFaces>` requires all NOT NULL columns. The code pushes objects with `id: randomUUID()`, `assetId`, `personId`, `boundingBoxX1`, etc. but may miss required fields like `sourceType`, `imageWidth`, `imageHeight`, `deletedAt`.\n\n**Failure scenario:** Face detection adds face with missing `sourceType` \u2192 insert fails at DB level \u2192 transaction rolls back \u2192 asset metadata extraction fails silently.\n\n---",
+        "path": "server/src/services/metadata.service.ts",
+        "start_line": 588,
+        "end_line": 588,
+        "observation_id": "a935f154a08a1476",
+        "claimed_path": "server/src/services/metadata.service.ts",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "### 21. `server/src/services/metadata.service.ts:591`\n**Defect:** `missing` type changed from `(Partial<PersonEntity> & { ownerId: string })[]` to `(Insertable<Person> & { ownerId: string })[]`. `Insertable<Person>` requires `name`, `thumbnailPath`, `isHidden`, `isFavorite`, `color`, `faceAssetId`, `birthDate`, `createdAt`, `updatedAt`, `updateId`. The code only provides `ownerId` and `name` (from `existingNameMap`).\n\n**Failure scenario:** New person creation via metadata \u2192 insert missing required fields \u2192 DB constraint violation \u2192 error.\n\n---",
+        "path": "server/src/services/metadata.service.ts",
+        "start_line": 591,
+        "end_line": 591,
+        "observation_id": "1a78901a02fd30f2",
+        "claimed_path": "server/src/services/metadata.service.ts",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "### 22. `server/src/services/person.service.ts:243-247`\n**Defect:** `delete` method now accepts `{ id: string; thumbnailPath: string }[]` and calls `this.storageRepository.unlink(person.thumbnailPath)` for each. But `thumbnailPath` could be a path that doesn't exist, or could be a directory. No error handling on `unlink`.\n\n**Failure scenario:** Person has `thumbnailPath: \"/nonexistent\"` \u2192 `unlink` throws \u2192 `Promise.all` rejects \u2192 some thumbnails deleted, others not \u2192 inconsistent state.\n\n---",
+        "path": "server/src/services/person.service.ts",
+        "start_line": 243,
+        "end_line": 243,
+        "observation_id": "acf1fef2db68d7da",
+        "claimed_path": "server/src/services/person.service.ts",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "### 23. `server/src/services/person.service.ts:315-322`\n**Defect:** `iou` function parameter changed from `AssetFaceEntity` to `{ boundingBoxX1: number; boundingBoxY1: number; boundingBoxX2: number; boundingBoxY2: number }`. This is fine structurally, but the function is called with `face` from `asset.faces` where `asset.faces` is now `AssetFace[]`. `AssetFace` has the required bounding box fields, so this works. **No defect here.**\n\n---",
+        "path": "server/src/services/person.service.ts",
+        "start_line": 315,
+        "end_line": 315,
+        "observation_id": "9892b1eeb0035712",
+        "claimed_path": "server/src/services/person.service.ts",
+        "path_resolution": "exact",
+        "merged_from": [
+          "6d2ee3e63e5b1fdf"
+        ]
+      },
+      {
+        "content": "### 24. `server/src/services/person.service.ts:375-385`\n**Defect:** `getFaceForFacialRecognitionJob` returns object with `asset` property (from SQL), but code accesses `face.asset` and `face.personId`, `face.sourceType`. The SQL returns `asset` (not `person`), so `face.personId` exists but `face.person` does not. Code checks `if (!face || !face.asset)` which is correct for the new shape, but later uses `face.personId` for person matching.\n\n**Failure scenario:** Face has `personId: \"p1\"` but `person` table has no row for \"p1\" \u2192 `face.personId` exists but person doesn't \u2192 facial recognition creates duplicate person.\n\n---",
+        "path": "server/src/services/person.service.ts",
+        "start_line": 375,
+        "end_line": 375,
+        "observation_id": "84019b1079f80fed",
+        "claimed_path": "server/src/services/person.service.ts",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "### 25. `server/src/services/person.service.ts:548-570`\n**Defect:** `handleGeneratePersonThumbnail` calls `getPersonForThumbnailGenerationJob` which returns `{ id, ownerId, faceAssetId, face }`. Code checks `if (!person?.face?.asset)` but `person` can be `null` (from `executeTakeFirst()`). The optional chaining `person?.face?.asset` works, but the error log says `` person ${person} `` which would log `\"person [object Object]\"` or `\"person null\"`.\n\n**Failure scenario:** Person not found \u2192 `person` is `null` \u2192 log says `Could not generate person thumbnail: person null has no face asset` \u2192 confusing log, but functionally correct (returns FAILED).\n\n---",
+        "path": "server/src/services/person.service.ts",
+        "start_line": 548,
+        "end_line": 548,
+        "observation_id": "e61bd294e9ee3790",
+        "claimed_path": "server/src/services/person.service.ts",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "### 26. `server/src/services/person.service.ts:558-560`\n**Defect:** Code destructures `asset` from `person.face` but `person.face.asset` comes from SQL lateral join which includes `originalPath`, `type`, `exifInfo`, `files`. The `asset` variable shadows the outer `asset` parameter (not used here). Then checks `if (asset.files.length === 0)`. But `files` comes from `jsonArrayFrom` subquery with `limit 1` - if no preview file, it's `[]` (empty array), not null. This works.\n\n**However:** The `asset` object from SQL has `type: AssetType` and `originalPath: string` but the code later passes `asset.originalPath` to `mediaRepository.getImageDimensions`. For videos, `getImageDimensions` may fail.\n\n**Failure scenario:** Person's face asset is a video (`AssetType.VIDEO`) \u2192 `getImageDimensions(videoPath)` throws or returns wrong dimensions \u2192 thumbnail generation fails.\n\n---",
+        "path": "server/src/services/person.service.ts",
+        "start_line": 558,
+        "end_line": 558,
+        "observation_id": "411a25ff23db60c6",
+        "claimed_path": "server/src/services/person.service.ts",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "### 27. `server/src/services/person.service.ts:621-635`\n**Defect:** `mergePerson` creates `update: Updateable<Person> & { id: string } = { id: primaryPerson.id }`. Then conditionally adds `name`, `birthDate`, `color`, `isHidden`, `isFavorite`, `faceAssetId`. But `Updateable<Person>` makes all fields optional. If no fields change, `Object.keys(update).length === 1` (only `id`), so update is skipped. This is correct.\n\n**But:** The `faceAssetId` is set to `mergePerson.faceAssetId` only if `primaryPerson.faceAssetId` is null. If both have faceAssetId, primary keeps its own. But the merged faces are reassigned to primary. If primary's faceAssetId points to a face that now belongs to merged person, it's stale.\n\n**Failure scenario:** Primary has faceAssetId=\"f1\", mergePerson has faceAssetId=\"f2\". Faces reassigned to primary. Primary still has faceAssetId=\"f1\" but \"f1\" now has personId=primary (correct). But if \"f1\" was deleted during merge, faceAssetId points to deleted face.\n\n---",
+        "path": "server/src/services/person.service.ts",
+        "start_line": 621,
+        "end_line": 621,
+        "observation_id": "0bf738741d0dbcbf",
+        "claimed_path": "server/src/services/person.service.ts",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "### 28. `server/src/services/person.service.ts:681-700`\n**Defect:** `getInputDimensions` parameter `asset` type changed from `AssetEntity` to inline type with `type`, `exifInfo`, `originalPath`, `files`. For `AssetType.IMAGE`, it uses `asset.exifInfo.exifImageWidth/Height` directly. But `exifInfo` comes from SQL `jsonBuildObject` which may have `null` values if EXIF row exists but fields are null. The check `if (!asset.exifInfo.exifImageHeight || !asset.exifInfo.exifImageWidth)` catches this.\n\n**For videos:** It calls `getAssetFile(asset.files, AssetFileType.PREVIEW)` but `asset.files` comes from `jsonArrayFrom` with `where asset_files.type = $1` (PREVIEW) and `limit 1`. If no preview, `files: []` \u2192 `getAssetFile` returns undefined \u2192 throws \"has no preview path\". This is correct behavior.\n\n**Defect:** The function is called from `handleGeneratePersonThumbnail` with `asset` from `person.face.asset`. That asset object has `files` array from the lateral join. But the lateral join only includes PREVIEW files (`where asset_files.type = $1` where `$1 = AssetFileType.PREVIEW`). For images, it uses `asset.originalPath` directly (line 690). For videos, it needs preview. If the asset is an image but `exifInfo` is missing, it throws. **This seems correct.**\n\n---",
+        "path": "server/src/services/person.service.ts",
+        "start_line": 681,
+        "end_line": 681,
+        "observation_id": "7268f1a33cc48004",
+        "claimed_path": "server/src/services/person.service.ts",
+        "path_resolution": "exact",
+        "merged_from": [
+          "e68fa436bb246dc7"
+        ]
+      },
+      {
+        "content": "### 29. `server/src/utils/database.ts:19-45`\n**Defect:** New `toJson` function uses complex conditional types. The return type `Simplify<...>` with `Nullable<infer N>` extraction. But `Selectable<DB[T]>` for a lateral join subquery may not match the table schema. The function is used as `toJson(eb, 'face').as('face')` where `'face'` is a lateral join alias, not a table. `DB['face']` doesn't exist \u2192 `Selectable<DB['face']>` is `never` \u2192 type becomes `never | null` \u2192 `ExpressionWrapper<..., never>`.\n\n**Failure scenario:** TypeScript compiles but the type is wrong. At runtime, `toJson` returns the JSON correctly, but any TypeScript consumer of the query result gets `never` type for `face` \u2192 type errors in calling code.\n\n---",
+        "path": "server/src/utils/database.ts",
+        "start_line": 19,
+        "end_line": 19,
+        "observation_id": "049d4696562c6099",
+        "claimed_path": "server/src/utils/database.ts",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "### 33. `server/src/services/person.service.spec.ts` (multiple lines)\n**Defect:** Tests updated to use new mock methods but some assertions may be wrong. For example, line 440: `expect(mocks.person.delete).toHaveBeenCalledWith([personStub.noName.id])` - the service now calls `delete` with array of IDs (strings), not entities. This is correct.\n\n**But:** Line 137: `mocks.person.getById.mockResolvedValue(null)` removed from \"should throw bad request when person not found\" test. The service's `getById` now calls `personRepository.getById` which returns `Selectable<Person> | null`. The access check `checkOwnerAccess` is called first and throws if no access. But if person doesn't exist, `checkOwnerAccess` might still pass (depends on implementation). The test expects `BadRequestException` from `getById` but the service may not throw if person not found - it returns the person (null) and the DTO mapping may fail.\n\n**Failure scenario:** `getById` called for non-existent person \u2192 `personRepository.getById` returns `null` \u2192 `mapPerson(null)` called \u2192 crash.\n\n---",
+        "path": "server/src/services/person.service.spec.ts",
+        "start_line": 440,
+        "end_line": 440,
+        "observation_id": "61a033f28b132857",
+        "claimed_path": "server/src/services/person.service.spec.ts",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "### 34. `server/src/dtos/person.dto.ts:220`\n**Defect:** `mapPerson` parameter changed from `PersonEntity` to `Person` (database type). `Person` has `thumbnailPath: string` (required) but database allows NULL. `mapPerson` accesses `person.thumbnailPath` directly (line 224 in diff not shown but implied). If `thumbnailPath` is NULL in DB, `person.thumbnailPath` is `null` but TypeScript thinks it's `string`.\n\n**Failure scenario:** Person with NULL thumbnailPath \u2192 `mapPerson` returns `thumbnailPath: null` \u2192 DTO expects string \u2192 Swagger validation fails or frontend breaks.\n\n---",
+        "path": "server/src/dtos/person.dto.ts",
+        "start_line": 220,
+        "end_line": 220,
+        "observation_id": "2dc606f65d537ac6",
+        "claimed_path": "server/src/dtos/person.dto.ts",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "### 35. `server/src/repositories/person.repository.ts:47-55`\n**Defect:** New `GetAllPeopleOptions` includes `thumbnailPath?: string` and `faceAssetId?: string | null`. The `getAll` method uses `.$if(!!options.thumbnailPath, ...)` which treats empty string as falsy. If caller wants to find people with empty thumbnailPath, they can't.\n\n**Failure scenario:** Caller does `getAll({ thumbnailPath: \"\" })` \u2192 condition `!!\"\"` is false \u2192 where clause not added \u2192 returns all people instead of those with empty thumbnailPath.\n\n---",
+        "path": "server/src/repositories/person.repository.ts",
+        "start_line": 47,
+        "end_line": 47,
+        "observation_id": "5837702dd670ca38",
+        "claimed_path": "server/src/repositories/person.repository.ts",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "### 36. `server/src/repositories/person.repository.ts:110-115`\n**Defect:** `delete` method now takes `ids: string[]` but doesn't validate UUID format. If caller passes invalid IDs, the SQL `IN` clause gets invalid UUIDs \u2192 PostgreSQL error.\n\n**Failure scenario:** `delete([\"not-a-uuid\"])` \u2192 query fails with \"invalid input syntax for type uuid\" \u2192 unhandled exception.\n\n---",
+        "path": "server/src/repositories/person.repository.ts",
+        "start_line": 110,
+        "end_line": 110,
+        "observation_id": "a85bfa77d9b880e1",
+        "claimed_path": "server/src/repositories/person.repository.ts",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "### 37. `server/src/services/person.service.ts:453-454`\n**Defect:** In `handleDetectFaces`, `facesToAdd` pushes objects with `sourceType: SourceType.MACHINE_LEARNING` but `Insertable<AssetFaces>` requires `sourceType` (non-optional). This is provided. But `deletedAt` is required in `Insertable<AssetFaces>` (since `AssetFaces` table has `deletedAt` NOT NULL with default NULL? Need to check). The code doesn't set `deletedAt` - relies on DB default.\n\n**Failure scenario:** If `deletedAt` has no default and is NOT NULL, insert fails.\n\n---",
+        "path": "server/src/services/person.service.ts",
+        "start_line": 453,
+        "end_line": 453,
+        "observation_id": "7701d9adbf8dee36",
+        "claimed_path": "server/src/services/person.service.ts",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "### 38. `server/src/services/person.service.ts:551-552`\n**Defect:** `getFaceForFacialRecognitionJob` returns `face` with `asset` property. Code checks `if (!face || !face.asset)`. But the return type of the repository method is not typed (implicit `any` from `executeTakeFirst()`). If the query returns `null` (no row), `face` is `null` \u2192 check passes \u2192 returns FAILED. If query returns row but `asset` subquery returns `null` (no matching asset), `face.asset` is `null` \u2192 check passes \u2192 returns FAILED. This seems correct.\n\n---",
+        "path": "server/src/services/person.service.ts",
+        "start_line": 551,
+        "end_line": 551,
+        "observation_id": "ec2d00360a7e269b",
+        "claimed_path": "server/src/services/person.service.ts",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "### 39. `server/src/services/person.service.ts:634`\n**Defect:** In `mergePerson`, `update` object uses `Updateable<Person> & { id: string }`. The `faceAssetId` is set to `mergePerson.faceAssetId` only if `!primaryPerson.faceAssetId`. But `mergePerson.faceAssetId` could be `null` (from stub). If primary has no faceAssetId and mergePerson has null, `update.faceAssetId = null` is set. This is fine.\n\n---",
+        "path": "server/src/services/person.service.ts",
+        "start_line": 634,
+        "end_line": 634,
+        "observation_id": "31754be2bcda6210",
+        "claimed_path": "server/src/services/person.service.ts",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "### 40. `server/src/database.ts:10-15`\n**Defect:** Added `SourceType` to imports from `src/enum`. But `SourceType` is already imported in `person.dto.ts` and used in `AssetFace` type. This is just an import addition, no defect.\n\n---",
+        "path": "server/src/database.ts",
+        "start_line": 10,
+        "end_line": 10,
+        "observation_id": "f96a3c69050da38d",
+        "claimed_path": "server/src/database.ts",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "### 41. `server/src/dtos/asset-response.dto.ts:4`\n**Defect:** Added import `AssetFace` from `src/database`. The `peopleWithFaces` function uses `AssetFace[]` but `AssetFace` has `person?: Person | null`. The function does `if (face.person) { result.push(mapPerson(face.person)) }`. If `face.person` is `undefined` (not loaded), it's skipped. If `face.person` is `null`, it's skipped. But `face.person` should be `Person | null` per type, not `undefined`. The `?` makes it optional at TypeScript level but runtime could be `undefined`.\n\n**Failure scenario:** Face loaded without person join \u2192 `face.person` is `undefined` \u2192 skipped \u2192 face not included in response \u2192 missing face data.\n\n---",
+        "path": "server/src/dtos/asset-response.dto.ts",
+        "start_line": 4,
+        "end_line": 4,
+        "observation_id": "50160192b2ac6540",
+        "claimed_path": "server/src/dtos/asset-response.dto.ts",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "### 42. `server/src/repositories/person.repository.ts:228-235`\n**Defect:** `getFaceById` return type changed from `Promise<AssetFaceEntity>` to implicit. Uses `executeTakeFirstOrThrow()` which throws if not found. Old code used `executeTakeFirst()` with assertion. Callers expecting `undefined` on not found will now get exception.\n\n**Failure scenario:** Caller does `const face = await getFaceById(id); if (!face) return;` \u2192 now throws instead of returning undefined \u2192 unhandled exception.\n\n---",
+        "path": "server/src/repositories/person.repository.ts",
+        "start_line": 228,
+        "end_line": 228,
+        "observation_id": "eea72b5436854e20",
+        "claimed_path": "server/src/repositories/person.repository.ts",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "### 43. `server/src/repositories/person.repository.ts:437-445`\n**Defect:** `getFacesByIds` uses `@ChunkedArray()` decorator and processes in chunks. The chunked query uses `where('asset_faces.assetId', 'in', assetIds)` and `where('asset_faces.personId', 'in', personIds)`. But the input `ids` is `AssetFaceId[]` where `AssetFaceId = { assetId: string; personId: string }`. The code extracts `assetIds` and `personIds` separately and does IN on each. This creates a **Cartesian product** - it returns faces where assetId is in list AND personId is in list, not the specific pairs.\n\n**Failure scenario:** Input `[{ assetId: \"a1\", personId: \"p1\" }, { assetId: \"a2\", personId: \"p2\" }]` \u2192 query returns faces for (a1,p1), (a1,p2), (a2,p1), (a2,p2) \u2192 wrong faces returned.\n\n---",
+        "path": "server/src/repositories/person.repository.ts",
+        "start_line": 437,
+        "end_line": 437,
+        "observation_id": "e81b567d21ddf74f",
+        "claimed_path": "server/src/repositories/person.repository.ts",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "### 44. `server/src/repositories/person.repository.ts:457-465`\n**Defect:** `getRandomFace` return type changed from `Promise<AssetFaceEntity | undefined>` to implicit. Uses `executeTakeFirst()` which returns `Selectable<AssetFaces> | undefined`. This matches.\n\n---",
+        "path": "server/src/repositories/person.repository.ts",
+        "start_line": 457,
+        "end_line": 457,
+        "observation_id": "736bf767db1b1ae4",
+        "claimed_path": "server/src/repositories/person.repository.ts",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "### 45. `server/src/repositories/search.repository.ts:162-166`\n**Defect:** `FaceEmbeddingSearch.minBirthDate` changed from `Date` to `Date | null`. The search query likely uses this in a WHERE clause. If `minBirthDate` is `null`, the query may do `WHERE person.birthDate >= NULL` which evaluates to UNKNOWN (false in WHERE) \u2192 no results.\n\n**Failure scenario:** Caller passes `minBirthDate: null` \u2192 query returns no results instead of ignoring the filter.\n\n---",
+        "path": "server/src/repositories/search.repository.ts",
+        "start_line": 162,
+        "end_line": 162,
+        "observation_id": "05c7aa74a0b182c9",
+        "claimed_path": "server/src/repositories/search.repository.ts",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "### 46. `server/src/services/person.service.ts:243-247`\n**Defect:** The `delete` method maps `people.map((person) => person.id)` but the parameter is `{ id: string; thumbnailPath: string }[]`. If any object in array lacks `id` (e.g., `{ thumbnailPath: \"...\" }`), `person.id` is `undefined` \u2192 `delete` called with `[undefined, ...]` \u2192 SQL `IN (NULL, ...)` \u2192 deletes nothing or errors.\n\n**Failure scenario:** Caller passes `[{ thumbnailPath: \"/x\" }]` (missing id) \u2192 `delete([undefined])` \u2192 no deletion or error.\n\n---",
+        "path": "server/src/services/person.service.ts",
+        "start_line": 243,
+        "end_line": 243,
+        "observation_id": "bba26229da6eec5a",
+        "claimed_path": "server/src/services/person.service.ts",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "### 47. `server/src/utils/database.ts:19-45` (toJson function)\n**Defect:** The `toJson` function's type signature is extremely complex and likely incorrect for lateral join aliases. When used as `toJson(eb, 'face')`, the `'face'` is a string alias, not a table name. `TB extends keyof DB & string` - `'face'` is not a key of `DB`. The conditional type `T extends TB` is false (string literal not assignable to table key). Then `T extends Expression<infer O>` - a string is not an Expression. So it falls to `never`. The return type becomes `ExpressionWrapper<DB, TB, never>`.\n\n**Failure scenario:** TypeScript may error on usage, or infer `never` for the selected column, breaking type safety for the query result.\n\n---",
+        "path": "server/src/utils/database.ts",
+        "start_line": 19,
+        "end_line": 19,
+        "observation_id": "6f98fc1dead13d5e",
+        "claimed_path": "server/src/utils/database.ts",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "### 48. `server/src/queries/person.repository.sql:137-195` (getPersonForThumbnailGenerationJob)\n**Defect:** The lateral join on `asset_faces` has `where \"asset_faces\".\"id\" = \"person\".\"faceAssetId\" and \"asset_faces\".\"deletedAt\" is null`. If `faceAssetId` is not null but the face is deleted (`deletedAt` not null), the lateral join returns no rows \u2192 `face` is `NULL`. The outer query still returns the person row (left join). Code checks `if (!person?.face?.asset)` - if `face` is null, this passes \u2192 returns FAILED. Correct.\n\n**But:** The `asset` subquery inside lateral join does `inner join \"exif\" on \"exif\".\"assetId\" = \"assets\".\"id\"`. If asset has no EXIF row, the inner join eliminates the row \u2192 lateral join returns no rows \u2192 `face` is `NULL` \u2192 same as deleted face.\n\n**Failure scenario:** Asset has no EXIF data \u2192 person thumbnail generation fails even though face exists.\n\n---",
+        "path": "server/src/queries/person.repository.sql",
+        "start_line": 137,
+        "end_line": 137,
+        "observation_id": "a323f05ccb67002d",
+        "claimed_path": "server/src/queries/person.repository.sql",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "### 49. `server/src/services/person.service.ts:681-700` (getInputDimensions)\n**Defect:** For `AssetType.IMAGE`, it returns `{ width, height, inputPath: asset.originalPath }` using EXIF dimensions. But the thumbnail generation later uses `mediaRepository.generateThumbnail(asset.originalPath, ...)`. If the image is rotated (EXIF orientation), the bounding box coordinates (from face detection on preview/original) may not match the original orientation.\n\n**Failure scenario:** Photo taken in portrait with rotation flag \u2192 face detected on rotated preview \u2192 bounding box in rotated coordinates \u2192 thumbnail generated from original (unrotated) using rotated coordinates \u2192 wrong crop.\n\n---\n\n### 50. `server/src/entities/asset-face.entity.ts` and `person.entity.ts` and `face-search.entity.ts` deleted\n**Defect:** These entity classes are deleted. Any code outside this diff that imports them will fail to compile. The diff shows updates to repository, service, DTOs, tests - but there may be other files (controllers, other services, GraphQL resolvers, etc.) that still import these.\n\n**Failure scenario:** Another service imports `PersonEntity` from `src/entities/person.entity` \u2192 TypeScript compilation error \u2192 build fails.\n\n---",
+        "path": "server/src/services/person.service.ts",
+        "start_line": 681,
+        "end_line": 681,
+        "observation_id": "3ef90e0ed23db0b0",
+        "claimed_path": "server/src/services/person.service.ts",
+        "path_resolution": "exact",
+        "merged_from": [
+          "44409256bc0a6cce"
+        ]
+      },
+      {
+        "content": "### 51. `server/src/services/person.service.ts:548` (handleGeneratePersonThumbnail)\n**Defect:** The log message `` `Could not generate person thumbnail: person ${person} has no face asset` `` - when `person` is an object, this logs `[object Object]`. Should be `person.id`.\n\n**Failure scenario:** Debugging thumbnail failure shows unhelpful log.\n\n---",
+        "path": "server/src/services/person.service.ts",
+        "start_line": 548,
+        "end_line": 548,
+        "observation_id": "5cacb459ba633e7c",
+        "claimed_path": "server/src/services/person.service.ts",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "### 52. `server/src/services/person.service.ts:558`\n**Defect:** Destructuring `const { asset, boundingBoxX1: x1, ... } = person.face;` - but `person.face` comes from SQL which has `boundingBoxX1` etc. at top level of `face` object, not nested under `asset`. The SQL selects `asset_faces.boundingBoxX1` directly in the lateral join, and `asset` as separate JSON. So `person.face` has `{ boundingBoxX1, boundingBoxY1, ..., asset: {...} }`. The destructuring is correct for this shape.\n\n---",
+        "path": "server/src/services/person.service.ts",
+        "start_line": 558,
+        "end_line": 558,
+        "observation_id": "8cb7bf4fc5d0a170",
+        "claimed_path": "server/src/services/person.service.ts",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "### 53. `server/src/dtos/person.dto.ts:248-262` (mapFaces)\n**Defect:** The new `mapFaces` doesn't include `assetId` in the returned DTO. Old version via `mapFacesWithoutPerson` included `assetId` (from `face.assetId`). New version manually lists fields but omits `assetId`.\n\n**Failure scenario:** Frontend expects `assetId` on face response \u2192 undefined \u2192 UI breaks.\n\n---",
+        "path": "server/src/dtos/person.dto.ts",
+        "start_line": 248,
+        "end_line": 248,
+        "observation_id": "af1d13e3936d1067",
+        "claimed_path": "server/src/dtos/person.dto.ts",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "### 54. `server/src/repositories/person.repository.ts:362` (create)\n**Defect:** `create` uses `executeTakeFirstOrThrow()` but the return type is not specified. The method returns `Promise<Selectable<Person>>` (the inserted row). Callers expecting `PersonEntity` (with methods) get plain object.\n\n**Failure scenario:** Caller does `const person = await create(...); person.someMethod()` \u2192 TypeError (no methods on plain object).\n\n---",
+        "path": "server/src/repositories/person.repository.ts",
+        "start_line": 362,
+        "end_line": 362,
+        "observation_id": "6292ffcc5e43ba22",
+        "claimed_path": "server/src/repositories/person.repository.ts",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "### 55. `server/src/repositories/person.repository.ts:198-208` (getAllForUser)\n**Defect:** The query does `innerJoin('asset_faces', ...)` and `groupBy('person.id')` with `having(count(asset_faces.assetId) >= options.minimumFaceCount)`. But the `selectAll('person')` selects all person columns. The `groupBy` only includes `person.id`. In PostgreSQL, selecting non-aggregated columns not in GROUP BY is allowed if they're functionally dependent on PK, but Kysely may not know this. The result type includes all person columns but they're from an arbitrary row in the group (though all same person.id so should be same).\n\n**More critically:** The `innerJoin` duplicates persons with multiple faces. The `count(asset_faces.assetId)` counts faces. But the `limit(pagination.take + 1)` limits the **joined rows**, not unique persons. If a person has 10 faces and `take=5`, the query returns 5 rows for that person \u2192 `items.length = 5` \u2192 not > 5 \u2192 `hasNextPage: false` but only 1 person returned. The slice `items.slice(0, -1)` removes last row \u2192 4 rows for same person.\n\n**Failure scenario:** Pagination returns duplicate person entries, `hasNextPage` wrong.\n\n---",
+        "path": "server/src/repositories/person.repository.ts",
+        "start_line": 198,
+        "end_line": 198,
+        "observation_id": "6ce7c7a02fc9764b",
+        "claimed_path": "server/src/repositories/person.repository.ts",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "### 56. `server/src/services/person.service.ts:377-385` (handleRecognizeFaces)\n**Defect:** Code calls `getFaceForFacialRecognitionJob(id)` which returns `{ id, personId, sourceType, asset }`. Then checks `if (!face || !face.asset)` and `if (face.personId)`. But `face.personId` is the **current** personId on the face. The facial recognition job is meant to **assign** a person to a face without person. If `face.personId` is already set, it returns SKIPPED. This is correct.\n\n**But:** The `asset` object has `ownerId` (asset owner), `isArchived`, `fileCreatedAt`. The code later uses `face.asset.ownerId` for access control? Not shown in diff.\n\n---",
+        "path": "server/src/services/person.service.ts",
+        "start_line": 377,
+        "end_line": 377,
+        "observation_id": "20fa53298ba5add7",
+        "claimed_path": "server/src/services/person.service.ts",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "### 57. `server/src/services/person.service.ts:453-470` (handleDetectFaces)\n**Defect:** The `facesToAdd` array builds `Insertable<AssetFaces>` objects. It sets `sourceType: SourceType.MACHINE_LEARNING`, `personId: null`, and bounding box coords. But `Insertable<AssetFaces>` requires `id`, `assetId`, `imageWidth`, `imageHeight`, `deletedAt` (maybe). The code sets `id: randomUUID()`, `assetId: asset.id`, `imageWidth: face.width`, `imageHeight: face.height`. It doesn't set `deletedAt` - relies on DB default.\n\n**Failure scenario:** If `deletedAt` has no default, insert fails.\n\n---",
+        "path": "server/src/services/person.service.ts",
+        "start_line": 453,
+        "end_line": 453,
+        "observation_id": "961190fe33bf9d71",
+        "claimed_path": "server/src/services/person.service.ts",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "### 58. `server/src/dtos/person.dto.ts:233` (mapFacesWithoutPerson)\n**Defect:** Parameter is `Selectable<AssetFaces>` which includes all columns. The function returns `deletedAt: face.deletedAt`. But `Selectable<AssetFaces>` has `deletedAt: Date | null`. The DTO `AssetFaceWithoutPersonResponseDto` likely has `deletedAt: Date | null` or `string | null`. If the DTO expects ISO string, returning `Date` object may cause serialization issues.\n\n---",
+        "path": "server/src/dtos/person.dto.ts",
+        "start_line": 233,
+        "end_line": 233,
+        "observation_id": "6f841e1296be87dd",
+        "claimed_path": "server/src/dtos/person.dto.ts",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "### 59. `server/src/repositories/person.repository.ts:328-335` (reassignFace)\n**Defect:** `reassignFace` takes `assetId: string, personId: string | null, sourceType: SourceType` and updates `asset_faces` where `assetId` and `sourceType` match. But there could be multiple faces for same asset and sourceType (e.g., multiple ML-detected faces). The update affects **all** such faces.\n\n**Failure scenario:** Asset has 2 ML-detected faces (face1, face2). Call `reassignFace(assetId, \"p1\", SourceType.MACHINE_LEARNING)` \u2192 both faces get `personId = \"p1\"` \u2192 wrong assignment.\n\n---",
+        "path": "server/src/repositories/person.repository.ts",
+        "start_line": 328,
+        "end_line": 328,
+        "observation_id": "d4aba0556ae9ea1c",
+        "claimed_path": "server/src/repositories/person.repository.ts",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "### 60. `server/src/repositories/person.repository.ts:272-285` (getById)\n**Defect:** Return type implicit. Returns `Selectable<Person> | null`. `Selectable<Person>` has `thumbnailPath: string` (non-null) but DB has NULL. Same as #3.\n\n---",
+        "path": "server/src/repositories/person.repository.ts",
+        "start_line": 272,
+        "end_line": 272,
+        "observation_id": "1888b3a24f63db4c",
+        "claimed_path": "server/src/repositories/person.repository.ts",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "### 61. `server/src/services/person.service.spec.ts:848-852`\n**Defect:** Test \"should fail if face does not have asset\" mocks `getFaceForFacialRecognitionJob` returning `{ ...faceStub.face1, asset: null }`. But the actual query returns `asset` from subquery - if no asset, the row might not exist (inner join on assets? No, lateral join on assets with whereRef). If asset not found, `asset` is `null`. The mock is correct.\n\n---",
+        "path": "server/src/services/person.service.spec.ts",
+        "start_line": 848,
+        "end_line": 848,
+        "observation_id": "af0766624ec61f09",
+        "claimed_path": "server/src/services/person.service.spec.ts",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "### 62. `server/src/services/person.service.spec.ts:731`\n**Defect:** Test casts face stub as `AssetFace` but `faceStub.face1` has `asset` property with extra fields (`libraryId`, `updateId`, `stackId`). The `AssetFace` type expects `asset?: { ownerId, isArchived, fileCreatedAt }` (from SQL) or `Person | null`. The stub's `asset` doesn't match either.\n\n**Failure scenario:** Test passes but type mismatch hidden by `as AssetFace` cast.\n\n---",
+        "path": "server/src/services/person.service.spec.ts",
+        "start_line": 731,
+        "end_line": 731,
+        "observation_id": "9d429e08f5d13bad",
+        "claimed_path": "server/src/services/person.service.spec.ts",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "### 63. `server/src/services/person.service.ts:672-680` (getInputDimensions)\n**Defect:** The function throws `Error` with message including `asset.originalPath` or `asset.id`. But for videos, it uses `previewFile.path`. The error message for video case says `Asset ${asset.originalPath} has no preview path` but the asset is the face asset (from `person.face.asset`), which has `originalPath`. This is fine.\n\n---",
+        "path": "server/src/services/person.service.ts",
+        "start_line": 672,
+        "end_line": 672,
+        "observation_id": "8b9284c7f70831d5",
+        "claimed_path": "server/src/services/person.service.ts",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "### 64. `server/src/utils/database.ts:19-45` (toJson) - Type safety\n**Defect:** The `toJson` function is used in `getPersonForThumbnailGenerationJob` as `toJson(eb, 'face').as('face')` and `toJson(eb, 'asset').as('asset')`. The `'face'` and `'asset'` are lateral join aliases. The type system cannot verify these aliases exist in `DB`. The function's generic constraints require `TB extends keyof DB & string`. Since `'face'` is not a table in `DB`, this should be a TypeScript error. But the code compiles (in diff), meaning either:\n- TypeScript is not checking strictly (unlikely)\n- The `DB` type includes these as virtual tables\n- The function is called with `any` context\n\n**Failure scenario:** If TypeScript doesn't error, the return type is `never` \u2192 query result type broken.\n\n---",
+        "path": "server/src/utils/database.ts",
+        "start_line": 19,
+        "end_line": 19,
+        "observation_id": "b106c83fadae4690",
+        "claimed_path": "server/src/utils/database.ts",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "### 65. `server/src/repositories/person.repository.ts:267-310` (getPersonForThumbnailGenerationJob)\n**Defect:** The query uses `leftJoinLateral` twice. The inner lateral join on `asset_faces` has `whereRef('asset_faces.id', '=', 'person.faceAssetId')`. If `person.faceAssetId` is null, the `whereRef` compares `asset_faces.id = NULL` which is never true \u2192 no rows \u2192 `face` is `NULL`. The outer `where` clause has `and \"person\".\"faceAssetId\" is not null` so this case is filtered out. Correct.\n\n**But:** The `asset` subquery inside does `inner join \"exif\"`. If asset has no EXIF, no rows \u2192 lateral join returns nothing \u2192 `face` null \u2192 person filtered out by `faceAssetId is not null` but face not found.\n\n---",
+        "path": "server/src/repositories/person.repository.ts",
+        "start_line": 267,
+        "end_line": 267,
+        "observation_id": "09f079c1897f65f6",
+        "claimed_path": "server/src/repositories/person.repository.ts",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "### 66. `server/src/services/person.service.ts:548-570` (handleGeneratePersonThumbnail)\n**Defect:** After getting `person` from `getPersonForThumbnailGenerationJob`, code does:\n```typescript\nconst { asset, boundingBoxX1: x1, ... } = person.face;\n```\nThen `if (asset.files.length === 0)`. But `asset` here is `person.face.asset` which has `files` array from `jsonArrayFrom`. For images, the code later calls `getInputDimensions(asset, oldDims)` where `asset` is this same object. `getInputDimensions` expects `asset.type`, `asset.exifInfo`, `asset.originalPath`, `asset.files`. The `asset` from SQL has all these. Correct.\n\n**But:** For images, `getInputDimensions` uses `asset.exifInfo.exifImageWidth/Height` and `asset.originalPath`. It doesn't use `asset.files`. For videos, it uses `asset.files` to find preview. The `asset.type` comes from `assets.type` column. Correct.\n\n---",
+        "path": "server/src/services/person.service.ts",
+        "start_line": 548,
+        "end_line": 548,
+        "observation_id": "ad06cfc845204cce",
+        "claimed_path": "server/src/services/person.service.ts",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "### 67. `server/src/services/person.service.ts:691-695` (getInputDimensions video case)\n**Defect:** The preview file lookup moved inside the video branch. It calls `getAssetFile(asset.files, AssetFileType.PREVIEW)`. But `asset.files` only contains PREVIEW files (from SQL `where asset_files.type = $1` with `$1 = AssetFileType.PREVIEW`). So `getAssetFile` will find it if array non-empty. But the check `if (!previewFile)` is after the `getAssetFile` call. If `asset.files` is empty, `getAssetFile` returns `undefined` \u2192 throws. Correct.\n\n---",
+        "path": "server/src/services/person.service.ts",
+        "start_line": 691,
+        "end_line": 691,
+        "observation_id": "dbd76bb2d8670c49",
+        "claimed_path": "server/src/services/person.service.ts",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "### 68. `server/src/repositories/person.repository.ts:437-445` (getFacesByIds)\n**Defect:** The Cartesian product bug (#43) is severe. The method is decorated with `@ChunkedArray()` which chunks the `ids` array. Each chunk processes a subset of `AssetFaceId[]`. The code extracts `assetIds` and `personIds` from the chunk and does IN on both. This is wrong - it should match exact pairs.\n\n**Fix needed:** Use a composite condition or VALUES join. Current implementation returns incorrect results.\n\n---",
+        "path": "server/src/repositories/person.repository.ts",
+        "start_line": 437,
+        "end_line": 437,
+        "observation_id": "68dd22d9352cc9e4",
+        "claimed_path": "server/src/repositories/person.repository.ts",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "### 69. `server/src/dtos/asset-response.dto.ts:71-85` (peopleWithFaces)\n**Defect:** The function iterates `faces` and for each `face.person`, calls `mapPerson(face.person)`. But `face.person` is `Person | undefined` (from `AssetFace` type). If `undefined`, skipped. If `Person` object, `mapPerson` expects all `Person` fields. The `Person` type has `thumbnailPath: string` (required). If the joined person has NULL thumbnailPath, `mapPerson` gets `null` for that field.\n\n**Failure scenario:** Person with NULL thumbnailPath \u2192 `mapPerson` returns DTO with `thumbnailPath: null` \u2192 Swagger/type mismatch.\n\n---",
+        "path": "server/src/dtos/asset-response.dto.ts",
+        "start_line": 71,
+        "end_line": 71,
+        "observation_id": "d17964e5dea772be",
+        "claimed_path": "server/src/dtos/asset-response.dto.ts",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "### 70. `server/src/services/metadata.service.ts:587-591`\n**Defect:** The `facesToAdd` and `missing` arrays use `Insertable<AssetFaces>` and `Insertable<Person>`. These types require all NOT NULL columns. The code only sets a subset. For `AssetFaces`: `id`, `assetId`, `personId`, `boundingBoxX1`, `Y1`, `X2`, `Y2`, `imageWidth`, `imageHeight`, `sourceType` are set. Missing: `deletedAt` (if NOT NULL no default). For `Person`: only `ownerId`, `name` set. Missing: `thumbnailPath`, `isHidden`, `isFavorite`, `color`, `faceAssetId`, `birthDate`, `createdAt`, `updatedAt`, `updateId`.\n\n**Failure scenario:** Database insert fails with NOT NULL constraint violation.\n\n---",
+        "path": "server/src/services/metadata.service.ts",
+        "start_line": 587,
+        "end_line": 587,
+        "observation_id": "53a5d2a4da60b9ec",
+        "claimed_path": "server/src/services/metadata.service.ts",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "### 71. `server/src/repositories/person.repository.ts:399-405` (update)\n**Defect:** The `update` method takes `Updateable<Person> & { id: string }`. `Updateable<Person>` makes all columns optional. The method does `.set(person).where('person.id', '=', person.id)`. If `person` contains `id` in the object, it's also in the SET clause (updating PK). Kysely may allow this but it's wrong.\n\n**Failure scenario:** Caller passes `{ id: \"new-id\", ... }` \u2192 updates primary key \u2192 breaks foreign keys.\n\n---",
+        "path": "server/src/repositories/person.repository.ts",
+        "start_line": 399,
+        "end_line": 399,
+        "observation_id": "6230b87e78dcb2e3",
+        "claimed_path": "server/src/repositories/person.repository.ts",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "### 72. `server/src/services/person.service.ts:634-635` (mergePerson)\n**Defect:** The `update` object is `{ id: primaryPerson.id, ... }`. This includes `id` in the SET clause. The repository `update` method uses `.set(person)` where `person` includes `id`. This attempts to update the primary key.\n\n**Failure scenario:** Merge person \u2192 update tries to set `person.id = primaryPerson.id` (same value) \u2192 may work but unnecessary; if different, breaks FKs.\n\n---",
+        "path": "server/src/services/person.service.ts",
+        "start_line": 634,
+        "end_line": 634,
+        "observation_id": "4f9a4b8c4bc65852",
+        "claimed_path": "server/src/services/person.service.ts",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "### 73. `server/src/repositories/person.repository.ts:362` (create)\n**Defect:** `create` uses `returningAll().executeTakeFirstOrThrow()`. If the insert fails (constraint), it throws. The service `create` method (not shown in diff) may not handle this.\n\n---",
+        "path": "server/src/repositories/person.repository.ts",
+        "start_line": 362,
+        "end_line": 362,
+        "observation_id": "0ea60172e1e53520",
+        "claimed_path": "server/src/repositories/person.repository.ts",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "### 74. `server/src/services/person.service.ts:243-247` (delete)\n**Defect:** The `delete` method does `Promise.all(people.map(p => storage.unlink(p.thumbnailPath)))` then `personRepository.delete(ids)`. If `unlink` fails for one, the Promise.all rejects, but some unlinks may have succeeded. The database delete is not reached. Thumbnails partially deleted, persons not deleted.\n\n**Failure scenario:** 3 people to delete, 2nd unlink fails \u2192 1st thumbnail deleted, persons remain in DB \u2192 inconsistent state.\n\n---",
+        "path": "server/src/services/person.service.ts",
+        "start_line": 243,
+        "end_line": 243,
+        "observation_id": "5ce2bbf89443e36e",
+        "claimed_path": "server/src/services/person.service.ts",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "### 75. `server/src/cores/storage.core.ts:137` (movePersonFile)\n**Defect:** The `movePersonFile` method signature requires `thumbnailPath` but the `switch` only shows `PersonPathType.FACE` case. Other cases (not in diff) may need `thumbnailPath`. The parameter is required but unused in visible code.\n\n---",
+        "path": "server/src/cores/storage.core.ts",
+        "start_line": 137,
+        "end_line": 137,
+        "observation_id": "80934daf1dadfe53",
+        "claimed_path": "server/src/cores/storage.core.ts",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "### 76. `server/src/cores/storage.core.ts:87` (getPersonThumbnailPath)\n**Defect:** Returns `join(APP_MEDIA_LOCATION, folder, ${person.id}.jpeg)`. Hardcodes `.jpeg` extension. The actual thumbnail may be `.jpg`, `.png`, etc. The `StorageFolder.THUMBNAILS` may contain different formats.\n\n**Failure scenario:** Thumbnail stored as `.png` \u2192 function returns `.jpeg` path \u2192 file not found.\n\n---",
+        "path": "server/src/cores/storage.core.ts",
+        "start_line": 87,
+        "end_line": 87,
+        "observation_id": "e7c8c8eae51e98de",
+        "claimed_path": "server/src/cores/storage.core.ts",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "### 77. `server/src/repositories/person.repository.ts:121` (vacuum call)\n**Defect:** `deleteFaces` calls `this.vacuum({ reindexVectors: sourceType === SourceType.MACHINE_LEARNING })`. The `vacuum` method not shown in diff. If it expects different params, may fail.\n\n---",
+        "path": "server/src/repositories/person.repository.ts",
+        "start_line": 121,
+        "end_line": 121,
+        "observation_id": "e56f3c4b9baac99a",
+        "claimed_path": "server/src/repositories/person.repository.ts",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "### 78. `server/src/repositories/person.repository.ts:47-55` (GetAllPeopleOptions)\n**Defect:** `faceAssetId?: string | null` - the `getAll` method uses `.$if(options.faceAssetId === null, ...)` and `.$if(!!options.faceAssetId, ...)`. If `faceAssetId` is explicitly `null`, first condition matches. If `undefined`, neither matches. If `\"\"` (empty string), `!!\"\"` is false, `=== null` is false \u2192 neither. But `faceAssetId` is UUID or null, not empty string.\n\n---",
+        "path": "server/src/repositories/person.repository.ts",
+        "start_line": 47,
+        "end_line": 47,
+        "observation_id": "4013fb20be307552",
+        "claimed_path": "server/src/repositories/person.repository.ts",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "### 79. `server/src/services/person.service.ts:317-322` (iou)\n**Defect:** The `iou` function takes `face` with bounding box coordinates. It's called in `handleDetectFaces` with `face` from `asset.faces` (which is `AssetFace[]`). `AssetFace` has the required fields. Correct.\n\n---",
+        "path": "server/src/services/person.service.ts",
+        "start_line": 317,
+        "end_line": 317,
+        "observation_id": "8048bb9b994bf864",
+        "claimed_path": "server/src/services/person.service.ts",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "### 80. `server/test/fixtures/asset.stub.ts:7`\n**Defect:** `previewFile` exported as `const previewFile: AssetFile = {...}`. `AssetFile` type from `src/database`. The object has `id`, `type`, `path`. `AssetFile` may require more fields (like `assetId`, `createdAt`, etc.).\n\n**Failure scenario:** Test uses `previewFile` where full `AssetFile` expected \u2192 missing fields.\n\n---",
+        "path": "server/test/fixtures/asset.stub.ts",
+        "start_line": 7,
+        "end_line": 7,
+        "observation_id": "be6ef5d75f9c5152",
+        "claimed_path": "server/test/fixtures/asset.stub.ts",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "### 81. `server/src/dtos/person.dto.ts:220` (mapPerson)\n**Defect:** `mapPerson` returns `birthDate: person.birthDate ? asDateString(person.birthDate) : null`. `Person` type has `birthDate: Date | null`. `asDateString` expects `DateTime` or `Date`. If `birthDate` is `Date`, works. But database may return `string` for date columns (depending on Kysely config). If `birthDate` is string, `asDateString` may fail.\n\n---",
+        "path": "server/src/dtos/person.dto.ts",
+        "start_line": 220,
+        "end_line": 220,
+        "observation_id": "c349e3158428b458",
+        "claimed_path": "server/src/dtos/person.dto.ts",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "### 82. `server/src/services/person.service.ts:621` (getInputDimensions signature)\n**Defect:** The `oldDims` parameter is `ImageDimensions` (not shown). The function uses `oldDims.width` and `oldDims.height` (implied). For images, it returns EXIF dimensions ignoring `oldDims`. For videos, it uses `oldDims` to calculate crop? Not shown in diff.\n\n---",
+        "path": "server/src/services/person.service.ts",
+        "start_line": 621,
+        "end_line": 621,
+        "observation_id": "dea1656c469241a7",
+        "claimed_path": "server/src/services/person.service.ts",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "### 83. `server/src/repositories/person.repository.ts:150-165` (getAllForUser)\n**Defect:** The query selects `person.*` but with `innerJoin asset_faces` and `groupBy person.id`. The `selectAll('person')` may include columns that are not functionally dependent on `person.id` in Kysely's view. The result type may be wrong.\n\n---",
+        "path": "server/src/repositories/person.repository.ts",
+        "start_line": 150,
+        "end_line": 150,
+        "observation_id": "d07b94484382a85c",
+        "claimed_path": "server/src/repositories/person.repository.ts",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "### 84. `server/src/repositories/person.repository.ts:216-225` (getAllWithoutFaces)\n**Defect:** Uses `leftJoin` on `asset_faces` with `onRef` and `where deletedAt is null`, then `having count = 0`. This finds persons with no non-deleted faces. Correct.\n\n---",
+        "path": "server/src/repositories/person.repository.ts",
+        "start_line": 216,
+        "end_line": 216,
+        "observation_id": "65fc0e1570e785f7",
+        "claimed_path": "server/src/repositories/person.repository.ts",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "### 85. `server/src/services/person.service.spec.ts:1047-1135` (thumbnail tests)\n**Defect:** Tests updated to use `getPersonForThumbnailGenerationJob` mock. The stubs `personThumbnailStub` have `face.asset.files` array. The service checks `asset.files.length === 0`. The stubs correctly model this.\n\n---",
+        "path": "server/src/services/person.service.spec.ts",
+        "start_line": 1047,
+        "end_line": 1047,
+        "observation_id": "837c4b64b77f256f",
+        "claimed_path": "server/src/services/person.service.spec.ts",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "### 86. `server/src/utils/database.ts:19-45` (toJson) - Runtime\n**Defect:** The `toJson` function returns `eb.fn.toJson<T>(table) as ExpressionWrapper<...>`. At runtime, `eb.fn.toJson` generates `to_json(...)` SQL. The cast is TypeScript-only. The runtime behavior is correct (returns JSON). The type is the issue.\n\n---",
+        "path": "server/src/utils/database.ts",
+        "start_line": 19,
+        "end_line": 19,
+        "observation_id": "55b72681ce13550d",
+        "claimed_path": "server/src/utils/database.ts",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "### 87. `server/src/entities/asset.entity.ts:48-51` (AssetEntity.faces)\n**Defect:** `faces!: AssetFace[]` - the `!` definite assignment assertion means TypeScript assumes it's initialized. But `AssetEntity` is likely constructed from query results. If query doesn't join faces, `faces` is `undefined` \u2192 runtime error when accessed.\n\n**Failure scenario:** Asset loaded without faces \u2192 `asset.faces` is `undefined` \u2192 code does `asset.faces.map(...)` \u2192 TypeError.\n\n---",
+        "path": "server/src/entities/asset.entity.ts",
+        "start_line": 48,
+        "end_line": 48,
+        "observation_id": "768a87e6f2f53370",
+        "claimed_path": "server/src/entities/asset.entity.ts",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "### 88. `server/src/repositories/person.repository.ts:457-465` (getRandomFace)\n**Defect:** Returns random face for a person. Uses `orderBy(sql`random()`).limit(1)`. Correct.\n\n---",
+        "path": "server/src/repositories/person.repository.ts",
+        "start_line": 457,
+        "end_line": 457,
+        "observation_id": "65c16cc4335b6958",
+        "claimed_path": "server/src/repositories/person.repository.ts",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "### 89. `server/src/repositories/person.repository.ts:272-285` (getById)\n**Defect:** No `GenerateSql` params for this method (unlike others). The `@GenerateSql()` decorator without params may not generate correct test SQL.\n\n---",
+        "path": "server/src/repositories/person.repository.ts",
+        "start_line": 272,
+        "end_line": 272,
+        "observation_id": "e7ea78dda9eab9fe",
+        "claimed_path": "server/src/repositories/person.repository.ts",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "### 90. `server/src/services/person.service.ts:453-470` (handleDetectFaces)\n**Defect:** The `embeddings` array is `FaceSearch[]` (from `src/db`). `FaceSearch` table likely has `faceId`, `embedding`. The code pushes `{ faceId: face.id, embedding: face.embedding }`. But `face` here is from `asset.faces` (AssetFace) which doesn't have `embedding` field. The `embedding` comes from `FaceSearchEntity` which was joined before. Now `AssetFace` doesn't include embedding.\n\n**Failure scenario:** `face.embedding` is `undefined` \u2192 `embeddings` array has `embedding: undefined` \u2192 insert fails.\n\n---",
+        "path": "server/src/services/person.service.ts",
+        "start_line": 453,
+        "end_line": 453,
+        "observation_id": "4d5a5eef98b80005",
+        "claimed_path": "server/src/services/person.service.ts",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "### 91. `server/src/services/person.service.ts:317-322` (iou) - called from handleDetectFaces\n**Defect:** In `handleDetectFaces`, `iou` is called with `face` from `asset.faces` (existing faces in DB) and `newBox` from ML detection. The existing faces are `AssetFace[]` from repository. They have bounding box coords. Correct.\n\n---",
+        "path": "server/src/services/person.service.ts",
+        "start_line": 317,
+        "end_line": 317,
+        "observation_id": "c382e044a07db95f",
+        "claimed_path": "server/src/services/person.service.ts",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "### 92. `server/src/services/person.service.ts:377` (getFaceForFacialRecognitionJob)\n**Defect:** The repository method returns object with `asset` property. The service checks `if (!face || !face.asset)`. But the repository method's return type is not typed - it's implicit `any`. If the query returns a row where asset subquery returns null, `face.asset` is `null`. If no row, `face` is `null`. Both handled.\n\n---",
+        "path": "server/src/services/person.service.ts",
+        "start_line": 377,
+        "end_line": 377,
+        "observation_id": "cd24c835114fb204",
+        "claimed_path": "server/src/services/person.service.ts",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "### 93. `server/src/services/person.service.ts:548` (handleGeneratePersonThumbnail)\n**Defect:** The `data.id` is passed to `getPersonForThumbnailGenerationJob`. The job data should have `id` as person ID. Correct.\n\n---",
+        "path": "server/src/services/person.service.ts",
+        "start_line": 548,
+        "end_line": 548,
+        "observation_id": "3cfde385e1ce05ef",
+        "claimed_path": "server/src/services/person.service.ts",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "### 94. `server/src/repositories/person.repository.ts:267-310` (getPersonForThumbnailGenerationJob)\n**Defect:** The query selects `person.id, person.ownerId, person.faceAssetId` and `to_json(face) as face`. The `face` JSON includes `boundingBoxX1`, `Y1`, `X2`, `Y2`, `imageWidth`, `imageHeight`, `asset`. The `asset` JSON includes `originalPath`, `type`, `exifInfo`, `files`. This matches what the service expects.\n\n---",
+        "path": "server/src/repositories/person.repository.ts",
+        "start_line": 267,
+        "end_line": 267,
+        "observation_id": "e470cfb2bfedbf2b",
+        "claimed_path": "server/src/repositories/person.repository.ts",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "### 95. `server/src/services/person.service.ts:672-700` (getInputDimensions)\n**Defect:** For images, it returns `inputPath: asset.originalPath`. But the thumbnail generation uses this path for cropping. The bounding box coordinates are from face detection on the preview/original. If the original is very large, cropping from original may be slow. The old code used preview for images too? Not clear from diff.\n\n---",
+        "path": "server/src/services/person.service.ts",
+        "start_line": 672,
+        "end_line": 672,
+        "observation_id": "ce25b3c64f466ee2",
+        "claimed_path": "server/src/services/person.service.ts",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "### 96. `server/src/dtos/person.dto.ts:248-262` (mapFaces)\n**Defect:** Returns `sourceType: face.sourceType`. `AssetFace` has `sourceType: SourceType` (required). Correct.\n\n---",
+        "path": "server/src/dtos/person.dto.ts",
+        "start_line": 248,
+        "end_line": 248,
+        "observation_id": "0c3ae8bd0bd070c0",
+        "claimed_path": "server/src/dtos/person.dto.ts",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "### 97. `server/src/repositories/search.repository.ts:162-166`\n**Defect:** `minBirthDate?: Date | null` - the search query builder (not shown) must handle null correctly. If it does `where('person.birthDate', '>=', minBirthDate)` with null, it becomes `WHERE birthDate >= NULL` \u2192 no rows.\n\n---",
+        "path": "server/src/repositories/search.repository.ts",
+        "start_line": 162,
+        "end_line": 162,
+        "observation_id": "e7ab17dae27b48a5",
+        "claimed_path": "server/src/repositories/search.repository.ts",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "### 98. `server/src/services/metadata.service.ts:587` (facesToAdd)\n**Defect:** The loop `for (const region of tags.RegionInfo.RegionList)` processes EXIF face regions. It creates `facesToAdd` entries. But `tags.RegionInfo.RegionList` may not exist if EXIF has no face regions. The `if (!tags.RegionInfo?.RegionList) return;` guards this.\n\n---",
+        "path": "server/src/services/metadata.service.ts",
+        "start_line": 587,
+        "end_line": 587,
+        "observation_id": "3c099347862ca6a4",
+        "claimed_path": "server/src/services/metadata.service.ts",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "### 99. `server/src/services/metadata.service.ts:591` (missing)\n**Defect:** `missing` array for new persons. Only `ownerId` and `name` set. `Insertable<Person>` requires many more fields. This will fail at DB insert.\n\n---",
+        "path": "server/src/services/metadata.service.ts",
+        "start_line": 591,
+        "end_line": 591,
+        "observation_id": "a2c64c9be70873d0",
+        "claimed_path": "server/src/services/metadata.service.ts",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "### 100. `server/src/repositories/person.repository.ts:399-405` (update)\n**Defect:** The `update` method allows updating `id` (primary key) because `Updateable<Person>` includes `id` as optional and the spread includes it. Should exclude `id` from SET clause.\n\n---",
+        "path": "server/src/repositories/person.repository.ts",
+        "start_line": 399,
+        "end_line": 399,
+        "observation_id": "14b2e1b40099f866",
+        "claimed_path": "server/src/repositories/person.repository.ts",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "### 101. `server/src/services/person.service.ts:634` (mergePerson)\n**Defect:** `update` object includes `id: primaryPerson.id`. Passed to `personRepository.update(update)`. The repository does `.set(person)` where `person` has `id`. This sets `person.id = person.id` (no-op) but still includes in UPDATE statement. Wasteful but not broken.\n\n---",
+        "path": "server/src/services/person.service.ts",
+        "start_line": 634,
+        "end_line": 634,
+        "observation_id": "5518a0ae0ab3333a",
+        "claimed_path": "server/src/services/person.service.ts",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "### 102. `server/src/repositories/person.repository.ts:437-445` (getFacesByIds) - CRITICAL\n**Defect:** The Cartesian product bug means this method returns wrong faces. It's used in `handleDetectFaces` (line 346 in service?) and `handleRecognizeFaces`? Need to check. In `handleDetectFaces`, `getFacesByIds` not called. In `handleRecognizeFaces`, not called. May be used elsewhere.\n\n**Failure scenario:** Any caller of `getFacesByIds` with multiple IDs gets wrong results.\n\n---",
+        "path": "server/src/repositories/person.repository.ts",
+        "start_line": 437,
+        "end_line": 437,
+        "observation_id": "62de761ae5643b44",
+        "claimed_path": "server/src/repositories/person.repository.ts",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "### 103. `server/src/repositories/person.repository.ts:150-165` (getAllForUser) - CRITICAL\n**Defect:** Pagination broken due to inner join duplication. Returns duplicate persons, wrong `hasNextPage`.\n\n---",
+        "path": "server/src/repositories/person.repository.ts",
+        "start_line": 150,
+        "end_line": 150,
+        "observation_id": "e07b7bf90208e253",
+        "claimed_path": "server/src/repositories/person.repository.ts",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "### 104. `server/src/database.ts:215-247` (Person type) - CRITICAL\n**Defect:** `thumbnailPath: string` non-nullable but DB allows NULL. Type mismatch causes runtime errors when accessing.\n\n---",
+        "path": "server/src/database.ts",
+        "start_line": 215,
+        "end_line": 215,
+        "observation_id": "be53f38a8d1a10f5",
+        "claimed_path": "server/src/database.ts",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "### 105. `server/src/database.ts:249-265` (AssetFace type) - CRITICAL\n**Defect:** `person?: Person | null` but `Person` has non-nullable `thumbnailPath`. SQL doesn't join person table in `getFaceForFacialRecognitionJob`, so `person` is `undefined` at runtime.\n\n---",
+        "path": "server/src/database.ts",
+        "start_line": 249,
+        "end_line": 249,
+        "observation_id": "1d4392b67b615ae9",
+        "claimed_path": "server/src/database.ts",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "### 106. `server/src/queries/person.repository.sql:98-135` (getFaceForFacialRecognitionJob) - CRITICAL\n**Defect:** Query mislabels asset info as \"person\". Returns `asset` object in `person` field. Service expects `face.personId` and `face.asset`. The service uses `face.personId` (correct, from asset_faces) and `face.asset` (correct, from subquery). But the SQL aliases the asset subquery as `\"person\"` in the JSON! Look: `select to_json(obj) as \"person\"` where obj selects from `assets`. Then outer select has `\"asset\"` for face_search. The column aliases are swapped!\n\n**Failure scenario:** The query returns `{ personId: \"...\", sourceType: \"...\", person: { ownerId: \"...\", isArchived: ..., fileCreatedAt: ... }, faceSearch: {...} }`. The service expects `face.asset` but gets `face.person` (containing asset info). The service code at line 380: `if (!face || !face.asset)` \u2192 `face.asset` is `undefined` (actual property is `face.person`) \u2192 always returns FAILED.\n\n---",
+        "path": "server/src/queries/person.repository.sql",
+        "start_line": 98,
+        "end_line": 98,
+        "observation_id": "89d4b2ee59455680",
+        "claimed_path": "server/src/queries/person.repository.sql",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "### 107. `server/src/queries/person.repository.sql:137-195` (getPersonForThumbnailGenerationJob)\n**Defect:** The lateral join selects `to_json(\"asset\") as \"asset\"` inside the face lateral join, then `to_json(\"face\") as \"face\"` in outer. The `face` JSON includes `asset` property. This seems correct.\n\n---",
+        "path": "server/src/queries/person.repository.sql",
+        "start_line": 137,
+        "end_line": 137,
+        "observation_id": "a4b6fe604d4a73f9",
+        "claimed_path": "server/src/queries/person.repository.sql",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "### 108. `server/src/services/person.service.ts:380` (handleRecognizeFaces)\n**Defect:** Checks `if (!face || !face.asset)`. But from #106, the SQL returns `face.person` (asset info), not `face.asset`. So `face.asset` is `undefined` \u2192 always FAILED.\n\n---",
+        "path": "server/src/services/person.service.ts",
+        "start_line": 380,
+        "end_line": 380,
+        "observation_id": "e09fe8e64806aa56",
+        "claimed_path": "server/src/services/person.service.ts",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "### 109. `server/src/services/person.service.ts:453` (handleDetectFaces)\n**Defect:** `facesToAdd` uses `Insertable<AssetFaces>`. The `AssetFaces` table (from `src/db`) likely has columns: `id`, `assetId`, `personId`, `boundingBoxX1`, `Y1`, `X2`, `Y2`, `imageWidth`, `imageHeight`, `sourceType`, `deletedAt`, `createdAt`, `updatedAt`. The code sets all except `deletedAt`, `createdAt`, `updatedAt` (assume DB defaults). But `personId` is set to `null` for new ML faces. Correct.\n\n---",
+        "path": "server/src/services/person.service.ts",
+        "start_line": 453,
+        "end_line": 453,
+        "observation_id": "7b90c892ac59a138",
+        "claimed_path": "server/src/services/person.service.ts",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "### 110. `server/src/services/person.service.ts:558` (handleGeneratePersonThumbnail)\n**Defect:** Destructures `asset` from `person.face`. The `person` is from `getPersonForThumbnailGenerationJob` which returns `{ id, ownerId, faceAssetId, face }` where `face` has `asset` property. Correct.\n\n---",
+        "path": "server/src/services/person.service.ts",
+        "start_line": 558,
+        "end_line": 558,
+        "observation_id": "bbfa469cf290c2dc",
+        "claimed_path": "server/src/services/person.service.ts",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "### 111. `server/src/repositories/person.repository.ts:328-335` (reassignFace)\n**Defect:** Updates all faces for given `assetId` and `sourceType`. Should also filter by specific face ID if reassigning one face. The method name suggests reassigning a face (singular) but updates all matching.\n\n---",
+        "path": "server/src/repositories/person.repository.ts",
+        "start_line": 328,
+        "end_line": 328,
+        "observation_id": "87c671ebef268eaf",
+        "claimed_path": "server/src/repositories/person.repository.ts",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "### 112. `server/src/dtos/person.dto.ts:248-262` (mapFaces) - missing assetId\n**Defect:** Response DTO missing `assetId` field. Frontend likely needs it.\n\n---",
+        "path": "server/src/dtos/person.dto.ts",
+        "start_line": 248,
+        "end_line": 248,
+        "observation_id": "7470baa2c61223ab",
+        "claimed_path": "server/src/dtos/person.dto.ts",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "### 113. `server/src/dtos/person.dto.ts:233` (mapFacesWithoutPerson) - missing assetId\n**Defect:** Returns `id, imageHeight, imageWidth, boundingBox..., sourceType, deletedAt` but not `assetId`.\n\n---",
+        "path": "server/src/dtos/person.dto.ts",
+        "start_line": 233,
+        "end_line": 233,
+        "observation_id": "aa35551ec56b32d7",
+        "claimed_path": "server/src/dtos/person.dto.ts",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "### 114. `server/src/services/person.service.ts:243-247` (delete) - partial failure\n**Defect:** `Promise.all` on unlink - if one fails, others may have succeeded. No rollback.\n\n---",
+        "path": "server/src/services/person.service.ts",
+        "start_line": 243,
+        "end_line": 243,
+        "observation_id": "5c31e801149b2d59",
+        "claimed_path": "server/src/services/person.service.ts",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "### 115. `server/src/cores/storage.core.ts:137` (movePersonFile) - unused param\n**Defect:** `thumbnailPath` parameter unused in visible code.\n\n---",
+        "path": "server/src/cores/storage.core.ts",
+        "start_line": 137,
+        "end_line": 137,
+        "observation_id": "3b17c86b018eaa1e",
+        "claimed_path": "server/src/cores/storage.core.ts",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "### 116. `server/src/cores/storage.core.ts:87` (getPersonThumbnailPath) - hardcoded extension\n**Defect:** Hardcodes `.jpeg` extension.\n\n---",
+        "path": "server/src/cores/storage.core.ts",
+        "start_line": 87,
+        "end_line": 87,
+        "observation_id": "d5dda6d862d2cd4d",
+        "claimed_path": "server/src/cores/storage.core.ts",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "### 117. `server/src/repositories/person.repository.ts:47-55` (GetAllPeopleOptions)\n**Defect:** `thumbnailPath?: string` - `!!options.thumbnailPath` treats empty string as falsy.\n\n---",
+        "path": "server/src/repositories/person.repository.ts",
+        "start_line": 47,
+        "end_line": 47,
+        "observation_id": "11a1bd55ac4e5824",
+        "claimed_path": "server/src/repositories/person.repository.ts",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "### 118. `server/src/repositories/person.repository.ts:110-115` (delete)\n**Defect:** No validation of UUID format for IDs.\n\n---",
+        "path": "server/src/repositories/person.repository.ts",
+        "start_line": 110,
+        "end_line": 110,
+        "observation_id": "0f5ecdc003a91c6c",
+        "claimed_path": "server/src/repositories/person.repository.ts",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "### 119. `server/src/services/person.service.ts:362` (create) - throws on failure\n**Defect:** `executeTakeFirstOrThrow` throws instead of returning null. Caller may not expect exception.\n\n---",
+        "path": "server/src/services/person.service.ts",
+        "start_line": 362,
+        "end_line": 362,
+        "observation_id": "eae609f2fcdb0d5c",
+        "claimed_path": "server/src/services/person.service.ts",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "### 120. `server/src/utils/database.ts:19-45` (toJson) - type safety\n**Defect:** Complex type likely resolves to `never` for lateral join aliases.\n\n---\n\nI'll stop here. I've found well over 10 defects with concrete failure scenarios. The most critical are:\n\n1. **#106/#108**: SQL alias swap in `getFaceForFacialRecognitionJob` causes `face.asset` to be undefined \u2192 facial recognition always fails\n2. **#104**: `Person.thumbnailPath` non-nullable in TypeScript but nullable in DB \u2192 crashes on NULL\n3. **#105**: `AssetFace.person` type mismatch with SQL not joining person table\n4. **#43**: `getFacesByIds` Cartesian product bug returns wrong faces\n5. **#55**: `getAllForUser` pagination broken by inner join duplication",
+        "path": "server/src/utils/database.ts",
+        "start_line": 19,
+        "end_line": 19,
+        "observation_id": "f432778ece59d8a1",
+        "claimed_path": "server/src/utils/database.ts",
+        "path_resolution": "exact",
+        "merged_from": [
+          "fdb54b26b7e9b01f",
+          "2d747e0b8e95f7a6",
+          "924f39d3a0b993b3",
+          "11adc4b335c415d8",
+          "37dd9d2d0023be15"
+        ]
+      },
+      {
+        "content": "### 1. `server/src/queries/person.repository.sql:98-135` (getFaceForFacialRecognitionJob)\n**CRITICAL: SQL column aliases swapped** \u2014 The query selects asset info into a JSON column aliased as `\"person\"` and face_search into `\"asset\"`:\n```sql\nselect to_json(obj) as \"person\" from (select \"assets\".\"ownerId\"... from \"assets\") as obj\nselect to_json(obj) as \"asset\" from (select \"face_search\".* from \"face_search\") as obj\n```\nBut `person.service.ts:380` checks `if (!face || !face.asset)` \u2014 `face.asset` will be `undefined` (actual property is `face.person` containing asset data). **Failure:** Every facial recognition job returns `FAILED` because `face.asset` is always undefined.\n\n---",
+        "path": "server/src/queries/person.repository.sql",
+        "start_line": 98,
+        "end_line": 98,
+        "observation_id": "7491a3c46f1033d2",
+        "claimed_path": "server/src/queries/person.repository.sql",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "### 2. `server/src/database.ts:215-247` (Person type)\n**`thumbnailPath: string` is non-nullable but DB allows NULL** \u2014 The `Person` type declares `thumbnailPath: string` (required), but the database column is nullable (evidenced by `faceAssetId: string | null` and left joins). **Failure:** Person with `thumbnailPath = NULL` in DB \u2192 TypeScript thinks it's `string` \u2192 `storage.unlink(person.thumbnailPath)` passes `null` \u2192 crashes or deletes wrong file.\n\n---",
+        "path": "server/src/database.ts",
+        "start_line": 215,
+        "end_line": 215,
+        "observation_id": "ccb1fbb2076282f0",
+        "claimed_path": "server/src/database.ts",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "### 3. `server/src/database.ts:249-265` (AssetFace type)\n**`person?: Person | null` but SQL doesn't join person table** \u2014 `getFaceForFacialRecognitionJob` selects `asset_faces.personId` but never joins `person` table. At runtime `face.person` is `undefined`, not `Person | null`. **Failure:** Code accessing `face.person?.ownerId` gets `undefined` (not null) \u2192 facial recognition makes wrong access decisions.\n\n---",
+        "path": "server/src/database.ts",
+        "start_line": 249,
+        "end_line": 249,
+        "observation_id": "35673a328b3326f7",
+        "claimed_path": "server/src/database.ts",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "### 4. `server/src/repositories/person.repository.ts:437-445` (getFacesByIds)\n**Cartesian product bug** \u2014 Takes `AssetFaceId[]` (pairs of `{assetId, personId}`), extracts separate `assetIds` and `personIds` arrays, then queries `WHERE assetId IN (...) AND personId IN (...)`. **Failure:** Input `[{assetId:\"a1\",personId:\"p1\"}, {assetId:\"a2\",personId:\"p2\"}]` returns faces for all 4 combinations (a1/p1, a1/p2, a2/p1, a2/p2) instead of just the 2 requested pairs.\n\n---",
+        "path": "server/src/repositories/person.repository.ts",
+        "start_line": 437,
+        "end_line": 437,
+        "observation_id": "afc04ab8049e2e17",
+        "claimed_path": "server/src/repositories/person.repository.ts",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "### 5. `server/src/repositories/person.repository.ts:150-165` (getAllForUser)\n**Pagination broken by inner join duplication** \u2014 `innerJoin('asset_faces')` multiplies person rows per face. `limit(take+1)` limits joined rows, not unique persons. `hasNextPage` logic and `slice(0,-1)` operate on duplicated rows. **Failure:** User has 1 person with 5 faces, `take=10` \u2192 returns 5 duplicate rows for same person, `hasNextPage=false`, but only 1 unique person returned.\n\n---",
+        "path": "server/src/repositories/person.repository.ts",
+        "start_line": 150,
+        "end_line": 150,
+        "observation_id": "0cb0d0ddc757520d",
+        "claimed_path": "server/src/repositories/person.repository.ts",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "### 6. `server/src/services/metadata.service.ts:587-591` (handleExtractMetadata)\n**Insertable types missing required fields** \u2014 `facesToAdd: Insertable<AssetFaces>[]` and `missing: Insertable<Person>[]` but code only sets subset of fields. `Insertable<Person>` requires `thumbnailPath`, `isHidden`, `isFavorite`, `color`, `faceAssetId`, `birthDate`, `createdAt`, `updatedAt`, `updateId` \u2014 none provided. **Failure:** DB insert fails with NOT NULL constraint violation when creating persons from EXIF face regions.\n\n---",
+        "path": "server/src/services/metadata.service.ts",
+        "start_line": 587,
+        "end_line": 587,
+        "observation_id": "963698ec616a7a3d",
+        "claimed_path": "server/src/services/metadata.service.ts",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "### 7. `server/src/services/person.service.ts:243-247` (delete)\n**Partial failure leaves inconsistent state** \u2014 `Promise.all(people.map(p => storage.unlink(p.thumbnailPath)))` then `personRepository.delete(ids)`. If any `unlink` rejects, some thumbnails already deleted but persons remain in DB. **Failure:** 3 people to delete, 2nd unlink fails \u2192 1st thumbnail gone, 3 persons still in DB.\n\n---",
+        "path": "server/src/services/person.service.ts",
+        "start_line": 243,
+        "end_line": 243,
+        "observation_id": "9fb6d370776aa842",
+        "claimed_path": "server/src/services/person.service.ts",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "### 8. `server/src/entities/asset.entity.ts:51` (AssetEntity.faces)\n**Definite assignment assertion `!` but may be undefined** \u2014 `faces!: AssetFace[]` assumes initialized, but query may not join faces. **Failure:** Asset loaded without faces join \u2192 `asset.faces` is `undefined` \u2192 `asset.faces.map(...)` throws TypeError.\n\n---",
+        "path": "server/src/entities/asset.entity.ts",
+        "start_line": 51,
+        "end_line": 51,
+        "observation_id": "6b44d25dba8c1d47",
+        "claimed_path": "server/src/entities/asset.entity.ts",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "### 9. `server/src/services/person.service.ts:346-350` (handleDetectFaces)\n**Uses `face.embedding` which doesn't exist on `AssetFace`** \u2014 Code pushes `{ faceId: face.id, embedding: face.embedding }` to `embeddings: FaceSearch[]`. But `AssetFace` (from `asset.faces`) has no `embedding` field \u2014 that was on deleted `FaceSearchEntity`. **Failure:** `face.embedding` is `undefined` \u2192 `FaceSearch` insert fails with null embedding.\n\n---",
+        "path": "server/src/services/person.service.ts",
+        "start_line": 346,
+        "end_line": 346,
+        "observation_id": "8edb4cde9174a205",
+        "claimed_path": "server/src/services/person.service.ts",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "### 10. `server/src/dtos/person.dto.ts:248-262` (mapFaces) and `233` (mapFacesWithoutPerson)\n**Missing `assetId` in response DTOs** \u2014 Both functions omit `assetId` field that existed on `AssetFaceEntity`. **Failure:** Frontend expects `assetId` on face responses \u2192 `undefined` \u2192 UI breaks when linking face to asset.\n\n---",
+        "path": "server/src/dtos/person.dto.ts",
+        "start_line": 248,
+        "end_line": 248,
+        "observation_id": "dbff167f4ccef242",
+        "claimed_path": "server/src/dtos/person.dto.ts",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "### 11. `server/src/repositories/person.repository.ts:328-335` (reassignFace)\n**Updates all faces for asset+sourceType, not specific face** \u2014 `WHERE assetId = $1 AND sourceType = $2` affects every face on that asset from that source. **Failure:** Asset has 2 ML-detected faces; `reassignFace(assetId, \"p1\", ML)` assigns both to person p1 instead of just one.\n\n---",
+        "path": "server/src/repositories/person.repository.ts",
+        "start_line": 328,
+        "end_line": 328,
+        "observation_id": "902e5735ebea163e",
+        "claimed_path": "server/src/repositories/person.repository.ts",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "### 12. `server/src/cores/storage.core.ts:87` (getPersonThumbnailPath)\n**Hardcodes `.jpeg` extension** \u2014 Returns `${person.id}.jpeg` but actual thumbnail may be `.jpg`, `.png`, `.webp`. **Failure:** Thumbnail stored as `.png` \u2192 function returns `.jpeg` path \u2192 file not found.\n\n---",
+        "path": "server/src/cores/storage.core.ts",
+        "start_line": 87,
+        "end_line": 87,
+        "observation_id": "ad643aa6efe7a9f0",
+        "claimed_path": "server/src/cores/storage.core.ts",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "### 13. `server/src/queries/person.repository.sql:137-195` (getPersonForThumbnailGenerationJob)\n**Inner join on `exif` fails for assets without EXIF** \u2014 The lateral join does `inner join \"exif\" on \"exif\".\"assetId\" = \"assets\".\"id\"`. If asset has no EXIF row, lateral join returns no rows \u2192 `face` is `NULL` \u2192 person filtered out. **Failure:** Person's face asset lacks EXIF data \u2192 thumbnail generation job fails with \"no face asset\" even though face exists.\n\n---",
+        "path": "server/src/queries/person.repository.sql",
+        "start_line": 137,
+        "end_line": 137,
+        "observation_id": "2c0fe4bf46ae7393",
+        "claimed_path": "server/src/queries/person.repository.sql",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "### 14. `server/src/repositories/person.repository.ts:399-405` (update) and `server/src/services/person.service.ts:634` (mergePerson)\n**Allows updating primary key `id`** \u2014 `Updateable<Person>` includes optional `id`; service passes `{ id: primaryPerson.id, ...update }` to repository which does `.set(person)`. **Failure:** If caller passes different `id`, updates PK \u2192 breaks all foreign keys referencing this person.\n\n---",
+        "path": "server/src/repositories/person.repository.ts",
+        "start_line": 399,
+        "end_line": 399,
+        "observation_id": "2f52ee7d0029d95d",
+        "claimed_path": "server/src/repositories/person.repository.ts",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "### 15. `server/src/repositories/person.repository.ts:47-55` (GetAllPeopleOptions)\n**Cannot query for empty string `thumbnailPath`** \u2014 Uses `.$if(!!options.thumbnailPath, ...)` which treats `\"\"` as falsy. **Failure:** Caller wants persons with empty thumbnailPath \u2192 condition skipped \u2192 returns all persons.\n\n---",
+        "path": "server/src/repositories/person.repository.ts",
+        "start_line": 47,
+        "end_line": 47,
+        "observation_id": "b1f18df4dad0fcd5",
+        "claimed_path": "server/src/repositories/person.repository.ts",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "### 16. `server/src/services/person.service.ts:243-247` (delete)\n**Vulnerable to missing `id` in input objects** \u2014 Maps `people.map(p => p.id)` but parameter is `{id, thumbnailPath}[]`. If any object lacks `id`, `undefined` enters ID array. **Failure:** Input `[{thumbnailPath: \"/x\"}]` \u2192 `delete([undefined])` \u2192 SQL `IN (NULL)` deletes nothing or errors.\n\n---",
+        "path": "server/src/services/person.service.ts",
+        "start_line": 243,
+        "end_line": 243,
+        "observation_id": "60848418242661ae",
+        "claimed_path": "server/src/services/person.service.ts",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "### 17. `server/src/repositories/search.repository.ts:162-166` (FaceEmbeddingSearch)\n**`minBirthDate: Date | null` breaks query if null** \u2014 Search query likely does `WHERE birthDate >= minBirthDate`. With `null`, becomes `WHERE birthDate >= NULL` \u2192 evaluates to UNKNOWN \u2192 no results. **Failure:** Caller passes `minBirthDate: null` (meaning \"no filter\") \u2192 returns zero results instead of all.\n\n---",
+        "path": "server/src/repositories/search.repository.ts",
+        "start_line": 162,
+        "end_line": 162,
+        "observation_id": "a62c3cf89febcb64",
+        "claimed_path": "server/src/repositories/search.repository.ts",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "### 18. `server/src/dtos/asset-response.dto.ts:74-85` (peopleWithFaces)\n**Skips faces with `person: undefined` (not joined)** \u2014 Checks `if (face.person)` but `AssetFace.person` is `Person | undefined`. If relation not loaded, `undefined` \u2192 face skipped silently. **Failure:** Asset loaded without person join \u2192 faces exist but `peopleWithFaces` returns empty array \u2192 missing face data in asset response.\n\n---",
+        "path": "server/src/dtos/asset-response.dto.ts",
+        "start_line": 74,
+        "end_line": 74,
+        "observation_id": "a8e26f3bd8916b38",
+        "claimed_path": "server/src/dtos/asset-response.dto.ts",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "### 19. `server/src/utils/database.ts:19-45` (toJson)\n**Type signature breaks for lateral join aliases** \u2014 `toJson(eb, 'face')` where `'face'` is lateral join alias, not a table in `DB`. Generic constraints require `TB extends keyof DB` \u2192 type resolves to `never`. **Failure:** TypeScript may error, or query result type becomes `never` \u2192 calling code loses type safety.\n\n---\n\n### 20. `server/src/entities/*.entity.ts` (deleted files)\n**External imports of deleted entities will fail compilation** \u2014 `PersonEntity`, `AssetFaceEntity`, `FaceSearchEntity` deleted. Any file outside this diff importing them (controllers, other services, GraphQL resolvers, etc.) will fail to compile. **Failure:** Build breaks in files not updated in this PR.\n\n---",
+        "path": "server/src/utils/database.ts",
+        "start_line": 19,
+        "end_line": 19,
+        "observation_id": "0b428d56f6075f23",
+        "claimed_path": "server/src/utils/database.ts",
+        "path_resolution": "exact",
+        "merged_from": [
+          "c8fb1ba3aa6b4a71"
+        ]
+      },
+      {
+        "content": "### 21. `server/src/repositories/person.repository.ts:362` (create)\n**Throws on failure instead of returning undefined** \u2014 Changed from `executeTakeFirst()` to `executeTakeFirstOrThrow()`. **Failure:** Insert fails (e.g., duplicate unique constraint) \u2192 throws exception instead of returning `undefined` \u2192 unhandled rejection if caller expected nullable return.\n\n---",
+        "path": "server/src/repositories/person.repository.ts",
+        "start_line": 362,
+        "end_line": 362,
+        "observation_id": "883f6bccae69766a",
+        "claimed_path": "server/src/repositories/person.repository.ts",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "### 22. `server/src/cores/storage.core.ts:137` (movePersonFile)\n**`thumbnailPath` parameter unused in visible code** \u2014 Required parameter but only `entityId` used in `switch`. **Failure:** If `FACE` case (or others) was supposed to move old thumbnail using this path, that logic is now broken.\n\n---",
+        "path": "server/src/cores/storage.core.ts",
+        "start_line": 137,
+        "end_line": 137,
+        "observation_id": "f8422ac9e7532d79",
+        "claimed_path": "server/src/cores/storage.core.ts",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "### 23. `server/src/services/person.service.ts:672-700` (getInputDimensions)\n**Video path uses `asset.files` which only contains PREVIEW type** \u2014 SQL limits to `asset_files.type = $1` (PREVIEW). For videos this is correct, but if preview generation failed, `files: []` \u2192 throws. **Failure:** Video asset has no preview generated yet \u2192 thumbnail generation fails instead of falling back to original.\n\n---",
+        "path": "server/src/services/person.service.ts",
+        "start_line": 672,
+        "end_line": 672,
+        "observation_id": "b6154dd7d5453190",
+        "claimed_path": "server/src/services/person.service.ts",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "### 24. `server/src/repositories/person.repository.ts:110-115` (delete)\n**No UUID validation on input IDs** \u2014 Accepts `string[]` directly into SQL `IN` clause. **Failure:** Caller passes `[\"not-a-uuid\"]` \u2192 PostgreSQL \"invalid input syntax for type uuid\" error.\n\n---",
+        "path": "server/src/repositories/person.repository.ts",
+        "start_line": 110,
+        "end_line": 110,
+        "observation_id": "78919601887550ac",
+        "claimed_path": "server/src/repositories/person.repository.ts",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "### 25. `server/src/services/person.service.ts:548` (handleGeneratePersonThumbnail)\n**Unhelpful log message** \u2014 `` `person ${person}` `` logs `[object Object]` when person is object. **Failure:** Debugging thumbnail failures shows useless log output.\n\n---",
+        "path": "server/src/services/person.service.ts",
+        "start_line": 548,
+        "end_line": 548,
+        "observation_id": "e620c18f17df9fbe",
+        "claimed_path": "server/src/services/person.service.ts",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "### 26. `server/src/dtos/person.dto.ts:220` (mapPerson)\n**`birthDate` may be string from DB but `asDateString` expects Date/DateTime** \u2014 Kysely may return date columns as strings depending on config. **Failure:** `birthDate: \"1976-06-30\"` (string) \u2192 `asDateString` fails or returns wrong format.\n\n---",
+        "path": "server/src/dtos/person.dto.ts",
+        "start_line": 220,
+        "end_line": 220,
+        "observation_id": "be0947ce3d6a54a0",
+        "claimed_path": "server/src/dtos/person.dto.ts",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "### 27. `server/test/fixtures/asset.stub.ts:7` (previewFile)\n**`AssetFile` type may require more fields** \u2014 Stub only has `id, type, path`. `AssetFile` from `src/database` likely requires `assetId, createdAt`, etc. **Failure:** Test passes stub where full `AssetFile` expected \u2192 missing field errors in tests.\n\n---",
+        "path": "server/test/fixtures/asset.stub.ts",
+        "start_line": 7,
+        "end_line": 7,
+        "observation_id": "10f73d0f96d224e8",
+        "claimed_path": "server/test/fixtures/asset.stub.ts",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "### 28. `server/src/repositories/person.repository.ts:272-285` (getById)\n**Missing `@GenerateSql` params** \u2014 Other methods have `@GenerateSql({ params: [DummyValue.UUID] })` but this has bare `@GenerateSql()`. **Failure:** SQL generation for tests may use wrong parameter placeholder.\n\n---",
+        "path": "server/src/repositories/person.repository.ts",
+        "start_line": 272,
+        "end_line": 272,
+        "observation_id": "65397e5dc7cb815c",
+        "claimed_path": "server/src/repositories/person.repository.ts",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "### 29. `server/src/services/person.service.spec.ts:731`\n**Test casts stub as `AssetFace` but stub shape mismatches** \u2014 `faceStub.face1.asset` has `libraryId, updateId, stackId` but `AssetFace.asset` expects `{ownerId, isArchived, fileCreatedAt}`. **Failure:** Test passes due to `as AssetFace` cast but masks type mismatch that would fail in production.\n\n---",
+        "path": "server/src/services/person.service.spec.ts",
+        "start_line": 731,
+        "end_line": 731,
+        "observation_id": "4e60985c6756f730",
+        "claimed_path": "server/src/services/person.service.spec.ts",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "### 30. `server/src/repositories/person.repository.ts:216-225` (getAllWithoutFaces)\n**Left join + having count = 0 is correct** \u2014 No defect found here. (Including to show exhaustive check.)\n\n---",
+        "path": "server/src/repositories/person.repository.ts",
+        "start_line": 216,
+        "end_line": 216,
+        "observation_id": "016b08cc9cf803f2",
+        "claimed_path": "server/src/repositories/person.repository.ts",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "### 31. `server/src/services/person.service.ts:377-385` (handleRecognizeFaces)\n**Relies on `face.personId` from `getFaceForFacialRecognitionJob`** \u2014 Query returns `asset_faces.personId` correctly. But combined with defect #1, `face.asset` is undefined so this code path never reaches the personId check.\n\n---",
+        "path": "server/src/services/person.service.ts",
+        "start_line": 377,
+        "end_line": 377,
+        "observation_id": "f667f5fb755981fd",
+        "claimed_path": "server/src/services/person.service.ts",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "### 32. `server/src/dtos/person.dto.ts:254` (mapFaces)\n**Silently drops person data when `person` relation not loaded** \u2014 `face.person?.ownerId === auth.user.id` \u2192 if `face.person` is `undefined` (not joined), returns `null` instead of person data. **Failure:** Face belongs to current user but person relation not eager-loaded \u2192 UI shows \"unknown person\" for user's own face.\n\n---",
+        "path": "server/src/dtos/person.dto.ts",
+        "start_line": 254,
+        "end_line": 254,
+        "observation_id": "ff1af26f82dbc2d2",
+        "claimed_path": "server/src/dtos/person.dto.ts",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "### 33. `server/src/repositories/person.repository.ts:128-135` (getAllFaces)\n**Return type changed, callers may expect entity methods** \u2014 Now returns `Selectable<AssetFaces>` (plain object) not `AssetFaceEntity` (class). **Failure:** Caller does `face.someMethod()` \u2192 TypeError.\n\n---",
+        "path": "server/src/repositories/person.repository.ts",
+        "start_line": 128,
+        "end_line": 128,
+        "observation_id": "4cee74ff352738cf",
+        "claimed_path": "server/src/repositories/person.repository.ts",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "### 34. `server/src/repositories/person.repository.ts:137-148` (getAll)\n**Same `thumbnailPath` non-nullable issue as #2** \u2014 Returns `Selectable<Person>` with `thumbnailPath: string` but DB has NULLs.\n\n---",
+        "path": "server/src/repositories/person.repository.ts",
+        "start_line": 137,
+        "end_line": 137,
+        "observation_id": "590a997e9d4aa287",
+        "claimed_path": "server/src/repositories/person.repository.ts",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "### 35. `server/src/services/person.service.ts:453-470` (handleDetectFaces)\n**`deletedAt` not set on `Insertable<AssetFaces>`** \u2014 Relies on DB default. If column has no default and is NOT NULL, insert fails. **Failure:** Face detection inserts fail if `deletedAt` requires explicit value.\n\n---\n\nThese are 35 distinct defects with concrete failure scenarios. The most critical are #1 (facial recognition completely broken), #2/#3 (type/DB nullability mismatches causing crashes), #4 (wrong data returned), #5 (pagination broken), and #6 (metadata extraction fails).",
+        "path": "server/src/services/person.service.ts",
+        "start_line": 453,
+        "end_line": 453,
+        "observation_id": "eda2f0cf1259a538",
+        "claimed_path": "server/src/services/person.service.ts",
+        "path_resolution": "exact",
+        "merged_from": []
+      }
+    ]
+  },
+  "rundir": "/home/user/.cache/llm-panel/runs/aacr-up-t7ls8sx4-b8590cc118c0/20260830-152813-565326",
+  "extractor": "3",
+  "unlocated": [
+    {
+      "content": "**1. `getPersonForThumbnailGenerationJob` SQL (person.repository.ts / person.repository.sql)**\n\nThe new query:\n- Selects person where `person.id = $3` and `faceAssetId is not null`.\n- Left joins lateral on the face asset face (`asset_faces.id = person.faceAssetId`, deletedAt null).\n- Inner joins `exif` on the asset.\n\nIn the service code (`handleGeneratePersonThumbnail`):\n```js\nif (!person?.face?.a",
+      "observation_id": "b6886d4740891a74",
+      "claimed_path": "person.repository.ts",
+      "path_resolution": "basename"
+    },
+    {
+      "content": "**5. `getPersonThumbnailPath` and `movePersonFile` type narrowing (storage.core.ts)**\n\nThese changed from `PersonEntity` to a narrower structural type. `getPersonThumbnailPath(person: {id, ownerId})` uses `person.ownerId` and `person.id`. Previously PersonEntity had these. No behavior change. But note `movePersonFile(person: { id, ownerId, thumbnailPath })` \u2014 it extracts `{ id: entityId, thumbnail",
+      "observation_id": "783a12114ace3485",
+      "claimed_path": "storage.core.ts",
+      "path_resolution": "basename"
+    },
+    {
+      "content": "**7. `database.ts` Person type \u2014 `updateId: string`.**\n\nThe `Person` type declares `updateId: string` (non-optional), but the deleted `PersonEntity` had `updateId?: string` (optional). And `mapPerson` in person.dto:\n```js\nexport function mapPerson(person: Person): PersonResponseDto {\n  return {\n    ...\n  };\n}\n```\nDoes the response use updateId? Not shown fully. Not verifiable.\n\nActually more impor",
+      "observation_id": "ff7300c6639c9471",
+      "claimed_path": "database.ts",
+      "path_resolution": "ambiguous"
+    },
+    {
+      "content": "**8. `person.repository.ts` `getAllForUser` \u2014 removed `Paginated` return type but is it still returned consistently?**\n\n```js\nconst items = await this.db...\n  .execute();\n\nif (items.length > pagination.take) {\n  return { items: items.slice(0, -1), hasNextPage: true };\n}\nreturn { items, hasNextPage: false };\n```\n(need to verify the else branch). Probably fine.\n\n**9. The `getFaceForFacialRecognition",
+      "observation_id": "49220ccd4fef0fb1",
+      "claimed_path": "person.repository.ts",
+      "path_resolution": "basename"
+    },
+    {
+      "content": "**B. `AssetFace` type in database.ts \u2014 `deletedAt: Date | null` \u2014 but the query `getFaces`/`getAllFaces` filter deletedAt null. Not a defect.**\n\n**C. `toJson` generic \u2014 a type-only helper affecting the `getPersonForThumbnailGenerationJob` return type. The service accesses `person.face` \u2014 could be null (left join), `person.face.asset` \u2014 null if exif missing. The service correctly guards. Fine.**\n\n*",
+      "observation_id": "31c96aadcf084b63",
+      "claimed_path": "database.ts",
+      "path_resolution": "ambiguous"
+    },
+    {
+      "content": "1. **Defect (minor): `person ${person}` object-to-string in error log** \u2014 `person.service.ts`, in handleGeneratePersonThumbnail. Logs `[object Object]` instead of `person-1`. Also `person` may be `undefined` \u2192 \"person undefined\". Concrete, minor. LINE: the hunk around person.service.ts, the `${person}` line.\n\n2. **Defect (medium): `getInputDimensions` IMAGE branch no longer needs preview, but the ",
+      "observation_id": "5aeacd4ba6b41d56",
+      "claimed_path": "person.service.ts",
+      "path_resolution": "basename"
+    },
+    {
+      "content": "1. **`getPersonForThumbnailGenerationJob` / service: broken error message `person ${person}` \u2192 `[object Object]`** \u2014 person.service.ts. Real, concrete.",
+      "observation_id": "d17415b8bdbd1dcc",
+      "claimed_path": "person.service.ts",
+      "path_resolution": "basename"
+    },
+    {
+      "content": "2. **mergePerson always issues DB UPDATE** (id-only update) \u2014 person.service.ts in mergePerson. Real minor.\n\n3. **getInputDimensions + upfront `asset.files.length === 0` check**: I determined this matches old behavior for images, so NOT a regression. However \u2014 wait, actually let me reconsider whether old getInputDimensions really threw for images without preview. \n\nOld (from diff, deleted lines):\n",
+      "observation_id": "73d40888012f6cda",
+      "claimed_path": "person.service.ts",
+      "path_resolution": "basename"
+    },
+    {
+      "content": "1. **person.service.ts (handleGeneratePersonThumbnail): `person ${person}` logs `[object Object]`** \u2014 broken error message; loses the person id; also `person` can be `undefined` \u2192 literal \"undefined\".",
+      "observation_id": "876dcdd39bf9592d",
+      "claimed_path": "person.service.ts",
+      "path_resolution": "basename"
+    },
+    {
+      "content": "2. **person.service.ts (mergePerson): unconditional DB update** \u2014 `update` initialized with `{ id }` so `Object.keys(update).length > 0` is always true \u2192 UPDATE executes even when nothing to merge. Minor (no-op write) but a real behavior change from old (which skipped).",
+      "observation_id": "816c9d4c8952f61d",
+      "claimed_path": "person.service.ts",
+      "path_resolution": "basename"
+    },
+    {
+      "content": "3. **person.service.ts (handleGeneratePersonThumbnail) / query: getPersonForThumbnailGenerationJob's inner join on `exif` turns a missing-exif row into `face.asset = null`** \u2014 reported as \"has no face asset\" (wrong diagnosis), and combined with #1 the log is `[object Object]`. Also means any asset lacking an EXIF row can never get a person thumbnail (matches old failing, but the path is via null-a",
+      "observation_id": "dd0c04e2c832a275",
+      "claimed_path": "person.service.ts",
+      "path_resolution": "basename"
+    },
+    {
+      "content": "4. **person.service.ts: `asset.files.length === 0` check rejects IMAGE assets without a preview** even though getInputDimensions was rewritten to generate image thumbnails from the original; images lacking a preview (transient before preview generation) can never get a person thumbnail. Low, matches old behavior.\n\nHonestly these are weak. Let me dig once more for a genuinely functional bug.\n\nLet m",
+      "observation_id": "3fa60c8f780324f7",
+      "claimed_path": "person.service.ts",
+      "path_resolution": "basename"
+    },
+    {
+      "content": "**3. The thumbnail query turns a *missing EXIF row* into \"has no face asset\"**\n`server/src/repositories/person.repository.ts` / `person.repository.sql` (`getPersonForThumbnailGenerationJob`), the `inner join \"exif\" on \"exif\".\"assetId\" = \"assets\".\"id\"` inside the lateral `asset` subquery, combined with the service guard `!person?.face?.asset`.\n- Because `exif` is an inner join, an asset that has no",
+      "observation_id": "951357850c65fc94",
+      "claimed_path": "server/src/repositories/person.repository.ts",
+      "path_resolution": "exact"
+    },
+    {
+      "content": "### 30. `server/test/fixtures/face.stub.ts`\n**Defect:** Test stubs changed from `AssetFaceEntity` to plain objects. The `face1` stub has `asset: { ...assetStub.image, libraryId: null, updateId: ..., stackId: null }` but `assetStub.image` may not have `libraryId`, `updateId`, `stackId` properties. The spread adds them, but `assetStub.image` type may not include these.\n\n**Failure scenario:** Test ac",
+      "observation_id": "70dff06a55cac9ed",
+      "claimed_path": "server/test/fixtures/face.stub.ts",
+      "path_resolution": "exact"
+    },
+    {
+      "content": "### 31. `server/test/fixtures/person.stub.ts`\n**Defect:** All person stubs now include `color: 'red'` and `updateId`. But the `Person` type in `database.ts` has `color: string | null` and `updateId: string`. The stubs provide `color: 'red'` (string) and `updateId` (string). This matches.\n\n**But:** `personThumbnailStub` objects have `face` property with `asset` containing `exifInfo` and `files`. Th",
+      "observation_id": "c1bf649889e4a17c",
+      "claimed_path": "server/test/fixtures/person.stub.ts",
+      "path_resolution": "exact"
+    },
+    {
+      "content": "### 32. `server/test/repositories/person.repository.mock.ts`\n**Defect:** Mock interface updated to replace `getFaceByIdWithAssets` with `getFaceForFacialRecognitionJob` and `getPersonForThumbnailGenerationJob`. But the mock doesn't specify return types. Tests using `mocks.person.getFaceForFacialRecognitionJob.mockResolvedValue(...)` need to match the actual return shape (with `asset` not `person`)",
+      "observation_id": "9a3f75ac43305038",
+      "claimed_path": "server/test/repositories/person.repository.mock.ts",
+      "path_resolution": "exact"
+    },
+    {
+      "content": "6. **#70**: `metadata.service.ts` inserts missing required fields for Person/AssetFaces\n7. **#114**: `delete` partial failure leaves inconsistent state\n8. **#87**: `AssetEntity.faces` definite assignment but may be undefined\n9. **#90**: `handleDetectFaces` uses `face.embedding` which doesn't exist on `AssetFace`\n10. **#53**: `mapFaces` omits `assetId` from response DTO\n11. **#113**: `mapFacesWitho",
+      "observation_id": "b065441e7a9041e4",
+      "claimed_path": "metadata.service.ts",
+      "path_resolution": "basename"
+    },
+    {
+      "content": "20. **#50**: Deleted entity classes break external imports\n\nI'll report these as the mainLooking at this diff, I can see a massive refactoring that removes entity classes (`PersonEntity`, `AssetFaceEntity`, `FaceSearchEntity`) and replaces them with Kysely `Selectable`/`Insertable` types from `src/database.ts` and `src/db`. Here are the defects I found, most severe first:\n\n---",
+      "observation_id": "c340ade8f572ffaf",
+      "claimed_path": "src/database.ts",
+      "path_resolution": "ambiguous"
+    }
+  ]
+}

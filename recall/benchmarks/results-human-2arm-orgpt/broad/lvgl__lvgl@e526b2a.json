@@ -1,0 +1,259 @@
+{
+  "review": {
+    "comments": [
+      {
+        "content": "1. **Real defect \u2014 heap-buffer overflow:** `src/others/xml/lv_xml_style.c:309` and `src/others/xml/parsers/lv_xml_obj_parser.c:920`. The allocation counts spaces and reserves only `item_cnt + 1` integers, but parsing writes one entry per token **plus** `LV_GRID_TEMPLATE_LAST`. For `\"100 200\"`, two entries are allocated and three are written, corrupting the heap.",
+        "path": "src/others/xml/lv_xml_style.c",
+        "start_line": 309,
+        "end_line": 309,
+        "observation_id": "0bb4b9490da38ec3",
+        "claimed_path": "src/others/xml/lv_xml_style.c",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "2. **Real defect \u2014 use-after-free:** `src/others/observer/lv_observer.c:835`. The observer is tied to the spangroup\u2019s lifetime but retains a raw pointer to an individual span. `lv_spangroup_delete_span()` can delete that span while the group and observer remain alive; the next subject notification dereferences the freed span.\n\n3. **Build/API defect:** `src/others/observer/lv_observer.h:548`. The span-binding declaration is guarded by `LV_USE_LABEL` while its implementation is guarded by `LV_USE_SPAN`. Configurations enabling spans without labels lose the declaration; configurations enabling labels without spans expose an implementation that is not built and may also reference an unavailable `lv_span_t`.",
+        "path": "src/others/observer/lv_observer.c",
+        "start_line": 835,
+        "end_line": 835,
+        "observation_id": "a5784590721ebe26",
+        "claimed_path": "src/others/observer/lv_observer.c",
+        "path_resolution": "exact",
+        "merged_from": [
+          "b359d164e20f3ef9"
+        ]
+      },
+      {
+        "content": "4. **Real defect \u2014 memory leak:** `src/widgets/span/lv_span.c:216` and `src/widgets/span/lv_span.c:274`. The old text is freed only when `span->txt == NULL && span->static_flag`, which can only free `NULL`. Replacing dynamically owned text\u2014such as on every formatted subject update\u2014leaks the previous allocation. The condition should free non-static, non-NULL text.",
+        "path": "src/widgets/span/lv_span.c",
+        "start_line": 216,
+        "end_line": 216,
+        "observation_id": "d0066e3174ce9df5",
+        "claimed_path": "src/widgets/span/lv_span.c",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "5. **Real defect \u2014 unchecked allocation failure:** `src/others/xml/lv_xml_style.c:293` and `src/others/xml/parsers/lv_xml_obj_parser.c:903`. Both paths write through `dsc_array` without checking `lv_malloc()`. On a memory-constrained target, parsing a grid descriptor after allocation failure immediately dereferences `NULL`.",
+        "path": "src/others/xml/lv_xml_style.c",
+        "start_line": 293,
+        "end_line": 293,
+        "observation_id": "1e8284737a4eb9d9",
+        "claimed_path": "src/others/xml/lv_xml_style.c",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "6. **Missing ownership model / likely leak:** `src/others/xml/lv_xml_style.c:293`. Unlike object-local descriptor arrays, the style-registration path neither records the allocation for cleanup nor attaches a deletion callback. Registering and later unloading/replacing XML styles can therefore leave the descriptor arrays allocated; their ownership needs to be explicit in the style/scope teardown.",
+        "path": "src/others/xml/lv_xml_style.c",
+        "start_line": 293,
+        "end_line": 293,
+        "observation_id": "fef471c84905c1ce",
+        "claimed_path": "src/others/xml/lv_xml_style.c",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "7. **Wrong-result defect:** `src/others/xml/lv_xml_style.c:299` and `src/others/xml/parsers/lv_xml_obj_parser.c:909`. The grid parser handles `fr(...)` and numeric tracks but sends every other valid descriptor through `lv_xml_atoi()`. A standard `LV_GRID_CONTENT`/`content` track consequently becomes `0`, producing a collapsed track rather than content sizing.",
+        "path": "src/others/xml/lv_xml_style.c",
+        "start_line": 299,
+        "end_line": 299,
+        "observation_id": "782faf321059d719",
+        "claimed_path": "src/others/xml/lv_xml_style.c",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "8. **Real portability defect:** `src/widgets/span/lv_span.c:212` and `src/widgets/span/lv_span.c:270`. The allocation-failure return occurs after `va_start()` but before `va_end()`. Every `va_start()` must be paired with `va_end()` before returning; this is undefined on implementations where `va_list` owns resources.",
+        "path": "src/widgets/span/lv_span.c",
+        "start_line": 212,
+        "end_line": 212,
+        "observation_id": "2809c26494346b1f",
+        "claimed_path": "src/widgets/span/lv_span.c",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "9. **Missing defensive check:** `src/others/observer/lv_observer.c:836`. `lv_subject_add_observer_obj()` is not checked before dereferencing `observer`. If observer allocation fails, this crashes and also leaks the already allocated `user_data`.",
+        "path": "src/others/observer/lv_observer.c",
+        "start_line": 836,
+        "end_line": 836,
+        "observation_id": "ce1239c9f50f48df",
+        "claimed_path": "src/others/observer/lv_observer.c",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "10. **Missing validation:** `src/others/observer/lv_observer.c:912` and `src/others/observer/lv_observer.c:930`. Both public scale-section binders assert `obj` and `subject` but not `section`. Passing a null section leaves an observer whose first notification calls the scale setter with `NULL`.\n\n11. **Dead/duplicated state:** `src/others/observer/lv_observer.c:59`. `bind_element_string_t.subject` is assigned but never read; callbacks already receive the subject directly. Keeping the duplicate pointer obscures the actual lifetime requirements without providing functionality.\n\nVerification note: the workspace was empty, so the supplied diff was the only source available; existing teardown and helper implementations were not present to inspect.**1. REAL DEFECT \u2014 Division/format bug in the `fr()` grid descriptor parsing (out-of-bounds read), `src/others/xml/lv_xml_style.c:284-298` and `src/others/xml/parsers/lv_xml_obj_parser.c:896-911`**\n\nThis block was duplicated (a refactor worth raising on its own \u2014 same ~25 lines copied verbatim into two files), and the shared logic has a concrete bug:\n\n```c\nif(sub_value[0] == 'f' && sub_value[1] == 'r') {\n    dsc_array[item_cnt] = LV_GRID_FR(lv_xml_atoi(sub_value + 3)); /*+3 to skip \"fr(\"*/\n}\n```\n\nThis tests for a token starting with `\"fr\"` but then reads `sub_value[3]`, skipping 3 characters \u2014 i.e. it assumes the token is exactly `fr(`. If the user writes a value like `fr2` (no parens) or `2fr` \u2014 the syntax that the rest of LVGL's grid API and docs actually use (`LV_GRID_FR(2)` is set via `\"2fr\"` strings in many places, and `lv_xml_split_str` on the raw string gives no parens anyway) \u2014 then `sub_value[3]` is past the meaningful prefix. Worse, the `f`/`r` prefix check matches `\"fr...\"` but the parse offset and the `lv_xml_atoi` will produce garbage for any malformed-but-accepted token, and `sub_value+3` can read past an allocation boundary for a 2-char token like `\"fr\"`. This is a **wrong result** (garbage grid descriptor) at minimum, and a **potential OOB read** on a 2-3 char token. Should either parse a well-defined `fr(<n>)` grammar (checking for the `(`/`)`) or accept the conventional `Nfr` syntax. Concrete scenario: XML `<lv_obj style_grid_column_dsc_array=\"1fr 2fr 1fr\"/>` produces `atoi(\" fr...\")` garbage in each cell.\n\nAlso note the item-count allocation depends on counting spaces (`item_cnt++` per space, `+1` for LAST). With the value `\"1fr\"` (no spaces) you allocate 2 ints (1 + LAST) \u2014 fine \u2014 but the trailing `LV_GRID_TEMPLATE_LAST` plus each parsed item means the count is under-allocated only if the value ends with trailing spaces. Trailing/double spaces corrupt the count respecting LV_GRID_TEMPLATE_LAST \u2014 worth adding a validation. **Kind: wrong result / potential OOB, plus duplicated-state refactor.**",
+        "path": "src/others/observer/lv_observer.c",
+        "start_line": 912,
+        "end_line": 912,
+        "observation_id": "6f028b11217c08a7",
+        "claimed_path": "src/others/observer/lv_observer.c",
+        "path_resolution": "exact",
+        "merged_from": [
+          "41c354f89b38c250",
+          "35e82b083c60efe5"
+        ]
+      },
+      {
+        "content": "**2. REAL DEFECT \u2014 Use-after-free / double-free on static spans, `src/widgets/span/lv_span.c:202-225` and `259-281`**\n\n```c\nif(span->txt == NULL && span->static_flag) {\n    lv_free(span->txt);\n}\n```\n\nThe condition is backwards. Two real bugs here:\n\n- **Freeing NULL is harmless** but the guard is inverted: it frees only when `span->txt == NULL`, which is the case where there's nothing to free. When a static text is actually set, `span->txt` points at the static (non-owned) string and `static_flag == 1`; the free is skipped, so the static string is leaked-into (not freed \u2014 correct) \u2014 but then:\n- **Static text never gets replaced as owned:** the new `text` from `lv_text_set_text_vfmt` is assigned, `static_flag = 0`, `span->txt = text`. That part is fine. But the real defect is the condition should be `if(span->txt != NULL && span->static_flag)`. As written, when a span holds a truly-owned dynamic string with `static_flag == 0`, `span->txt = text` **overwrites the old owned pointer without freeing it** \u2014 a **memory leak** on every `lv_span_set_text_fmt` call on a previously-dynamic span. When it holds a static string (`static_flag == 1`, `txt != NULL`), it skips the free (correct not-to-free) and replaces \u2014 fine. So the net effect: dynamic\u2192fmt leaks the old buffer.\n\nCompare with the existing `lv_span_set_text` / `lv_span_set_text_static` in the same file: the correct pattern frees `span->txt` when it was owned, before replacing. This new code has the condition inverted. Concrete failure: calling `lv_span_set_text_fmt(span, \"%d\", n)` repeatedly in a loop leaks one buffer per iteration. **Kind: memory leak.** (The inverted `NULL &&` makes the free dead in the one case it's wanted and absent in the case it's needed.)",
+        "path": "src/widgets/span/lv_span.c",
+        "start_line": 202,
+        "end_line": 202,
+        "observation_id": "643015eab34f2923",
+        "claimed_path": "src/widgets/span/lv_span.c",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "**3. REAL DEFECT \u2014 Missing `lv_spangroup_refresh` in `lv_span_set_text_fmt`, and inconsistent redraw contract, `src/widgets/span/lv_span.c:202`**\n\n`lv_span_set_text_fmt` (the span-level variant) doesn't call `lv_spangroup_refresh` (the header even documents \"As the spangroup is not passed ... `lv_spangroup_refresh(spangroup)` needs to be called manually\"). The observer path (`span_text_observer_cb`) calls `lv_spangroup_set_span_text_fmt` which *does* refresh \u2014 so that's OK \u2014 but any direct user of the new public `lv_span_set_text_fmt` is left with a stale redraw that only appears by luck. Existing `lv_span_set_text` has the same limitation, so this is **not-yet-wrong / API-footgun** rather than a new regression. Worth raising because the new public function invites misuse. **Kind: missing defensive/validation-ish footgun in a public API.**\n\n**4. REAL DEFECT \u2014 `lv_scale_bind_section_min/max_value` never validates `section`, `src/others/observer/lv_observer.c:916-944`**\n\n```c\nlv_result_t res = lv_scale_bind_section_min_value(lv_obj_t * obj, lv_scale_section_t * section, lv_subject_t * subject)\n{\n    LV_ASSERT_NULL(subject);\n    LV_ASSERT_NULL(obj);          // <-- no LV_ASSERT_NULL(section)\n    ...\n    lv_subject_add_observer_obj(subject, scale_section_min_value_observer_cb, obj, section);\n```\n\n`section` (which becomes `observer->user_data`) is never null-checked, but the other new bind function (`lv_spangroup_bind_span_text`) null-checks all three args. A NULL section will be dereferenced in `scale_section_min_value_observer_cb` via `lv_scale_set_section_min_value(target, section, ...)`. **Missing validation / inconsistent with the sibling function. Kind: missing defensive check.**\n\n**5. REAL DEFECT \u2014 Pointer/string formatting passes a pointer where an `int` is expected (varargs UB), `src/others/observer/lv_observer.c:1205-1215`**\n\n```c\ncase LV_SUBJECT_TYPE_STRING:\ncase LV_SUBJECT_TYPE_POINTER:\n    lv_spangroup_set_span_text_fmt(observer->target, user_data->element, user_data->fmt, subject->value.pointer);\n    break;\n```\n\nThe format string is user-provided. `fmt` was *not* constrained in the `else` branch (non-NULL fmt) to contain exactly one specifier of matching type \u2014 the code only checks the subject *type* is one of the allowed set, not that the format's conversion matches. If a user binds a string subject with `fmt = \"%d\"` (a very plausible mistake \u2014 the doc even says `\"%d \u00b0C\"`), this passes a `const char *` into a `%d` conversion, which is **undefined behavior / potentially a garbage read**. The label equivalent has the same varargs hazard, but here the mismatch is easier to reach because the same `switch` feeds int and pointer cases from the same untrusted fmt. **Kind: security/UB hazard with a concrete crashing scenario** (`%s` read of an int is the classic crash). At minimum the doc's \"1 format specifier\" is unenforced.\n\n**6. REAL DEFECT \u2014 `utils/lv_text_set_text_vfmt` return and `LV_ASSERT_MALLOC` ordering, `src/widgets/span/lv_span.c:210-212, 267-269`**\n\n```c\nchar * text = lv_text_set_text_vfmt(fmt, args);\nLV_ASSERT_MALLOC(text);\nif(text == NULL) return;\n```\n\nNote this is fine (checks NULL after assert). Not a bug. Skip.\n\n**7. REAL DEFECT \u2014 Observer `add` for `lv_scale_bind_*` doesn't use the pattern the file establishes, and `auto_free_user_data` is not set \u2014 but `section` is not owned either, so that's consistent. Not a defect.**\n\nActually let me reconsider: `lv_scale_bind_section_*` passes the raw `section` pointer as observer user_data without setting `auto_free_user_data`. The span bind allocates a `bind_element_string_t` and sets `auto_free_user_data = 1`. For scale, the `section` is a widget-owned object, not allocated by the observer \u2014 so *not* auto-freeing is correct (else double-free). OK, not a defect. Skip.\n\n**8. REAL DEFECT (leak) \u2014 `lv_scale_bind_*` returns an observer but the section pointer isn't tracked; if section is destroyed while the observer lives... that's a normal LVGL ownership concern, not specific enough. Skip.**",
+        "path": "src/widgets/span/lv_span.c",
+        "start_line": 202,
+        "end_line": 202,
+        "observation_id": "9ff2a12494245d10",
+        "claimed_path": "src/widgets/span/lv_span.c",
+        "path_resolution": "exact",
+        "merged_from": [
+          "0e9c065302de37b3",
+          "f10b4f2a734b264f",
+          "1d93df2ee0bbef87",
+          "aeb6fd785ca37ed8",
+          "c07e5ce2a4614283"
+        ]
+      },
+      {
+        "content": "**9. REAL DEFECT \u2014 XML span bind: fmt duplicated + freed by a separate event callback that may not fire, `src/others/xml/parsers/lv_xml_spangroup_parser.c:91-104`**\n\n```c\nconst char * fmt = lv_xml_get_value_of(attrs, \"bind_text-fmt\");\nif(fmt) {\n    fmt = lv_strdup(fmt);\n    lv_obj_add_event_cb(spangroup, free_fmt_event_cb, LV_EVENT_DELETE, (void *) fmt);\n}\nlv_spangroup_bind_span_text(spangroup, span, subject, fmt);\n```\n\nThis re-implements (locally, with a *new* `free_fmt_event_cb`) exactly the helper the rest of this very PR consolidated into `lv_event_free_user_data_cb` \u2014 the label parser was just refactored to use the shared helper (diff line `src/others/xml/parsers/lv_xml_label_parser.c:70-73`), yet the spangroup parser reintroduces a private copy. **Consistency/refactor item \u2014 the shared helper exists and should be reused.** Also: unlike the label path, the span path registers `free_fmt_event_cb` on the `spangroup` object rather than tying the free to the span's lifecycle \u2014 if the spangroup outlives the span, the strdup'd fmt is freed only when the group dies, but if the span is deleted first the bind still references... it's fine since fmt lives until group delete. Low severity.",
+        "path": "src/others/xml/parsers/lv_xml_spangroup_parser.c",
+        "start_line": 91,
+        "end_line": 91,
+        "observation_id": "c2e6fdcc6cb8a938",
+        "claimed_path": "src/others/xml/parsers/lv_xml_spangroup_parser.c",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "**10. REAL DEFECT \u2014 `lv_xml_tabview_tab_button_create` crashes on missing/`NULL` index, `src/others/xml/parsers/lv_xml_tabview_parser.c:91-99`**\n\n```c\nconst char * index_str = lv_xml_get_value_of(attrs, \"index\");\nint32_t index_int = lv_xml_atoi(index_str);\n```\n\nIf `index` attribute is absent, `index_str == NULL` and `lv_xml_atoi(NULL)` likely dereferences NULL. The XML schema (`lv_tabview.xml`) declares `index` as an arg but it's optional in XML. And the docs for `lv_tabview_get_tab_button` say \"0 means start counting ... NULL if out of range\" \u2014 but the parser's bounds check is `LV_ABS(index_int) >= btn_cnt` which mishandles negative indices: `lv_tabview_get_tab_button(tv, -1)` in `lv_tabview.c` uses `lv_obj_get_child_by_type(..., idx, ...)` where a negative idx from the back is then... but the parser has already rejected negatives with `LV_ABS` check \u2192 `LV_ABS(-1)=1`. If `btn_cnt==1`, `1 >= 1` \u2192 true \u2192 clamps to 0. OK. But the **NULL deref on missing index** is real. **Kind: crash (NULL deref) with concrete scenario: `<lv_tabview-tab_button/>` without an `index` attribute.**",
+        "path": "src/others/xml/parsers/lv_xml_tabview_parser.c",
+        "start_line": 91,
+        "end_line": 91,
+        "observation_id": "a11bafdf1be502bb",
+        "claimed_path": "src/others/xml/parsers/lv_xml_tabview_parser.c",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "**11. REAL DEFECT \u2014 `lv_tabview_get_tab_button` negative-index contract mismatch, `src/widgets/tabview/lv_tabview.c:245-250`**\n\n```c\nreturn lv_obj_get_child_by_type(lv_tabview_get_tab_bar(obj), idx, &lv_button_class);\n```\n\nThe header advertises `idx < 0` means \"count from the back\". But `lv_obj_get_child_by_type` \u2014 does it accept negative indices meaning from-the-back? If it doesn't, the negative-index contract is a **doc lie** and negatives either return the wrong child or assert. Can't verify the callee's semantics from the diff, but the header's claim (`-1 is the last tab button`) must be true of the underlying call, else it's a **misleading doc / real wrong-result** for negative indices. I can't confirm `lv_obj_get_child_by_type`'s negative handling from the diff alone \u2014 flagging as \"verify\" because the doc makes a specific negative-index promise.\n\n**12. NOT-YET-WRONG \u2014 `lv_scale_bind_section_*` returns `observer` even on the incompatible-subject path? No \u2014 those return NULL before.** Fine.\n\n**13. NOT-YET-WRONG \u2014 `span_text_observer_cb` `default: return;` (line ~1215) silently drops the update without redrawing \u2014 a non-int/str/ptr subject type reaching the fmt-enabled path would leave a stale span with no invalidation. Given the bind function already rejects incompatible types, this default is mostly dead, but the silent `return` without refresh on partial mismatch is a footgun. Low.**",
+        "path": "src/widgets/tabview/lv_tabview.c",
+        "start_line": 245,
+        "end_line": 245,
+        "observation_id": "930bb7bf9e1f6bb8",
+        "claimed_path": "src/widgets/tabview/lv_tabview.c",
+        "path_resolution": "exact",
+        "merged_from": [
+          "0bcb18da7102c11f"
+        ]
+      },
+      {
+        "content": "**2. Real defect (memory leak) \u2014 reversed ownership-free condition in span text setters.**\n`src/widgets/span/lv_span.c:202-225` (and the identical `259-281`)\n```c\nif(span->txt == NULL && span->static_flag) {\n    lv_free(span->txt);\n}\n```\nThe guard is inverted: it frees only when `span->txt == NULL` (nothing to free) and skips the free precisely when the old text was an owned dynamic buffer (`txt != NULL`, `static_flag == 0`). Every `lv_span_set_text_fmt`/`lv_spangroup_set_span_text_fmt` call on a span that already holds a dynamic string overwrites `span->txt` in `span->txt = text` without freeing the previous buffer. Concrete scenario: a loop calling `lv_span_set_text_fmt(span, \"%d\", n)` leaks one buffer per iteration. The condition should be `txt != NULL && static_flag`.",
+        "path": "src/widgets/span/lv_span.c",
+        "start_line": 202,
+        "end_line": 202,
+        "observation_id": "90dd8d7e3f238123",
+        "claimed_path": "src/widgets/span/lv_span.c",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "**3. Real defect (UB / crash) \u2014 untrusted format passed to varargs with a mismatched pointer argument.**\n`src/others/observer/lv_observer.c:1205-1215`\nFor `LV_SUBJECT_TYPE_STRING`/`POINTER` the code forwards `subject->value.pointer` into `lv_spangroup_set_span_text_fmt(..., user_data->fmt, subject->value.pointer)`. `fmt` is user-supplied and its conversion specifier is never checked against the value type \u2014 the code only checks the *subject type*, not that `fmt` has a matching `%` spec. Binding a string subject with the doc's own example `\"%d \u00b0C\"` passes a `char *` into a `%d` conversion (UB); binding an int with `%s` does an out-of-bounds string read (crash). The `switch` making all four types reach the same untrusted fmt makes a mismatch trivially reachable. Related defensive gap: `lv_span_set_text_fmt` in `lv_span.h:100-105` is missing `LV_FORMAT_ATTRIBUTE`, so unlike `lv_label_set_text_fmt` these mismatches are never caught at compile time.",
+        "path": "src/others/observer/lv_observer.c",
+        "start_line": 1205,
+        "end_line": 1205,
+        "observation_id": "38217964b8b34ed9",
+        "claimed_path": "src/others/observer/lv_observer.c",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "**4. Real defect (NULL deref / crash) \u2014 missing `index` attribute.**\n`src/others/xml/parsers/lv_xml_tabview_parser.c:93-99`\n```c\nconst char * index_str = lv_xml_get_value_of(attrs, \"index\");\nint32_t index_int = lv_xml_atoi(index_str);\n```\n`index` is optional in the XML (`lv_tabview.xml` declares it as an arg but nothing makes it required). `<lv_tabview-tab_button/>` without `index` yields `index_str == NULL` and `lv_xml_atoi(NULL)` likely dereferences NULL. Needs a NULL guard before `atoi`.",
+        "path": "src/others/xml/parsers/lv_xml_tabview_parser.c",
+        "start_line": 93,
+        "end_line": 93,
+        "observation_id": "1ae602e8da7a39e4",
+        "claimed_path": "src/others/xml/parsers/lv_xml_tabview_parser.c",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "**5. Real defect (missing validation) \u2014 `section` never null-checked in the scale binds.**\n`src/others/observer/lv_observer.c:916-944`\n`lv_scale_bind_section_min_value`/`max_value` `LV_ASSERT_NULL(subject)` and `LV_ASSERT_NULL(obj)` but not `section`, which becomes `observer->user_data` and is dereferenced in `scale_section_min_value_observer_cb` (`lv_scale_set_section_min_value(target, section, ...)`). Inconsistent with the sibling `lv_spangroup_bind_span_text` which checks all three. A NULL section yields a NULL deref on the first subject notification. (Note: correctly, `auto_free_user_data` is *not* set here since `section` is widget-owned \u2014 that part is right.)",
+        "path": "src/others/observer/lv_observer.c",
+        "start_line": 916,
+        "end_line": 916,
+        "observation_id": "15157bc95feb5738",
+        "claimed_path": "src/others/observer/lv_observer.c",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "**6. Real defect (confirm callee) \u2014 `lv_tabview_get_tab_button` negative-index contract.**\n`src/widgets/tabview/lv_tabview.c:245-250`\nThe header (`lv_tabview.h:90-94`) promises `idx < 0` counts from the back (`-1` = last). The body forwards to `lv_obj_get_child_by_type(bar, idx, &lv_button_class)` and whether that callee honors negative indices is not visible from the diff. If it doesn't, the negative-index promise is a doc lie that returns the wrong button. I could not confirm the callee's semantics from the diff \u2014 verify before merging. (The parser's clamping `LV_ABS(index_int) >= btn_cnt` also only meaningfully handles the small range; out-of-range is clamped, so that's fine.)",
+        "path": "src/widgets/tabview/lv_tabview.c",
+        "start_line": 245,
+        "end_line": 245,
+        "observation_id": "1964409776fa848a",
+        "claimed_path": "src/widgets/tabview/lv_tabview.c",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "**7. Not-yet-wrong / refactor \u2014 same 25 lines duplicated in two files; and a second leak-path inconsistency.**\n`src/others/xml/lv_xml_style.c:284-305` vs `src/others/xml/parsers/lv_xml_obj_parser.c:894-924`\nThe grid-array parsing is copy-pasted into both files (root cause of #1). Beyond duplication: the `obj_parser.c` copy registers the allocated `dsc_array`'s free via `lv_obj_add_event_cb(obj, lv_event_free_user_data_cb, LV_EVENT_DELETE, dsc_array)` (good), but the `lv_xml_style.c` copy hands the same `lv_malloc`'d array to `lv_style_set_grid_column_dsc_array(style, dsc_array)` with **no** ownership/free path (bad / unverified). That's inconsistent ownership of an identical allocation: one leaks or dangles depending on whether the style system adopts the pointer. Cannot confirm style-array ownership from the diff \u2014 but the asymmetry between two copies of the same code is a review flag regardless. Should be one shared helper with one ownership model.",
+        "path": "src/others/xml/lv_xml_style.c",
+        "start_line": 284,
+        "end_line": 284,
+        "observation_id": "3ad1b917ecb36fc5",
+        "claimed_path": "src/others/xml/lv_xml_style.c",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "**8. Not-yet-wrong / refactor \u2014 private `free_fmt_event_cb` reintroduced in spangroup.**\n`src/others/xml/parsers/lv_xml_spangroup_parser.c:91-104` and `117-123`\nThis PR's whole thrust is consolidating the \"free user_data on DELETE\" callback into the shared `lv_event_free_user_data_cb` (see the refactors across `lv_obj.c`, `lv_observer.c`, `lv_xml_label_parser.c`, `lv_xml_obj_parser.c`), yet the spangroup parser reintroduces a *private duplicate* `free_fmt_event_cb` with the exact same body that the label parser just deleted. Use the shared helper for consistency. Also subtle: the label parser registers its fmt-free on the label whose delete triggers it, while this one registers on the `spangroup` \u2014 with the rework of span-vs-group lifecycles this is a second place the free could disaggregate from the object using it.",
+        "path": "src/others/xml/parsers/lv_xml_spangroup_parser.c",
+        "start_line": 91,
+        "end_line": 91,
+        "observation_id": "23ba1d21b2fff889",
+        "claimed_path": "src/others/xml/parsers/lv_xml_spangroup_parser.c",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "**9. Real defect (silent stale update) \u2014 `default:` returns without refresh.**\n`src/others/observer/lv_observer.c:1216`\nIn `span_text_observer_cb`, the `default:` branch just `return`s, leaving the span text stale and, because `lv_spangroup_set_span_text_fmt` (which triggers `lv_spangroup_refresh`) is never reached, no redraw is queued. Largely dead given the bind already rejects those types, but a silent drop-with-no-invalidation is a footgun if the type mapping ever drifts. Minor.",
+        "path": "src/others/observer/lv_observer.c",
+        "start_line": 1216,
+        "end_line": 1216,
+        "observation_id": "2f0f3b5287711951",
+        "claimed_path": "src/others/observer/lv_observer.c",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "**10. Not-yet-wrong (footgun) \u2014 `lv_span_set_text_fmt` redraw contract.**\n`src/widgets/span/lv_span.c:202` + doc `lv_span.h:95-104`\nThe new public span-level setter doesn't (and can't) refresh the group; the header defers to a manual `lv_spangroup_refresh`. The observer path is fine because it calls the group-level variant (which does refresh), so observers redraw correctly \u2014 but any direct user of the new public `lv_span_set_text_fmt` silently gets a stale screen until a manual refresh. Matches the pre-existing `lv_span_set_text` limitation so not a new regression, but a new public API that invites exactly this misuse. **Missing redraw**.\n\nMinor / docs-only (not defects): the misleading `LV_EVENT_DELETED`\u2192`LV_EVENT_DELETE` doc fix in `lv_obj_tree.h:43,51` is itself suspicious \u2014 `LV_EVENT_DELETE` is sent *before* deletion (why a delete-cb can free `user_data`) while the old doc claimed `DELETED` (post-delete), which is exactly the distinction this PR leans on for its shared free-cb; if `DELETED` were truly the event, the free-by-delete-cb pattern would be a use-after-free \u2014 but since the existing code relies on `LV_EVENT_DELETE` it's already the working behavior, so the doc fix is correct, just worth noting it pins the fragile pre-delete contract the whole consolidation depends on. The `switch` parser returns `0` for unknown orientation (`lv_xml_switch_parser.c:71-76`) which for an enum is the `AUTO` value \u2014 matching the sibling parsers' convention, so not new.\n\n---\n\n**Verification caveat:** I could not check any of this against live source \u2014 the working directory `/tmp/aacr-up-l7u4koxy` is empty, so there is no tree to read. Items #1\u2013#5 and #8 are fully determinate from the diff. Items #6 (`lv_obj_get_child_by_type` negative-index semantics) and #7 (style-system ownership of `dsc_array`) hinge on callee behavior not present in the diff and are flagged as \"confirm before merging\" rather than asserted.",
+        "path": "src/widgets/span/lv_span.c",
+        "start_line": 202,
+        "end_line": 202,
+        "observation_id": "761a7b3596f6f0c6",
+        "claimed_path": "src/widgets/span/lv_span.c",
+        "path_resolution": "exact",
+        "merged_from": []
+      }
+    ]
+  },
+  "rundir": "/home/user/.cache/llm-panel/runs/aacr-up-l7u4koxy-dfc7118ef85b/20260830-113512-2044518",
+  "extractor": "3",
+  "unlocated": [
+    {
+      "content": "**14. Docs item \u2014 the new `lv_span_set_text_fmt` in lv_span.h gets no `LV_FORMAT_ATTRIBUTE`, so no compile-time format-arg checking (unlike `lv_label_set_text_fmt` which has `LV_FORMAT_ATTRIBUTE(2,3)`). Combined with #5, a `%s`/value mismatch won't be caught at compile time. Kind: missing defensive/validation.**\n\n**15. NOT-YET-WRONG \u2014 `lv_xml_style.c` / `lv_xml_obj_parser.c` grid array parsing all",
+      "observation_id": "2a5a63f3aee8a8c9",
+      "claimed_path": "lv_span.h",
+      "path_resolution": "basename"
+    }
+  ]
+}

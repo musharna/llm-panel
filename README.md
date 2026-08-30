@@ -226,8 +226,12 @@ nothing.
   content buys efficiency. An earlier draft added "and a different set of hits (more
   human-authored references)"; a pre-registered replication on 35 fresh PRs (150
   human-authored references) found broad 12.0% vs volume 10.7%, one-sided p = 0.40 — the
-  claim is withdrawn. See `recall/benchmarks/results-volume-3judge/README.md` and
-  `recall/benchmarks/results-human-2arm/README.md`.
+  claim is withdrawn. A transport-controlled re-run (every panel through one harness) found
+  8.7% vs 15.3%: the claim's one foothold, a subset that had run through the codex CLI, was
+  a harness effect — the same `gpt-5.6-sol` reviews differently behind codex's tool loop
+  than behind opencode's. See `recall/benchmarks/results-volume-3judge/README.md`,
+  `recall/benchmarks/results-human-2arm/README.md` and
+  `recall/benchmarks/results-human-2arm-orgpt/README.md`.
   An earlier version of this bullet split recall by a DEFECT/IMPROVEMENT classifier I
   wrote; that split was circular and is withdrawn — on the benchmark's own `category`
   field the `defect` prompt recalls both classes at the same rate. The default stays

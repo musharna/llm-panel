@@ -1,0 +1,300 @@
+{
+  "review": {
+    "comments": [
+      {
+        "content": "1. **High \u2014 `src/core/storage/state.ts:623`**: A single storage failure leaves a partially switched configuration. For example, if updating `apiProvider` rejects while the other global-state and secret writes succeed, `updateApiConfiguration` rejects before the controller\u2019s API handler is replaced, but the new model settings and credentials are still persisted. The active task continues using the old provider, while a restart loads a mixture of the old provider and new provider settings.",
+        "path": "src/core/storage/state.ts",
+        "start_line": 623,
+        "end_line": 623,
+        "observation_id": "6e7a90a4a3fb761b",
+        "claimed_path": "src/core/storage/state.ts",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "2. **High \u2014 `src/core/storage/state.ts:37` and `src/core/storage/state.ts:48`**: `Promise.all` rejects immediately without waiting for the remaining writes, allowing failed saves to mutate storage after the caller has handled the error. For example, save configuration A with a delayed `apiKey` write while another write rejects quickly; after the rejection, save configuration B successfully. If A\u2019s delayed credential write then finishes after B\u2019s, the persisted credential reverts to A even though B reported success.\n\nChecked every supplied hunk. The workspace is empty, so no surrounding implementation or tests were available beyond the provided diff.",
+        "path": "src/core/storage/state.ts",
+        "start_line": 37,
+        "end_line": 37,
+        "observation_id": "a5198cf8fa557f80",
+        "claimed_path": "src/core/storage/state.ts",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "**1. `src/core/storage/state.ts` \u2014 `updateApiConfiguration`, the outer `await Promise.all([updateGlobalStateBatch(...), updateSecretsBatch(...)])` (\u2248 new line 626, hunk `@@ -491,84 +535,95 @@`).**\nThe secrets batch is no longer gated on the config-write batch succeeding. Old code: a failure in any of the 47 sequential `updateGlobalState` calls aborted before a single `storeSecret` ran \u2014 zero secrets touched. New code: `Promise.all` rejects on the first failing write but does **not** cancel the siblings, so all 24 `storeSecret` calls (22 of which are deletions \u2014 every key not being configured is written as `undefined`) run to completion even after config writes have already failed. Concrete scenario: user switches providers while typing a model id; `apiProvider` (first batch key) hits a transient storage rejection; the global batch throws, but the secrets batch completes anyway \u2014 the still-selected provider's stored API key and all other providers' keys are deleted. Caller rethrows, UI shows failure, user retries per keystroke, each retry re-fires the deletions. Next extension activation: the selected provider has no credentials and the model config is partial \u2014 auth fails with no user action needed to cause it.",
+        "path": "src/core/storage/state.ts",
+        "start_line": 626,
+        "end_line": 626,
+        "observation_id": "7596c22da2b4a798",
+        "claimed_path": "src/core/storage/state.ts",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "**2. `src/core/storage/state.ts` \u2014 `updateGlobalStateBatch` `Promise.all` (line 37) and `updateSecretsBatch` `Promise.all` (line 48).**\nA single failing key makes the whole batch report failure while a *nondeterministic* subset of the other 47/24 writes has already committed. Old code: failure at write *k* left writes *k+1..47* provably untouched and produced a deterministic prefix \u2014 the error message accurately implied \"everything after k is still old\". New code: which keys landed is a race; the error gives no information about it. Concrete scenario: storage rejection on `openAiModelId` (key 10); writes 11-47 (region, base URLs, endpoints, `claudeCodePath`) have already been dispatched and commit anyway \u2014 the user's provider is switched in storage while the UI reports the save failed; on next start the hybrid config (new provider, empty model fields, stale region) is read by `getAllExtensionState` and applied.",
+        "path": "src/core/storage/state.ts",
+        "start_line": 37,
+        "end_line": 37,
+        "observation_id": "3b9ec6a3cb75a149",
+        "claimed_path": "src/core/storage/state.ts",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "**3. `src/core/storage/state.ts` \u2014 `key as GlobalStateKey` (line 37) and `key as SecretKey` (line 48) casts.**\nThe old code passed string literals against parameters typed as the `GlobalStateKey`/`SecretKey` unions, so a misspelled key was a compile error. The new code gets `key` from `Object.entries` (typed `string`) and force-casts it, so any typo in `batchedGlobalUpdates`/`batchedSecretUpdates` compiles silently and persists a garbage key that nothing ever reads, while the real key keeps its stale value. Concrete scenario: a typo such as `sapAiResouceGroup` inside the batch object \u2014 the update \"succeeds\", the UI even logs the perf total, but the actual `sapAiResourceGroup` is unchanged and the user's config reverts on next activation with no error anywhere. Also, `Record<string, any>` removes value-type checking that each old call had.",
+        "path": "src/core/storage/state.ts",
+        "start_line": 37,
+        "end_line": 37,
+        "observation_id": "b94d31b90eece28c",
+        "claimed_path": "src/core/storage/state.ts",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "**4. `src/core/storage/state.ts` (lines 33, 44, 79, 536) and `src/core/controller/models/updateApiConfigurationProto.ts` (line 18) \u2014 unguarded use of the global `performance` object.**\nThe extension host has `globalThis.performance` only on Node \u2265 16 (VS Code \u2265 1.64). The diff inserts `performance.now()` as the first statement of `updateApiConfiguration` and `getAllExtensionState` (no try/catch anywhere in those functions) and *before* the `try` in `updateApiConfigurationProto`, with no fallback. Concrete scenario: on any supported-but-older VS Code build (or any host embedding the extension host with Node < 16), every provider switch throws `ReferenceError: performance is not defined` before doing any work \u2014 the function rejects, the storage update never happens, and the only symptom is an unhandled promise rejection. The instrumentation that was meant to be additive is a hard dependency.",
+        "path": "src/core/storage/state.ts",
+        "start_line": 33,
+        "end_line": 33,
+        "observation_id": "02aee2931be8ef52",
+        "claimed_path": "src/core/storage/state.ts",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "**5. `src/core/controller/models/updateApiConfigurationProto.ts` (\u2248 line 52, catch block) \u2014 \"Failed to update API configuration after Xms\" is affirmatively wrong in the partial-commit case.**\nBecause of defects 1\u20132, the error log fires when most or even *all* of the writes may have committed (the global batch can fail while the secrets batch fully succeeds, or vice versa). The user (and any downstream retry logic) is told nothing was saved and re-submits, amplifying the deletions and re-racing 73 concurrent writes, while the UI in `useApiConfigurationHandlers` has already set `updatedConfig` to the new value in memory \u2014 so the webview shows one config, storage holds a different one, and the log claims failure.\n\nLower-severity / conditional items:",
+        "path": "src/core/controller/models/updateApiConfigurationProto.ts",
+        "start_line": 52,
+        "end_line": 52,
+        "observation_id": "e2b4ce4b828e9845",
+        "claimed_path": "src/core/controller/models/updateApiConfigurationProto.ts",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "**6. `webview-ui/src/components/settings/utils/useApiConfigurationHandlers.ts` (\u2248 lines 26, 34-41) \u2014 the failure contract weakened by the `.then` success log.**\nThe success log \"Provider switch completed in Xms\" fires on any resolution of the extension-side promise, but per defects 1\u20132 the resolution of that promise no longer means the configuration was durably persisted \u2014 just that no rejection was observed. Combined with the `.catch` message, the only signal the UI has (\"completed\" vs \"failed\") is guaranteed wrong in the exact failure modes this change introduces; there is no way to distinguish \"all 73 writes committed\" from \"only the secrets deleted\". Nothing in the new code detects `context.globalState.update` rejections per key, since `Promise.all` collapses them.",
+        "path": "webview-ui/src/components/settings/utils/useApiConfigurationHandlers.ts",
+        "start_line": 26,
+        "end_line": 26,
+        "observation_id": "f122a92ebe260846",
+        "claimed_path": "webview-ui/src/components/settings/utils/useApiConfigurationHandlers.ts",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "**7. `src/core/storage/state.ts` (lines 37, 48) \u2014 `Promise.all` over 73 concurrent storage operations offers no partial-state recovery or ordering guarantee for readers.**\n`getAllExtensionState` can be in flight while a batch is mid-write (e.g., webview load during a save). Old code: reader saw either \"old global + old secrets\" or \"new global prefix + old secrets\" \u2014 the config was always ahead of or equal to the secret writes. New code: reader can observe the fully-deleted secrets set with a partially-updated config (global batch still committing) \u2014 the \"provider selected in config but its key deleted\" state from defect 1 is observable transiently even without any failure, since both batches write concurrently.\n\nRemaining hunks I could not attach a defect to (verified, no reportable failure): the `.changeset` file; the `[PERF]` timing blocks in `getAllExtensionState` (pure instrumentation, no variable collisions); the `backdropFilter` additions in `HistoryPreview.tsx` (Chromium webview, cosmetic); and the key-by-key comparison of `batchedGlobalUpdates`/`batchedSecretUpdates` against the removed sequential calls (identical key sets, identical defaults such as `openAiHeaders || {}`).",
+        "path": "src/core/storage/state.ts",
+        "start_line": 37,
+        "end_line": 37,
+        "observation_id": "047cecbc411abaa4",
+        "claimed_path": "src/core/storage/state.ts",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "### 3. `src/core/storage/state.ts` \u2014 `updateApiConfiguration` loses atomicity guarantee\n\n**Lines 535-580:** The old code did 70+ sequential `await updateGlobalState` / `await storeSecret` calls. The new code batches into two `Promise.all` calls.\n\n**Defect:** The original code had a **de facto ordering guarantee**: globals written before secrets. If a secret write failed, all globals were already persisted. The new code runs `updateGlobalStateBatch` and `updateSecretsBatch` **in parallel** (`Promise.all([globalsBatch, secretsBatch])`). If secrets batch fails but globals batch succeeds, the config is now in an inconsistent state: globals reflect new provider, but secrets (API keys) are stale or partial.\n\n**Failure scenario:** User switches from Anthropic \u2192 OpenAI. `globalsBatch` writes `apiProvider: \"openai\"`, `apiModelId: \"gpt-4o\"`, etc. `secretsBatch` fails on `openAiApiKey` (network hiccup). Result: `apiProvider` = `\"openai\"` but `apiKey` still holds old Anthropic key. Next request uses OpenAI provider with Anthropic key \u2192 auth failure, confusing error.\n\n---",
+        "path": "src/core/storage/state.ts",
+        "start_line": 535,
+        "end_line": 535,
+        "observation_id": "0bedf28fa62aa7ed",
+        "claimed_path": "src/core/storage/state.ts",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "### 5. `src/core/controller/models/updateApiConfigurationProto.ts` \u2014 `performance.now()` not available in all contexts\n\n**Lines 17, 27, 33, 39, 45, 51, 57, 63:** Uses `performance.now()`.\n\n**Defect:** `performance` is a Web API. In VS Code extension host (Node.js), `performance` exists as `perf_hooks.performance` but **only if polyfilled or imported**. If this code runs in a context without `performance` (e.g., test environment, or VS Code version where it's not globally available), it throws `ReferenceError: performance is not defined`, crashing the provider switch.\n\n**Failure scenario:** Unit test imports `updateApiConfigurationProto` without JSDOM / `perf_hooks` polyfill. First line `const startTime = performance.now()` throws. Entire provider switch fails with unhandled exception.\n\n---",
+        "path": "src/core/controller/models/updateApiConfigurationProto.ts",
+        "start_line": 17,
+        "end_line": 17,
+        "observation_id": "10a12a5e63e345cc",
+        "claimed_path": "src/core/controller/models/updateApiConfigurationProto.ts",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "### 6. `src/core/controller/models/updateApiConfigurationProto.ts` \u2014 Error path logs `totalTime` but `startTime` may be uninitialized if error occurs before line 17\n\n**Lines 63-65:**\n```typescript\nconst totalTime = performance.now() - startTime\nconsole.error(`[PERF] Failed to update API configuration after ${totalTime}ms: ${error}`)\n```\n\n**Defect:** If `performance.now()` throws at line 17 (see defect #5), `startTime` is never assigned. The `catch` block then tries to read `startTime` \u2192 `ReferenceError: startTime is not defined`, masking the original error.\n\n**Failure scenario:** Same as #5 \u2014 `performance` unavailable. Original error: `ReferenceError: performance is not defined`. Actual logged error: `ReferenceError: startTime is not defined`. Debugging time wasted.\n\n---",
+        "path": "src/core/controller/models/updateApiConfigurationProto.ts",
+        "start_line": 17,
+        "end_line": 17,
+        "observation_id": "47a080ae41e3e9c1",
+        "claimed_path": "src/core/controller/models/updateApiConfigurationProto.ts",
+        "path_resolution": "exact",
+        "merged_from": [
+          "1343b0a475850c89"
+        ]
+      },
+      {
+        "content": "### 7. `webview-ui/src/components/history/HistoryPreview.tsx` \u2014 `backdropFilter: \"blur(8px)\"` breaks on unsupported browsers / CSS containment\n\n**Lines 68, 156:** Added `backdropFilter: \"blur(8px)\"` to inline styles.\n\n**Defect A:** `backdrop-filter` requires browser support (Chrome 76+, Firefox 103+, Safari 14+). In unsupported browsers, the style is ignored \u2014 not a functional defect, but the **intent** (frosted glass) silently fails.\n\n**Defect B (real):** `backdrop-filter` creates a **new stacking context** and **containing block** for `position: fixed`/`absolute` descendants. If any child element uses `position: fixed` (common for tooltips, dropdowns, modals), it will now be positioned relative to this card instead of the viewport \u2014 breaking layout.\n\n**Failure scenario:** History preview card contains a dropdown menu (e.g., \"more actions\" menu with `position: fixed`). Before: dropdown positioned at viewport coordinates. After: dropdown positioned relative to the card, appearing in wrong place or clipped by card's `overflow: hidden` (if any).\n\n---",
+        "path": "webview-ui/src/components/history/HistoryPreview.tsx",
+        "start_line": 68,
+        "end_line": 68,
+        "observation_id": "8891796b1f18c4d8",
+        "claimed_path": "webview-ui/src/components/history/HistoryPreview.tsx",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "### 8. `webview-ui/src/components/settings/utils/useApiConfigurationHandlers.ts` \u2014 `performance.now()` same as #5\n\n**Lines 20, 34, 41:** Uses `performance.now()` in webview (React) code.\n\n**Defect:** Webview runs in a **webview panel** (Chromium-based). `performance` **is** available there. However, if this hook is ever reused in a non-browser context (test, SSR, Node script), it crashes. More importantly: the `catch` block at line 39 references `startTime` which is only defined in the `try` path (line 20). If `handleFieldChange` throws **before** line 20 (e.g., `field` invalid, `apiConfiguration` undefined), `startTime` is uninitialized \u2192 `ReferenceError` in catch.\n\n**Failure scenario:** `handleFieldChange(\"invalidField\", value)` where `invalidField` not in `ApiConfiguration` keys. TypeScript catches this at compile time, but if `field` comes from untyped source (e.g., JSON parse), runtime error before line 20 \u2192 catch block crashes on `startTime`.\n\n---",
+        "path": "webview-ui/src/components/settings/utils/useApiConfigurationHandlers.ts",
+        "start_line": 20,
+        "end_line": 20,
+        "observation_id": "265dfb0955fbdc78",
+        "claimed_path": "webview-ui/src/components/settings/utils/useApiConfigurationHandlers.ts",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "### 9. `src/core/storage/state.ts` \u2014 `getAllExtensionState` performance logging adds observable side effects\n\n**Lines 79-350:** Multiple `console.log` with `performance.now()` added throughout.\n\n**Defect:** `console.log` is **synchronous and blocking** in Node.js / VS Code extension host. Adding 10+ log calls with string interpolation to a hot path (`getAllExtensionState` called on every webview load) **increases latency**, the opposite of the stated goal. The overhead of `console.log` (formatting, IPC to VS Code UI) can exceed the measured operation time.\n\n**Failure scenario:** User opens settings \u2192 `getAllExtensionState` called. 12 `console.log` calls execute. On slow machine, each log takes 2-5ms (IPC round-trip). Total added latency: 24-60ms. The \"optimization\" makes it slower.\n\n---",
+        "path": "src/core/storage/state.ts",
+        "start_line": 79,
+        "end_line": 79,
+        "observation_id": "0dd3dea19c9656c5",
+        "claimed_path": "src/core/storage/state.ts",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "### 11. `src/core/storage/state.ts` \u2014 `updateGlobalStateBatch` / `updateSecretsBatch` don't validate key types\n\n**Lines 31-37, 40-47:** Accept `Record<string, any>` and `Record<string, string | undefined>`.\n\n**Defect:** No validation that keys are valid `GlobalStateKey` / `SecretKey` enum values. Caller can pass arbitrary strings. Combined with defect #4, this allows storage pollution with no compile-time or runtime guard.\n\n**Failure scenario:** Migration code calls `updateGlobalStateBatch(context, { \"oldKey\": \"value\", \"newKey\": \"value\" })` where `oldKey` is deprecated. Both written. No warning, no error. Storage grows unbounded with dead keys.\n\n---",
+        "path": "src/core/storage/state.ts",
+        "start_line": 31,
+        "end_line": 31,
+        "observation_id": "1f9c1728ef502622",
+        "claimed_path": "src/core/storage/state.ts",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "### 12. `src/core/storage/state.ts` \u2014 `updateSecretsBatch` passes `undefined` values to `storeSecret`; `storeSecret` behavior on `undefined` unverified\n\n**Line 44:** `storeSecret(context, key as SecretKey, value)` where `value` can be `undefined`.\n\n**Defect:** The diff doesn't show `storeSecret` implementation. If `storeSecret` treats `undefined` as \"delete secret\", batching deletes with writes is dangerous (see #2). If it treats `undefined` as \"skip\", the batch silently no-ops for those keys \u2014 caller expects delete. If it throws on `undefined`, the whole batch fails.\n\n**Failure scenario:** Caller wants to rotate keys: `{ \"apiKey\": \"new-key\", \"oldKey\": undefined }`. If `storeSecret` throws on `undefined`, batch fails, `\"apiKey\"` not updated. If it deletes, `\"oldKey\"` deleted but `\"apiKey\"` not written (batch failed) \u2192 both keys gone.\n\n---",
+        "path": "src/core/storage/state.ts",
+        "start_line": 44,
+        "end_line": 44,
+        "observation_id": "a00c37b177c32720",
+        "claimed_path": "src/core/storage/state.ts",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "### 13. `webview-ui/src/components/settings/utils/useApiConfigurationHandlers.ts` \u2014 `.catch` handler uses `error` but TypeScript type is `unknown`\n\n**Line 40:** `console.error(..., error)`\n\n**Defect:** In TypeScript with `strict: true`, `catch (error)` binds `error: unknown`. Logging `error` directly works but `error.message` would fail. Not a runtime defect, but the preceding `.then()` callback (line 33) captures `totalTime` correctly \u2014 the `.catch` does too (line 39). However, if the promise rejects with a non-Error (e.g., string, null), `console.error` logs it but stack trace is lost.\n\n**Failure scenario:** Backend returns `reject(\"network error\")` (string). `.catch` logs `[PERF] Frontend: Failed... after 123ms: network error` \u2014 no stack. Harder to debug.\n\n---",
+        "path": "webview-ui/src/components/settings/utils/useApiConfigurationHandlers.ts",
+        "start_line": 40,
+        "end_line": 40,
+        "observation_id": "cf604a4b7b2f2416",
+        "claimed_path": "webview-ui/src/components/settings/utils/useApiConfigurationHandlers.ts",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "### 14. `src/core/storage/state.ts` \u2014 `getAllExtensionState` reads `planActSeparateModelsSetting` and writes it back in same function (line 335-337)\n\n**Lines 335-337:**\n```typescript\nawait updateGlobalState(context, \"planActSeparateModelsSetting\", planActSeparateModelsSetting)\n```\n\n**Defect:** This write is **not batched** \u2014 it uses the old sequential `updateGlobalState`. It runs **after** the batched reads but **before** the final return. If this write fails, the function throws, but all the batched reads already completed. The caller gets partial state (the return object is built after this write). Also: this write is not included in the new batch APIs \u2014 inconsistent.\n\n**Failure scenario:** `planActSeparateModelsSetting` needs migration. Write fails (quota). Function throws. Caller has no state at all (exception), even though 96 other keys were read successfully.\n\n---",
+        "path": "src/core/storage/state.ts",
+        "start_line": 335,
+        "end_line": 335,
+        "observation_id": "0be446a796d2de73",
+        "claimed_path": "src/core/storage/state.ts",
+        "path_resolution": "exact",
+        "merged_from": [
+          "a525c26b6fb3b08f"
+        ]
+      },
+      {
+        "content": "### 15. `src/core/storage/state.ts` \u2014 `getAllExtensionState` second batch includes `getGlobalState(context, \"previousModeSapAiCoreModelId\")` etc. but these keys may not exist in `GlobalStateKey` type\n\n**Lines 295-300:** Reads keys like `\"previousModeSapAiCoreModelId\"`, `\"sapAiCoreModelId\"`.\n\n**Defect:** If these keys are not in the `GlobalStateKey` type, the `getGlobalState` call (which takes `GlobalStateKey`) will fail at compile time. The diff shows them as string literals passed to `getGlobalState` which casts to `GlobalStateKey` at line 28 (`key as GlobalStateKey`). Same unsound cast issue as #4 \u2014 runtime pollution with invalid keys.\n\n---",
+        "path": "src/core/storage/state.ts",
+        "start_line": 295,
+        "end_line": 295,
+        "observation_id": "5a8d388e0e0c28d4",
+        "claimed_path": "src/core/storage/state.ts",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "### 16. `.changeset/purple-rings-hide.md` \u2014 Changeset title doesn't match content\n\n**Line 4:** `\"Optimizing provider switching performance with batched storage operations\"`\n\n**Defect:** The changeset describes \"batched storage operations\" but the diff also includes:\n- Performance logging in 3 files (controller, storage, frontend)\n- CSS `backdropFilter` in HistoryPreview (unrelated to provider switching)\n- Frontend performance logging in `useApiConfigurationHandlers`\n\nThis changeset bundles unrelated changes. If reverted, you lose the CSS change and logging together.\n\n**Failure scenario:** `backdropFilter` causes layout bug (defect #7). Team reverts changeset \u2192 loses all performance logging and batching, not just the CSS.\n\n---",
+        "path": ".changeset/purple-rings-hide.md",
+        "start_line": 4,
+        "end_line": 4,
+        "observation_id": "5fbfb6a4c50349af",
+        "claimed_path": ".changeset/purple-rings-hide.md",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "### 17. `src/core/storage/state.ts` \u2014 `updateApiConfiguration` destructures `apiConfiguration` but uses `apiConfiguration.requestTimeoutMs` directly (line 567)\n\n**Line 567:** `requestTimeoutMs: apiConfiguration.requestTimeoutMs`\n\n**Defect:** `requestTimeoutMs` is destructured at line 523 (`const { ... requestTimeoutMs, ... } = apiConfiguration`) but then **re-accessed** as `apiConfiguration.requestTimeoutMs` in the batch object. If the destructuring is incomplete (missing `requestTimeoutMs`), this works but is inconsistent. More critically: if `apiConfiguration` is missing `requestTimeoutMs` (optional?), `undefined` is written to global state \u2014 may break consumers expecting a number.\n\n**Failure scenario:** `apiConfiguration` from old storage lacks `requestTimeoutMs`. Batched write stores `undefined`. Later code `const timeout = config.requestTimeoutMs ?? 30000` works, but `config.requestTimeoutMs * 2` \u2192 `NaN`.\n\n---",
+        "path": "src/core/storage/state.ts",
+        "start_line": 567,
+        "end_line": 567,
+        "observation_id": "09a3214345325898",
+        "claimed_path": "src/core/storage/state.ts",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "### 18. `src/core/controller/models/updateApiConfigurationProto.ts` \u2014 `console.log` in hot path with template literals allocates strings even when logging disabled\n\n**Lines 18, 28, 34, 40, 46, 52, 58, 64:** All `console.log` with template literals.\n\n**Defect:** VS Code extension host respects `console.log` level? Unclear. But template literal evaluation is **eager** \u2014 `${conversionEnd - conversionStart}ms` computes and allocates string **before** `console.log` decides to drop it. In a hot path (provider switch), this adds GC pressure.\n\n**Failure scenario:** Rapid provider switching (user clicks through providers). Each switch allocates 8+ strings. GC pauses cause frame drops in webview.\n\n---",
+        "path": "src/core/controller/models/updateApiConfigurationProto.ts",
+        "start_line": 18,
+        "end_line": 18,
+        "observation_id": "bd946e07b585d726",
+        "claimed_path": "src/core/controller/models/updateApiConfigurationProto.ts",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "### 19. `webview-ui/src/components/history/HistoryPreview.tsx` \u2014 `backdropFilter` value is hardcoded, not theme-aware\n\n**Lines 68, 156:** `backdropFilter: \"blur(8px)\"`\n\n**Defect:** VS Code themes can have transparent/opaque panel backgrounds. A fixed `blur(8px)` assumes semi-transparent background. On opaque backgrounds, blur has no visible effect but still creates stacking context (defect #7B). On high-contrast themes, blur may reduce readability.\n\n**Failure scenario:** High contrast theme user sees blurred text behind card, reduced contrast, fails WCAG.\n\n---",
+        "path": "webview-ui/src/components/history/HistoryPreview.tsx",
+        "start_line": 68,
+        "end_line": 68,
+        "observation_id": "e67723a26569f31e",
+        "claimed_path": "webview-ui/src/components/history/HistoryPreview.tsx",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "### 20. `src/core/storage/state.ts` \u2014 `updateGlobalStateBatch` / `updateSecretsBatch` have no rollback / compensation logic\n\n**Lines 31-37, 40-47:** Fire-and-forget `Promise.all`.\n\n**Defect:** No transaction semantics. If batch partially succeeds, no way to roll back. The old sequential code at least allowed caller to catch error after each key and decide. Now it's all-or-nothing with no compensation.\n\n**Failure scenario:** 47 global keys + 23 secrets. Key #30 fails. Keys 1-29 persisted, 30-47 not. Secrets 1-23 attempted in parallel \u2014 some may have succeeded. State is now inconsistent. Caller has no API to \"revert batch\" or \"complete batch\".\n\n---",
+        "path": "src/core/storage/state.ts",
+        "start_line": 31,
+        "end_line": 31,
+        "observation_id": "64c1b43a617253ab",
+        "claimed_path": "src/core/storage/state.ts",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "### Summary of defects by severity:\n\n| # | File | Line | Severity | Defect |\n|---|------|------|----------|--------|\n| 3 | state.ts | 575 | **Critical** | Parallel globals+secrets batches break atomicity \u2014 inconsistent config state |\n| 1 | state.ts | 33 | **High** | `Promise.all` fail-fast loses per-key error semantics |\n| 2 | state.ts | 44 | **High** | Same + secret leakage risk |\n| 4 | state.ts | 33,44 | **High** | Unsound `as` casts allow storage pollution |\n| 5 | updateApiConfigurationProto.ts | 17 | **High** | `performance.now()` may not exist in extension host |\n| 6 | updateApiConfigurationProto.ts | 63 | **Medium** | `startTime` uninitialized in catch if line 17 throws |\n| 12 | state.ts | 44 | **Medium** | `storeSecret` behavior on `undefined` unknown |\n| 7 | HistoryPreview.tsx | 68,156 | **Medium** | `backdropFilter` creates stacking context, breaks positioned descendants |\n| 13 | useApiConfigurationHandlers.ts | 40 | **Low** | `catch (error: unknown)` loses stack on non-Error rejections |\n| 14 | state.ts | 335 | **Low** | Solo unbatched write in otherwise batched function |\n| 8 | useApiConfigurationHandlers.ts | 20 | **Low** | `startTime` uninitialized if error before line 20 |\n| 9 | state.ts | 79-350 | **Low** | `console.log` overhead may exceed measured time |\n| 10 | state.ts | 580 | **Low** | Misleading hardcoded perf claim in log |\n| 11 | state.ts | 31,40 | **Low** | No key validation in batch APIs |\n| 15 | state.ts | 295 | **Low** | String literal keys may not be valid `GlobalStateKey` |\n| 16 | purple-rings-hide.md | 4 | **Low** | Changeset bundles unrelated changes |\n| 17 | state.ts | 567 | **Low** | Inconsistent destructuring / potential `undefined` write |\n| 18 | updateApiConfigurationProto.ts | 18+ | **Low** | Eager template string allocation in hot path |\n| 19 | HistoryPreview.tsx | 68 | **Low** | Hardcoded blur not theme-aware |\n| 20 | state.ts | 31,40 | **Low** | No rollback/compensation for partial batch failure |\n\n---\n\n**Total: 20 distinct defects with concrete failure scenarios.**",
+        "path": "src/core/storage/state.ts",
+        "start_line": 17,
+        "end_line": 17,
+        "observation_id": "3b1b80808ac68848",
+        "claimed_path": "state.ts",
+        "path_resolution": "basename",
+        "merged_from": [
+          "f7d26c970d1e8555"
+        ]
+      }
+    ]
+  },
+  "rundir": "/home/user/.cache/llm-panel/runs/aacr-up-maf0xfbs-9c95512c7d35/20260829-115248-3720239",
+  "extractor": "3",
+  "unlocated": [
+    {
+      "content": "### 1. `src/core/storage/state.ts` \u2014 Batched updates lose per-key error semantics\n\n**Lines 31-37 (new `updateGlobalStateBatch`):**\n```typescript\nawait Promise.all(Object.entries(updates).map(([key, value]) => \n  context.globalState.update(key as GlobalStateKey, value)))\n```\n\n**Defect:** `Promise.all` fails fast \u2014 if **any** key fails, **all** prior successful writes remain committed but the caller",
+      "observation_id": "d07647a9cd6b10fe",
+      "claimed_path": "src/core/storage/state.ts",
+      "path_resolution": "exact"
+    },
+    {
+      "content": "### 2. `src/core/storage/state.ts` \u2014 Batched secrets same defect + secret leakage risk\n\n**Lines 40-47 (new `updateSecretsBatch`):**\n```typescript\nawait Promise.all(Object.entries(updates).map(([key, value]) => \n  storeSecret(context, key as SecretKey, value)))\n```\n\n**Defect A:** Same `Promise.all` fail-fast problem as above \u2014 partial secret writes with no visibility into which succeeded.\n\n**Defect",
+      "observation_id": "9fe1cd1060393472",
+      "claimed_path": "src/core/storage/state.ts",
+      "path_resolution": "exact"
+    },
+    {
+      "content": "### 4. `src/core/storage/state.ts` \u2014 Type safety: `key as GlobalStateKey` and `key as SecretKey` are unsound\n\n**Lines 33, 44:** \n```typescript\ncontext.globalState.update(key as GlobalStateKey, value)\nstoreSecret(context, key as SecretKey, value)\n```\n\n**Defect:** `updates` is `Record<string, any>` / `Record<string, string | undefined>`. The `as` cast tells TS \"trust me\", but at runtime `key` can be",
+      "observation_id": "938c1a0644f0acdf",
+      "claimed_path": "src/core/storage/state.ts",
+      "path_resolution": "exact"
+    },
+    {
+      "content": "### 10. `src/core/storage/state.ts` \u2014 `updateApiConfiguration` logs misleading \"was ~535ms, now should be <50ms\" claim\n\n**Line 580:**\n```typescript\nconsole.log(`[PERF] OPTIMIZED updateApiConfiguration took: ${totalTime}ms (was ~535ms, now should be <50ms)`)\n```\n\n**Defect:** Hardcoded performance claim in production code. If the optimization doesn't achieve <50ms (e.g., on large configs, slow disk,",
+      "observation_id": "eea84983067c2d48",
+      "claimed_path": "src/core/storage/state.ts",
+      "path_resolution": "exact"
+    }
+  ]
+}

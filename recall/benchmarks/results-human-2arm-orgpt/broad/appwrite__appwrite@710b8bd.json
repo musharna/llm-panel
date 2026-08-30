@@ -1,0 +1,200 @@
+{
+  "review": {
+    "comments": [
+      {
+        "content": "1. **High \u2014 Defect / routing-security regression** \u2014 `app/controllers/general.php:812`; `src/Appwrite/Platform/Modules/Proxy/Http/Rules/API/Create.php:79`; `Function/Create.php:84`; `Redirect/Create.php:87`; `Site/Create.php:84`; `tests/e2e/Services/Projects/ProjectsCustomServerTest.php:86`  \n   `_APP_CONSOLE_DOMAIN` replaces `_APP_DOMAIN` rather than augmenting the set of protected platform domains. When both are configured differently, the legacy/API domain is treated as an external domain and is no longer rejected when creating proxy rules. A custom rule can therefore collide with or shadow traffic for `_APP_DOMAIN`. Both nonempty domains should remain reserved and be recognized as platform hosts; the test should cover the dual-domain case.",
+        "path": "app/controllers/general.php",
+        "start_line": 812,
+        "end_line": 812,
+        "observation_id": "02e5384d2517f77e",
+        "claimed_path": "app/controllers/general.php",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "2. **Low \u2014 Refactor / future-bug risk** \u2014 `app/config/templates/site.php:10`; `app/controllers/general.php:451`; `src/Appwrite/Platform/Modules/Proxy/Http/Rules/API/Create.php:79`; `src/Executor/Executor.php:203`  \n   Domain precedence is duplicated across URL generation, routing decisions, security deny-lists, and execution headers. The next normalization or migration change can easily leave these security-sensitive consumers inconsistent. Centralize canonical-domain resolution and separately expose the complete set of reserved platform domains.\n\nVerification note: I checked the supplied hunks; the workspace contained no repository files, so surrounding implementations and tests were unavailable.",
+        "path": "app/config/templates/site.php",
+        "start_line": 10,
+        "end_line": 10,
+        "observation_id": "641c395075e73d62",
+        "claimed_path": "app/config/templates/site.php",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "**1. `app/controllers/general.php` \u2014 inconsistent fallback (missing default) at line 262.**\nAt hunk `@@ -262,7 +262,7 @@`:\n```php\n$url = (System::getEnv('_APP_OPTIONS_FORCE_HTTPS') == 'disabled' ? 'http' : 'https') . \"://\" . System::getEnv('_APP_CONSOLE_DOMAIN', System::getEnv('_APP_DOMAIN', ''));\n```\nThis one has the fallback with the empty-string default, so it's consistent. Let me recheck each site.\n\nActually, all the changed lines consistently use `System::getEnv('_APP_CONSOLE_DOMAIN', System::getEnv('_APP_DOMAIN', ''))` or similar. Good \u2014 the diff seems internally consistent on the fallback chain.\n\nBut there's a real subtlety worth noting:",
+        "path": "app/controllers/general.php",
+        "start_line": 262,
+        "end_line": 262,
+        "observation_id": "7a61144877f1df5b",
+        "claimed_path": "app/controllers/general.php",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "**`app/controllers/general.php` line 809 \u2014 routing comparison semantics.**\n```php\n$host = $request->getHostname() ?? '';\n$mainDomain = System::getEnv('_APP_CONSOLE_DOMAIN', System::getEnv('_APP_DOMAIN', ''));\n// Only run Router when external domain\nif ($host !== $mainDomain || !empty($previewHostname)) {\n```\nThis is a behavioral concern. Previously `_APP_DOMAIN` was the domain used to decide whether the request host matches the \"main domain\" (i.e., the console). Now it's `_APP_CONSOLE_DOMAIN`. Note this is a *different* semantic role than the others \u2014 this one is a *comparison against a request host* to decide whether to route to the console or to the external domain router. There is a subtle issue: `_APP_CONSOLE_DOMAIN` falling back to `_APP_DOMAIN` \u2014 but if a deploy sets `_APP_CONSOLE_DOMAIN` to a *different* value than `_APP_DOMAIN`, then the console will be served at `_APP_CONSOLE_DOMAIN`, and the routing at line 809 must be in sync. This coupling holds as long as the fallback is uniform, which it is. OK.",
+        "path": "app/controllers/general.php",
+        "start_line": 809,
+        "end_line": 809,
+        "observation_id": "8ca1d01a5aee71e8",
+        "claimed_path": "app/controllers/general.php",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "**Most severe real concern \u2014 the `Comment.php` file.**\n\nLook at the hunk `@@ -87,7 +87,7 @@` in `src/Appwrite/Vcs/Comment.php`. The change is:\n```php\n-$hostname = System::getEnv('_APP_CONSOLE_DOMAIN', System::getEnv('_APP_DOMAIN'));\n+$hostname = System::getEnv('_APP_CONSOLE_DOMAIN', System::getEnv('_APP_DOMAIN', ''));\n```\nWait \u2014 this file's *pre-change* line ALREADY used `_APP_CONSOLE_DOMAIN`. That's a pre-existing inconsistency that this diff fixes only partially (adds the `''` default). Both hunks in this file are about adding the `''` default to the already-`_APP_CONSOLE_DOMAIN` code. So the `Comment.php` was already using the new var before this PR. This suggests potential incomplete migration in the codebase \u2014 but within this diff it's just adding the default. Not a defect in the diff per se.\n\nLet me think about the most severe actual defect.\n\n**The `''` default in the inner call + outer getEnv.**\n\n`System::getEnv('_APP_CONSOLE_DOMAIN', System::getEnv('_APP_DOMAIN', ''))`. If `_APP_CONSOLE_DOMAIN` is set to an empty string... well `getEnv` with a default returns the default when unset, not when empty. So empty-string `_APP_CONSOLE_DOMAIN` would return empty string, not fall through to `_APP_DOMAIN`. That's a potential footgun but pre-existing pattern.",
+        "path": "src/Appwrite/Vcs/Comment.php",
+        "start_line": 87,
+        "end_line": 87,
+        "observation_id": "4fc5636f600ac40f",
+        "claimed_path": "Comment.php",
+        "path_resolution": "basename",
+        "merged_from": [
+          "1d02ae45723ded43"
+        ]
+      },
+      {
+        "content": "6. There appear to be **no tests added** for the new `_APP_CONSOLE_DOMAIN` fallback behavior \u2014 only a test *assertion* updated in `ProjectsCustomServerTest.php` to read the new var.\n\nLet me finalize. The working directory is empty (no actual repo files), so I could not check for missed call sites or verify `System::getEnv` semantics in source. I'll note that.\n\nLet me write the review with file:line from the hunk headers.\n\nFor line numbers: the hunk headers give context. For `general.php`:\n- line 76 (hunk `@@ -76`): the error.phtml URL.\n- line 262 (hunk `@@ -262`): the unauthorized redirect URL.\n- line 448 (hunk `@@ -448`): endpoint hostname.\n- line 809 (hunk `@@ -809`): routing comparison.\n- line 858 (hunk `@@ -858`): envDomain.\n\nFor proxy rules, all the `$mainDomain` lines: API Create.php line 76\u219279 actually the hunk is `@@ -76`, the changed line is within. The changed line for API/Create.php is at line 79 (76+3). Let me be careful: the hunk `@@ -76,7 +76,7 @@` shows 7 lines starting at 76. The context:\n```\n76:       APP_HOSTNAME_INTERNAL\n77:   ];\n78:\n79:   $mainDomain = System::getEnv('_APP_CONSOLE_DOMAIN', ...);   <- changed line\n80:   $deniedDomains[] = $mainDomain;\n```\nSo changed line is 79 for API/Create.php. Similarly Function/Create.php hunk `@@ -81,7`, changed line 84. Redirect/Create.php hunk `@@ -84,7`, changed line 87. Site/Create.php hunk `@@ -81`, changed line 84.\n\nGiven the empty-string `''` fallback for the denied-domains read at line 79: `System::getEnv('_APP_CONSOLE_DOMAIN', System::getEnv('_APP_DOMAIN', ''))` \u2014 returns `''` if unset, and `$deniedDomains[] = ''` appends empty string. Previously same behavior (empty `_APP_DOMAIN` \u2192 `''` appended). Same.\n\nLet me write it up.I could not verify against the actual repository \u2014 the working directory `/tmp/aacr-up-d3yy03fe` is empty (no source files on disk), so I can only review the diff as presented. Any claim that requires checking outside this diff (e.g., \"are there `_APP_DOMAIN` read-sites this PR missed?\") is flagged as unverified rather than answered. That limitation noted, here are the items I would raise, most severe first.",
+        "path": "tests/e2e/Services/Projects/ProjectsCustomServerTest.php",
+        "start_line": 76,
+        "end_line": 76,
+        "observation_id": "3c6498e9f659b36d",
+        "claimed_path": "ProjectsCustomServerTest.php",
+        "path_resolution": "basename",
+        "merged_from": []
+      },
+      {
+        "content": "## 1. Security-behavior regression: proxy-rule \"denied domains\" no longer protects `_APP_DOMAIN` once `_APP_CONSOLE_DOMAIN` is set \u2014 Defect (security, behavior change)\n\n**Files:** `src/Appwrite/Platform/Modules/Proxy/Http/Rules/API/Create.php:79`, `.../Function/Create.php:84`, `.../Redirect/Create.php:87`, `.../Site/Create.php:84`\n\n```php\n$mainDomain = System::getEnv('_APP_CONSOLE_DOMAIN', System::getEnv('_APP_DOMAIN', ''));\n$deniedDomains[] = $mainDomain;\n```\n\nThe fallback silently narrows the guarded set. Before this PR, `_APP_DOMAIN` was the only domain denied from being claimed by a user proxy rule. Now, when a deployment sets `_APP_CONSOLE_DOMAIN` to a value *different* from `_APP_DOMAIN` (the very scenario this var exists for), the fallback means **only** `_APP_CONSOLE_DOMAIN` lands in `$deniedDomains[]`, and the old `_APP_DOMAIN` is no longer denied.\n\n**Concrete failure:** Operator migrates the console to `admin.example.com` (`_APP_CONSOLE_DOMAIN`) while `_APP_DOMAIN=example.com` stays as the general API domain. The fallback resolves to `admin.example.com`, so `example.com` is dropped from `$deniedDomains`. A user now creates a proxy/Site rule for `example.com` (or a subdomain collision) that previously would have been rejected, hijacking the domain / intercepting traffic that the operator believed was protected. This is exactly the class of thing `$deniedDomains` exists to prevent (domain hijack / rule shadowing the primary domain), and the diff changes its protection surface without acknowledgment.\n\nThe same silent-narrowing applies to the routing/security-main-domain logic in `app/controllers/general.php` (`$mainDomain` comparison at line 809, and `$envDomain` for cookie/protected-domain handling at line 858): when the two vars diverge, the request-host comparison and the protected-domain set now track `_APP_CONSOLE_DOMAIN` only, and the `_APP_DOMAIN`-based guard is lost. If any other consumer still treats `_APP_DOMAIN` as authoritative (likely \u2014 see item 4), those two now disagree about what the \"main\" domain is.",
+        "path": "src/Appwrite/Platform/Modules/Proxy/Http/Rules/API/Create.php",
+        "start_line": 79,
+        "end_line": 79,
+        "observation_id": "012c6b005d79d25f",
+        "claimed_path": "src/Appwrite/Platform/Modules/Proxy/Http/Rules/API/Create.php",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "## 2. Fallback never engages for empty (not unset) `_APP_CONSOLE_DOMAIN` \u2014 Defect (footgun, likely a real misconfiguration path)\n\n**Files:** every changed line, e.g. `app/config/templates/site.php:10`, `app/controllers/general.php:448`, `src/Executor/Executor.php:203`, `src/Appwrite/Platform/Workers/Functions.php:487`\n\n`System::getEnv('_APP_CONSOLE_DOMAIN', System::getEnv('_APP_DOMAIN', ''))` returns the fallback only when `_APP_CONSOLE_DOMAIN` is *unset*. If an operator sets `_APP_CONSOLE_DOMAIN=\"\"` (empty, which many compose/dotenv setups emit for \"not configured\"), the inner default is ignored, the outer call yields `''`, and `$hostname`/`$endpoint`/`$envDomain`/`$mainDomain` become empty. The result: `https:///v1` endpoints, `$mainDomain === ''` broken comparisons, and empty `$deniedDomains[]` entries. The double-`getEnv` nesting reads as \"empty falls through to `_APP_DOMAIN`\", but it does not. A normalizing `System::getEnv('_APP_CONSOLE_DOMAIN') ?: System::getEnv('_APP_DOMAIN', '')` would match the apparent intent. Since this decision is repeated ~16 times, the empty-string hazard is multiplied.",
+        "path": "app/config/templates/site.php",
+        "start_line": 10,
+        "end_line": 10,
+        "observation_id": "a8af902e47d24716",
+        "claimed_path": "app/config/templates/site.php",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "## 3. Duplicated non-trivial expression \u2014 Maintainability / state duplication\n\n**File:** `app/controllers/api/console.php:46-47`\n\n```php\n$validator = new Domain(System::getEnv('_APP_CONSOLE_DOMAIN', System::getEnv('_APP_DOMAIN', '')));\n$isDomainValid = !empty(System::getEnv('_APP_CONSOLE_DOMAIN', System::getEnv('_APP_DOMAIN', ''))) && ...\n```\n\nThe same three-level `getEnv` expression is evaluated twice; they must stay textually identical or the validator and the emptiness guard drift apart. Extract once into a `$consoleDomain` variable, then build both the `Domain` validator and the `!empty()` check from it. (Right now they happen to match, so this is \"not yet wrong\" \u2014 but it is exactly the duplicated-state shape that produces a future bug when someone edits one occurrence.)\n\n## 4. Incomplete/uncertain migration \u2014 the `Comment.php` hunk reveals a pre-existing inconsistency the PR does not resolve \u2014 Abstraction/consistency\n\n**File:** `src/Appwrite/Vcs/Comment.php:90,204`\n\nThe pre-change lines in both hunks *already* referenced `System::getEnv('_APP_CONSOLE_DOMAIN', ...)` \u2014 this PR only adds the `''` default there. So the codebase was already reading `_APP_CONSOLE_DOMAIN` in `Vcs/Comment.php` while the rest of the diff is *introducing* it. That strongly implies other `_APP_DOMAIN` read-sites exist that this PR did not touch, which will now disagree with these call sites once `_APP_CONSOLE_DOMAIN` is configured (per item 1). I could not confirm the full extent because the source tree is absent from this directory \u2014 but at a minimum, the PR should be audited for every remaining `getEnv('_APP_DOMAIN'` occurrence and the console-vs-app-domain intent made explicit, rather than leaving a half-migrated state where some subsystems answer to the new var and others to the old.",
+        "path": "app/controllers/api/console.php",
+        "start_line": 46,
+        "end_line": 46,
+        "observation_id": "f52181d5384287ba",
+        "claimed_path": "app/controllers/api/console.php",
+        "path_resolution": "exact",
+        "merged_from": [
+          "b31b2aff28ef9562"
+        ]
+      },
+      {
+        "content": "## 5. No test coverage for the new variable / fallback semantics \u2014 Missing validation\n\n**File:** `tests/e2e/Services/Projects/ProjectsCustomServerTest.php:86`\n\nThe only test change is updating an *assertion value* to use `_APP_CONSOLE_DOMAIN`. There is no test that (a) `_APP_CONSOLE_DOMAIN` unset falls back to `_APP_DOMAIN`, (b) both set to different values \u2014 which is the entire point of the PR \u2014 yields the console domain in `$deniedDomains`/routing while `_APP_DOMAIN` behaves as the app domain, or (c) the empty-`_APP_CONSOLE_DOMAIN` case from item 2. Given the security-sensitive narrowing in item 1, the divergent-values case specifically should be tested.\n\n---\n\nSummary of kinds: item 1 is a security-relevant behavior regression (defect), item 2 is a fallback footgun (defect on the misconfig path), item 3 is dead-weight duplication (maintainability), item 4 is an unresolved consistency/abstraction risk, item 5 is missing coverage. The most severe thing a careful maintainer must not wave through is item 1 \u2014 the diff changes what domains are protected against user proxy-rule claims, and that narrowing is not called out anywhere in the change.\n\nLine numbers are taken from the diff hunk headers and the visible context lines; I could not re-derive them from source because the checkout is empty.",
+        "path": "tests/e2e/Services/Projects/ProjectsCustomServerTest.php",
+        "start_line": 86,
+        "end_line": 86,
+        "observation_id": "4011b21643a1ef74",
+        "claimed_path": "tests/e2e/Services/Projects/ProjectsCustomServerTest.php",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "**app/controllers/api/console.php:43-48** \u2014 **Logic defect risk**  \nThe `Domain` validator is constructed with the fallback value, but `$isDomainValid` re-fetches the env var independently. If `_APP_CONSOLE_DOMAIN` is set to an empty string (explicitly), `getEnv` returns `''` (not the fallback), so the validator receives `''` while the `!empty()` check also sees `''` \u2014 consistent but likely not intended. More critically, if `_APP_CONSOLE_DOMAIN` is set to an invalid domain, validation fails as expected. No crash, but the dual-fetch is fragile; store the resolved value once.",
+        "path": "app/controllers/api/console.php",
+        "start_line": 43,
+        "end_line": 43,
+        "observation_id": "00dbea1f58a88868",
+        "claimed_path": "app/controllers/api/console.php",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "**src/Appwrite/Platform/Modules/Proxy/Http/Rules/API/Create.php:76** (and **Function/Create.php:81**, **Redirect/Create.php:84**, **Site/Create.php:81**) \u2014 **Potential security/logic bug**  \n`$mainDomain` now resolves to `_APP_CONSOLE_DOMAIN` (falling back to `_APP_DOMAIN`), then gets added to `$deniedDomains`. The variable name `$mainDomain` implies it should be the primary application domain (`_APP_DOMAIN`), not the console domain. If these differ, the wrong domain is denied \u2014 either the console domain is blocked when it shouldn't be, or the main domain escapes denial. This changes access control behavior silently.",
+        "path": "src/Appwrite/Platform/Modules/Proxy/Http/Rules/API/Create.php",
+        "start_line": 76,
+        "end_line": 76,
+        "observation_id": "4f67dd268541ef46",
+        "claimed_path": "src/Appwrite/Platform/Modules/Proxy/Http/Rules/API/Create.php",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "**app/config/templates/site.php:7** \u2014 **Behavior change**  \nOriginal: `$hostname = System::getEnv('_APP_DOMAIN');` (returns `null` if unset).  \nNew: `$hostname = System::getEnv('_APP_CONSOLE_DOMAIN', System::getEnv('_APP_DOMAIN', ''));` (returns `''` if both unset).  \nDownstream code uses `$hostname` in string concatenation (`'://' . $hostname`). `null` vs `''` both produce `'://'` but `''` is safer. However, the development override below (`$hostname = 'localhost'`) makes this moot in dev. In prod with neither var set, you now get `https:///v1` instead of `https:///v1` \u2014 same broken result, but the explicit `''` default is clearer.",
+        "path": "app/config/templates/site.php",
+        "start_line": 7,
+        "end_line": 7,
+        "observation_id": "b466c36bd69f0bb0",
+        "claimed_path": "app/config/templates/site.php",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "**src/Appwrite/Vcs/Comment.php:87,201** \u2014 **Inconsistency fixed (good)**  \nOriginal already used the two-tier fallback but without the final `''` default: `System::getEnv('_APP_CONSOLE_DOMAIN', System::getEnv('_APP_DOMAIN'))`. The patch adds the explicit `''`, eliminating a possible `null`. This is a correction, not a defect.",
+        "path": "src/Appwrite/Vcs/Comment.php",
+        "start_line": 87,
+        "end_line": 87,
+        "observation_id": "7736d68833231140",
+        "claimed_path": "src/Appwrite/Vcs/Comment.php",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "**app/controllers/general.php:809,858** \u2014 **Routing logic shift**  \n`$mainDomain` (now console domain) compared against request hostname to decide whether to run the router. If `_APP_CONSOLE_DOMAIN` \u2260 `_APP_DOMAIN`, requests to the old main domain will now trigger the router (since `$host !== $mainDomain`). This may be intentional (separating console from app), but it's a behavioral change not obvious from the diff.",
+        "path": "app/controllers/general.php",
+        "start_line": 809,
+        "end_line": 809,
+        "observation_id": "a32b290cbdf807c9",
+        "claimed_path": "app/controllers/general.php",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "**src/Executor/Executor.php:200** \u2014 **Internal call header**  \nThe `Host` header for internal execution requests now uses the console domain. If internal services expect the main domain or an internal hostname, this could break auth/routing. Needs verification against executor expectations.\n\n**Overall pattern** \u2014 **Missing validation**  \nNowhere is `_APP_CONSOLE_DOMAIN` validated for format (hostname/FQDN) when set. The `Domain` validator in `console.php` only covers that one code path. Other uses (proxy rules, executor, endpoint construction) trust the value blindly. A malformed value (e.g., containing path, port, scheme) would produce broken URLs/headers.\n\n**tests/e2e/Services/Projects/ProjectsCustomServerTest.php:83** \u2014 **Test updated correctly** (no issue)",
+        "path": "src/Executor/Executor.php",
+        "start_line": 200,
+        "end_line": 200,
+        "observation_id": "d83117c4152ca42d",
+        "claimed_path": "src/Executor/Executor.php",
+        "path_resolution": "exact",
+        "merged_from": [
+          "fe02b35da31f0c72"
+        ]
+      }
+    ]
+  },
+  "rundir": "/home/user/.cache/llm-panel/runs/aacr-up-d3yy03fe-d50e2aa1c317/20260830-145518-180155",
+  "extractor": "3",
+  "unlocated": [
+    {
+      "content": "**The genuinely important issue: consistency between the `Domain` validator and the `$isDomainValid` check (console.php).**\n\nAt `console.php`:\n```php\n$validator = new Domain(System::getEnv('_APP_CONSOLE_DOMAIN', System::getEnv('_APP_DOMAIN', '')));\n$isDomainValid = !empty(System::getEnv('_APP_CONSOLE_DOMAIN', System::getEnv('_APP_DOMAIN', ''))) && $validator->isKnown() && !$validator->isTest();\n``",
+      "observation_id": "f0738eff300eea64",
+      "claimed_path": "console.php",
+      "path_resolution": "basename"
+    },
+    {
+      "content": "**The key real defect I want to highlight: `site.php` and `error.phtml` override behavior.**\n\nThese are for building URLs. If `_APP_CONSOLE_DOMAIN` is unset, it correctly falls back to `_APP_DOMAIN`. Fine.\n\n**Now the biggest one \u2014 the `mainDomain` in proxy rules and routing is used for *denial* of domains.**\n\nIn `Proxy/Http/Rules/*/Create.php`:\n```php\n$mainDomain = System::getEnv('_APP_CONSOLE_DOM",
+      "observation_id": "54e8174022fe0427",
+      "claimed_path": "site.php",
+      "path_resolution": "basename"
+    },
+    {
+      "content": "3. **`console.php` duplicated expression** \u2014 minor maintainability.\n\n4. **Empty-string `_APP_CONSOLE_DOMAIN` doesn't trigger fallback** \u2014 footgun (pre-existing pattern).",
+      "observation_id": "d2370ee52c9f6495",
+      "claimed_path": "console.php",
+      "path_resolution": "basename"
+    },
+    {
+      "content": "5. **Comment.php pre-existing `_APP_CONSOLE_DOMAIN` usage implies incomplete migration elsewhere** \u2014 worth checking other `_APP_DOMAIN` reads not updated by this diff.",
+      "observation_id": "deb893a50a84bcac",
+      "claimed_path": "Comment.php",
+      "path_resolution": "basename"
+    }
+  ]
+}
