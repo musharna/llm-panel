@@ -227,9 +227,9 @@ nothing.
   human-authored references)"; a pre-registered replication on 35 fresh PRs (150
   human-authored references) found broad 12.0% vs volume 10.7%, one-sided p = 0.40 — the
   claim is withdrawn. A transport-controlled re-run (every panel through one harness) found
-  8.7% vs 15.3%: the claim's one foothold, a subset that had run through the codex CLI, was
-  a harness effect — the same `gpt-5.6-sol` reviews differently behind codex's tool loop
-  than behind opencode's. See `recall/benchmarks/results-volume-3judge/README.md`,
+  8.7% vs 15.3%, and the claim's one foothold — a 13-PR subset that had run through the
+  codex CLI — did not survive a re-run; a per-judge cut showed a same-transport re-run of
+  another judge moved as much, so the subset was noise, not a harness effect. See `recall/benchmarks/results-volume-3judge/README.md`,
   `recall/benchmarks/results-human-2arm/README.md` and
   `recall/benchmarks/results-human-2arm-orgpt/README.md`.
   An earlier version of this bullet split recall by a DEFECT/IMPROVEMENT classifier I
