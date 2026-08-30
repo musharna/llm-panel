@@ -7,8 +7,10 @@ way: `broad` 13/150 (8.7%) vs `volume` 23/150 (15.3%), discordant 5 / 15, one-si
 not supported for the second time. H2, the pre-declared discriminator, lands on the
 "advantage vanishes" branch: on the 13 PRs that both arms had run on the codex CLI, the
 codex panels gave broad 10 vs volume 4 (7 / 1); the same 13 PRs on `or-gpt` give 5 vs 10
-(3 / 8, one-sided p = 0.97). **Same model, different harness, different reviewer** — the
-original per-slot split was a transport effect, not a property of the richer PRs.
+(3 / 8, one-sided p = 0.97). The per-judge cut below then shows the swing is **not** located
+in the gpt slot: a same-transport re-run of nemotron swung by the same amount. The
+original per-slot split was not a property of the richer PRs; whether it was the harness or
+run-to-run variance the data cannot separate, and the noise-floor control points to variance.
 
 Protocol: `PREREG.md` (committed at e3aa2cb before any panel ran). Sample, arms, extractor,
 evaluator and retry policy as in `../results-human-2arm/PREREG.md`; the 43 panels already on
@@ -72,13 +74,35 @@ evaluator's stochasticity is not what moved the 13 re-paneled PRs (10, 4 → 5, 
 - The seed-42 claim ("broad reaches human-authored references volume does not") is now
   0-for-2 on fresh samples and its one surviving foothold — the codex-CLI subset — was a
   harness artefact. Withdrawn without residue.
-- What the harness changes is the review, not the model's knowledge: the same
-  `gpt-5.6-sol` behind codex's tool loop favours the `broad` prompt; behind opencode's it
-  favours `volume`. A benchmark number for a "model" is a number for a model-in-a-harness.
-  Any future arm holds the transport fixed, as this run did.
-- Not tested here, and the natural next cut: per-judge recall (extract each panel with
-  `aacr-upstream reextract --judges <one>`) would say whether the swing is in the gpt slot
-  itself or in how the panel merge weighs it against big-pickle and nemotron.
+- "Same model, different harness, different reviewer" was this README's first reading of
+  H2 and is **withdrawn** by the per-judge cut below: H2 as pre-declared could not tell a
+  transport effect from a re-run, because it had no same-transport re-run control. The cut
+  supplied one, and it moved as much as the gpt slot. Any future H2 of this shape carries
+  its own re-run arm.
+- What survives: on 81 human references with per-judge counts of 0–7, a single 13-PR
+  subgroup cannot carry a direction claim in either transport. The pilot's claim is
+  0-for-2 on fresh samples, and the subset that seemed to keep it alive is within noise.
+
+## Per-judge cut (declared before scoring; `perjudge/DECLARED.md`)
+
+Each of the 13 PRs' panels re-extracted with one judge's review only
+(`aacr-upstream reextract --judges <one>`) and scored by the same evaluator; human-reference
+matches out of 81, all-reference out of 254 (`perjudge/table.txt`, scores in
+`../scores/perjudge/`). The two free slots were re-run on the same transport, so their
+change is the noise floor for a same-judge re-run.
+
+| slot | codex-run broad / volume | or-gpt-run broad / volume | broad−volume: codex-run → or-gpt-run |
+|---|---|---|---|
+| gpt (codex → or-gpt) | 7 / 3 | 3 / 5 | +4 → −2 (swing −6) |
+| nemotron (same transport) | 4 / 0 | 2 / 4 | +4 → −2 (swing −6) |
+| big-pickle (same transport) | 2 / 2 | 1 / 3 | 0 → −2 (swing −2) |
+
+The gpt slot's swing equals nemotron's, whose transport did not change. On all 254
+references the picture is the same: gpt 15 / 31 → 13 / 24, nemotron 9 / 10 → 9 / 24,
+big-pickle 19 / 14 → 16 / 17 — the or-gpt run's pooled tilt toward volume is mostly
+nemotron's volume arm (364 → 507 findings), not the swapped slot. Read: run-to-run variance
+of a three-judge panel on 13 PRs is at least as large as the effect the transport swap was
+credited with. The transport reading is not falsified, but it is not supported either.
 
 ## Run ledger
 
