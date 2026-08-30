@@ -1,7 +1,9 @@
 #!/usr/bin/env python3
 """McNemar (exact, discordant pairs) between two arms judged on the SAME references.
-usage: mcnemar2.py <scores-dir> <armA> <armB>   e.g.  mcnemar2.py scores clean checkout
-Compares armA-pos vs armB-pos and armA-neg vs armB-neg, by ALL / defect-y / maint / AI / human."""
+usage: aacr-mcnemar <scores-dir> <armA> <armB> [<ids-file>]
+Compares armA-pos vs armB-pos and armA-neg vs armB-neg, by ALL / defect-y / maint / AI / human.
+An optional ids-file (one instance_id per line) restricts every cut to those instances --
+the pre-declared H2 subgroup of results-human-2arm-orgpt/PREREG.md."""
 
 import signal
 import sys
@@ -19,6 +21,7 @@ from scipy.stats import binomtest, fisher_exact
 
 S = pathlib.Path(sys.argv[1])
 A, B = sys.argv[2], sys.argv[3]
+IDS = set(pathlib.Path(sys.argv[4]).read_text().split()) if len(sys.argv) > 4 else None
 spec = importlib.util.spec_from_loader(
     "rc",
     importlib.machinery.SourceFileLoader(
@@ -34,6 +37,8 @@ idx = rc.bench_index()
 def verdicts(arm):
     out = {}
     for inst in json.load(open(S / f"{arm}.json"))["eval_res"]:
+        if IDS is not None and inst["instance_id"] not in IDS:
+            continue
         c = inst["instance_id"].split("@")[-1]
         for cm in inst["comments"]:
             k = rc.key_of(c, cm["path"], cm["from_line"], cm["note"])
@@ -50,6 +55,8 @@ def wilson(k, n, z=1.96):
 
 
 D = rc.DEFECTY
+if IDS is not None:
+    print(f"restricted to {len(IDS)} instances from {sys.argv[4]}")
 for side in ("pos", "neg"):
     if not (S / f"{A}-{side}.json").is_file():   # a positive-only sample has no neg arm
         print(f"{side:3} (no {A}-{side}.json -- skipped)"); continue
