@@ -1,0 +1,358 @@
+{
+  "review": {
+    "comments": [
+      {
+        "content": "1. **High \u2014 `src/Processors/Executors/PipelineExecutor.cpp:379-387` \u2014 contended spawn requests can be permanently lost.**  \n   Scenario: caller A holds `spawn_lock` and performs its final failed loop condition; before A unlocks, a CPU slot becomes available and caller B invokes `spawnThreads()`. B fails `try_to_lock` and returns, while A does not recheck. The granted slot remains unused, so a parallel query can continue on one worker until another unrelated spawn call occurs.",
+        "path": "src/Processors/Executors/PipelineExecutor.cpp",
+        "start_line": 379,
+        "end_line": 379,
+        "observation_id": "f43beaa8098f53f1",
+        "claimed_path": "src/Processors/Executors/PipelineExecutor.cpp",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "2. **High \u2014 `src/Processors/Executors/PipelineExecutor.cpp:387` / `src/Processors/Executors/ExecutorTasks.cpp:114` \u2014 newly launched but not-yet-idle workers are not counted, allowing mass overspawning.**  \n   Scenario: a query requests 100 threads but initially has only one runnable task. On a saturated host, the thread-pool jobs do not begin before the spawning loop iterates. `idle_threads` remains zero, so the loop acquires all 100 slots and creates 100 workers, most of which subsequently become idle. This defeats the intended idle-thread limit and incurs the same thread/memory overhead the change is meant to avoid.",
+        "path": "src/Processors/Executors/PipelineExecutor.cpp",
+        "start_line": 387,
+        "end_line": 387,
+        "observation_id": "39bade9be9507dce",
+        "claimed_path": "src/Processors/Executors/PipelineExecutor.cpp",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "3. **Medium \u2014 `src/Processors/Executors/ExecutorTasks.cpp:43,114,234` / `src/Processors/Executors/ExecutorTasks.h:74` \u2014 the idle count is not updated atomically with queue membership.**  \n   Scenario: there are five queued idle threads. One is popped, but before the following decrement executes, `shouldSpawn()` still observes five and declines an available slot; after the decrement there need not be another spawn request, leaving the slot unused. Conversely, after a fifth thread is pushed but before its increment, `shouldSpawn()` observes four and launches another worker, resulting in six idle threads.",
+        "path": "src/Processors/Executors/ExecutorTasks.cpp",
+        "start_line": 43,
+        "end_line": 43,
+        "observation_id": "a5bc61cd17844b93",
+        "claimed_path": "src/Processors/Executors/ExecutorTasks.cpp",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "4. **Low \u2014 `src/Processors/Executors/ExecutorTasks.h:74` \u2014 the threshold predicate permits one more idle thread than the declared threshold.**  \n   Scenario: exactly four workers are idle and an additional slot is available. `shouldSpawn()` returns true because it uses `<= 4`; the new worker finds no task and becomes the fifth idle worker, exceeding `TOO_MANY_IDLE_THRESHOLD`.",
+        "path": "src/Processors/Executors/ExecutorTasks.h",
+        "start_line": 74,
+        "end_line": 74,
+        "observation_id": "09d80b90b301b663",
+        "claimed_path": "src/Processors/Executors/ExecutorTasks.h",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "5. **Low \u2014 `tests/integration/test_concurrent_threads_soft_limit/test.py:73,86` \u2014 the default-limit test now passes when worker spawning is effectively broken.**  \n   Scenario: the executor acquires only its mandatory initial slot and processes the parallel workload serially. `ConcurrencyControlSlotsAcquired == 1` passes line 73, while three bookkeeping/coordinator thread IDs satisfy line 86, so the test reports success without any additional execution worker being spawned.",
+        "path": "tests/integration/test_concurrent_threads_soft_limit/test.py",
+        "start_line": 73,
+        "end_line": 73,
+        "observation_id": "a76bc5fb8f62d97a",
+        "claimed_path": "tests/integration/test_concurrent_threads_soft_limit/test.py",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "6. **Low \u2014 `tests/integration/test_concurrent_threads_soft_limit/test.py:144,157` \u2014 the 50-slot test likewise accepts complete failure to use the available capacity.**  \n   Scenario: under a soft limit of 50, the executor acquires only one slot because `spawnThreads()` never successfully runs. The acquired-slot assertion accepts 1 and the baseline three thread IDs satisfy the second assertion, so the soft-limit utilization regression is not detected.",
+        "path": "tests/integration/test_concurrent_threads_soft_limit/test.py",
+        "start_line": 144,
+        "end_line": 144,
+        "observation_id": "280cc73311d6320d",
+        "claimed_path": "tests/integration/test_concurrent_threads_soft_limit/test.py",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "7. **Low \u2014 `tests/queries/0_stateless/01415_overlimiting_threads_for_repica_bug.sql:12` \u2014 the regression assertion is true for any normally completed logged query.**  \n   Scenario: the replica query regresses to using only its initial execution thread. `thread_ids` still contains that thread, so `length(thread_ids) >= 1` returns true and the prior over-limiting regression passes unnoticed.",
+        "path": "tests/queries/0_stateless/01415_overlimiting_threads_for_repica_bug.sql",
+        "start_line": 12,
+        "end_line": 12,
+        "observation_id": "8d154eae4a7649cc",
+        "claimed_path": "tests/queries/0_stateless/01415_overlimiting_threads_for_repica_bug.sql",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "8. **Low \u2014 `tests/queries/0_stateless/02015_global_in_threads.sh:12` \u2014 the test no longer verifies that the `max_threads=32`, concurrency-control-disabled query runs in parallel.**  \n   Scenario: a defect forces the global-IN query to execute entirely on one thread despite `--max_threads=32 --use_concurrency_control=0`. Its finished query-log entry has one thread ID, satisfying the new assertion.",
+        "path": "tests/queries/0_stateless/02015_global_in_threads.sh",
+        "start_line": 12,
+        "end_line": 12,
+        "observation_id": "2bbc6d290f7bb0af",
+        "claimed_path": "tests/queries/0_stateless/02015_global_in_threads.sh",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "9. **Low \u2014 `tests/queries/0_stateless/02845_threads_count_in_distributed_queries.sql.j2:105` \u2014 the first peak-concurrency check accepts serialization.**  \n   Scenario: the distributed query that previously reached at least 77 simultaneous threads regresses to one worker. `peak_threads == 1` now produces `ok`, so the threads-count regression is hidden.",
+        "path": "tests/queries/0_stateless/02845_threads_count_in_distributed_queries.sql.j2",
+        "start_line": 105,
+        "end_line": 105,
+        "observation_id": "a01062c66d59ac93",
+        "claimed_path": "tests/queries/0_stateless/02845_threads_count_in_distributed_queries.sql.j2",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "10. **Low \u2014 `tests/queries/0_stateless/02845_threads_count_in_distributed_queries.sql.j2:219` \u2014 the 95-part case also accepts serialization.**  \n    Scenario: all 95 parts are processed sequentially by one worker because adaptive spawning fails. The measured peak is 1 and the test still produces `ok`.",
+        "path": "tests/queries/0_stateless/02845_threads_count_in_distributed_queries.sql.j2",
+        "start_line": 219,
+        "end_line": 219,
+        "observation_id": "326d766d4f0dd9a3",
+        "claimed_path": "tests/queries/0_stateless/02845_threads_count_in_distributed_queries.sql.j2",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "11. **Low \u2014 `tests/integration/test_concurrent_threads_soft_limit/test.py:138` \u2014 delayed-slot overcounting is no longer detected.**  \n    Scenario: with exactly 50 slots unavailable, a counter bug records each delayed slot twice and reports 100. The changed `>= 50` assertion passes despite the incorrect profile-event value.## DEFECTS",
+        "path": "tests/integration/test_concurrent_threads_soft_limit/test.py",
+        "start_line": 138,
+        "end_line": 138,
+        "observation_id": "f7684c8a99dd7d1e",
+        "claimed_path": "tests/integration/test_concurrent_threads_soft_limit/test.py",
+        "path_resolution": "exact",
+        "merged_from": [
+          "f3c755b7ff70ba47"
+        ]
+      },
+      {
+        "content": "**1. `idle_threads` can go negative / desync under `processAsyncTasks` \u2014 race between `wakeUp()` and thread re-enqueueing.** \nFILE `ExecutorTasks.cpp`, hunk `@@ -228,6 +231,7 @@` (line 234): \n```cpp\nif (threads_queue.has(task.thread_num))\n{\n    threads_queue.pop(task.thread_num);\n    idle_threads--;\n    executor_contexts[task.thread_num]->wakeUp();\n}\n```\n`wakeUp()` is called from the async-tasks thread while the worker thread is potentially concurrently running `tryGetTask`/`threads_queue.push(...)` + `idle_threads++`. Consider: the worker is between `threads_queue.push(context.thread_number)` and `idle_threads++` in `tryGetTask` (line ~114). It pushes its thread number into `threads_queue` before incrementing `idle_threads`. Meanwhile `processAsyncTasks` sees `threads_queue.has(thread_num)` is true, pops it, decrements `idle_threads` (now potentially -1 if the ++ hadn't happened yet), then calls `wakeUp()`. The `threads_queue` pop and `idle_threads--` are not atomic with the worker's push/++, and even the two fields themselves (`threads_queue` and `idle_threads`) are not updated atomically together. The precise failure: the thread wakes, but `idle_threads` is left under-counted (or the counter goes negative), corrupting the `shouldSpawn()` throttle. Because `idle_threads` is now too low, `shouldSpawn()` returns true and `spawnThreads` may keep spawning threads up to the slot limit / beyond the intended throttle, defeating the whole purpose of this change and re-introducing the over-subscription (many idle threads) the change is meant to eliminate. Concrete: `idle_threads` reaching a value that allows `spawnThreads` to acquire slots when it shouldn't \u2192 excess threads spawned. There is also no integrality/consistency guard between `threads_queue.size()` and `idle_threads` despite the header comment claiming \"changed with threads_queue.size()\".",
+        "path": "src/Processors/Executors/ExecutorTasks.cpp",
+        "start_line": 234,
+        "end_line": 234,
+        "observation_id": "63138817a4e01647",
+        "claimed_path": "ExecutorTasks.cpp",
+        "path_resolution": "basename",
+        "merged_from": []
+      },
+      {
+        "content": "**2. Race: `shouldSpawn()` read of `idle_threads` is not synchronized with the increment in `tryWakeUpAnyOtherThreadWithTasks` / re-acquisition.** \nFILE `ExecutorTasks.cpp`, hunk `@@ -40,6 +40,7 @@` (line 43): `idle_threads--;` is performed when waking another thread. Consider the ordering race between `tryWakeUpAnyOtherThreadWithTasks` (which does `idle_threads--`, removes the thread from the idle set and wakes it to DO WORK) and `spawnThreads` checking `idle_threads <= TOO_MANY_IDLE_THRESHOLD`. These are separate atomic operations on the same counter but the semantic* \u2014 number of idle threads \u2014 can transiently mismatch: the decrement happens at wake-up time, but the woken thread may not yet have picked up new work. So `idle_threads` can report \"low\" (<= threshold) while the thread is still in the process of being woken and cannot yet accept tasks, causing `spawnThreads` to spawn an *additional* thread that would be idle immediately \u2192 idle/total thread count overshoot. This is a low-probability but real defect against the change's stated goal.\n\n**3. `shouldSpawn()` upper-bound check alone is not a sufficient overload guard \u2014 asymmetric limiter.** FILE `ExecutorTasks.h` `@@ -72,6 +72,8 @@` (shouldSpawn definition): `shouldSpawn()` returns true when *fewer than* `TOO_MANY_IDLE_THREADS` threads are idle. This only limits spawning based on the number of *idle* threads; it never limits based on the total number of threads. If all running threads are *busy* (idle_threads == 0, which is below threshold), `shouldSpawn()` stays true and `spawnThreads` keeps acquiring CPU slots and spawning threads as long as `cpu_slots` allows. That is by design, but combined with defect #1/#2 the counter can stay artificially low, so the guard never kicks in \u2192 unbounded spawning up to the slot count. This is the concrete failure path of #1/#2.\n\n**4. `spawnThreads` now single-flight via `spawn_lock` \u2014 but `tryAcquire` loop may starve / return zero new threads while holding the lock, yet the function is still marked as \"spawning\", blocking other callers unnecessarily.** FILE `PipelineExecutor.cpp` `@@ -378,7 +378,15 @@` (lines ~382-390). If `shouldSpawn()` is true but `cpu_slots->tryAcquire()` returns null (all slots exhausted), the caller returns having acquired nothing but having taken the lock, and any concurrent `spawnThreads` caller (that could have proceeded because a slot was freed in between) bails out at the `owns_lock()` check. This is mostly benign (a lost opportunistic spawn) but with defect #1/#2's wrong counter it can permanently starve thread growth in a transient way. Low probability but real.\n\nMore importantly, this change means the *only* place threads get spawned is `spawnThreads`, and it can now skip entirely when the lock is contended (returns without acquiring any slot). If the lock is held by another thread that itself does not spawn (returns at top because it stole the battle), there's no escalation \u2014 but again that's the intended single-flight. Actually this is more a design observation; I'll keep it as the starvation item only.\n\n**5. Data race on `threads.fetch_add(1)` with concurrent-but-skipped spawns \u2014 actually fine (atomic).** Not a defect.\n\n**6. `initializeExecution` now hardcodes `use_threads = 1` and drops the granted count.** FILE `PipelineExecutor.cpp` `@@ -364,13 +364,12 @@` \u2192 `tasks.init(num_threads, 1, ...)`. `use_threads` is used in `tryWakeUpAnyOtherThreadWithTasks` at the `@@ -40 @@` hunk: `if (thread_to_wake >= use_threads) throw Exception(LOGICAL_ERROR, ...)`. Previously `use_threads` was `cpu_slots->grantedCount()` \u2014 the number of threads actually granted by ConcurrencyControl at init. Now it is hardcoded to `1`. In `tryWakeUpAnyOtherThreadWithTasks`, the popped thread number from `threads_queue.popAny()` can be any value up to `num_threads-1` (threads are numbered 0..num_threads-1 and are pushed into the queue regardless of slots). With `use_threads == 1`, any `thread_to_wake >= 1` now throws `LOGICAL_ERROR` and aborts the query. Previously the guard was `thread_to_wake >= grantedCount` where grantedCount could legitimately be 1 in low-concurrency situations, but for multi-threaded queries grantedCount was larger, matching the real thread numbers pushed.\n\nConcretely: before this change, a query that acquires, say, 8 slots sets use_threads=8, and positions 0..7 are in the push range, so the LOGICAL_ERROR check at `thread_to_wake >= 8` is satisfied. After the change, use_threads=1, and `threads_queue` will contain thread numbers 0..(num_threads-1); `popAny()` may return e.g. 5, and `5 >= 1` \u2192 throws LOGICAL_ERROR \u2192 \"Non-empty queue without allocated thread\" exception, killing the query. This is a serious regression: the check now fails on legitimate multi-thread execution.\n\nWait \u2014 need to double check the semantics. In `tryGetTask`, `threads_queue.push(context.thread_number);` \u2014 the thread pushes its own number. In the async-wake path (`@@ -228 @@`), `threads_queue.pop(task.thread_num)` explicitly. And in `tryWakeUpAnyOtherThreadWithTasks`, `thread_to_wake = threads_queue.popAny()`. With the threads numbered 0..num_threads-1, a popped value can definitely be >= 1. So yes, with use_threads hardcoded to 1, the LOGICAL_ERROR check becomes a near-certain throw whenever a thread other than thread 0 is the one being woken. This is the most severe defect.\n\nLet me verify `num_threads` vs `use_threads` semantics by re-reading: In `init`, `num_threads` is the total and `use_threads` the started count. The `thread_to_wake >= use_threads` check was previously protecting against waking a thread that ConcurrencyControl hasn't granted a slot to (per the comment \"Started thread count (allocated by ConcurrencyControl)\"). By hardcoding to 1, the protection is effectively disabled *and* the check now throws for any non-zero thread -- meaning the code either (a) throws on multi-threaded wakeups, or (b) if it happens that only thread 0 is ever woken, does nothing. Given thread numbers are arbitrary, this is a real crash. I'm confident this is the top defect.\n\n**7. `shouldSpawn` threshold check in `spawnThreads` loop interacts with `tryAcquire` on a *shared* `cpu_slots` whose `grantedCount` was used elsewhere.** Not clearly a defect beyond #3.\n\n**8. Test weakening \u2014 the soft-limit test changed `SlotsDelayed == 0` to `>= 0` / other assertions loosened.** FILE `tests/integration/.../test.py`. The changes remove the strong assertions (`length(thread_ids) == 102`, `== 52`, `SlotsAcquired == 100`, etc.) and replace them with ranges that always pass (`x >= 1 and x <= 100`, `count >= 3`). Also `lambda x: x >= 50` for SlotsDelayed \u2014 previously exact. These now cannot fail and no longer test the concurrency limit; they mask regressions. This is a test-validity defect, not a production bug, but per the instructions falls under \"defect with concrete failure scenario\": the test would pass even if the soft limit were completely broken, so a real over-subscription/under-subscription regression goes undetected. Concretely: if `shouldSpawn` were inverted and the executor spawned far too few (or far too many) threads, `count >= 3` and `x >= 1` still pass.\n\n**9. `count = int(s_count) if s_count else 0` \u2014 casts an empty-query result to 0**, then `assert count >= 3` fails-or-passes. If the query returns nothing (e.g., log not flushed, query not found), `s_count` is empty \u2192 `count = 0` \u2192 `assert 0 >= 3` fails. Actually this still fails properly on empty, so not a silent-pass; minor. But the threshold tolerance is the real issue. Low value; skip.\n\n**10. `lambda x: x >= 50` for `SlotsDelayed` in the \"defined_50\" test now *accepts* values far above 50**, meaning the soft limit of 50 is not enforced by the test \u2014 a regression detector is lost. Same class as #8. I'll fold into #8's general point but it's a distinct assertion. Keep as item.\n\n**11. `shouldSpawn` reads a `std::atomic_size_t` but the decrement sites use separate, non-atomic-to-each-other operations** \u2014 already covered in #1/#2 (the desync with `threads_queue`). \n\n**12. In `tryWakeUpAnyOtherThreadWithTasks`, `idle_threads--` is unconditional** \u2014 let me check the surrounding code. The hunk shows:\n```cpp\nelse\n    thread_to_wake = threads_queue.popAny();\n\nidle_threads--;\nif (thread_to_wake >= use_threads)\n    throw ...\n```\nThe `idle_threads--` is placed *before* the `if (thread_to_wake >= use_threads)` throw and it's outside the `if/else`. Let me look at the fuller function to see whether the decrement applies in both branches (the else-branch pop and the if-branch). I need the full function body.\n\nLet me note the def at `@@ -40,6 +40,7 @@` \u2014 the function `tryWakeUpAnyOtherThreadWithTasks`. The hunk context shows the `if (condition)`... Actually the context only shows the `else` branch and the decrement. I can't see the `if` branch fully. Let me reason from the shown hunk:\n\n```cpp\nvoid ExecutorTasks::tryWakeUpAnyOtherThreadWithTasks(ExecutionThreadContext & self)\n{\n    ...\n    else\n        thread_to_wake = threads_queue.popAny();\n\n    idle_threads--;\n    if (thread_to_wake >= use_threads)\n        throw ...\n```\n\nOnly the `else` and the following lines are shown. If there's an `if (threads_queue.has(self...))` branch above that doesn't pop, then `idle_threads--` would be applied even when no thread was actually popped \u2192 over-decrement. I can't fully confirm without the full source (which is absent). I'll flag it as a conditional defect requiring the missing context \u2014 but note the decrement being outside the pop means if the first branch (not shown) also decrements or if it doesn't pop, there's a mismatch. Since I can't see it, I'll rank it lower and be explicit about the missing context.\n\nGiven the directory is empty, I cannot verify the surrounding branch structure. I'll note that.\n\nLet me also reconsider the `use_threads=1` defect more carefully because it's the headline. The check `if (thread_to_wake >= use_threads) throw ... \"Non-empty queue without allocated thread\"`. In this concurrency-control refactor, the intent is that threads are ONLY spawned when there's a CPU slot, so `use_threads` (slots granted) tracks spawned threads, and waking a thread with number >= granted count is a genuine logic error. By hardcoding 1, the moment a second thread (number 1 or more) is pushed into `threads_queue` and popped, the throw triggers. Since `threads_queue` can hold threads 0..num_threads-1 and `popAny` returns arbitrary, and multi-threaded queries push multiple threads, this is a guaranteed crash on any query that spawns more than one thread and hits the wake-up path. Severe.\n\nThis is my top defect.\n\nLet me finalize the list, ordered most severe first. I'll also mention that the directory is empty so I could not read the full function bodies to confirm the branch structure of `tryWakeUpAnyOtherThreadWithTasks`, but the core defects stand from the diff hunks.I need to note an environment limitation up front: the working directory `/tmp/aacr-up-wud13104` is **empty** \u2014 none of the source files referenced by the diff exist here, so I cannot read the full function bodies (in particular the top branch of `tryWakeUpAnyOtherThreadWithTasks`, `init`, and `shouldSpawn`'s call sites). The defects below are pointed at from the diff hunks themselves. Where a verdict depends on code not shown in the diff, I flag it explicitly rather than guessing.\n\n## DEFECTS (most severe first)",
+        "path": "src/Processors/Executors/ExecutorTasks.cpp",
+        "start_line": 43,
+        "end_line": 43,
+        "observation_id": "37d8a1ce71bd60cf",
+        "claimed_path": "ExecutorTasks.cpp",
+        "path_resolution": "basename",
+        "merged_from": [
+          "fae63e2c43f87deb"
+        ]
+      },
+      {
+        "content": "**1. Hardcoded `use_threads = 1` makes the LOGICAL_ERROR guard in `tryWakeUpAnyOtherThreadWithTasks` throw on any multi-threaded wake-up.**\nFILE `src/Processors/Executors/PipelineExecutor.cpp`, hunk `@@ -364,13 +364,12 @@` \u2192 `tasks.init(num_threads, 1, ...)`.\n`initializeExecution` now passes `use_threads = 1` unconditionally instead of `cpu_slots->grantedCount()`. In `ExecutorTasks.cpp` (`@@ -40` / line ~45) the guard is `if (thread_to_wake >= use_threads) throw Exception(LOGICAL_ERROR, \"Non-empty queue without allocated thread\")`. Threads are numbered `0..num_threads-1` and every worker pushes its own number into `threads_queue` in `tryGetTask`; `tryWakeUpAnyOtherThreadWithTasks` pulls an arbitrary entry via `popAny()`. With `use_threads == 1`, any thread other than thread 0 (i.e. any second-and-later worker) that gets popped satisfies `thread_to_wake >= 1` and throws `LOGICAL_ERROR`, aborting the query with a fake \"Non-empty queue without allocated thread\" error. Previously `use_threads` equaled the real granted count, so legitimately-started threads passed the boundary. **Concrete failure:** a two-thread query where thread 1 is in `threads_queue` \u2192 `popAny()` returns 1 \u2192 `1 >= 1` \u2192 LOGICAL_ERROR exception \u2192 whole query crashes even though the queue state is entirely legitimate.",
+        "path": "src/Processors/Executors/PipelineExecutor.cpp",
+        "start_line": 45,
+        "end_line": 45,
+        "observation_id": "20df0fcc55bbbedf",
+        "claimed_path": "src/Processors/Executors/PipelineExecutor.cpp",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "**2. `idle_threads` desyncs from `threads_queue` in `processAsyncTasks` vs the worker's push/++ \u2014 counter can go negative and the spawn throttle never engages (or mis-fires).**\nFILE `src/Processors/Executors/ExecutorTasks.cpp`, hunk `@@ -228,6 +231,7 @@` (line ~234): `threads_queue.pop(task.thread_num); idle_threads--;`. The worker in `tryGetTask` (`@@ -110 @@`, line ~114) does `threads_queue.push(context.thread_number); idle_threads++;` \u2014 two *separate* non-atomic updates. `processAsyncTasks` runs on the async thread and can observe `threads_queue.has()` true and decrement *before* the worker's `idle_threads++` lands, so the counter drifts below the true idle count and can go negative. Because these are separate atomics on different variables with no lock and no invariant check (despite the header comment \"changed with threads_queue.size()\"), the throttle in `shouldSpawn()` reads a wrong value. **Concrete failure:** interleaving where the async thread pops and decrements while the worker hasn't yet run its `++` leaves `idle_threads` under-counted; `shouldSpawn()` then returns `true` in the `idle_threads <= TOO_MANY_IDLE_THRESHOLD` test and `spawnThreads` keeps taking CPU slots and spawning threads it shouldn't (threads that become idle immediately) \u2014 precisely the over-subscription this change exists to prevent, and the counter can permanently drift negative across the query.\n\n**3. `idle_threads--` in `tryWakeUpAnyOtherThreadWithTasks` is placed outside the pop and before the throw, and is not atomic with the `threads_queue` pop** \u2014 over-decrement / desync on the very path the change depends on.\nFILE `src/Processors/Executors/ExecutorTasks.cpp`, hunk `@@ -40,6 +40,7 @@` (line 43). The decrement sits after the `else \u2026 popAny()` but the full branch structure above it (the `if` that may not pop anything) is not shown in the diff; the decrement is definitely not tied atomically to a successful pop. If the first branch reaches here without having removed a thread, `idle_threads` is decremented for no removal; combined with #2 the counter is corrupted by two independent sites. Even in the shown `else` path, the `popAny` and `--` are two separate operations, so a concurrent reader of `idle_threads` in `shouldSpawn()` (from `spawnThreads`) can observe the post-decrement value while the thread is still being woken and has not yet acquired new work \u2014 `shouldSpawn()` sees \"idle\" and spawns an extra thread that is on the verge of idleness anyway. I could not read the un-shown `if` branch (directory empty) to confirm whether it also decrements; flagging this as needing that confirmation, but the non-atomicity is visible in the diff regardless.",
+        "path": "src/Processors/Executors/ExecutorTasks.cpp",
+        "start_line": 234,
+        "end_line": 234,
+        "observation_id": "9435bebd8bb13eea",
+        "claimed_path": "src/Processors/Executors/ExecutorTasks.cpp",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "**4. `spawnThreads` single-flight lock causes a lost-spawn under contention, and with the corrupted counter from #2/#3 it can permanently starve or overshoot thread growth.**\nFILE `src/Processors/Executors/PipelineExecutor.cpp`, hunk `@@ -378,7 +378,15 @@` (lines ~382-390). With `std::try_to_lock`, a caller that loses the lock returns immediately having spawned nothing. If the winning holder is inside a `while (tasks.shouldSpawn() && (slot = cpu_slots->tryAcquire()))` loop whose `tryAcquire` returns null (all slots momentarily exhausted) it also returns having spawned nothing \u2014 and any other caller that could have proceeded once a slot freed up is blocked out by `owns_lock()` returning false. **Concrete failure:** transient slot exhaustion + lock contention \u2192 a needed thread upgrade is skipped entirely; with the counter corruption in #2/#3 the condition that should eventually re-trigger spawning never fires reliably, stalling throughput. Low probability, but a real defect against the changed control path.",
+        "path": "src/Processors/Executors/PipelineExecutor.cpp",
+        "start_line": 382,
+        "end_line": 382,
+        "observation_id": "8ce22d37ba308f4b",
+        "claimed_path": "src/Processors/Executors/PipelineExecutor.cpp",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "### 1. `ExecutorTasks.cpp:43` \u2014 `idle_threads--` executes unconditionally after `if/else`, not just when a thread is popped\n\n**Failure scenario:** If the `if` branch (not shown in diff) is taken and sets `thread_to_wake` without popping from `threads_queue`, `idle_threads` is still decremented. This desynchronizes the counter from the actual queue size. Subsequent `shouldSpawn()` calls see a falsely low idle count and over-spawn threads.\n\n---",
+        "path": "src/Processors/Executors/ExecutorTasks.cpp",
+        "start_line": 43,
+        "end_line": 43,
+        "observation_id": "ed37bb817c0c17ff",
+        "claimed_path": "ExecutorTasks.cpp",
+        "path_resolution": "basename",
+        "merged_from": []
+      },
+      {
+        "content": "### 2. `ExecutorTasks.cpp:114` \u2014 `idle_threads++` after `push()` but before `wait()` creates a missed-wakeup window\n\n**Failure scenario:** Thread A pushes itself to `threads_queue`, increments `idle_threads`, but hasn't yet reached `context.wait(finished)`. Thread B calls `tryWakeUpAnyOtherThreadWithTasks`, pops Thread A from queue, decrements `idle_threads`, and wakes it. Thread A then enters `wait()` on an already-signaled condition, blocking indefinitely. The pipeline hangs.\n\n---",
+        "path": "src/Processors/Executors/ExecutorTasks.cpp",
+        "start_line": 114,
+        "end_line": 114,
+        "observation_id": "f146bdca54eb83aa",
+        "claimed_path": "ExecutorTasks.cpp",
+        "path_resolution": "basename",
+        "merged_from": []
+      },
+      {
+        "content": "### 3. `ExecutorTasks.cpp:234` \u2014 Race between `has()` and `pop()` in `processAsyncTasks`\n\n**Failure scenario:** Thread A sees `threads_queue.has(task.thread_num) == true`. Thread B concurrently calls `popAny()` and removes that same thread. Thread A then calls `pop(task.thread_num)` (which may fail or assert) but still executes `idle_threads--`. Counter goes negative (wraps to `SIZE_MAX`), `shouldSpawn()` returns `false` permanently, no new threads spawn, pipeline stalls.\n\n---",
+        "path": "src/Processors/Executors/ExecutorTasks.cpp",
+        "start_line": 234,
+        "end_line": 234,
+        "observation_id": "5a92c14178bc0389",
+        "claimed_path": "ExecutorTasks.cpp",
+        "path_resolution": "basename",
+        "merged_from": []
+      },
+      {
+        "content": "### 4. `ExecutorTasks.cpp:163` \u2014 `idle_threads = 0` in `init()` doesn't account for pre-existing queue state\n\n**Failure scenario:** If `init()` is called reentrantly or after a partial execution where threads are already waiting in `threads_queue`, the counter is reset to 0 while the queue is non-empty. `shouldSpawn()` sees 0 idle threads (\u22644) and spawns aggressively, exceeding `num_threads` limit.\n\n---",
+        "path": "src/Processors/Executors/ExecutorTasks.cpp",
+        "start_line": 163,
+        "end_line": 163,
+        "observation_id": "3feaca4803029432",
+        "claimed_path": "ExecutorTasks.cpp",
+        "path_resolution": "basename",
+        "merged_from": []
+      },
+      {
+        "content": "### 5. `ExecutorTasks.h:42` \u2014 `idle_threads` is `atomic` but compound queue+counter ops are not atomic\n\n**Failure scenario:** Any interleaving where one thread reads `idle_threads` for `shouldSpawn()` while another is mid-way through `push()+increment` or `pop()+decrement` observes a stale count. Example: `idle_threads` reads 4 (threshold), spawn proceeds, but actual idle threads are 5 \u2192 over-spawning.\n\n---",
+        "path": "src/Processors/Executors/ExecutorTasks.h",
+        "start_line": 42,
+        "end_line": 42,
+        "observation_id": "b1059d5f5298fcb8",
+        "claimed_path": "ExecutorTasks.h",
+        "path_resolution": "basename",
+        "merged_from": []
+      },
+      {
+        "content": "### 6. `ExecutorTasks.h:50` \u2014 `TOO_MANY_IDLE_THRESHOLD = 4` is a magic constant with no runtime configurability\n\n**Failure scenario:** On a 128-core machine, 4 idle threads is trivial; the executor spawns until 128 threads, ignoring the intent of \"soft limit.\" On a 2-core machine, 4 is already oversubscribed. The hardcoded value defeats the purpose of `ConcurrencyControl`.\n\n---",
+        "path": "src/Processors/Executors/ExecutorTasks.h",
+        "start_line": 50,
+        "end_line": 50,
+        "observation_id": "55ff8881dcf30516",
+        "claimed_path": "ExecutorTasks.h",
+        "path_resolution": "basename",
+        "merged_from": []
+      },
+      {
+        "content": "### 7. `ExecutorTasks.h:74` \u2014 `shouldSpawn()` reads `idle_threads` without synchronizing with queue mutations\n\n**Failure scenario:** Thread A calls `shouldSpawn()`, reads `idle_threads == 3` (\u22644), proceeds to spawn. Thread B simultaneously pushes to queue and increments to 4. Thread C also reads 3, spawns. Now 2 threads spawned for 1 actual idle slot. With many threads, this multiplies.\n\n---",
+        "path": "src/Processors/Executors/ExecutorTasks.h",
+        "start_line": 74,
+        "end_line": 74,
+        "observation_id": "ca9bfe6423988cc6",
+        "claimed_path": "ExecutorTasks.h",
+        "path_resolution": "basename",
+        "merged_from": []
+      },
+      {
+        "content": "### 8. `PipelineExecutor.cpp:371` \u2014 `use_threads` hardcoded to `1` but `spawnThreads()` creates threads numbered `0,1,2...`\n\n**Failure scenario:** `ExecutorTasks::tryWakeUpAnyOtherThreadWithTasks` checks `if (thread_to_wake >= use_threads) throw LOGICAL_ERROR`. With `use_threads=1`, any `thread_to_wake >= 1` (i.e., all threads except thread 0) throws. Multi-threaded execution crashes immediately on first wakeup of thread 1+.\n\n---",
+        "path": "src/Processors/Executors/PipelineExecutor.cpp",
+        "start_line": 371,
+        "end_line": 371,
+        "observation_id": "6ce7872815f1a2bb",
+        "claimed_path": "PipelineExecutor.cpp",
+        "path_resolution": "basename",
+        "merged_from": []
+      },
+      {
+        "content": "### 9. `PipelineExecutor.cpp:382-388` \u2014 `spawn_lock` with `try_to_lock` causes silent spawn abandonment\n\n**Failure scenario:** Thread A holds `spawn_lock`, spawns 2 threads, `shouldSpawn()` becomes false, loop exits. Thread B (concurrent caller) fails `try_to_lock`, returns early. Later, one spawned thread finishes a task, pushes to queue, `idle_threads` increments, `shouldSpawn()` becomes true again. No thread calls `spawnThreads()` (Thread B already gave up), so the new idle capacity is never utilized. Pipeline under-utilizes CPU.\n\n---",
+        "path": "src/Processors/Executors/PipelineExecutor.cpp",
+        "start_line": 382,
+        "end_line": 382,
+        "observation_id": "659f9f80bbee93b8",
+        "claimed_path": "PipelineExecutor.cpp",
+        "path_resolution": "basename",
+        "merged_from": []
+      },
+      {
+        "content": "### 10. `PipelineExecutor.cpp:389` \u2014 `shouldSpawn()` checked inside lock but `idle_threads` updated outside lock\n\n**Failure scenario:** Thread A acquires `spawn_lock`, reads `idle_threads=3` (shouldSpawn=true). Thread B (not in spawnThreads) decrements `idle_threads` to 2 via `tryWakeUpAnyOtherThreadWithTasks`. Thread A acquires slot, spawns thread. Thread C acquires lock, reads `idle_threads=2`, spawns another. Two threads spawned for one \"available\" idle slot. Lock doesn't protect the predicate.\n\n---",
+        "path": "src/Processors/Executors/PipelineExecutor.cpp",
+        "start_line": 389,
+        "end_line": 389,
+        "observation_id": "120eb999f70bc426",
+        "claimed_path": "PipelineExecutor.cpp",
+        "path_resolution": "basename",
+        "merged_from": []
+      },
+      {
+        "content": "### 11. `PipelineExecutor.h:88` \u2014 `spawn_lock` doesn't protect `threads` counter or `tasks` state\n\n**Failure scenario:** `threads.fetch_add(1)` is atomic, but the relationship between `threads` (total spawned) and `tasks.use_threads` (hardcoded 1) is inconsistent. Code assuming `threads <= use_threads` (e.g., for bounds checking) will fail when `threads` grows beyond 1.\n\n---",
+        "path": "src/Processors/Executors/PipelineExecutor.h",
+        "start_line": 88,
+        "end_line": 88,
+        "observation_id": "fb3285a49be4ceea",
+        "claimed_path": "PipelineExecutor.h",
+        "path_resolution": "basename",
+        "merged_from": []
+      },
+      {
+        "content": "### 12. `ExecutorTasks.cpp:43` / `ExecutorTasks.cpp:114` / `ExecutorTasks.cpp:234` \u2014 `idle_threads` can underflow to `SIZE_MAX`\n\n**Failure scenario:** Any bug causing more decrements than increments (e.g., Defect 1 + Defect 3 combined) makes `idle_threads` wrap to `18446744073709551615`. `shouldSpawn()` returns `false` forever. All subsequent queries on this executor hang with no threads spawned.\n\n---",
+        "path": "src/Processors/Executors/ExecutorTasks.cpp",
+        "start_line": 43,
+        "end_line": 43,
+        "observation_id": "509f8b64b5ce23ea",
+        "claimed_path": "ExecutorTasks.cpp",
+        "path_resolution": "basename",
+        "merged_from": []
+      },
+      {
+        "content": "### 13. `tests/integration/test_concurrent_threads_soft_limit/test.py:73` \u2014 Test weakened from exact to range assertion\n\n**Failure scenario:** The test previously verified exactly 100 slots acquired. Now `>=1 and <=100` passes even if only 1 slot is acquired (total serialization). A regression that limits concurrency to 1 thread would not be caught.\n\n---",
+        "path": "tests/integration/test_concurrent_threads_soft_limit/test.py",
+        "start_line": 73,
+        "end_line": 73,
+        "observation_id": "224cf6c3144c708a",
+        "claimed_path": "tests/integration/test_concurrent_threads_soft_limit/test.py",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "### 14. `tests/queries/0_stateless/01415_overlimiting_threads_for_repica_bug.sql:11` \u2014 Test assertion changed from `>=16` to `>=1`\n\n**Failure scenario:** The test was verifying that distributed queries use multiple threads (\u226516). Now it passes with just 1 thread. A bug that forces all distributed queries to single-threaded execution would not be detected.\n\n---",
+        "path": "tests/queries/0_stateless/01415_overlimiting_threads_for_repica_bug.sql",
+        "start_line": 11,
+        "end_line": 11,
+        "observation_id": "a22912fadb83e433",
+        "claimed_path": "tests/queries/0_stateless/01415_overlimiting_threads_for_repica_bug.sql",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "### 15. `tests/queries/0_stateless/02015_global_in_threads.sh:11` \u2014 Same weakening: `>=32` \u2192 `>=1`\n\n**Failure scenario:** Query with `max_threads=32` and `use_concurrency_control=0` should use 32 threads. Test now passes with 1 thread. Regression to single-threaded execution goes unnoticed.\n\n---",
+        "path": "tests/queries/0_stateless/02015_global_in_threads.sh",
+        "start_line": 11,
+        "end_line": 11,
+        "observation_id": "9cba57ccb356aa85",
+        "claimed_path": "tests/queries/0_stateless/02015_global_in_threads.sh",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "### 16. `tests/queries/0_stateless/02845_threads_count_in_distributed_queries.sql.j2:105` \u2014 Threshold `>=77` \u2192 `>=1`\n\n**Failure scenario:** Test has 95 parts, expects at least 77 concurrent threads. Now passes with 1 thread. Massive parallelism regression undetected.\n\n---",
+        "path": "tests/queries/0_stateless/02845_threads_count_in_distributed_queries.sql.j2",
+        "start_line": 105,
+        "end_line": 105,
+        "observation_id": "66f921c559d525af",
+        "claimed_path": "tests/queries/0_stateless/02845_threads_count_in_distributed_queries.sql.j2",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "### 17. `tests/queries/0_stateless/02845_threads_count_in_distributed_queries.sql.j2:221` \u2014 Threshold `>=95` \u2192 `>=1` with comment \"avoid spawning too much idles threads\"\n\n**Failure scenario:** The comment acknowledges the code change intentionally reduces parallelism. The test no longer validates the original capability. If the threshold was lowered due to a bug (not a feature), the test masks it.\n\n---\n\n### Summary\n\n**Most severe:** Defect 8 (hardcoded `use_threads=1` crashes multi-threaded execution), Defect 2 (missed wakeup hangs pipeline), Defect 3 (race corrupts counter permanently), Defect 9 (silent spawn abandonment under-utilizes CPU).\n\n**Root cause:** The `idle_threads` counter is maintained separately from `threads_queue` without atomic compound operations, and `use_threads` was incorrectly hardcoded to 1 while thread spawning logic was changed to depend on the broken counter.",
+        "path": "tests/queries/0_stateless/02845_threads_count_in_distributed_queries.sql.j2",
+        "start_line": 221,
+        "end_line": 221,
+        "observation_id": "7ee138815c298111",
+        "claimed_path": "tests/queries/0_stateless/02845_threads_count_in_distributed_queries.sql.j2",
+        "path_resolution": "exact",
+        "merged_from": [
+          "3b6e583248f66d8d"
+        ]
+      }
+    ]
+  },
+  "rundir": "/home/mjarnold/.cache/llm-panel/runs/aacr-up-wud13104-575e828b3967/20260829-105751-3395046",
+  "extractor": "3",
+  "unlocated": [
+    {
+      "content": "**5. The soft-limit integration test no longer tests the limit \u2014 assertions loosened to always-true ranges.**\nFILE `tests/integration/test_concurrent_threads_soft_limit/test.py`, hunks `@@ -70 @@`, `@@ -78 @@`, `@@ -135 @@`, `@@ -149 @@`. `SlotsAcquired == 100` \u2192 `x >= 1 and x <= 100`; `SlotsDelayed == 50` \u2192 `x >= 50`; `length(thread_ids) == 102/52` \u2192 `count >= 3 and count <= 102/52`. **Concrete f",
+      "observation_id": "b1cccf2db30d1030",
+      "claimed_path": "tests/integration/test_concurrent_threads_soft_limit/test.py",
+      "path_resolution": "exact"
+    },
+    {
+      "content": "**6. Stateless tests weakened to `>= 1` (or `>= 16` \u2192 `>= 1`) mask thread-count regressions.**\nFILE `tests/queries/0_stateless/01415_overlimiting_threads_for_repica_bug.sql` (hunk `@@ -8 @@`) and `tests/queries/0_stateless/02015_global_in_threads.sh` (hunk `@@ -8 @@`): `length(thread_ids) >= 16` \u2192 `>= 1` and `>= 32` \u2192 `>= 1`. These queries' *only* purpose was to assert the thread count is high; ch",
+      "observation_id": "538403ad366cc1e4",
+      "claimed_path": "tests/queries/0_stateless/01415_overlimiting_threads_for_repica_bug.sql",
+      "path_resolution": "exact"
+    }
+  ]
+}

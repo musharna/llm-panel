@@ -42,3 +42,10 @@ and precision; per-PR paired change between the codex panel and its or-gpt repla
 re-paneled, so 14 broad / 13 volume re-panels.
 
 **Cost.** ~27 × $0.14 ≈ $3.80 on OpenRouter plus evaluator scoring.
+
+**Run-time record, written after the run and before scoring (2026-08-30 16:40 EDT).** No
+deviation from the fixed retry policy. Two panels stood degraded within it: lvgl@e526b2a
+broad (nemotron `harness` on both allowed attempts) and SDL@1526727 volume (or-gpt stopped
+on `tool-calls` before emitting text on all four attempts, the same signature as
+SDL@96dfef3's burst on 08-29). Neither was re-asked beyond policy; the README reports H2 with
+and without them. 42 attempts for 27 panels; $8.02.

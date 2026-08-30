@@ -1,0 +1,338 @@
+{
+  "review": {
+    "comments": [
+      {
+        "content": "1. **High \u2014 `graphrag/general/extractor.py:204`**  \n   Node keywords are no longer merged. Given nodes A and B with `A.keywords = [\"alpha\"]` and `B.keywords = [\"beta\"]`, merging B into A deletes B while leaving A with only `[\"alpha\"]`; `\"beta\"` is permanently lost.",
+        "path": "graphrag/general/extractor.py",
+        "start_line": 204,
+        "end_line": 204,
+        "observation_id": "9e2316e6c99b244a",
+        "claimed_path": "graphrag/general/extractor.py",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "2. **Medium \u2014 `graphrag/utils.py:443`**  \n   Every edge deletion is awaited before the loop advances, so the nursery provides no concurrency. Given 1,000 removed edges and a backend taking 100 ms per deletion, `set_graph` takes roughly 100 seconds rather than processing deletions concurrently, causing callers with shorter request/job deadlines to time out before graph persistence completes.",
+        "path": "graphrag/utils.py",
+        "start_line": 443,
+        "end_line": 443,
+        "observation_id": "0aeca3186b92622b",
+        "claimed_path": "graphrag/utils.py",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "**Hunk 1 \u2014 entity_resolution.py line 114:**\n```python\n-                merging_nodes = list(sub_connect_graph.nodes)\n+                merging_nodes = list(sub_connect_graph)\n```\n`sub_connect_graph` is from `nx.connected_components(connect_graph)`, which yields sets of nodes. `sub_connect_graph.nodes` \u2014 wait, this is iterating over connected components. In the original, `sub_connect_graph` is a **set** of nodes (from `connected_components`), so `.nodes` would be an attribute error on a set... Actually no. Let me reconsider. `nx.connected_components(connect_graph)` yields sets. So the original `sub_connect_graph.nodes` would fail on a set. The fix `list(sub_connect_graph)` converts the set to a list. This is actually a fix. Both produce a list of nodes. Not really a defect \u2014 it's the correct fix. No defect here except the loop variable name. Actually, this is a genuine fix, not a defect.",
+        "path": "graphrag/entity_resolution.py",
+        "start_line": 114,
+        "end_line": 114,
+        "observation_id": "d98545482ba71da9",
+        "claimed_path": "entity_resolution.py",
+        "path_resolution": "basename",
+        "merged_from": []
+      },
+      {
+        "content": "**Hunk 2 \u2014 general/extractor.py lines 204-208:**\n```python\n-            for attr in [\"keywords\", \"source_id\"]:\n-                node0_attrs[attr] = sorted(set(node0_attrs[attr].extend(node1_attrs[attr])))\n+            node0_attrs[\"source_id\"].extend(node1_attrs[\"source_id\"])\n+            node0_attrs[\"source_id\"] = sorted(set(node0_attrs[\"source_id\"]))\n```\n\nThe original was buggy because `list.extend()` returns `None`, so `set(None)` would fail. The new code fixes this by extending then sorting. But the new code **drops the `keywords` merge entirely**. The original code merged both `keywords` and `source_id` attributes; the new code only merges `source_id`. So the `keywords` attribute for node0 is no longer merged with node1's keywords. This is a **functional regression**: node1's keywords are silently dropped from the merged node. That's a defect \u2014 file general/extractor.py, line ~204.\n\nWait, but where exactly? The change at lines 204-205. Let me identify: the hunk header is `@@ -201,8 +201,8 @@`. Line numbers in new file: 201 is the signature line, then 202 comment, 203 node1_attrs, 204 node0_attrs description, 205 removed `for attr...`, 206-207 new `source_id` lines. So the defect \"keywords no longer merged\" is at new line 206-207. The original loop iterated both keywords and source_id; now keywords is dropped. Defect.",
+        "path": "graphrag/general/extractor.py",
+        "start_line": 204,
+        "end_line": 204,
+        "observation_id": "7b487241aa071b43",
+        "claimed_path": "general/extractor.py",
+        "path_resolution": "basename",
+        "merged_from": []
+      },
+      {
+        "content": "**Hunk 3 \u2014 extractor.py lines 216-219 (edges):**\n```python\n-                        edge0_attrs[\"keywords\"] = list(set(edge0_attrs[\"keywords\"].extend(edge1_attrs[\"keywords\"])))\n-                        edge0_attrs[\"source_id\"] = list(set(edge0_attrs[\"source_id\"].extend(edge1_attrs[\"source_id\"])))\n+                        edge0_attrs[\"keywords\"].extend(edge1_attrs[\"keywords\"])\n+                        edge0_attrs[\"keywords\"] = list(set(edge0_attrs[\"keywords\"]))\n+                        edge0_attrs[\"source_id\"].extend(edge1_attrs[\"source_id\"])\n+                        edge0_attrs[\"source_id\"] = list(set(edge0_attrs[\"source_id\"]))\n```\nThis one properly extends both keywords and source_id. This is a fix of the same extend-returns-None bug. Looks correct.",
+        "path": "graphrag/general/extractor.py",
+        "start_line": 216,
+        "end_line": 216,
+        "observation_id": "e9e4d3444098156a",
+        "claimed_path": "extractor.py",
+        "path_resolution": "basename",
+        "merged_from": []
+      },
+      {
+        "content": "**Hunk 4 \u2014 utils.py line 442:**\n```python\n-                nursery.start_soon(lambda: settings.docStoreConn.delete({...}, search.index_name(tenant_id), kb_id))\n+                 await trio.to_thread.run_sync(lambda: settings.docStoreConn.delete({...}, search.index_name(tenant_id), kb_id))\n```\n\nMultiple defects here:\n1. **The `async with trio.open_nursery()` context is now pointless** \u2014 it wraps a single awaited call. Not a functional defect per se.\n2. **Removing the nursery changes concurrency to serial**: Previously all `delete` calls ran concurrently in the nursery; now they run sequentially with `await`. This is a performance/concurrency change, and importantly, the **indentation of the new line is wrong** \u2014 it's indented with extra spaces (note `+                 await` has more leading spaces than the surrounding `for` body). Actually looking closely: the original had `nursery.start_soon(...)` at one indentation. The new `await trio.to_thread...` line appears to have *extra* leading whitespace compared to the `for` body. Let me count. The diff shows:\n```\n             for from_node, to_node in change.removed_edges:\n-                nursery.start_soon(lambda: ...)\n+                 await trio.to_thread.run_sync(lambda: ...)\n     now = trio.current_time()\n```\nThe `-` line has 16 spaces (4 levels). The `+` line appears to have 17 spaces (one extra). If the `+` line has an extra space, it's misindented relative to the `for` body, but Python would still treat it as part of the for body as long as it's more indented than the `for` (which is at 12). Actually an extra space just makes it more indented, still valid \u2014 though inconsistent. Not a syntax error necessarily. But wait \u2014 if the await is at 4 spaces indentation relative to `if`, and the `for` is at 4 spaces too... let me look at the hunk header `@@ -439,7 +439,7 @@`. The context shows `if change.removed_edges:` then `async with...nursery` then `for`. The `await` line \u2014 one extra space. Since everything is inside the `for`, and the `for` is at 12 spaces, the `await` at 17 spaces is inside the for. Fine syntactically.\n\n3. **Real defect: the `lambda` captures loop variables `from_node, to_node` late-binding.** In the original, the late-binding lambda bug existed too (all deletes ran with last values). Actually wait \u2014 in the original this was a bug (all lambdas would use the last from_node/to_node). The new version changes to `await ... run_sync(lambda: ...)` in the same loop, but now the lambda executes **immediately** within the loop iteration before `from_node`/`to_node` change, so the late-binding bug is *fixed* by the serialization. So removing concurrency actually fixes the late-binding closure bug. Hmm. Not a defect then, but the concurrency loss is notable.\n\nBut the substantive defects:\n\n4. **`trio.to_thread.run_sync` + `await` inside an `open_nursery` context.** This mixes the cancel scope of a nursery with to_thread. Not a defect per se, functionally it works. However running a blocking call via to_thread inside a nursery and awaiting it directly \u2014 the nursery becomes useless but works. Minor.\n\n5. **Decorator/return-value concern**: `run_sync` returns the result of the lambda. `delete(...)` presumably returns something (maybe a dict/count). Not awaited meaningfully. Not a defect.\n\nLet me focus on the clear, pointable defects:\n\n**Defect A (extractor.py ~206):** `keywords` attribute merge for **nodes** was dropped entirely. Before: both `keywords` and `source_id` merged into node0. After: only `source_id`. So node1's keywords are lost during merge. Concrete failure: two entities merged, merged node's `keywords` field lacks node1's keywords \u2192 downstream keyword-based retrieval/query misses those keywords. Severe.\n\nActually, wait \u2014 let me double check the original behavior even worked. Original: `node0_attrs[attr] = sorted(set(node0_attrs[attr].extend(node1_attrs[attr])))`. `node0_attrs[attr].extend(...)` mutates node0's list and returns None. `set(None)` \u2192 TypeError. So the original was buggy for BOTH keywords and source_id. The fix only fixes source_id and drops keywords entirely. So baseline had a crash; the fix leaves keywords unmerged (no crash, but data loss for keywords). So the defect is: keywords not merged \u2192 silently dropped. Yes.\n\n**Defect B (extractor.py ~216-219):** Wait, is there an issue with the edges? `edge0_attrs[\"keywords\"].extend(edge1_attrs[\"keywords\"])` \u2014 if `edge0_attrs[\"keywords\"]` or `edge1_attrs[\"keywords\"]` is missing or None, `.extend` fails. But that was also true before. Not new.\n\nActually, let me reconsider whether there's an ordering/dedup issue. This fixes correctly.\n\n**Defect C (utils.py):** The indentation of the `await` line has an extra leading space (17 vs 16). If the original `nursery.start_soon` was inside the `for`, and now the await is one space more indented... it's still inside the for. Not an error. But if the code is actually more subtly misindented beyond the `for`... no.\n\nActually, let me reconsider: The most important defect in utils.py is that the refactor removed parallelism but, more importantly, the `async with trio.open_nursery()` now only wraps a single sequential loop with awaits \u2014 effectively dead concurrency scaffolding. Not functional defect.\n\nLet me think about the bigger picture: In hunk 4, by moving from `nursery.start_soon` (parallel) to a sequential loop, deletes now occur one at a time. If there are many removed edges, this is serialized \u2192 performance regression. But is that \"wrong behaviour\"? It's slower, not wrong. Could be a minor item.\n\nAlso, there's a genuine defect I should double-check: in hunk 4, the lambda still captures `from_node` and `to_node` but now executes synchronously inside `run_sync` during the same loop iteration \u2014 that's fine since it runs before the next iteration. Actually `run_sync` runs the callable in a worker thread and returns a future that we await. The lambda body executes when the worker thread runs it \u2014 which could be AFTER the next loop iteration increments... but no, `await` blocks until it completes. So by the time we await the result, the lambda has been executed with the captured values. The lambda captures `from_node`/`to_node` by reference (closure), but since we `await` before moving on, the closure reads the current value at execution time, which is still the correct current iteration because we await. So it's fine. Not a defect.\n\nBut wait, there's a subtle timing issue: `trio.to_thread.run_sync(lambda: ...)` \u2014 the callable is passed to a thread. The thread might not have executed the lambda before mainTask... no, we block on await. Fine.\n\nLet me also reconsider hunk 1. `nx.connected_components(connect_graph)` returns an iterator of node-sets. So `sub_connect_graph` is a set. Original `.nodes` \u2014 a set has no `.nodes` attribute \u2192 would raise AttributeError. So the change is a genuine fix. Fine, not a defect.\n\nHowever \u2014 is there any issue with `list(sub_connect_graph)` vs `list(sub_connect_graph.nodes)`? Both give node lists. Fine.\n\nHmm, let me reconsider whether the original `.nodes` actually worked. If `connected_components` yields sets, `.nodes` doesn't exist on a set. So original crashed. Fix is correct. Unless... maybe networkx version where connected_components yields subgraphs? Standard it yields sets. The fix makes it consistent with treating it as a collection of nodes. Fine.\n\nNow let me reconsider the whole set of pointable defects:",
+        "path": "graphrag/utils.py",
+        "start_line": 442,
+        "end_line": 442,
+        "observation_id": "45550d9f1669fb27",
+        "claimed_path": "utils.py",
+        "path_resolution": "basename",
+        "merged_from": [
+          "b44bfd4f80477818",
+          "6751e9b9c9e185f5",
+          "9c9f4172a0d8c462",
+          "d9dcb169385f71ff",
+          "882785f7f2f6d62e"
+        ]
+      },
+      {
+        "content": "1. **extractor.py (line ~207): keywords merge dropped for nodes** \u2014 data loss. HIGH.",
+        "path": "graphrag/general/extractor.py",
+        "start_line": 207,
+        "end_line": 207,
+        "observation_id": "852fa51d0b87143c",
+        "claimed_path": "extractor.py",
+        "path_resolution": "basename",
+        "merged_from": []
+      },
+      {
+        "content": "2. **utils.py (line 442): latent indentation issue / concurrency loss.** Let me nail the indentation. Based on hunk, original and new:\n```\n             for from_node, to_node in change.removed_edges:\n-                nursery.start_soon(lambda: ...)\n+                 await trio.to_thread.run_sync(lambda: ...)\n```\nThe `-` line: 16 spaces. The `+` line: 17 spaces (one extra). This is syntactically valid (inside the for) but inconsistent indentation. Actually wait \u2014 one extra space means it's MORE indented than the `for` body's other potential lines, but there are no other statements in the for. It's still within the for block. Not a syntax error. So it's cosmetic + the concurrency issue.\n\nLet me think harder about actual wrong-behavior defects to be exhaustive:",
+        "path": "graphrag/utils.py",
+        "start_line": 442,
+        "end_line": 442,
+        "observation_id": "f9a1575e2a45ae5a",
+        "claimed_path": "utils.py",
+        "path_resolution": "basename",
+        "merged_from": []
+      },
+      {
+        "content": "1. **extractor.py line 204-205 (nodes): keywords merge silently dropped.** When two nodes are merged, node1's `keywords` are lost. Failure: merge two entities with distinct keywords; the surviving merged node's `keywords` no longer contains node1's keywords, so keyword-based retrieval/queries on the merged entity return incomplete results. HIGH severity.",
+        "path": "graphrag/general/extractor.py",
+        "start_line": 204,
+        "end_line": 204,
+        "observation_id": "769ceec81b1a2cee",
+        "claimed_path": "extractor.py",
+        "path_resolution": "basename",
+        "merged_from": []
+      },
+      {
+        "content": "2. **utils.py line 442: lost parallelism returns wrong/regressed behaviour \u2014 batch deletes now serialized inside a still-present nursery.** Actually let me think if there's a *functional* wrong-behaviour. The deletes still execute. Lower.\n\nAlso \u2014 is there a subtle defect in utils.py line 442 regarding `trio.to_thread.run_sync` combined with `await` inside a nursery? Actually the bigger defect: with a nursery and awaiting directly, no. But wait \u2014 there might be a **deadlock/liveness issue**: the lambda invokes a `delete` that may itself be blocking/not thread-safe when moved to a worker thread. `settings.docStoreConn.delete` \u2014 if the docStore connection is not thread-safe, running it in a to_thread worker thread while other code runs could cause parallel access from multiple threads (since the outer code continues... no, we await each). Actually since each delete is awaited before proceeding, and to_thread uses worker threads \u2014 if two `set_graph` calls run concurrently (multiple nurseries), the docStore could be accessed from multiple worker threads concurrently \u2192 potential thread-safety issue. But that's speculative.",
+        "path": "graphrag/utils.py",
+        "start_line": 442,
+        "end_line": 442,
+        "observation_id": "9439730e9eeb47a4",
+        "claimed_path": "utils.py",
+        "path_resolution": "basename",
+        "merged_from": []
+      },
+      {
+        "content": "3. **utils.py line 442 indentation: the new line is indented with one extra leading space (17 spaces vs 16)** \u2014 inconsistent with the surrounding `for` body. Let me verify by counting the diff characters. Context: `             for from_node...` = 13 spaces + `for`? Let me count: the diff context line prefix is one space from the diff marker then the actual line. In the hunk, `             for from_node` line \u2014 the display shows the diff-metadata stripped. Hard to count exactly. The `-` line: `-                nursery.start_soon` = `-` + 16 spaces. The `+` line: `+                 await` = `+` + 17 spaces. So yes one extra space. That's a style/indentation inconsistency, which would still parse. Not functional. I'll mention it as minor.\n\nNow, let me make sure I'm being exhaustive and not over-reporting. Let me reconsider the concurrency/parallelism change more carefully as the most concrete defect after the keywords one.\n\nActually, there's a more serious correctness concern with removing the nursery in utils.py: **error handling/cancellation semantics.** With `start_soon`, individual failures... eh.\n\nLet me also reconsider hunk 1 \u2014 is there any defect? `list(sub_connect_graph)` where sub_connect_graph is a set from connected_components. Converting set\u2192list. The nodes list is passed to `_merge_graph_nodes`. Order of the list is arbitrary (set iteration order), but that doesn't affect correctness of merging. Not a defect.\n\nLet me reconsider hunk 2 for another subtle issue: `node0_attrs[\"source_id\"].extend(node1_attrs[\"source_id\"])` mutates node0's list *in place*, then reassigns. If `node0_attrs[\"source_id\"]` is actually a tuple or other immutable, `.extend` fails \u2014 but it was a list before. Same dtype assumption as before. Not new.\n\nNow, a genuinely important one I should verify: **`node0_attrs[\"source_id\"]` might be missing entirely.** In the original code, `for attr in [\"keywords\", \"source_id\"]` also assumed both keys exist. So same assumption. Not new.\n\nOK. Let me also reconsider whether the dropped `keywords` on nodes is truly a drop or whether keywords was excluded elsewhere. The diff shows the node merge only merges description and source_id now. So yes, keywords dropped. That's the #1 defect.\n\nLet me also flag: extractor.py edges \u2014 now, `edge0_attrs[\"keywords\"].extend(edge1_attrs[\"keywords\"])` \u2014 if an edge lacks a `keywords` key (edges created without keywords), KeyError. But that's pre-existing.\n\nI think the solid, pointable defects are:",
+        "path": "graphrag/utils.py",
+        "start_line": 442,
+        "end_line": 442,
+        "observation_id": "809c066380925130",
+        "claimed_path": "utils.py",
+        "path_resolution": "basename",
+        "merged_from": []
+      },
+      {
+        "content": "1. **extractor.py lines 204-205 \u2014 node `keywords` merge dropped** (data loss). HIGH.",
+        "path": "graphrag/general/extractor.py",
+        "start_line": 204,
+        "end_line": 204,
+        "observation_id": "003b3ca651d090f9",
+        "claimed_path": "extractor.py",
+        "path_resolution": "basename",
+        "merged_from": []
+      },
+      {
+        "content": "2. **utils.py line 442 \u2014 deletion parallelized\u2192serialized, and the now-pointless nursery wrapper; also this is a real behaviour change** (perf regression). Medium.",
+        "path": "graphrag/utils.py",
+        "start_line": 442,
+        "end_line": 442,
+        "observation_id": "f0b8bdde8ff80d30",
+        "claimed_path": "utils.py",
+        "path_resolution": "basename",
+        "merged_from": []
+      },
+      {
+        "content": "3. **utils.py line 442 \u2014 inconsistent indentation (extra leading space)**. Minor.\n\nLet me also double check if there's a timing/race defect in the utils.py change that's worse: Original with `start_soon`: the lambdas late-bind `from_node`/`to_node`, so all deletes actually invoked with the LAST iteration's values \u2192 **original was buggy** (would delete wrong pairs / the last pair multiple times, and none for others). The new code, by awaiting synchronously, actually FIXES that latent bug. So not a defect introduced \u2014 but worth noting the new approach is the fix. Not a defect to report though.\n\nHmm, but is there a NEW defect introduced by running delete in a worker thread that is not thread-safe? If `settings.docStoreConn.delete` is not thread-safe and another coroutine concurrently does docStore operations, moving it to a thread introduces cross-thread concurrent access. But it's gated behind `await` per-call in a single coroutine. If multiple `set_graph` calls run concurrently in different tasks, each spawns worker threads \u2192 concurrent docStore access from multiple threads. That's plausible but speculative. I'll mention it as low-probability.\n\nLet me also reconsider \u2014 the removal of the nursery changes failure semantics: previously failures in start_soon would surface... eh.\n\nI think 3 solid defects is lean for a \"usually ten or more\" instruction, but honesty matters more than hitting a number. The diff is small and mostly fixes. Let me be thorough and also reconsider whether there are more.\n\nReconsider hunk 2: After the change, is there ordering non-determinism? `sorted(set(...))` \u2014 deterministic. For edges, `list(set(...))` \u2014 **non-deterministic ordering** because set iteration order is arbitrary. But that was true before too (`list(set(...))`). Not new. Actually for edges the new code keeps `list(set(...))` (unordered) whereas for nodes it uses `sorted(set(...))` (ordered). Inconsistent but pre-existing for edges. Not a new defect.\n\nLet me reconsider the node source_id: `sorted(set(...))` \u2014 if `source_id` entries are not comparable/sortable (e.g., mixed types, dicts), `sorted` raises TypeError. But original code also used `sorted(set(...))` for nodes' source_id. So same. Not new.\n\nLet me reconsider utils.py: is there a syntax error? The `await` inside `async with trio.open_nursery()` \u2014 valid. One extra space \u2014 invalid indentation? No, extra space is fine as long as it's within the block. Actually \u2014 wait. Let me re-examine. If the original `nursery.start_soon` was at indentation implying it's the `for` body (16 spaces), and the new `await` is at 17 spaces, it's still within the `for` (which is at 12+1? no). Everything's consistent enough syntactically. Actually one subtle thing: could the extra space push the `await` line to be MORE indented such that... no, blocks only care about relative vs the `for`'s first line. `for` at 12 spaces (context line `             for from_node...` = 13 chars of indent? plus diff space). Whatever \u2014 it's within.\n\nHmm, actually let me recount the context line indentation. The hunk:\n```\n     if change.removed_edges:\n         async with trio.open_nursery() as nursery:\n             for from_node, to_node in change.removed_edges:\n-                nursery.start_soon(lambda: ...\n+                 await trio.to_thread.run_sync(lambda: ...\n     now = trio.current_time()\n```\n`if` at 4 spaces, `async with` at 8, `for` at 12, `nursery.start_soon` at 16 (`-` + 16). The `+` line: `+` + 17 spaces. So the await is at 17 \u2014 an inconsistent extra space, but the next line `now = trio.current_time()` is at 4 spaces (dedents out of the `if`). So `await` at 17 is inside the `for`. Fine syntactically. The inconsistency is cosmetic. I'll flag it as minor.\n\nGiven the instruction to be exhaustive but only report real pointable defects, I'll report:",
+        "path": "graphrag/utils.py",
+        "start_line": 442,
+        "end_line": 442,
+        "observation_id": "5a71694634eeccc2",
+        "claimed_path": "utils.py",
+        "path_resolution": "basename",
+        "merged_from": []
+      },
+      {
+        "content": "**1. `graphrag/general/extractor.py` \u2014 lines 204\u2013205: node `keywords` merge silently dropped (data loss).**\nThe original `for attr in [\"keywords\", \"source_id\"]: ...` merged **both** `keywords` and `source_id` into the surviving node. The replacement only merges `source_id`; the `keywords` handling for **nodes** is gone entirely (note the corresponding `keywords` handling on **edges** in the next hunk, lines 216\u2013217, was *retained* \u2014 so the two are now inconsistent, confirming the drop is not intentional deduplication elsewhere).\nFailure scenario: merge two entities `A` (keywords `[\"foo\"]`) and `B` (keywords `[\"bar\"]`). After merge, node0's `keywords` is `[\"foo\"]` only \u2014 `\"bar\"` is lost. Any downstream keyword-indexed lookup or query that relies on the merged node's `keywords` now returns incomplete/garbled results, silently. The original code (crash on `set(...extend(...))`) is replaced by correct-but-incomplete merging rather than by merging both fields correctly.",
+        "path": "graphrag/general/extractor.py",
+        "start_line": 204,
+        "end_line": 204,
+        "observation_id": "7a9a8b372a932627",
+        "claimed_path": "graphrag/general/extractor.py",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "**2. `graphrag/utils.py` \u2014 line 442: batch edge deletion changed from concurrent to strictly serial, and the `open_nursery` wrapper is now dead scaffolding.**\n`nursery.start_soon(...)` for every removed edge (all launched concurrently) becomes `await trio.to_thread.run_sync(...)` executed one-at-a-time in a sequential loop. The `async with trio.open_nursery()` block now wraps a single awaited call and provides nothing.\nFailure scenario: a graph update removing N edges now issues N blocking `delete` calls back-to-back instead of in parallel; `set_graph`'s wall-clock time scales linearly with `len(change.removed_edges)` where it previously did not, and the coroutine blocks on each remote delete, stalling the whole update (including the follow-up pagerank/update work) pending each successive network round-trip.",
+        "path": "graphrag/utils.py",
+        "start_line": 442,
+        "end_line": 442,
+        "observation_id": "1681cd6f73d1fb93",
+        "claimed_path": "graphrag/utils.py",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "**3. `graphrag/utils.py` \u2014 line 442: extra leading-space indentation (17 spaces vs the surrounding 16).**\nThe `+` line is indented one space deeper than the other statements in the `for` body. It happens to parse (still inside the `for` block), but it is inconsistent indentation and a latent trap \u2014 if the loop body ever grows or the line is re-indented, the mismatch is a correctness/foot-gun. Concrete failure: this line gets visually/automatically re-aligned or edited by a formatter/editor that treats the 17-space level as a distinct nested block, silently changing control flow.",
+        "path": "graphrag/utils.py",
+        "start_line": 442,
+        "end_line": 442,
+        "observation_id": "fa0acff01a0a806c",
+        "claimed_path": "graphrag/utils.py",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "**4. `graphrag/utils.py` \u2014 line 442 (low probability): moving a blocking `settings.docStoreConn.delete` into a worker thread raises a thread-safety concern.**\nThe call now executes inside `trio.to_thread`'s thread pool. If `set_graph` (or sibling code paths) runs concurrently in multiple tasks/nurseries, the same `docStoreConn` object can be driven from multiple worker threads simultaneously. Failure scenario: two concurrent `set_graph` calls, each spawning a `to_thread` worker that calls `docStoreConn.delete(...)` on the shared, non-thread-safe connection \u2014 interleaved protocol writes on one socket \u2192 corrupted/partial requests, dropped deletes, or the connection raising/desyncing. Previously the target ran on the trio task's own thread, so this exposure did not exist.",
+        "path": "graphrag/utils.py",
+        "start_line": 442,
+        "end_line": 442,
+        "observation_id": "629066e3f6a62a9c",
+        "claimed_path": "graphrag/utils.py",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "## Hunks reviewed with no defect reported\n\n- `graphrag/entity_resolution.py` line 114 (`list(sub_connect_graph.nodes)` \u2192 `list(sub_connect_graph)`): `connected_components` yields node-sets, so `.nodes` was an AttributeError; this is a fix, not a defect.\n- `graphrag/general/extractor.py` lines 216\u2013219 (edge `keywords`/`source_id`): the `.extend`-then-`set` pattern correctly fixes the prior `set(None)` crash with no dropped fields, so no defect (only the unrelated pre-existing `list(set(...))` unordered-dedup, which is unchanged).\n\nI stopped after the four items above; the remaining changes in the diff are the genuine fixes and the unrelated loop-variable renaming noted above.",
+        "path": "graphrag/entity_resolution.py",
+        "start_line": 114,
+        "end_line": 114,
+        "observation_id": "c84701e9936ea65d",
+        "claimed_path": "graphrag/entity_resolution.py",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "### 1. `graphrag/general/extractor.py:204` \u2014 **Node `keywords` merge silently dropped**\n```python\n# Old: for attr in [\"keywords\", \"source_id\"]: ...\n# New: only handles \"source_id\"\n```\n**Failure scenario**: Merge two nodes where both have `keywords` (e.g., `[\"AI\", \"ML\"]` and `[\"deep learning\"]`). After merge, the resulting node only retains the first node's keywords. The second node's keywords are lost with no warning.\n\n---",
+        "path": "graphrag/general/extractor.py",
+        "start_line": 204,
+        "end_line": 204,
+        "observation_id": "74d43ed48b8551bf",
+        "claimed_path": "graphrag/general/extractor.py",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "### 2. `graphrag/general/extractor.py:204` \u2014 **Node merge assumes `source_id` exists and is a list**\n```python\nnode0_attrs[\"source_id\"].extend(node1_attrs[\"source_id\"])\n```\n**Failure scenario**: If either node lacks a `source_id` attribute, or if it's `None`/string instead of a list \u2192 `KeyError` or `AttributeError` crashes the merge.\n\n---",
+        "path": "graphrag/general/extractor.py",
+        "start_line": 204,
+        "end_line": 204,
+        "observation_id": "c98106471f2ba0c1",
+        "claimed_path": "graphrag/general/extractor.py",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "### 3. `graphrag/general/extractor.py:216` \u2014 **Edge merge loses deterministic ordering**\n```python\n# Old (nodes): sorted(set(...))  \u2192 deterministic\n# New (edges): list(set(...))    \u2192 non-deterministic order\n```\n**Failure scenario**: Two runs merging the same edges produce different `keywords`/`source_id` orderings. Breaks reproducible builds, caching, or any downstream code that compares serialized graphs (e.g., `graph1 == graph2` fails spuriously).\n\n---",
+        "path": "graphrag/general/extractor.py",
+        "start_line": 216,
+        "end_line": 216,
+        "observation_id": "c1c72c2d146a6bdc",
+        "claimed_path": "graphrag/general/extractor.py",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "### 4. `graphrag/general/extractor.py:216` \u2014 **Edge merge assumes attributes exist and are lists**\n```python\nedge0_attrs[\"keywords\"].extend(edge1_attrs[\"keywords\"])\n```\n**Failure scenario**: Edge missing `keywords` or `source_id`, or attribute is not a list \u2192 `KeyError`/`AttributeError` crashes the merge.\n\n---",
+        "path": "graphrag/general/extractor.py",
+        "start_line": 216,
+        "end_line": 216,
+        "observation_id": "4985d3eecf2afb32",
+        "claimed_path": "graphrag/general/extractor.py",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "### 5. `graphrag/utils.py:442` \u2014 **Complete loss of concurrency for edge deletions**\n```python\n# Old: nursery.start_soon(...)  \u2192 all deletions run concurrently\n# New: await trio.to_thread.run_sync(...)  \u2192 each deletion blocks sequentially\n```\n**Failure scenario**: Deleting 10,000 edges. Original: ~parallel I/O, completes in ~max(delete_latency). New: 10,000 \u00d7 serial round-trips, completes in ~sum(delete_latency). Orders-of-magnitude slowdown.\n\n---",
+        "path": "graphrag/utils.py",
+        "start_line": 442,
+        "end_line": 442,
+        "observation_id": "db1e0b2d6030c969",
+        "claimed_path": "graphrag/utils.py",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "### 6. `graphrag/utils.py:442` \u2014 **Lambda closure captures loop variables by reference**\n```python\nawait trio.to_thread.run_sync(lambda: settings.docStoreConn.delete(..., from_node, to_node, ...))\n```\n**Failure scenario**: Currently \"works\" because each `await` completes before the next iteration. But any refactor (e.g., batching with `nursery.start_soon` again, or `gather`) would cause all threads to see the final `from_node`/`to_node` values \u2192 wrong edges deleted or `KeyError` on stale values.\n\n---",
+        "path": "graphrag/utils.py",
+        "start_line": 442,
+        "end_line": 442,
+        "observation_id": "30362bf99fdadf85",
+        "claimed_path": "graphrag/utils.py",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "### 7. `graphrag/utils.py:442` \u2014 **Error handling semantics changed**\n```python\n# Old: nursery collects exceptions, cancels siblings on first failure\n# New: exception propagates immediately, crashes loop, remaining deletions skipped\n```\n**Failure scenario**: 5th of 100 deletions fails (transient network error). Original: nursery cancels remaining 95, surfaces first exception. New: loop crashes at 5th, 95 deletions never attempted, no cleanup.\n\n---",
+        "path": "graphrag/utils.py",
+        "start_line": 442,
+        "end_line": 442,
+        "observation_id": "26c9f3aaa6de37d1",
+        "claimed_path": "graphrag/utils.py",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "### 8. `graphrag/utils.py:442` \u2014 **Thread-per-deletion overhead + potential async misuse**\n```python\nawait trio.to_thread.run_sync(lambda: settings.docStoreConn.delete(...))\n```\n**Failure scenario A**: If `docStoreConn.delete` is async, this passes a coroutine to `run_sync` \u2192 coroutine never awaited \u2192 deletion silently not executed.  \n**Failure scenario B**: 10,000 edges \u2192 10,000 thread-pool tasks queued \u2192 thread pool exhaustion, memory pressure, or `RuntimeError: cannot schedule new futures after shutdown`.\n\n---",
+        "path": "graphrag/utils.py",
+        "start_line": 442,
+        "end_line": 442,
+        "observation_id": "48086a4a4d6a9fef",
+        "claimed_path": "graphrag/utils.py",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "### 9. `graphrag/entity_resolution.py:114` \u2014 **Behavioral change with no test coverage implication**\n```python\n# Old: list(sub_connect_graph.nodes)\n# New: list(sub_connect_graph)\n```\n**Not a defect** \u2014 In NetworkX, iterating a `Graph` yields its nodes, so these are equivalent. Included only because the diff highlights it; no failure scenario exists.\n\n---",
+        "path": "graphrag/entity_resolution.py",
+        "start_line": 114,
+        "end_line": 114,
+        "observation_id": "4cbe7cdeb14cd6c9",
+        "claimed_path": "graphrag/entity_resolution.py",
+        "path_resolution": "exact",
+        "merged_from": []
+      }
+    ]
+  },
+  "rundir": "/home/mjarnold/.cache/llm-panel/runs/aacr-up-peu3wn0j-0e07632064bf/20260829-114843-3710502",
+  "extractor": "3",
+  "unlocated": [
+    {
+      "content": "3. **utils.py: The `async with trio.open_nursery()` wrapper is now redundant** but more importantly, converting the parallel `start_soon` batch into an awaited sequential loop changes it so that if `delete()` is slow/blocking, the whole graph set operation stalls. Performance regression only.",
+      "observation_id": "48f12c00491b5c71",
+      "claimed_path": "utils.py",
+      "path_resolution": "basename"
+    },
+    {
+      "content": "4. **extractor.py edges: dedup with `list(set(...))` loses ordering.** Previously too. `sorted(set(...))` wasn't used for edges. Not new.\n\n5. **Potential NoneType `.extend` failure** in both node source_id and edge attrs if the attribute is None. Same as before \u2014 not new.\n\nLet me reconsider: is there a defect where in hunk 2 the new code could fail if `node0_attrs[\"source_id\"]` doesn't exist or no",
+      "observation_id": "bc325ec1afa05226",
+      "claimed_path": "extractor.py",
+      "path_resolution": "basename"
+    },
+    {
+      "content": "1. extractor.py 204-205: node keywords dropped (data loss) \u2014 HIGH",
+      "observation_id": "52237f6362a25115",
+      "claimed_path": "extractor.py",
+      "path_resolution": "basename"
+    },
+    {
+      "content": "2. utils.py 442: batch deletes serialized + redundant nursery (perf/behaviour regression)",
+      "observation_id": "03ad30622d815efa",
+      "claimed_path": "utils.py",
+      "path_resolution": "basename"
+    },
+    {
+      "content": "3. utils.py 442: extra-space indentation inconsistency",
+      "observation_id": "9b7e43349276df39",
+      "claimed_path": "utils.py",
+      "path_resolution": "basename"
+    },
+    {
+      "content": "4. utils.py 442 (low-prob): delete moved to worker thread raises thread-safety concern for docStore if connection isn't thread-safe and set_graph runs concurrently across tasks/nurseries.\n\nThat's honest. I won't manufacture items to hit \"ten.\"\n\nLet me be precise on line numbers I cite.\n\nFor extracted defects, I should note I could not read the files (not present in working dir), but cite from diff",
+      "observation_id": "6a83a1f10b80b5be",
+      "claimed_path": "utils.py",
+      "path_resolution": "basename"
+    },
+    {
+      "content": "### Summary\n| File | Line | Severity | Defect |\n|------|------|----------|--------|\n| `graphrag/general/extractor.py` | 204 | **Critical** | Node `keywords` merge silently dropped |\n| `graphrag/general/extractor.py` | 204 | **High** | Node merge assumes `source_id` list exists |\n| `graphrag/general/extractor.py` | 216 | **High** | Edge merge loses deterministic ordering |\n| `graphrag/general/extra",
+      "observation_id": "761aa7f579e9d3a2",
+      "claimed_path": "graphrag/general/extractor.py",
+      "path_resolution": "exact"
+    }
+  ]
+}

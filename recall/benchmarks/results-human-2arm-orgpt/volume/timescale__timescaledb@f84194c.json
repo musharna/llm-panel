@@ -1,0 +1,676 @@
+{
+  "review": {
+    "comments": [
+      {
+        "content": "1. **[P1] `tsl/src/compression/compression.c:778, 798\u2013837, 890` \u2014 Attribute offsets are resolved against different relations than the supplied tuple descriptors.** `build_column_map()` and `row_compressor_init()` look up attnums using `settings->fd.relid`/`compress_relid`, then use those numbers to index `noncompressed_tupdesc` and `compressed_tupdesc`. `compress_and_swap_heap()` supplies `new_compressed_rel`\u2019s descriptor while the settings can still identify the old compressed relation. Scenario: the old relation contains a dropped attribute at position 3 while the rebuilt relation has compacted attributes; lookup returns position 4 for column `v`, but position 4 in the new descriptor is another column. Compression then writes `v` or its count/min/max metadata into the wrong physical attribute, producing corrupt compressed tuples or type-related crashes.",
+        "path": "tsl/src/compression/compression.c",
+        "start_line": 778,
+        "end_line": 778,
+        "observation_id": "82d66d8b1033ead2",
+        "claimed_path": "tsl/src/compression/compression.c",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "2. **[P1] `tsl/src/compression/compression.c:1765` \u2014 Decompressed slots no longer carry the destination table OID.** The removed `decompressed_tuple->t_tableOid = decompressor->out_rel->rd_id` assignment is not replaced using `writer->out_rel`. Scenario: the destination has a partial index whose predicate references `tableoid`; decompression creates slots with `InvalidOid`, so index-predicate evaluation rejects rows that actually belong to the table. The heap rows are inserted but their index entries are omitted, causing qualifying index scans to miss them.",
+        "path": "tsl/src/compression/compression.c",
+        "start_line": 1765,
+        "end_line": 1765,
+        "observation_id": "1b7ae6a8d0f52b92",
+        "claimed_path": "tsl/src/compression/compression.c",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "3. **[P1] `tsl/src/compression/compression.h:154` \u2014 The public header uses `AttrMap` without declaring it or including its defining header.** `compression.c` includes `<access/attmap.h>` privately, but `compression.h` exposes `AttrMap *attrmap`. Scenario: a translation unit includes `compression.h` without first including `access/attmap.h`; compilation fails with an unknown type name for `AttrMap`.\n\nVerification scope: I checked the workspace directory, but it is empty; therefore these findings are verified against the supplied diff only, and no additional repository call sites or transitive includes were available to inspect.",
+        "path": "tsl/src/compression/compression.h",
+        "start_line": 154,
+        "end_line": 154,
+        "observation_id": "633aec39632e4a91",
+        "claimed_path": "tsl/src/compression/compression.h",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "## Defects\n\n**1. compression.c:768\u2013781, 897\u2013900 \u2014 column lookups switched from the actual relations being written to `settings->fd.compress_relid` / `settings->fd.relid`** (`@@ -763,12 +761,10 @@`, `@@ -899,25 +896,22 @@`)\n`build_column_map` now resolves each column with `get_attnum(settings->fd.compress_relid, ...)` and offsets the result against the *passed-in* `out_desc`; `row_compressor_init` looks up the count metadata column the same way. The relations actually written in two callers are freshly created tables that are not the catalog-recorded one: `compress_and_swap_heap` and `convert_to_hypercore_finish` write into `new_compressed_rel`/`compressed_rel` created in the same transaction. If `settings->fd.compress_relid` still points at the previous chunk (or is InvalidOid for a first conversion), `get_attnum` either returns a column number belonging to a *different* table's layout or `InvalidAttrNumber`. Failure scenario: `get_attnum` returns 0/InvalidAttrNumber \u2192 `AttrNumberGetAttrOffset()` gives \u22121 \u2192 `TupleDescAttr(out_desc, -1)` and `map[...] = -1` read/write out of bounds (garbage ColumnCompressor state or crash). If the stale relid returns a *valid but different* attnum (e.g. old layout has more columns), the offset exceeds `out_desc->natts` \u2192 out-of-bounds `TupleDescAttr` read \u2192 wrong `attlen`/`attbyval` \u2192 compressed values written under wrong column semantics \u2192 corrupt columnstore that may only fail later at decompression. The count-metadata lookup errors out with \"missing metadata column\" even though the actual target table has it. The old code always consulted the relation being written, so this class of failure is new.\n\n**2. compression.c:1403 with recompress.c:711\u2013724 \u2014 `writer->mycid` is captured once and never refreshed, but recompression runs `CommandCounterIncrement()` between segments** (`@@ -1329,43 +1340,115 @@`, `@@ -702,14 +711,15 @@`)\n`bulk_writer_build` snapshots `GetCurrentCommandId(true)` at build time; every later `heap_insert`/`table_multi_insert` uses that cid. The old recompress path re-read the command id at the entry of every `row_compressor_append_sorted_rows`, i.e. after each segment's `CommandCounterIncrement()`. Failure scenario: recompress a chunk with \u22652 segments inside a transaction that already holds an older snapshot \u2014 e.g. a declared cursor or a `FOR ... LOOP` opened before the recompress statement. Rows recompressed in segments 2..N are stamped with the command id from before the increments, so `HeapTupleSatisfiesMVCC` (cmin < snapshot->curcid) reports them as visible to that older snapshot, even though they were inserted in a later command \u2014 a statement cursor returns rows it must not see, and any EPQ/recheck path keyed on the same snapshot can act on rows that are not actually part of its read view.\n\n**3. compression.c:1428\u20131434, compression_dml.c:528 \u2014 count-metadata-column validity is guarded only by `Assert`s, and the non-assert fallback is a negative array index** (`@@ -1340,43 +1340,115 @@`, `@@ -521,9 +521,9 @@`)\n`build_decompressor` asserts `AttributeNumberIsValid(count_meta_attnum)` and then unconditionally computes `count_compressed_attindex = AttrNumberGetAttrOffset(count_meta_attnum)`. In a non-assert build, a compressed chunk whose `_ts_compressed_count` column is missing or dropped (legacy/hand-built chunk) yields `count_compressed_attindex = -1`; the decompression loops then read `compressed_datums[-1]` / index `decompressed_is_nulls[-1]` for the count \u2192 garbage row count \u2192 `decompress_batch` advances the wrong number of rows \u2192 wrong number of decompressed rows or out-of-bounds slot access. Likewise in `decompress_batches_scan`, `meta_count_attno` is Assert-only; on a malformed chunk `heap_getattr(compressed_tuple, InvalidAttrNumber, ...)` reads off the front of the tuple. The old code defaulted these to 0 (wrong data, but in-bounds); the new code is memory-unsafe in the same situation.\n\n**4. compression.c:300 \u2014 `bulk_writer_build(out_rel, insert_options)` runs before the relkind sanity checks** (`@@ -297,13 +297,13 @@`)\n`bulk_writer_build` calls `CatalogOpenIndexes`, `GetBulkInsertState` and `CreateExecutorState`; only afterwards do the two `Ensure(relkind == RELKIND_RELATION)` checks run. If an Ensure fails (compress_chunk called on a non-relation, e.g. a foreign table or view passed from a buggy caller), the ERROR path never reaches `bulk_writer_close` \u2014 open index relations, the bulk-insert state and the executor estate stay pinned on the resource owner until transaction abort. Old code opened the indexes only inside `row_compressor_init`, after the Ensures. Low impact (ERROR aborts the transaction anyway) but a genuine ordering regression that also unbalances index locks if any caller ever catches the error (e.g. via subtransaction).\n\n**5. compression_dml.c:525 \u2014 the decompressor is built before the writer, and the writer's `mycid` therefore predates the first `table_tuple_delete`** (`@@ -521,9 +521,9 @@`)\n`bulk_writer_build(out_rel, 0)` runs *after* `build_decompressor` and *before* the first inlined `table_tuple_delete(..., GetCurrentCommandId(true), ...)` in the same loop iteration. Since no `CommandCounterIncrement` occurs between them, `writer->mycid` and the delete's fresh cid are the same value today \u2014 but the delete path now evaluates `GetCurrentCommandId(true)` per tuple while the insert path reuses the captured value, so any future `CommandCounterIncrement` inserted inside the loop (the loop already contains `write_logical_replication_msg_*` calls and conditional error handling) silently desynchronizes deletes and inserts. This is the same staleness class as #2 in a latent form; today's concrete effect is only that the insert cid is one acquire earlier than the delete cid.\n\n**6. compression.c:1340\u20131395 \u2014 `build_decompress_attrmap`'s rotating cursor search** (`@@ -1340,43 +1340,115 @@`)\nThe inner search for a compressed column's name starts from `nextindesc+1` \u2014 the position where the *previous* column's search ended \u2014 and never restarts from 0. Because it wraps and runs `innatts` iterations this happens to cover every position, so with unique column names it finds the match; but if a name is *not* found, the cursor is left mid-array and the next column's search begins there, so the mapping for a pair of columns whose names appear in reversed order relative to the uncompressed table is order-dependent rather than name-dependent. Concretely: uncompressed `[b, a]`, compressed `[a, b]` \u2014 column `a` matches at position 1, cursor lands after it, and `b` correctly wraps to position 0 \u2014 but any *renamed/added* column (e.g. a column added to the uncompressed chunk after compression whose name collides with nothing, leaving `attnums[i]=0`) silently flips subsequent columns' mapping to whatever the rotated scan happens to match first, marking a wrongly-mapped column as \"no uncompressed counterpart\" instead of erroring. The scan is also the only place count/meta columns are excluded; a column named with the count-meta string in the *uncompressed* relation is skipped without comment. Low probability (requires dropped/renamed columns), but it converts a name collision into silent wrong-column decompression.\n\n**7. compression.c:1218\u20131251 \u2014 split of `row_compressor_flush` changes when `MemoryContextReset(per_row_ctx)` happens relative to the reset of `compressed_is_null`/`compressed_values`** (`@@ -1232,16 +1218,39 @@`)\nThe old code reset the value/null arrays *before* invoking `on_flush`, then zeroed counters, then reset the context. The new code calls `row_compressor->on_flush` (inside `row_compressor_flush`) while `compressed_values[col]` still holds pointers into `per_row_ctx` for the *next* batch's write, and only then resets both. The registered progress callback `on_compression_progress` (set in `compress_and_swap_heap`) does not read those arrays today, so this is latent: any progress/observer callback that inspects or retains `row_compressor->compressed_values` (or any index-insert hooks that stash them) now observes cross-batch stale pointers that get freed by the reset a moment later. Same class of fragility as the old code avoided by not exposing these fields across the callback boundary.\n\n**8. compression.h:24\u201331 with compression.c:1402 \u2014 `CatalogIndexState indexstate` in `BulkWriter` is no longer lazily guarded like the old `row_compressor.resultRelInfo`/`decompressor.indexstate` lifetime** (`@@ -121,25 +121,24 @@`)\nInvalid \u2014 rechecked: old code opened and closed indexes at the same points. Withdraw. Instead: `bulk_writer_close` is *not* called on the early-return paths in `decompress_batches_scan` if `skip_current_tuple` fires on the very first valid tuple and `!decompressor_initialized` was false \u2014 no; the return path closes both unconditionally after the lazy init. No defect. Nothing further to report in this hunk.\n\n**9. recompress.c:251\u2013268 \u2014 `build_decompressor` and `row_compressor_init`/`bulk_writer_build` are constructed unconditionally, before the loop can determine whether any segment needs recompression** (`@@ -251,27 +251,29 @@`)\nThe decompressor, compressor, and writer (including `CatalogOpenIndexes(compressed_chunk_rel)`, a bulk-insert state, and an executor estate) are all created even when the chunk has no rows or when every batch ends in `tuples_for_recompression == false` and control jumps to `finish:` immediately. `bulk_writer_close` then releases them without any insert having happened \u2014 functional, but the uncompressed->compressed lock/`index_open`/lock-mode dance now happens after `get_compressed_chunk_index(writer.indexstate, ...)` while the writer is still holding its own open indexes on the same relation, i.e. two concurrent opens of the chunk's index set (`CatalogOpenIndexes` + `index_open(index_oid, ExclusiveLock)`). If `ts_guc_enable_exclusive_locking_recompression` is on, `index_open` with ExclusiveLock against the already-open `CatalogIndexState` entries for the *same* relation in the *same* backend is fine (same lock owner), so no deadlock \u2014 but the ordering makes the exclusive-lock mode acquire its lock *after* work-initialization instead of before, so a concurrently-issued recompress can interleave its index-open between the writer's open and the exclusive `index_open`, defeating the purpose of the exclusive-lock GUC. Marginal, but it is a real weakening of the existing lock-ordering guarantee that the old code did not have (old code held no open index state from a writer while acquiring the exclusive index lock).\n\nI checked every hunk; the include changes, signature reorderings, loop-bound substitutions (`num_compressed_columns` \u2192 `in_desc->natts`), the `t_tableOid` removal, and the pure renaming in `compression.h` are behavior-preserving as far as the diff shows, and I could not verify allocation-context claims (e.g. whether `per_compressed_cols` would make the new `pfree` in `row_decompressor_close` a double-free) because no source tree is present in the working directory.",
+        "path": "tsl/src/compression/compression.c",
+        "start_line": 768,
+        "end_line": 768,
+        "observation_id": "8aa0719a17dc1461",
+        "claimed_path": "compression.c",
+        "path_resolution": "basename",
+        "merged_from": []
+      },
+      {
+        "content": "### 1. `tsl/src/compression/compression.c:246` - `calculate_reltuples_to_report` signature change\n\n**Defect:** The function now takes `float4 reltuples` instead of `Relation rel`. Callers at lines 488 and 950 pass `in_rel->rd_rel->reltuples` (a `float4`), but the original code at line 269 passed the full `Relation`. If any other callers exist that pass a `Relation*`, they would now pass a pointer where a float is expected, causing garbage values or crashes.\n\n**Failure scenario:** If another caller (not shown in diff) passes `Relation rel` instead of `rel->rd_rel->reltuples`, the pointer value gets interpreted as `float4`, producing wildly incorrect `report_reltuples` (likely huge), causing progress logging to never fire or fire constantly.\n\n---",
+        "path": "tsl/src/compression/compression.c",
+        "start_line": 246,
+        "end_line": 246,
+        "observation_id": "ef49f2cea45e1573",
+        "claimed_path": "tsl/src/compression/compression.c",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "### 2. `tsl/src/compression/compression.c:270` - `mycid` removed from `compress_chunk`\n\n**Defect:** `CommandId mycid = GetCurrentCommandId(true);` was removed. The `BulkWriter` now captures `mycid` at build time via `bulk_writer_build()` \u2192 `GetCurrentCommandId(true)`. But `compress_chunk` calls `bulk_writer_build()` once at the start, while the old code got a fresh `mycid` for each flush path (index scan vs tuplesort). If the command ID advances between the two paths (unlikely but possible in complex transactions), the writer uses a stale CID.\n\n**Failure scenario:** In a transaction that does `compress_chunk` after some other command that advances the command counter, the bulk insert uses an old CID. This could cause visibility issues for concurrent transactions or incorrect `xmin`/`xmax` on inserted tuples.\n\n---",
+        "path": "tsl/src/compression/compression.c",
+        "start_line": 270,
+        "end_line": 270,
+        "observation_id": "ac5a44b3f945a716",
+        "claimed_path": "tsl/src/compression/compression.c",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "### 3. `tsl/src/compression/compression.c:458-465` - `row_compressor_init` signature change\n\n**Defect:** Old signature took `(settings, row_compressor, uncompressed_table, compressed_table, num_columns, need_bistate, insert_options)`. New signature takes `(row_compressor, settings, noncompressed_tupdesc, compressed_tupdesc)`. The `need_bistate` and `insert_options` parameters are dropped. These are now expected to come from `BulkWriter`. But `row_compressor_init` no longer initializes `bistate`, `resultRelInfo`, `index_oid`, `insert_options` \u2014 those moved to `BulkWriter`. However, `row_compressor_flush` (line 1232) now accesses `writer->bistate`, `writer->indexstate`, `writer->mycid`, `writer->insert_options`. This is fine *if* all callers pass a properly initialized `BulkWriter`. But `row_compressor_init` no longer validates that the compressed table has the required metadata column (count column) via `get_attnum(compressed_table->rd_id, ...)` \u2014 wait, it still does at line 896 but now uses `settings->fd.compress_relid` instead of `compressed_table->rd_id`.\n\n**Defect at line 896:** `get_attnum(settings->fd.compress_relid, ...)` \u2014 `settings->fd.compress_relid` is an `Oid`, but `get_attnum` expects a relation OID. This is correct. However, the old code used `compressed_table->rd_id` which is the same thing. No defect here.\n\n**But:** The old code had `Assert(row_compressor->bistate != NULL)` at line 1183 (in flush). The new code has `Assert(writer->bistate != NULL)` at line 1221. This is fine.\n\n---",
+        "path": "tsl/src/compression/compression.c",
+        "start_line": 458,
+        "end_line": 458,
+        "observation_id": "8720b18257029315",
+        "claimed_path": "tsl/src/compression/compression.c",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "### 4. `tsl/src/compression/compression.c:761-797` - `build_column_map` signature change\n\n**Defect at line 780-781:** \n```c\nAttrNumber compressed_colnum =\n    get_attnum(settings->fd.compress_relid, NameStr(attr->attname));\n```\nOld code: `get_attnum(compressed_table->rd_id, NameStr(attr->attname))`. \n\n`settings->fd.compress_relid` is the OID of the compressed hypertable (the parent), NOT the compressed chunk relation. The compressed chunk has a different OID. `get_attnum` on the parent hypertable OID will fail to find chunk-specific attributes or return wrong attnums if the schema differs.\n\n**Failure scenario:** Compressing a chunk where the compressed chunk has a different column layout than the parent hypertable (e.g., added/dropped columns, different attribute numbers). The column map will be wrong, causing data corruption or \"cache lookup failed\" errors.\n\n---",
+        "path": "tsl/src/compression/compression.c",
+        "start_line": 761,
+        "end_line": 761,
+        "observation_id": "193dac7838e5958b",
+        "claimed_path": "tsl/src/compression/compression.c",
+        "path_resolution": "exact",
+        "merged_from": [
+          "44bb4e9b4b635432"
+        ]
+      },
+      {
+        "content": "### 5. `tsl/src/compression/compression.c:798-830` - `build_column_map` segment min/max/bloom attno calls\n\n**Defect at lines 803-818:** Calls to `compressed_column_metadata_attno` now pass `settings->fd.relid` and `settings->fd.compress_relid` (parent hypertable OIDs) instead of `uncompressed_table->rd_id` and `compressed_table->rd_id` (actual chunk relation OIDs). \n\n`compressed_column_metadata_attno` likely looks up metadata columns in the compressed chunk's pg_attribute. Passing the parent hypertable OID will cause it to search the wrong relation.\n\n**Failure scenario:** Segmentby column metadata (min/max/bloom) not found or wrong columns mapped, causing incorrect segment filtering or compression failures.\n\n---",
+        "path": "tsl/src/compression/compression.c",
+        "start_line": 798,
+        "end_line": 798,
+        "observation_id": "84f1d84589bc4b04",
+        "claimed_path": "tsl/src/compression/compression.c",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "### 6. `tsl/src/compression/compression.c:882` - `row_compressor_init` - `index_oid` not set\n\n**Defect:** Old code at line 926: `row_compressor->index_oid = get_compressed_chunk_index(row_compressor->resultRelInfo, settings);`. New code removes this entirely. The `index_oid` field was removed from `RowCompressor` struct (see compression.h line 261). But `recompress.c` at line 260 now calls `get_compressed_chunk_index(writer.indexstate, settings)` separately. This is fine for recompress, but what about `compress_chunk`? It doesn't seem to use `index_oid` anymore. Need to check if any code path relies on `row_compressor.index_oid`.\n\nLooking at the diff, `index_oid` is only used in `recompress.c` for logging (line 262). The old `compress_chunk` didn't use it after init. So probably OK.\n\n---",
+        "path": "tsl/src/compression/compression.c",
+        "start_line": 882,
+        "end_line": 882,
+        "observation_id": "e01ebb75b2ebcc79",
+        "claimed_path": "tsl/src/compression/compression.c",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "### 7. `tsl/src/compression/compression.c:1010` - `row_compressor_process_ordered_slot` signature change\n\n**Defect:** Changed from `CommandId mycid` to `BulkWriter *writer`. The function now calls `row_compressor_flush(row_compressor, writer, changed_groups)` at line 1022. But `row_compressor_flush` at line 1232 expects `writer->bistate`, `writer->indexstate`, `writer->mycid`, `writer->insert_options`, `writer->out_rel`, `writer->estate`. All callers now pass a `BulkWriter*`. This seems consistent.\n\n---",
+        "path": "tsl/src/compression/compression.c",
+        "start_line": 1010,
+        "end_line": 1010,
+        "observation_id": "f4f5ed6877e1196d",
+        "claimed_path": "tsl/src/compression/compression.c",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "### 8. `tsl/src/compression/compression.c:1121` - `row_compressor_build_tuple` (was `row_compressor_flush`)\n\n**Defect at line 1134:** `HeapTuple tuple = heap_form_tuple(row_compressor->out_desc, ...)`. The `out_desc` is a copy created at line 899: `CreateTupleDescCopyConstr(compressed_tupdesc)`. This is fine.\n\n**But:** The old `row_compressor_flush` did `heap_insert` with `row_compressor->compressed_table` (a `Relation`). The new `row_compressor_build_tuple` just returns the tuple. The actual insert happens in the new `row_compressor_flush` at line 1232 using `writer->out_rel`. This separation is clean.\n\n---",
+        "path": "tsl/src/compression/compression.c",
+        "start_line": 1121,
+        "end_line": 1121,
+        "observation_id": "2c09435fdc9b53a3",
+        "claimed_path": "tsl/src/compression/compression.c",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "### 9. `tsl/src/compression/compression.c:1218` - `row_compressor_clear_batch`\n\n**Defect at line 1230:** `MemoryContextSwitchTo(old_cxt);` then `MemoryContextReset(row_compressor->per_row_ctx);`. But `old_cxt` was set at line 1219: `MemoryContext old_cxt = MemoryContextSwitchTo(row_compressor->per_row_ctx);`. So we switch TO per_row_ctx, then switch back to old_cxt, THEN reset per_row_ctx. This is correct \u2014 reset after switching away.\n\n**But:** The old code at line 1228 did:\n```c\nMemoryContextSwitchTo(old_ctx);\nMemoryContextReset(row_compressor->per_row_ctx);\nMemoryContextSwitchTo(old_ctx);  // wait, this switches back twice?\n```\nActually old code:\n```c\nold_ctx = MemoryContextSwitchTo(row_compressor->per_row_ctx);\n...\nMemoryContextSwitchTo(old_ctx);\nMemoryContextReset(row_compressor->per_row_ctx);\nMemoryContextSwitchTo(old_ctx);\n```\nThat's a bug in old code \u2014 switches to old_ctx, resets per_row_ctx, then switches to old_ctx again (no-op). New code fixes this by only switching once. Not a defect in new code.\n\n---",
+        "path": "tsl/src/compression/compression.c",
+        "start_line": 1218,
+        "end_line": 1218,
+        "observation_id": "3859098dd7984148",
+        "claimed_path": "tsl/src/compression/compression.c",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "### 10. `tsl/src/compression/compression.c:1232` - New `row_compressor_flush`\n\n**Defect at line 1235:** `Assert(writer->bistate != NULL);` \u2014 but `bulk_writer_build` at line 1357 sets `bistate = GetBulkInsertState()`. `GetBulkInsertState()` can return NULL if `bulk_insert_state` allocation fails? Actually `GetBulkInsertState` returns a `BulkInsertState` which is a pointer to `BulkInsertStateData`. It allocates with `palloc`, so it would error out on OOM, not return NULL. So assert is fine.\n\n**Defect at line 1236-1241:** `heap_insert(writer->out_rel, compressed_tuple, writer->mycid, writer->insert_options, writer->bistate);`. The `writer->mycid` was captured at `bulk_writer_build` time (line 1356: `GetCurrentCommandId(true)`). If `compress_chunk` takes a long time and the command counter increments, this CID becomes stale. Same issue as #2.\n\n**Defect at line 1242-1245:** `ts_catalog_index_insert(writer->indexstate, compressed_tuple);` \u2014 `writer->indexstate` comes from `CatalogOpenIndexes(out_rel)` at line 1355. This is correct.\n\n---",
+        "path": "tsl/src/compression/compression.c",
+        "start_line": 1232,
+        "end_line": 1232,
+        "observation_id": "9026a3285b121ae6",
+        "claimed_path": "tsl/src/compression/compression.c",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "### 11. `tsl/src/compression/compression.c:1253` - `row_compressor_close`\n\n**Defect:** Old code freed `bistate` and `resultRelInfo` (CatalogCloseIndexes). New code frees `compressed_is_null`, `compressed_values`, `per_column`, `uncompressed_col_to_compressed_col`, `out_desc`. But it does NOT free `bistate` or close indexes \u2014 those are now in `BulkWriter` and freed by `bulk_writer_close`. This is correct *if* `bulk_writer_close` is always called. \n\n**But:** In `compress_chunk` at line 505, `row_compressor_close(&row_compressor);` is called, then `bulk_writer_close(&writer);`. Good.\n\nIn `row_compressor_append_sorted_rows` (line 945), if an error occurs before `row_compressor_close`, the `BulkWriter` might leak. But that's a resource leak, not a correctness defect.\n\n---",
+        "path": "tsl/src/compression/compression.c",
+        "start_line": 1253,
+        "end_line": 1253,
+        "observation_id": "d21b70d4327086e0",
+        "claimed_path": "tsl/src/compression/compression.c",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "### 12. `tsl/src/compression/compression.c:1340` - `build_decompress_attrmap`\n\n**Defect at lines 1352-1374:** The attribute mapping logic is complex and fragile. It iterates `outnatts` (compressed desc) and for each non-dropped attribute, searches `noncompressed_desc` for a matching name starting from `nextindesc` (which wraps around). \n\nProblems:\n1. **Wraparound logic at lines 1365-1368:** `nextindesc++`; if `>= innatts`, `nextindesc = 0`. This means if compressed columns are not in the same order as uncompressed, it might match the wrong column on wraparound.\n2. **No handling for multiple columns with same name** (shouldn't happen in PG but still).\n3. **Dropped columns in noncompressed_desc:** The loop skips dropped columns in `inatt` (line 1370), but `nextindesc` still increments. This could cause misalignment.\n4. **The count metadata column is skipped** (lines 1358-1363) but `nextindesc` is NOT incremented for it. This means the next compressed column will match the same `nextindesc` position, potentially correct if count column has no counterpart in noncompressed.\n\n**Failure scenario:** Compressed table has columns [count, a, b], uncompressed has [a, b]. Loop: i=0 (count) \u2192 skip, nextindesc=-1. i=1 (a) \u2192 nextindesc=0 \u2192 matches a. i=2 (b) \u2192 nextindesc=1 \u2192 matches b. Works.\n\nBut if compressed has [a, count, b] and uncompressed [a, b]: i=0 (a) \u2192 nextindesc=0 \u2192 matches a. i=1 (count) \u2192 skip. i=2 (b) \u2192 nextindesc=1 \u2192 matches b. Works.\n\nIf compressed has [a, b, count] and uncompressed [a, b]: i=0 (a)\u21920:a, i=1 (b)\u21921:b, i=2 (count)\u2192skip. Works.\n\n**Real defect:** If uncompressed has **dropped columns**, e.g., uncompressed [a, dropped, b], compressed [a, b]. i=0 (a)\u2192nextindesc=0\u2192inatt=a (not dropped)\u2192match. i=1 (b)\u2192nextindesc=1\u2192inatt=dropped (skip, continue loop but no continue! Wait, line 1370: `if (inatt->attisdropped) continue;` \u2014 this continues the inner `j` loop, not the outer `i` loop. So it increments `j`, `nextindesc` becomes 2, checks `inatt` at 2 (b), matches. But `nextindesc` is now 2. If there were more compressed columns, they'd start from 2. This seems correct actually.\n\n**But:** The `nextindesc` is shared across all `i` iterations. If a compressed column finds its match at `j=5`, `nextindesc` becomes 5. Next compressed column starts searching from 6. This assumes compressed columns appear in the same order as uncompressed. If they don't, it fails.\n\n**Failure scenario:** Compressed columns ordered differently from uncompressed (e.g., compressed: [b, a], uncompressed: [a, b]). i=0 (b)\u2192searches from 0: a(no), dropped?, b(yes at 1)\u2192match, nextindesc=1. i=1 (a)\u2192searches from 2: out of bounds\u2192wraps to 0\u2192a at 0\u2192match. Actually works due to wrap. But if compressed: [b, a, c], uncompressed: [a, b, c]. i=0(b)\u2192finds at 1, nextindesc=1. i=1(a)\u2192searches from 2: c(no), wrap to 0: a(yes)\u2192match, nextindesc=0. i=2(c)\u2192searches from 1: b(no), 2: c(yes)\u2192match. Works.\n\nActually the algorithm seems to handle reordering via wraparound. But it's O(n\u00b2) and fragile. Not a clear defect, but high risk.\n\n---",
+        "path": "tsl/src/compression/compression.c",
+        "start_line": 1340,
+        "end_line": 1340,
+        "observation_id": "9e09581ec1712822",
+        "claimed_path": "tsl/src/compression/compression.c",
+        "path_resolution": "exact",
+        "merged_from": [
+          "84075bc4340b38c3",
+          "d1fd8d19560c0572",
+          "61a4f94ad9926ed3",
+          "a5d75cb37a9d6deb"
+        ]
+      },
+      {
+        "content": "### 13. `tsl/src/compression/compression.c:1376` - `bulk_writer_build`\n\n**Defect at line 1356:** `mycid = GetCurrentCommandId(true);` \u2014 captured once at build time. Used for all inserts via this writer. If the writer lives across command counter increments (e.g., `CommandCounterIncrement()` called between batches), the CID is stale.\n\n**Failure scenario:** In `recompress_chunk_segmentwise_impl`, `recompress_segment` calls `CommandCounterIncrement()` at line 720 (old line 709). The `writer` is created before the loop (line 258), used across multiple `recompress_segment` calls. Each segment does `CommandCounterIncrement()`. The second segment's inserts use a stale CID from the first segment.\n\n**This is a REAL DEFECT.** The `mycid` must be refreshed per command counter increment, or at least per batch flush.\n\n---",
+        "path": "tsl/src/compression/compression.c",
+        "start_line": 1376,
+        "end_line": 1376,
+        "observation_id": "b7d5ae4f34bba606",
+        "claimed_path": "tsl/src/compression/compression.c",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "### 14. `tsl/src/compression/compression.c:1478` - `build_decompressor` - `attrmap` build\n\n**Defect at line 1480:** `build_decompress_attrmap(out_desc, in_desc, &count_meta_attnum)`. Note the order: `noncompressed_desc` = `out_desc`, `compressed_desc` = `in_desc`. But the function signature at line 1340 is `build_decompress_attrmap(const TupleDesc noncompressed_desc, const TupleDesc compressed_desc, ...)`. So the call swaps them! \n\nWait, let me check: `build_decompressor` is called with `(in_desc, out_desc)` where `in_desc` = compressed table desc, `out_desc` = uncompressed table desc. At line 1480: `build_decompress_attrmap(out_desc, in_desc, ...)` \u2192 `noncompressed_desc=out_desc` (uncompressed), `compressed_desc=in_desc` (compressed). This matches the function signature. OK.\n\nBut at line 1340, the function builds an `AttrMap` with `outnatts = compressed_desc->natts` (compressed table natts). Then for each compressed attribute, it finds the matching uncompressed attribute. The `attrMap->attnums[i]` is set to `inatt->attnum` (uncompressed attnum). This maps compressed attribute index \u2192 uncompressed attribute number.\n\nAt line 1578 (in `create_per_compressed_column`): `decompressed_colnum = decompressor->attrmap->attnums[col];` where `col` is compressed column index. This gives the uncompressed attnum. Correct.\n\n---",
+        "path": "tsl/src/compression/compression.c",
+        "start_line": 1478,
+        "end_line": 1478,
+        "observation_id": "7bd55ad335601ac3",
+        "claimed_path": "tsl/src/compression/compression.c",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "### 15. `tsl/src/compression/compression.c:1525` - `init_iterator`\n\n**Defect at line 1525:** `Assert(decompressor->in_desc->natts > input_column);` \u2014 old code asserted `decompressor->num_compressed_columns > input_column`. `num_compressed_columns` was removed from struct. `in_desc->natts` is the compressed table's natts. This is equivalent. OK.\n\n---",
+        "path": "tsl/src/compression/compression.c",
+        "start_line": 1525,
+        "end_line": 1525,
+        "observation_id": "36113577b767ca86",
+        "claimed_path": "tsl/src/compression/compression.c",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "### 16. `tsl/src/compression/compression.c:1550` - `init_batch`\n\n**Defect at line 1550:** Loop condition `input_column < decompressor->in_desc->natts`. Old: `decompressor->num_compressed_columns`. Same thing. OK.\n\n---",
+        "path": "tsl/src/compression/compression.c",
+        "start_line": 1550,
+        "end_line": 1550,
+        "observation_id": "d8aff32f67c7d940",
+        "claimed_path": "tsl/src/compression/compression.c",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "### 17. `tsl/src/compression/compression.c:1639` - `decompress_batch`\n\n**Defect at line 1639:** Loop `col < decompressor->in_desc->natts`. Old: `decompressor->num_compressed_columns`. OK.\n\n**Defect at line 1676:** Old code set `decompressed_tuple->t_tableOid = decompressor->out_rel->rd_id;`. New code removes this. `heap_form_tuple` doesn't set `t_tableOid`. `ExecStoreHeapTuple` might need it for some operations. But `table_multi_insert` at line 1910 uses the slot, not the tuple directly. The slot's `tts_tableOid` might be set by `ExecStoreHeapTuple`? Actually `ExecStoreHeapTuple` sets `tts_tableOid` from the tuple's `t_tableOid` if the tuple has it, else from the slot's tuple descriptor? Need to check PG source. This could be a defect if `t_tableOid` is needed for index updates or triggers.\n\n**Failure scenario:** If the decompressed table has triggers or RLS policies that check `t_tableOid`, they may see 0/InvalidOid instead of the correct relation OID.\n\n---",
+        "path": "tsl/src/compression/compression.c",
+        "start_line": 1639,
+        "end_line": 1639,
+        "observation_id": "678d47c812dcbb09",
+        "claimed_path": "tsl/src/compression/compression.c",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "### 18. `tsl/src/compression/compression.c:1741` - `decompress_batch_next_row`\n\n**Defect at line 1741:** Loop `col < decompressor->in_desc->natts`. OK.\n\n---",
+        "path": "tsl/src/compression/compression.c",
+        "start_line": 1741,
+        "end_line": 1741,
+        "observation_id": "99185124177383f5",
+        "claimed_path": "tsl/src/compression/compression.c",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "### 19. `tsl/src/compression/compression.c:1771` - `decompress_single_column`\n\n**Defect at line 1771:** Loop `col < decompressor->in_desc->natts`. OK.\n\n---",
+        "path": "tsl/src/compression/compression.c",
+        "start_line": 1771,
+        "end_line": 1771,
+        "observation_id": "58fa60fe4add4db0",
+        "claimed_path": "tsl/src/compression/compression.c",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "### 20. `tsl/src/compression/compression.c:1820` - `row_decompressor_decompress_row_to_table`\n\n**Defect at line 1910:** `table_multi_insert(writer->out_rel, ..., writer->mycid, writer->bistate);`. Same stale `mycid` issue as #13. The `writer` is created once in `decompress_chunk` (line 1515) and used for all batches. If `CommandCounterIncrement()` happens between batches (it doesn't appear to in this function), CID goes stale.\n\nBut in `decompress_batches_scan` (compression_dml.c line 521), the writer is created once and used for multiple batches in a loop. No `CommandCounterIncrement` in the loop. OK for now.\n\nIn `hypercore_decompress_update_segment` (hypercore_handler.c line 1946), writer created, used once, closed. OK.\n\nIn `recompress_chunk_segmentwise_impl` (recompress.c line 258), writer created once, used across multiple `recompress_segment` calls, each of which does `CommandCounterIncrement()` at line 720. **STALE CID DEFECT CONFIRMED.**\n\n---",
+        "path": "tsl/src/compression/compression.c",
+        "start_line": 1820,
+        "end_line": 1820,
+        "observation_id": "63d54da6d19598f0",
+        "claimed_path": "tsl/src/compression/compression.c",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "### 21. `tsl/src/compression/compression_dml.c:521` - `decompress_batches_scan`\n\n**Defect at line 521:** `decompressor = build_decompressor(RelationGetDescr(in_rel), RelationGetDescr(out_rel));` \u2014 but `build_decompressor` now expects `(in_desc, out_desc)` where `in_desc` = compressed, `out_desc` = uncompressed. Here `in_rel` is the compressed chunk, `out_rel` is the uncompressed chunk. So `RelationGetDescr(in_rel)` = compressed desc, `RelationGetDescr(out_rel)` = uncompressed desc. Correct.\n\n**Defect at line 523:** `writer = bulk_writer_build(out_rel, 0);` \u2014 `out_rel` is the uncompressed chunk (where decompressed rows go). Correct.\n\n**Defect at line 550:** Old code called `delete_compressed_tuple(&decompressor, snapshot, compressed_tuple)` which used `decompressor->in_rel` (compressed rel) and `decompressor->mycid`. New code calls `table_tuple_delete(in_rel, &compressed_tuple->t_self, GetCurrentCommandId(true), ...)`. It uses a **fresh** `GetCurrentCommandId(true)` instead of the writer's CID. This is actually BETTER \u2014 it avoids the stale CID issue for deletes. But it's inconsistent: inserts use writer's stale CID, deletes use fresh CID.\n\n**Failure scenario:** In a long-running decompression scan, if command counter increments, inserts use old CID, deletes use new CID. The deleted tuples have xmax=old_CID, inserted tuples have xmin=new_CID. Concurrent transaction at REPEATABLE READ might see neither or both inconsistently.\n\n---",
+        "path": "tsl/src/compression/compression_dml.c",
+        "start_line": 521,
+        "end_line": 521,
+        "observation_id": "095457e7171a9ac9",
+        "claimed_path": "tsl/src/compression/compression_dml.c",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "### 22. `tsl/src/compression/compression_dml.c:550` - Delete path\n\n**Defect:** The old `delete_compressed_tuple` function is removed (line 1499-1513 in old file). New code inlines the delete. But it passes `in_rel` (compressed rel) and `cid` (fresh CID). The `snapshot` is passed correctly. However, the old code used `decompressor->mycid` which was set at decompressor build time. Same stale CID issue existed. New code fixes it for delete but not for insert.\n\n---",
+        "path": "tsl/src/compression/compression_dml.c",
+        "start_line": 550,
+        "end_line": 550,
+        "observation_id": "4d033ff3768449c7",
+        "claimed_path": "tsl/src/compression/compression_dml.c",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "### 23. `tsl/src/compression/recompress.c:251` - `recompress_chunk_segmentwise_impl`\n\n**Defect at line 258:** `BulkWriter writer = bulk_writer_build(compressed_chunk_rel, 0);` \u2014 writer created once.\n\n**Defect at line 260:** `Oid index_oid = get_compressed_chunk_index(writer.indexstate, settings);` \u2014 uses `writer.indexstate` which is `CatalogOpenIndexes(compressed_chunk_rel)`. Correct.\n\n**Defect at lines 415, 463, 498, 508:** Multiple calls to `recompress_segment(..., &writer)`.\n\n**Defect at line 720 (in `recompress_segment`):** `CommandCounterIncrement();` \u2014 This advances the command counter. The `writer->mycid` is now stale for subsequent segments.\n\n**Failure scenario:** Recompressing a chunk with multiple segments. Segment 1 inserts with CID=100. `CommandCounterIncrement()` \u2192 CID=101. Segment 2 inserts with CID=100 (stale). The tuples from segment 2 have xmin=100 but should be 101. A concurrent REPEATABLE READ transaction started at CID=100.5 would see segment 1 tuples (xmin=100 \u2264 100.5) but NOT segment 2 tuples (xmin=100 but command counter says they're \"future\"). Actually in PG, xmin is compared against the snapshot's xmin/xmax, not command counter directly. But the command counter affects `GetCurrentCommandId` which is used for `xmin` assignment. If CID goes backwards, it breaks visibility semantics.\n\nThis is a **SEVERE DEFECT**.\n\n---",
+        "path": "tsl/src/compression/recompress.c",
+        "start_line": 251,
+        "end_line": 251,
+        "observation_id": "8a1d1c355e6ce5b5",
+        "claimed_path": "tsl/src/compression/recompress.c",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "### 24. `tsl/src/compression/recompress.c:702` - `recompress_segment`\n\n**Defect at line 715:** `row_compressor_append_sorted_rows(..., compressed_chunk_rel, writer);` \u2014 passes `compressed_chunk_rel` as `in_rel` (4th arg). But `row_compressor_append_sorted_rows` signature at line 936 is `(row_compressor, sorted_rel, sorted_desc, in_rel, writer)`. The `in_rel` is only used for `calculate_reltuples_to_report(in_rel->rd_rel->reltuples)` at line 950. Here it's passed `compressed_chunk_rel` (the SOURCE of tuples being recompressed), but the tuples come from `tuplesortstate` which contains UNCOMPRESSED tuples (from `fetch_uncompressed_chunk_into_tuplesort`). So `in_rel` should be the uncompressed chunk rel, not compressed. \n\nWait, let me check `fetch_uncompressed_chunk_into_tuplesort` at line 702: it reads from `uncompressed_chunk_rel` and puts into tuplesort. So the tuples in tuplesort are uncompressed format. `row_compressor_append_sorted_rows` processes them and compresses. The `in_rel` parameter is only for reltuples reporting. Passing `compressed_chunk_rel` (the target) instead of `uncompressed_chunk_rel` (the source) means reltuples report uses compressed chunk's reltuples (which is the OLD compressed chunk, being rewritten). This is wrong but only affects debug logging.\n\n**Low-severity defect:** Progress logging shows wrong table name and reltuples.\n\n---",
+        "path": "tsl/src/compression/recompress.c",
+        "start_line": 702,
+        "end_line": 702,
+        "observation_id": "1e6edc765a9bd089",
+        "claimed_path": "tsl/src/compression/recompress.c",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "### 25. `tsl/src/hypercore/hypercore_handler.c:1928` - `hypercore_decompress_update_segment`\n\n**Defect at line 1931:** `CommandId cid = GetCurrentCommandId(true);` \u2014 fresh CID for delete.\n\n**Defect at line 1946:** `RowDecompressor decompressor = build_decompressor(RelationGetDescr(crel), RelationGetDescr(relation));` \u2014 `crel` is compressed chunk, `relation` is uncompressed hypertable. Correct order for new `build_decompressor(in_desc, out_desc)` where in=compressed, out=uncompressed.\n\n**Defect at line 1948:** `BulkWriter writer = bulk_writer_build(relation, 0);` \u2014 writer for uncompressed table. Correct.\n\n**Defect at line 1954:** `table_tuple_delete(crel, &cslot->tts_tid, cid, ...)` \u2014 uses fresh `cid`. Good.\n\n**Defect at line 1965:** `row_decompressor_decompress_row_to_table(&decompressor, &writer);` \u2014 uses writer with CID captured at line 1948. No `CommandCounterIncrement` between build and use. OK for this code path.\n\n---",
+        "path": "tsl/src/hypercore/hypercore_handler.c",
+        "start_line": 1928,
+        "end_line": 1928,
+        "observation_id": "601689639693f888",
+        "claimed_path": "tsl/src/hypercore/hypercore_handler.c",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "### 26. `tsl/src/hypercore/hypercore_handler.c:2180` - `compress_and_swap_heap`\n\n**Defect at line 2190:** `writer = bulk_writer_build(new_compressed_rel, HEAP_INSERT_FROZEN);` \u2014 writer created once.\n\n**Defect at line 2193:** `row_compressor_append_sorted_rows(..., &writer);` \u2014 single call, no CommandCounterIncrement in between. OK.\n\n---",
+        "path": "tsl/src/hypercore/hypercore_handler.c",
+        "start_line": 2180,
+        "end_line": 2180,
+        "observation_id": "84be99b81b012956",
+        "claimed_path": "tsl/src/hypercore/hypercore_handler.c",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "### 27. `tsl/src/hypercore/hypercore_handler.c:3783` - `convert_to_hypercore_finish`\n\n**Defect at line 3792:** `writer = bulk_writer_build(compressed_rel, HEAP_INSERT_FROZEN);` \u2014 single use. OK.\n\n---",
+        "path": "tsl/src/hypercore/hypercore_handler.c",
+        "start_line": 3783,
+        "end_line": 3783,
+        "observation_id": "8c99fe09d8401260",
+        "claimed_path": "tsl/src/hypercore/hypercore_handler.c",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "### 28. `tsl/src/compression/compression.h` - Struct changes\n\n**Defect:** `RowDecompressor` struct no longer has `in_rel`, `out_rel`, `bistate`, `indexstate`, `estate`, `delete_only`, `batches_deleted`, `mycid`. These moved to `BulkWriter`. But `row_decompressor_close` at line 1406 (new) frees `attrmap`, tuple descs, arrays, but does NOT free `bistate` or close indexes \u2014 those are in `BulkWriter` and freed by `bulk_writer_close`. This is correct if paired.\n\n**But:** `row_decompressor_decompress_row_to_table` at line 1910 uses `writer->estate` for index updates (line 1940). The `writer->estate` is created in `bulk_writer_build` (line 1358). This is fine.\n\n---",
+        "path": "tsl/src/compression/compression.h",
+        "start_line": 1406,
+        "end_line": 1406,
+        "observation_id": "6f9f2ec3422be6f1",
+        "claimed_path": "tsl/src/compression/compression.h",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "### 29. `tsl/src/compression/compression.c:1490` - `create_per_compressed_column`\n\n**Defect at line 1578:** `AttrNumber decompressed_colnum = decompressor->attrmap->attnums[col];` \u2014 `col` is index into compressed desc (0 to in_desc->natts-1). `attrmap->attnums` has size `outnatts` (compressed natts). But `attrmap` was built with `outnatts = compressed_desc->natts` (line 1349). So `attrmap->attnums[col]` is valid. Returns uncompressed attnum. Correct.\n\n**But:** What if `attrmap->attnums[col]` is 0 (InvalidAttrNumber)? The code at line 1580 checks `!AttributeNumberIsValid(decompressed_colnum)` and marks column as not having uncompressed version. Correct.\n\n---",
+        "path": "tsl/src/compression/compression.c",
+        "start_line": 1490,
+        "end_line": 1490,
+        "observation_id": "474b72378aa85c97",
+        "claimed_path": "tsl/src/compression/compression.c",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "### 30. `tsl/src/compression/compression.c:1340` - `build_decompress_attrmap` - Missing count column in attrmap\n\nThe count metadata column is explicitly skipped (lines 1358-1363). Its `attnums` entry remains 0 (from `make_attrmap` which zeros memory). In `create_per_compressed_column`, when `col` is the count column index, `decompressed_colnum = 0` \u2192 `!AttributeNumberIsValid` \u2192 column marked as `is_compressed=false, has_uncompressed_version=false`. But the count column IS in the compressed data and needs to be read to get the batch row count. \n\nLooking at `init_batch` (line 1550), it iterates all `input_column < decompressor->in_desc->natts`. For the count column, `column_info->is_compressed` is false (set at line 1583), `has_uncompressed_version` false. In `decompress_batch` (line 1639), for each column, if `column_info->iterator == NULL`, it calls `init_iterator`. For count column, `is_compressed=false`, so `init_iterator` at line 1528: `if (!column_info->is_compressed) { column_info->iterator = NULL; return; }`. So iterator stays NULL. \n\nThen in `decompress_batch` line 1650: `if (column_info->iterator == NULL) { column_info->value_is_null = true; continue; }`. So count column gets `value_is_null = true`. But the count column is NOT null \u2014 it contains the row count! This is a **CRITICAL DEFECT**.\n\n**Failure scenario:** Decompression reads a compressed batch. The count metadata column (which stores how many rows are in the batch) is treated as NULL. `n_batch_rows` comes from... where? At line 1633: `int n_batch_rows = DatumGetInt32(decompressor->compressed_datums[decompressor->count_compressed_attindex]);` \u2014 it reads directly from `compressed_datums` using the stored `count_compressed_attindex`. So the count is read correctly from the raw datum array. The `attrmap` not mapping it is OK because it's handled specially.\n\nBut wait: `compressed_datums` is filled by `heap_deform_tuple` at line 1510 (in `decompress_chunk`) or line 1949 (in `hypercore_decompress_update_segment`). The count column IS in the tuple, so `heap_deform_tuple` puts its value in `compressed_datums[count_compressed_attindex]`. So the count is available. The `attrmap` skipping it is fine because the decompressor doesn't need to map it to an output column \u2014 it's metadata only.\n\nOK, not a defect.\n\n---",
+        "path": "tsl/src/compression/compression.c",
+        "start_line": 1340,
+        "end_line": 1340,
+        "observation_id": "2a98a4a1078d2374",
+        "claimed_path": "tsl/src/compression/compression.c",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "### 31. `tsl/src/compression/compression.c:1478` - `build_decompressor` - `count_meta_attnum` assert\n\n**Defect at line 1482:** `Assert(AttributeNumberIsValid(count_meta_attnum));` \u2014 if the compressed table doesn't have the count metadata column, this crashes. Old code had same assert at line 893 (in `row_compressor_init`). But `build_decompressor` is called for decompression, where the count column MUST exist. If it doesn't, the data is corrupt. Assert is appropriate.\n\n---",
+        "path": "tsl/src/compression/compression.c",
+        "start_line": 1478,
+        "end_line": 1478,
+        "observation_id": "277834991e2e705a",
+        "claimed_path": "tsl/src/compression/compression.c",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "### 32. `tsl/src/compression/compression.c:1253` - `row_compressor_close` - Missing `on_flush` callback cleanup\n\nOld `row_compressor_flush` called `if (NULL != row_compressor->on_flush) row_compressor->on_flush(...)` at line 1228. New `row_compressor_flush` at line 1248 calls it. But `row_compressor_clear_batch` (called at line 1253) does NOT call it. The callback is called in `row_compressor_flush` before `row_compressor_clear_batch`. This is correct.\n\nBut `row_compressor_close` doesn't call the callback for any remaining rows. Old `row_compressor_close` didn't either \u2014 it just freed resources. The flush at line 505 (in `compress_chunk`) calls `row_compressor_flush(..., true)` before close. So final batch is flushed. OK.\n\n---",
+        "path": "tsl/src/compression/compression.c",
+        "start_line": 1253,
+        "end_line": 1253,
+        "observation_id": "6d736af7ef6d115f",
+        "claimed_path": "tsl/src/compression/compression.c",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "### 33. `tsl/src/compression/compression.c:899` - `row_compressor_init` - `out_desc` copy\n\n**Defect:** `out_desc = CreateTupleDescCopyConstr(compressed_tupdesc);`. This copies constraints. In `row_compressor_close`, `FreeTupleDesc(row_compressor->out_desc);` frees it. Correct.\n\nBut `row_compressor_build_tuple` uses `row_compressor->out_desc` to form the tuple. The tuple descriptor must match the target relation (`writer->out_rel`). Since `out_desc` is a copy of `compressed_tupdesc` which came from `RelationGetDescr(out_rel)` (in callers), it matches. OK.\n\n---",
+        "path": "tsl/src/compression/compression.c",
+        "start_line": 899,
+        "end_line": 899,
+        "observation_id": "ab163a7a5e222850",
+        "claimed_path": "tsl/src/compression/compression.c",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "### 34. `tsl/src/compression/compression.c:761` - `build_column_map` - `settings->fd.relid` vs `settings->fd.compress_relid`\n\nAt lines 803, 810, 817, 824: `settings->fd.relid` (uncompressed hypertable OID) and `settings->fd.compress_relid` (compressed hypertable OID) are passed to `compressed_column_metadata_attno`. But this function likely expects the **chunk** relation OIDs, not the parent hypertable OIDs. The metadata columns (min/max/bloom) exist on the compressed **chunk**, not the parent hypertable.\n\n**Failure scenario:** `compressed_column_metadata_attno` does a `get_attnum` on the passed OID. If passed the parent hypertable OID, it won't find the chunk's metadata columns (which have different attnums or may not exist on parent). Returns `InvalidAttrNumber`. Then `segment_min_attr_offset = InvalidAttrNumber - 1` = -2 (since AttrNumber is int16). This corrupts the column map.\n\n**This is a SEVERE DEFECT.**\n\n---",
+        "path": "tsl/src/compression/compression.c",
+        "start_line": 761,
+        "end_line": 761,
+        "observation_id": "10ed9549f80d10e0",
+        "claimed_path": "tsl/src/compression/compression.c",
+        "path_resolution": "exact",
+        "merged_from": [
+          "a8ca063aa46d8076"
+        ]
+      },
+      {
+        "content": "### 35. `tsl/src/compression/compression.c:458` - `row_compressor_init` call in `compress_chunk`\n\nAt line 465: `row_compressor_init(&row_compressor, settings, RelationGetDescr(in_rel), RelationGetDescr(out_rel));`. `in_rel` = uncompressed chunk, `out_rel` = compressed chunk. Correct.\n\nBut `build_column_map` inside uses `settings->fd.relid` and `settings->fd.compress_relid` (parent hypertable OIDs). As noted in #34, this is wrong for chunk-level metadata columns.\n\n---",
+        "path": "tsl/src/compression/compression.c",
+        "start_line": 458,
+        "end_line": 458,
+        "observation_id": "f48508eddbd9baa3",
+        "claimed_path": "tsl/src/compression/compression.c",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "### 36. `tsl/src/compression/compression.h:229` - `RowCompressor` struct - `out_desc` vs `compressed_table`\n\nOld struct had `Relation compressed_table;`. New has `TupleDesc out_desc;`. The `out_desc` is a copy. This means the compressor no longer has direct access to the relation for things like `RelationGetDescr(row_compressor->compressed_table)` \u2014 but it uses `out_desc` instead. All uses in the diff are updated. OK.\n\n---",
+        "path": "tsl/src/compression/compression.h",
+        "start_line": 229,
+        "end_line": 229,
+        "observation_id": "d1392faaee215a62",
+        "claimed_path": "tsl/src/compression/compression.h",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "### 37. `tsl/src/compression/compression.c:1090` - `row_compressor_append_row` made non-static\n\n**Defect:** Function was `static`, now `extern` (in header) and non-static in .c. This exposes it to other files. If any other file calls it, they must pass a `BulkWriter*` to the new `row_compressor_flush` internally? No, `row_compressor_append_row` doesn't call flush. It just appends to the current batch. The flush is called from `row_compressor_process_ordered_slot` and `row_compressor_append_sorted_rows`. Making it non-static is an API change. If external callers exist, they now need to ensure `row_compressor->out_desc` is set and they handle flushing themselves. But no external callers shown in diff. Low risk.\n\n---",
+        "path": "tsl/src/compression/compression.c",
+        "start_line": 1090,
+        "end_line": 1090,
+        "observation_id": "38b0adc530a7ca28",
+        "claimed_path": "tsl/src/compression/compression.c",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "### 38. `tsl/src/compression/compression_dml.c:78` - `TupleDescGetAttrNumber` - Missing return on not found\n\n**Defect at line 84:** Function returns `InvalidAttrNumber` if not found. But the loop at line 81 returns on match. If not found, falls through to line 84. But wait, the function declaration says `static inline int TupleDescGetAttrNumber(TupleDesc desc, const char *name)`. It returns `int` but `AttrNumber` is `int16`. Return type mismatch but C allows it.\n\n**Real defect:** The function has no explicit return after the loop! At line 84: `return InvalidAttrNumber;` \u2014 but this is OUTSIDE the function! Look at the diff:\n```c\n static inline int TupleDescGetAttrNumber(TupleDesc desc, const char *name)\n {\n \tfor (int i = 0; i < desc->natts; i++)\n \t{\n \t\tif (strcmp(name, NameStr(desc->attrs[i].attname)) == 0)\n \t\t\treturn desc->attrs[i].attnum;\n \t}\n+\n \treturn InvalidAttrNumber;\n }\n```\nThe `+` line is the added blank line. The `return InvalidAttrNumber;` is at the same indentation as the function body. In the old code (not shown), it might have been missing! The diff shows the function previously didn't have a return for not-found case (falling off end \u2192 undefined behavior). The new code ADDS the return. This is a **BUG FIX**, not a defect.\n\n---",
+        "path": "tsl/src/compression/compression_dml.c",
+        "start_line": 78,
+        "end_line": 78,
+        "observation_id": "78c7b8c169e32858",
+        "claimed_path": "tsl/src/compression/compression_dml.c",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "### 39. `tsl/src/compression/recompress.c:58` - `recompress_segment` signature\n\nChanged to add `BulkWriter *writer`. All callers updated. OK.\n\n---",
+        "path": "tsl/src/compression/recompress.c",
+        "start_line": 58,
+        "end_line": 58,
+        "observation_id": "38fcf6cbba819741",
+        "claimed_path": "tsl/src/compression/recompress.c",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "### 40. `tsl/src/compression/compression.c:1329` - `segment_info_datum_is_in_group` unchanged\n\nOK.\n\n---\n\n### Summary of REAL DEFECTS (most severe first):",
+        "path": "tsl/src/compression/compression.c",
+        "start_line": 1329,
+        "end_line": 1329,
+        "observation_id": "7ce69a081923d4be",
+        "claimed_path": "tsl/src/compression/compression.c",
+        "path_resolution": "exact",
+        "merged_from": [
+          "a4dd1168d4e68bd4"
+        ]
+      },
+      {
+        "content": "1. **SEVERE: Stale CommandId in BulkWriter across CommandCounterIncrement** (compression.c:1356, recompress.c:720) \u2014 `writer->mycid` captured once at build, but `CommandCounterIncrement()` called between segments in recompression. Subsequent inserts use stale CID, breaking MVCC visibility.",
+        "path": "tsl/src/compression/compression.c",
+        "start_line": 1356,
+        "end_line": 1356,
+        "observation_id": "ab259ae6aa99e48d",
+        "claimed_path": "compression.c",
+        "path_resolution": "basename",
+        "merged_from": []
+      },
+      {
+        "content": "2. **SEVERE: build_column_map uses parent hypertable OIDs instead of chunk OIDs** (compression.c:803,810,817,824) \u2014 `settings->fd.relid`/`compress_relid` are parent OIDs, but metadata columns (min/max/bloom) exist on chunks. Causes wrong attribute numbers, corruption.\n\n3. **SEVERE: Decompression count metadata column not mapped in attrmap** \u2014 Actually analyzed as OK (#30), count read directly from datum array.",
+        "path": "tsl/src/compression/compression.c",
+        "start_line": 803,
+        "end_line": 803,
+        "observation_id": "bcdef5cda7a7b2e2",
+        "claimed_path": "compression.c",
+        "path_resolution": "basename",
+        "merged_from": [
+          "8cdab81400f57e36"
+        ]
+      },
+      {
+        "content": "4. **MEDIUM: Inconsistent CID usage in decompress_batches_scan** (compression_dml.c:550) \u2014 Delete uses fresh `GetCurrentCommandId(true)`, insert uses writer's stale CID. Visibility inconsistency.",
+        "path": "tsl/src/compression/compression_dml.c",
+        "start_line": 550,
+        "end_line": 550,
+        "observation_id": "43ed8921a198ef48",
+        "claimed_path": "compression_dml.c",
+        "path_resolution": "basename",
+        "merged_from": []
+      },
+      {
+        "content": "5. **MEDIUM: recompress_segment passes wrong relation for reltuples reporting** (recompress.c:715) \u2014 Passes `compressed_chunk_rel` instead of `uncompressed_chunk_rel` for debug logging only.",
+        "path": "tsl/src/compression/recompress.c",
+        "start_line": 715,
+        "end_line": 715,
+        "observation_id": "6ad1b58d5d2cc34c",
+        "claimed_path": "recompress.c",
+        "path_resolution": "basename",
+        "merged_from": []
+      },
+      {
+        "content": "6. **LOW: calculate_reltuples_to_report signature change** (compression.c:246) \u2014 If any external caller passes `Relation*` instead of `float4`, silent corruption. No external callers shown.",
+        "path": "tsl/src/compression/compression.c",
+        "start_line": 246,
+        "end_line": 246,
+        "observation_id": "0fef6cd22083ab87",
+        "claimed_path": "compression.c",
+        "path_resolution": "basename",
+        "merged_from": []
+      },
+      {
+        "content": "7. **LOW: row_compressor_append_row made non-static** (compression.c:1090, compression.h:362) \u2014 API exposure without review of callers.",
+        "path": "tsl/src/compression/compression.c",
+        "start_line": 1090,
+        "end_line": 1090,
+        "observation_id": "aaeab05da058e2b5",
+        "claimed_path": "compression.c",
+        "path_resolution": "basename",
+        "merged_from": []
+      },
+      {
+        "content": "8. **LOW: build_decompress_attrmap fragile column matching** (compression.c:1340) \u2014 Assumes column order compatibility; may misalign with dropped columns or reordering.",
+        "path": "tsl/src/compression/compression.c",
+        "start_line": 1340,
+        "end_line": 1340,
+        "observation_id": "0d02848dcf3f04c7",
+        "claimed_path": "compression.c",
+        "path_resolution": "basename",
+        "merged_from": []
+      },
+      {
+        "content": "9. **LOW: Missing t_tableOid on decompressed tuples** (compression.c:1676) \u2014 Old code set `decompressed_tuple->t_tableOid = decompressor->out_rel->rd_id;`. Removed. May affect triggers/RLS.\n\n10. **LOW: row_compressor_close doesn't free bistate/indexstate** (compression.c:1253) \u2014 Now in BulkWriter, but if bulk_writer_close not called (error path), leak. Not a correctness defect.\n\n---\n\nLet me verify the most critical ones by checking the diff context again.\n\nFor #1: `recompress.c` line 258 creates writer, line 720 does `CommandCounterIncrement()`, line 715 uses writer for next segment. Confirmed.\n\nFor #2: `compression.c` line 780 uses `settings->fd.compress_relid` for `get_attnum`. Line 803 uses `settings->fd.relid` and `settings->fd.compress_relid` for `compressed_column_metadata_attno`. These are parent hypertable OIDs from `CompressionSettings.fd`. The chunk OIDs are `in_rel->rd_id` and `out_rel->rd_id` (or `compressed_chunk_rel->rd_id`). Confirmed defect.\n\nFor #4: `compression_dml.c` line 550 uses fresh CID for delete, line 581 uses writer for insert. Confirmed.\n\nFor #9: `compression.c` line 1676 removed `decompressed_tuple->t_tableOid = decompressor->out_rel->rd_id;`. Confirmed.\n\nI have 10+ defects. Let me format the output.### Defects Found (most severe first)\n\n---",
+        "path": "tsl/src/compression/compression.c",
+        "start_line": 1676,
+        "end_line": 1676,
+        "observation_id": "05668bd3e5e8992e",
+        "claimed_path": "compression.c",
+        "path_resolution": "basename",
+        "merged_from": [
+          "6fb8e87bf753de1d"
+        ]
+      },
+      {
+        "content": "**1. SEVERE: Stale CommandId in BulkWriter across CommandCounterIncrement**  \n**File:** `tsl/src/compression/recompress.c:258,720`  \n**Failure scenario:** `recompress_chunk_segmentwise_impl` creates `BulkWriter` once (line 258), then calls `recompress_segment` multiple times. Each `recompress_segment` ends with `CommandCounterIncrement()` (line 720). The `writer->mycid` captured at build time (line 1356 in compression.c) becomes stale. Subsequent segment inserts use the old CID for `heap_insert`, assigning wrong `xmin` to tuples. A concurrent REPEATABLE READ transaction sees some segments but not others, violating snapshot isolation.\n\n---",
+        "path": "tsl/src/compression/recompress.c",
+        "start_line": 258,
+        "end_line": 258,
+        "observation_id": "c3eebf8c280257a8",
+        "claimed_path": "tsl/src/compression/recompress.c",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "**2. SEVERE: `build_column_map` uses parent hypertable OIDs instead of chunk OIDs for metadata columns**  \n**File:** `tsl/src/compression/compression.c:803,810,817,824`  \n**Failure scenario:** `compressed_column_metadata_attno` is called with `settings->fd.relid` (uncompressed hypertable OID) and `settings->fd.compress_relid` (compressed hypertable OID). But segment min/max/bloom metadata columns exist on the **chunk** relations, not the parent hypertables. `get_attnum` on parent OID returns `InvalidAttrNumber` (or wrong attnum if parent has same-named column). This sets `segment_min_attr_offset = -2` (since `InvalidAttrNumber - 1`), corrupting the column map. Compression reads/writes wrong columns \u2192 data corruption or \"cache lookup failed\" errors.\n\n---",
+        "path": "tsl/src/compression/compression.c",
+        "start_line": 803,
+        "end_line": 803,
+        "observation_id": "58c816794ee2a0e4",
+        "claimed_path": "tsl/src/compression/compression.c",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "**3. MEDIUM: Inconsistent CommandId between delete and insert in `decompress_batches_scan`**  \n**File:** `tsl/src/compression/compression_dml.c:550,581`  \n**Failure scenario:** Delete uses fresh `GetCurrentCommandId(true)` (line 554), but insert uses `writer->mycid` captured at `bulk_writer_build` (line 523). If command counter advances between batches (e.g., long scan), deleted tuples get `xmax=new_CID`, inserted tuples get `xmin=old_CID`. Concurrent REPEATABLE READ transaction may see neither (delete visible, insert not) or both, breaking atomicity of the decompress+recompress operation.\n\n---",
+        "path": "tsl/src/compression/compression_dml.c",
+        "start_line": 550,
+        "end_line": 550,
+        "observation_id": "ebf168fa95248cf8",
+        "claimed_path": "tsl/src/compression/compression_dml.c",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "**4. MEDIUM: `recompress_segment` passes wrong relation for reltuples reporting**  \n**File:** `tsl/src/compression/recompress.c:715`  \n**Failure scenario:** `row_compressor_append_sorted_rows` receives `compressed_chunk_rel` as `in_rel` (4th arg), but the tuples being processed are **uncompressed** (from `fetch_uncompressed_chunk_into_tuplesort` reading `uncompressed_chunk_rel`). Progress logging at line 950 reports `in_rel->rd_rel->reltuples` from the compressed chunk (stale/being-rewritten) instead of the uncompressed source. Debug logging shows wrong table name and row count.\n\n---",
+        "path": "tsl/src/compression/recompress.c",
+        "start_line": 715,
+        "end_line": 715,
+        "observation_id": "55245340aa04400d",
+        "claimed_path": "tsl/src/compression/recompress.c",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "**5. LOW: `calculate_reltuples_to_report` signature change breaks external callers**  \n**File:** `tsl/src/compression/compression.c:246`  \n**Failure scenario:** Function now takes `float4 reltuples` instead of `Relation rel`. Any external caller not updated (e.g., in another file not shown in diff) passing a `Relation*` will have the pointer bits interpreted as a float, yielding garbage `report_reltuples` (likely huge). Progress logging never fires or fires every row.\n\n---",
+        "path": "tsl/src/compression/compression.c",
+        "start_line": 246,
+        "end_line": 246,
+        "observation_id": "657fd4421dd831c7",
+        "claimed_path": "tsl/src/compression/compression.c",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "**6. LOW: `row_compressor_append_row` made non-static without API review**  \n**File:** `tsl/src/compression/compression.c:1090`, `tsl/src/compression/compression.h:362`  \n**Failure scenario:** Function was `static`, now exposed in header. If any external caller exists (not in diff), it now must ensure `row_compressor->out_desc` is valid and manually call `row_compressor_flush` with a `BulkWriter*`. No callers visible in diff, but API surface expanded unsafely.\n\n---",
+        "path": "tsl/src/compression/compression.c",
+        "start_line": 1090,
+        "end_line": 1090,
+        "observation_id": "14bee36bf882994b",
+        "claimed_path": "tsl/src/compression/compression.c",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "**7. LOW: `build_decompress_attrmap` fragile column matching with dropped columns**  \n**File:** `tsl/src/compression/compression.c:1340-1374`  \n**Failure scenario:** Algorithm uses `nextindesc` cursor that wraps around, assuming compressed columns appear in same order as uncompressed. With dropped columns in uncompressed table, `nextindesc` increments past dropped attrs but the inner loop `continue` only skips the current `j` iteration. If compressed column order differs from uncompressed, mapping becomes misaligned. Example: uncompressed `[a, dropped, b]`, compressed `[b, a]` \u2192 `b` maps to `a`, `a` maps to `b` (after wraparound). Silent data corruption.\n\n---",
+        "path": "tsl/src/compression/compression.c",
+        "start_line": 1340,
+        "end_line": 1340,
+        "observation_id": "ad12c1ed3c1962e0",
+        "claimed_path": "tsl/src/compression/compression.c",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "**8. LOW: Decompressed tuples missing `t_tableOid`**  \n**File:** `tsl/src/compression/compression.c:1676`  \n**Failure scenario:** Old code set `decompressed_tuple->t_tableOid = decompressor->out_rel->rd_id;`. New code removes this. `heap_form_tuple` leaves `t_tableOid` uninitialized (0). `ExecStoreHeapTuple` may not propagate it to slot's `tts_tableOid`. Triggers, RLS policies, or `pg_stat_clear_snapshot` on the decompressed table may see `InvalidOid` instead of correct relation OID, causing permission errors or missed stats updates.\n\n---\n\n**9. LOW: `row_compressor_close` no longer frees bistate/indexstate (moved to BulkWriter)**  \n**File:** `tsl/src/compression/compression.c:1253`  \n**Failure scenario:** If error occurs after `row_compressor_close` but before `bulk_writer_close` (e.g., in `compress_chunk` line 505-506), `BulkWriter`'s `bistate` and `indexstate` leak. Not a correctness issue in happy path, but resource leak on error paths. Old code freed them in `row_compressor_close`.\n\n---",
+        "path": "tsl/src/compression/compression.c",
+        "start_line": 1676,
+        "end_line": 1676,
+        "observation_id": "7815a6e88ad52619",
+        "claimed_path": "tsl/src/compression/compression.c",
+        "path_resolution": "exact",
+        "merged_from": [
+          "bc27f9f14463b69f"
+        ]
+      },
+      {
+        "content": "**10. LOW: `bulk_writer_build` captures CID once; no refresh mechanism**  \n**File:** `tsl/src/compression/compression.c:1356`  \n**Failure scenario:** Any long-lived `BulkWriter` used across `CommandCounterIncrement()` calls (as in recompress.c) uses stale CID. No API to refresh `mycid`. Callers must destroy/recreate writer, but `recompress_segment` reuses the same writer across segments.\n\n---",
+        "path": "tsl/src/compression/compression.c",
+        "start_line": 1356,
+        "end_line": 1356,
+        "observation_id": "0f7149b1b15759ec",
+        "claimed_path": "tsl/src/compression/compression.c",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "**11. LOW: `build_column_map` count metadata column lookup uses parent OID**  \n**File:** `tsl/src/compression/compression.c:780`  \n**Failure scenario:** `get_attnum(settings->fd.compress_relid, COMPRESSION_COLUMN_METADATA_COUNT_NAME)` \u2014 `compress_relid` is parent compressed hypertable OID. The count metadata column exists on the compressed **chunk**, not parent. If parent lacks this column (typical), returns `InvalidAttrNumber`. `count_metadata_column_offset = -1`. Later `row_compressor->compressed_is_null[-1]` \u2192 memory corruption.\n\n---",
+        "path": "tsl/src/compression/compression.c",
+        "start_line": 780,
+        "end_line": 780,
+        "observation_id": "795026e14480567f",
+        "claimed_path": "tsl/src/compression/compression.c",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "**12. LOW: `decompress_batches_scan` doesn't close writer on early `skip_current_tuple` return**  \n**File:** `tsl/src/compression/compression_dml.c:550-557`  \n**Failure scenario:** At line 550, if `skip_current_tuple` is true, `row_decompressor_close` and `bulk_writer_close` are called (lines 551-552). But `decompress_batch_endscan` and `ExecDropSingleTupleTableSlot` run after. If `bulk_writer_close` errors (unlikely), writer not closed. Minor leak.\n\n---",
+        "path": "tsl/src/compression/compression_dml.c",
+        "start_line": 550,
+        "end_line": 550,
+        "observation_id": "77b2bb2d7087b74e",
+        "claimed_path": "tsl/src/compression/compression_dml.c",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "**13. LOW: `row_compressor_init` drops `need_bistate` parameter; always allocates in BulkWriter**  \n**File:** `tsl/src/compression/compression.c:882`  \n**Failure scenario:** Old code conditionally allocated `bistate` via `need_bistate`. New `bulk_writer_build` always calls `GetBulkInsertState()`. If caller doesn't need bulk insert (e.g., single-row insert), unnecessary allocation. Not a bug, but behavioral change.\n\n---",
+        "path": "tsl/src/compression/compression.c",
+        "start_line": 882,
+        "end_line": 882,
+        "observation_id": "4f8f84fce82bbd49",
+        "claimed_path": "tsl/src/compression/compression.c",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "**14. LOW: `row_decompressor_close` doesn't free `attrmap` if `build_decompressor` fails mid-way**  \n**File:** `tsl/src/compression/compression.c:1406`  \n**Failure scenario:** `build_decompressor` creates `attrmap` via `build_decompress_attrmap` (line 1480). If subsequent allocation fails (e.g., `palloc` for `decompressed_slots`), `elog(ERROR)` unwinds without calling `row_decompressor_close`. `attrmap` leaked in `CurrentMemoryContext`. Same for tuple desc copies. PostgreSQL error cleanup handles this via memory context, but `attrmap` allocated in `CurrentMemoryContext` (not a child context) \u2014 persists until transaction end. Minor leak.",
+        "path": "tsl/src/compression/compression.c",
+        "start_line": 1406,
+        "end_line": 1406,
+        "observation_id": "6adce78ee8c7216f",
+        "claimed_path": "tsl/src/compression/compression.c",
+        "path_resolution": "exact",
+        "merged_from": []
+      }
+    ]
+  },
+  "rundir": "/home/mjarnold/.cache/llm-panel/runs/aacr-up-dmd_9bx6-9ccb6a4878e5/20260829-111820-3552073",
+  "extractor": "3",
+  "unlocated": []
+}

@@ -1,0 +1,322 @@
+{
+  "review": {
+    "comments": [
+      {
+        "content": "1. **High \u2014 Real defect (wrong results): `packages/cli/src/ui/commands/promptCommands.ts:135` and `:146`.** MCP prompt results may contain multiple messages and non-text content, but this uses only the first message\u2019s `text`. It then `JSON.stringify`s that text, adding quotes and escaped newlines before submission. A prompt returning setup, an example response, and a final task will submit only the quoted setup and silently discard the rest.\n\n2. **High \u2014 Real defect (command collision/routing): `packages/cli/src/ui/commands/promptCommands.ts:30`.** Prompt names become unqualified top-level commands without collision validation. Two servers can both expose `summarize`, making one unreachable, while a server prompt named `help`, `quit`, or another built-in can shadow\u2014or be shadowed by\u2014the existing command depending on registry behavior. These remotely supplied commands are also misleadingly classified as `BUILT_IN` at line 32.\n\n3. **High \u2014 Design/lifecycle defect: `packages/cli/src/services/BuiltinCommandLoader.ts:70`.** The command list snapshots the global discovered-prompt map when built, but discovery occurs asynchronously and can change after reconnects. If loading happens before a server finishes discovery, or a disconnected server later reconnects, its prompt commands remain absent unless some external code explicitly rebuilds the built-in command registry; no invalidation mechanism is added here.",
+        "path": "packages/cli/src/ui/commands/promptCommands.ts",
+        "start_line": 135,
+        "end_line": 135,
+        "observation_id": "cc7f109298a7d5d8",
+        "claimed_path": "packages/cli/src/ui/commands/promptCommands.ts",
+        "path_resolution": "exact",
+        "merged_from": [
+          "0b68fefa5db28b63",
+          "ab9db01c3df838d6"
+        ]
+      },
+      {
+        "content": "4. **Medium \u2014 Real defect (existing functionality can be blocked): `packages/core/src/tools/mcp-client.ts:424`.** Optional prompt discovery is awaited before tool discovery. A server that supports tools but hangs or responds slowly to `prompts/list` delays all of its tools until the request timeout, potentially leaving the server in \u201cconnecting\u201d state for minutes. Prompt discovery should not serially gate tool discovery.",
+        "path": "packages/core/src/tools/mcp-client.ts",
+        "start_line": 424,
+        "end_line": 424,
+        "observation_id": "430450cb2d51d405",
+        "claimed_path": "packages/core/src/tools/mcp-client.ts",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "5. **Medium \u2014 Real defect (incomplete results): `packages/core/src/tools/mcp-client.ts:508`.** `prompts/list` is paginated, but this makes one request and ignores `nextCursor`. Any prompts after the server\u2019s first page are never registered or exposed as commands.\n\n6. **Medium \u2014 Real defect (resource cleanup/race): `packages/cli/src/ui/commands/promptCommands.ts:155`.** `Client.close()` is asynchronous, but its promise is neither awaited nor handled. Repeated invocations can return while transports or stdio child processes are still shutting down, and a rejected close becomes an unhandled rejection.\n\n7. **Medium \u2014 Real defect (argument corruption/validation): `packages/cli/src/ui/commands/promptCommands.ts:80` and `:92`.** The parser recognizes escaped characters inside quotes but never unescapes them, so `--text=\"say \\\"hello\\\"\"` sends the backslashes to the server. The truthiness check also treats a supplied empty string as absent, so a valid required argument such as `--text=\"\"` is rejected. Unknown or otherwise unparsed input is silently ignored as well.",
+        "path": "packages/core/src/tools/mcp-client.ts",
+        "start_line": 508,
+        "end_line": 508,
+        "observation_id": "6c60db29928848db",
+        "claimed_path": "packages/core/src/tools/mcp-client.ts",
+        "path_resolution": "exact",
+        "merged_from": [
+          "bbf20b5d7893082a",
+          "fba385a0e7bbf94f"
+        ]
+      },
+      {
+        "content": "8. **Medium \u2014 Security hardening defect: `packages/cli/src/ui/commands/mcpCommand.ts:254` and `:259`.** MCP-provided prompt names and descriptions are inserted directly into terminal output without stripping control characters. A malicious or compromised server can include ANSI/OSC sequences that clear or spoof the terminal, create deceptive links, or manipulate the clipboard.",
+        "path": "packages/cli/src/ui/commands/mcpCommand.ts",
+        "start_line": 254,
+        "end_line": 254,
+        "observation_id": "4f490520fe536293",
+        "claimed_path": "packages/cli/src/ui/commands/mcpCommand.ts",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "9. **Low \u2014 Misleading output: `packages/cli/src/ui/commands/mcpCommand.ts:187`.** For a disconnected server with cached prompts, the status header reports only `N tools cached` even though prompts are subsequently displayed. A prompt-only server therefore appears to have nothing cached in the summary.\n\n10. **Low \u2014 Dead/unclear logic: `packages/cli/src/ui/commands/mcpCommand.ts:256`.** `prompt.description.trim().split('\\n')` always returns an array, so `if (descLines)` is always true and its `else` branch is unreachable. A whitespace-only description consequently renders a colon and an empty colored line rather than the simple-name form.\n\nThe workspace contained no repository files, so cross-file behavior beyond the supplied diff could not be inspected.**Diff analysis:**\n\nThe PR adds MCP prompt discovery and prompt-based slash commands to a Gemini CLI. Let me go through it for real defects and maintainer-worthy concerns.",
+        "path": "packages/cli/src/ui/commands/mcpCommand.ts",
+        "start_line": 187,
+        "end_line": 187,
+        "observation_id": "c317f1ff8961bdb5",
+        "claimed_path": "packages/cli/src/ui/commands/mcpCommand.ts",
+        "path_resolution": "exact",
+        "merged_from": [
+          "a22f072692b1966a",
+          "ff7f04915e37538c"
+        ]
+      },
+      {
+        "content": "### Most severe items\n\n**1. `submit_prompt` with double-stringified JSON (promptCommands.ts:164)** \u2014 `content: JSON.stringify(result.messages[0].content.text)`. `result.messages[0].content.text` is likely already a string (the prompt's text content). `JSON.stringify` on a string wraps it in quotes and escapes. Then `submit_prompt` presumably submits this string as a prompt. Let me think about what type `content.text` is. In MCP, `GetPromptResult.messages[].content` is a `TextContent | ImageContent | AudioContent`, and `.text` is a plain string. So `JSON.stringify(\"some text\")` = `\"\\\"some text\\\"\"` \u2014 including the literal quote characters. When the CLI then submits that string as a prompt, the user's model would receive the prompt text wrapped in literal JSON quotes and with any special chars escaped (`\\n` as literal backslash-n since JSON.stringify escapes newlines). That would corrupt the prompt content. This is a real wrong-result defect. Should be just `content.text` (and there's a redundant `.text` access \u2014 actually it's `result.messages[0].content.text` then stringified). Concrete failure: a prompt whose text contains newlines or quotes gets submitted to the model as an escaped JSON literal rather than the prompt's actual text.\n\nActually, let me reconsider\u2014maybe `submit_prompt`'s content is expected as JSON string for some structured reason. But there's no indication; and given the try/catch checks `result.messages?.[0]?.content?.text` (string), the natural content is the string itself. JSON-stringifying a string is a bug.\n\n**2. `mcpClient?.close()` in `finally` (promptCommands.ts:177)** \u2014 reads `mcpClient?.close()`. Is close async? In the SDK, `Client.close()` returns a promise. Calling without awaiting gives unhandled rejection risk and the close may not complete before the response returns. Minor but worth noting\u2014actually calling it without await and ignoring it is a common pattern, but if close throws, it becomes an unhandled rejection. Worth a defensive note. Low severity.\n\n**3. Prompt command name collision / global namespace pollution (promptCommands.ts:53-183)** \u2014 each prompt becomes a global slash command named `${prompt.name}` across ALL MCP servers. Two issues:\n   - If two different MCP servers expose a prompt with the same name, they collide \u2014 the second silently overwrites the first in the commands array, and whichever command runs can only target... actually each closure captures its own `serverName`, so both commands exist but with the same `name`; the last one appended wins in lookup, and the earlier one is shadowed/unreachable. **Duplicated/hidden command** \u2014 a real functional defect for users with multiple servers exposing overlapping prompt names (very common: `summarize`, `review`, etc.). There's also no namespace like `mcp/...` or server prefix.\n   - Command names and descriptions are taken directly from server data with no sanitization; a malicious or just poorly-behaved MCP server could register slash commands that shadow built-in commands (e.g., a prompt named `help`, `quit`, `status`, or even `mcp`), overriding the built-in behavior. Since these are BUILT_IN kind and loaded into the same list as real built-ins, and appended last \u2014 they'd shadow `ideCommand`/`helpCommand` etc. That's a security/UX hardening gap. No validation against reserved names.\n\n**4. `config` captured at load time but `mcpServers` re-read at action time (promptCommands.ts:159)** \u2014 at creation time, `getMCPServerPrompts(serverName)` and `config.getMcpServers()` are read to enumerate prompts. But at action time, `config.getMcpServers()?.[serverName]` is re-read from the live config. If the server was removed from config after command creation, you get \"MCP server not found\" \u2014 fine. Not a big issue.\n\nActually a more important one: `createPromptCommands(this.config)` is called in `BuiltinCommandLoader` at construction. But prompts are only discovered during `connectAndDiscover` (async). At the time `createPromptCommands` runs, `getMCPServerPrompts` would likely return nothing (empty), because discovery hasn't completed. So the prompt commands would be created for an empty prompt list at startup and never refreshed when prompts are later discovered. Let me check the ordering...\n\nIn `BuiltinCommandLoader.ts`, `createPromptCommands(this.config)` is called synchronously in the command list. `connectAndDiscover` is async and populates `mcpServerPromptsInternal` lazily when servers connect. So at the time the loader builds the command list, `getMCPServerPrompts` returns undefined/empty for not-yet-connected servers. Result: **the prompt commands are built from an empty prompt set and never rebuilt after discovery.** This means the feature likely doesn't work except in a narrow race where the server is already connected+cached from a previous session. This is a significant real defect. However, I can't verify the exact timing without the surrounding runtime code (how/when connectAndDiscover is invoked relative to loader construction). I should flag it as a high-suspicion timing issue but note the material is insufficient to confirm. Actually this is a strong concern worth raising.\n\n**5. `mcpServerPromptsInternal` never cleared on reconnect/disconnect other than in `onerror` (mcp-client.ts)** \u2014 prompts map updated in `discoverPrompts`, deleted in `onerror`. But if server disconnects cleanly and reconnects, prompts get re-set on next discoverPrompts. If connect fails (the catch around connect), prompts aren't deleted. Stale data possible, minor.\n\n**6. Discovered prompt count inconsistency (mcpCommand.ts)** \u2014 `serverPrompts.length` derived from `getMCPServerPrompts`. If `discoverPrompts` failed (Method not found \u2014 common, most servers don't implement prompts), the map is deleted, so it's undefined \u2192 `|| []` \u2192 0. Good. But if a server previously had prompts and then stops exposing them... edge. Not worth much.\n\n**7. The `parts`/`(0 tools)` fallback (mcpCommand.ts:172-183)** \u2014 when both lengths are 0 for a CONNECTED server, message becomes `(0 tools)` \u2014 but before this change, connected servers always showed `(N tools)`. Now a connected server with 0 tools and 0 prompts shows \"(0 tools)\" \u2014 consistent enough. But note the disconnected/else branch still shows `(${serverTools.length} tools cached)` even if there are prompts \u2014 that's the cached line and doesn't mention prompts, acceptable. Minor inconsistency: the 'cached' line never reflects prompts, and the earlier test changed from `No tools available` to `No tools or prompts available`. Fine.\n\n**8. Test for discoverPrompts \"do nothing if no prompts\" uses `console.debug` spy but in mcp-client.ts discoverPrompts calls `console.error` and never `console.debug`** \u2014 looking at the test: \"should do nothing if no prompts are discovered\" spies on `console.debug` and asserts it's not called. But `discoverPrompts` doesn't call `console.debug` at all \u2014 it logs via `console.error` only on failure. Also, in the empty-prompts case, `discoverPrompts` still `set`s the map to `[]` (it doesn't \"do nothing\"). The test name and assertion don't correspond to observable behavior of the implementation \u2014 it's a vacuous/meaningless test (it would pass regardless of whether the implementation logged, because it spies on a method never invoked). **Misleading/dead test.** Worth raising as it gives false confidence. Also the \"do nothing\" assertion contradicts: the function always sets the map (side effect), so \"do nothing\" is wrong in spirit.\n\nAlso the first test in that file (in the diff at mcp-client.test.ts) expects `mockRequest` called with `{ method: 'prompts/list', params: {} }`. Fine.\n\n**9. `DiscoverMCPPrompt` type is just `Prompt` alias, but mcpCommand.ts imports `DiscoveredMCPPrompt` (mcpCommand.ts)** \u2014 the import `DiscoveredMCPPrompt` at line 15 in mcpCommand.ts \u2014 is that imported from core? In mcpCommand.ts the diff adds `DiscoveredMCPPrompt` to the import from `@google/gemini-cli-core`. But `DiscoveredMCPPrompt` is defined as an alias in mcp-client.ts (core package). Let me check \u2014 mcpCommand.ts imports from `@google/gemini-cli-core` which is presumably the core package built, and `DiscoveredMCPPrompt` is exported from mcp-client.ts which is in core. So that's consistent if core exports it. Not a defect per se.\n\n**10. Prompt command `arguments` handling \u2014 `if (value)` truthiness (promptCommands.ts:135)** \u2014 `if (value)` treats empty string `\"\"` as missing. A user passing `--foo=\"\"` to set an optional/required argument to an empty string is treated as \"not provided\"; if that arg is required, they get \"Missing required argument\". So there's no way to pass an empty-string value. Minor edge but real. Could use `value !== undefined`.\n\n**11. Regex arg parsing doesn't reject unknown args (promptCommands.ts)** \u2014 `argValues` collects any `--key=value`; unknown keys are silently ignored rather than rejected, so typos are silently dropped. Missing validation \u2014 worth a minor mention.\n\n**12. Numeric/boolean args are kept as strings (promptCommands.ts)** \u2014 all values are strings, passed as `Record<string, unknown>` to prompt; server may expect numbers or booleans (MCP prompt arguments are typed). No type coercion, so numbers can't be passed properly. Minor.\n\n**13. The `connectToMcpServer` call in each prompt action (promptCommands.ts:159-163)** \u2014 every prompt invocation creates a brand-new MCP connection (and closes it in finally). The server was already connected during discovery; this opens a fresh client connection per invocation. Also note discovery used the mcpClient created in connectAndDiscover but here a separate connectToMcpServer(false) \u2014 is `false` the \"force new connection\" flag? Possibly okay but wasteful; and each new connection re-runs nothing. Worth noting perf/design but not clearly a bug.\n\n**14. `completion` function \u2014 missing space handling (promptCommands.ts:182)** \u2014 `suggestions.push(`${partialArg}--${arg.name}=\\\"\\\"`)` \u2014 `partialArg` may already be a partial `--x` token or may abruptly concatenate. If `partialArg` is empty, produces `--name=\"\"`; if partialArg ends without space, could produce malformed concatenation like `--foo--bar`. Cosmetic completion bug, minor.\n\n**15. Order/style: `mcpCommand` moved after `privacyCommand` (BuiltinCommandLoader.ts)** \u2014 the diff reorders `mcpCommand` from before `memoryCommand` to after `privacyCommand`. This changes command listing order but isn't a defect. Skip (not worth raising).\n\n**16. In `invokeMcpPrompt` error log (mcp-client.ts ~line 540)** \u2014 logs `promptParams` (an object) into a string template: `${promptName}' from ${mcpServerName} ${promptParams}: ${...}`. Interpolating an object into a template string gives `[object Object]` \u2014 not a useful log line. Minor logging defect.\n\n**17. `discoverTools` change (mcp-client.ts)** \u2014 removed `if (discoveredTools.length === 0) throw Error('No enabled tools found')`. So now an empty tool list no longer throws. Is that intentional? With the prompts feature, a server could have only prompts. But removing that throw changes behavior for all callers that relied on it to detect \"no tools\". Could mask misconfigurations (e.g., a server that only offers tools but returns none due to filtering now silently yields 0 tools rather than erroring). This is a behavior change worth flagging \u2014 could be intentional but deserves scrutiny. Actually the diff removed this throw. Callers downstream (status display) now handle 0 tools with prompts. But other callers of discoverTools that expected either error-or-nonempty may now get empty. Worth flagging as a behavioral regression risk.\n\nNow, given the working directory is empty, I cannot verify against source. I'll be transparent about that where verification would settle a claim (e.g., what `submit_prompt` expects, the ordering/timing of loader construction vs discovery, whether `close()` is async, the mcpCommand import source).\n\nLet me prioritize and present the review.\n\nLet me reconsider the biggest one \u2014 the timing defect (item 4). Given the loader synchronously builds commands from `getMCPServerPrompts` which returns a map populated only by async discovery, and built-in slash commands are enumerated at construction, this is a real and likely showstopper for the feature. But I should hedge since I can't see how/when connectAndDiscover is scheduled relative to command loading. If commands are (re)loaded whenever the connection state changes, it'd be fine. I'll flag it as the top concern with the caveat.\n\nLet me also double check: in `createPromptCommands`, prompt commands are created with `commandName = prompt.name`. For BuiltinCommandLoader these are appended to allDefinitions. If a later loader/refresh replaces, whatever. OK.\n\nLet me write the review, ordered most severe first, with file+line from diff hunk headers.\n\nLine numbers: for new file promptCommands.ts, line numbers are the file's own line numbers (1-183). For mcp-client.ts, lines from hunks. Let me map:\n\n- mcp-client.ts: `discoverTools` throw removal \u2014 around line 490-496 (the hunk `@@ -459,15 +487,91 @@`). The removed lines `if (discoveredTools.length === 0) throw...` were at ~473-475 old, ~501 new. I'll cite mcp-client.ts:501.\n- discoverPrompts \u2014 new function ~495-520.\n- invokeMcpPrompt \u2014 ~530-560. The logging defect ~540.\n- mcpClient.close() in finally \u2014 promptCommands.ts line ~177 (from `@@ -0,0 +1,183 @@`, the finally is near end).\n\nLet me be careful with promptCommands.ts line numbers since it's a new file 1..183. Let me count roughly from the diff content:\n- help subcommand ~54-78\n- action starts ~79\n- arg parsing ~92\n- promptInputs loop ~121-140 (`if (value)` at ~133)\n- mcpServer check ~142\n- connectToMcpServer ~156-... \n- invokeMcpPrompt ~165\n- submit_prompt JSON.stringify ~173\n- catch ~176\n- finally close ~186\n\nHmm the file is 183 lines total but the catches push things. Let me recount. The diff shows `@@ -0,0 +1,183 @@` so 183 lines. Counting the content... it's hard to be precise. I'll give approximate line numbers and note they're from the new-file attribution. Let me estimate more carefully by counting the diff body for promptCommands.ts:\n\nLines (new file numbering):\n1-13: header/license + imports (13 lines)\nThen:\n- Line ~14: `export function createPromptCommands...` Actually imports span 6-13 (7 import lines: `import {` lines 6-12ish, then `import {` for gemini-core 14-17). Let me just estimate key lines.\n\nRather than risk wrong precise numbers for the new file, I'll cite approximate locations with \"~\" and note that exact numbering is from the added-file hunk. Actually the instructions require line numbers from diff hunk headers. For new file it's the file line numbers. I'll do my best estimate and mark as approximate for the new file.\n\nLet me estimate promptCommands.ts layout by counting the diff body items:\n- Header/license/imports: roughly lines 1-17\n- function decl: 18\n- `const promptCommands`: 19\n- `if (config)`: 20\n- `for serverName`: 21\n- `getMCPServerPrompts`: 23\n- `for prompt of prompts`: 25\n- `const commandName`: 26\n- newPromptCommand object starts: 27\n- name/description/kind: 28-30\n- subCommands help: 31\n- ...help block ~32-58\n- action: ~59\n- destructure config: 60\n- if !config: 61-66\n- promptArgs: 67\n- argValues: 68\n- argRegex: 69\n- while loop: 70-75\n- promptInputs: 76\n- for arg: 77-87 (if value / required)\n- mcpServer lookup: 86-91\n- let mcpClient: 92\n- try: 93\n- connectToMcpServer: 94-...\n- invokeMcpPrompt: ~100\n- result.error: ~104\n- empty content check: ~110\n- submit_prompt JSON.stringify: ~115\n- catch: ~118\n- finally close: ~121\n\nHmm, that gives ~121 lines but the file is 183. My counting is too low. The diff content has lots of blank lines and the exact new-file line numbering I should derive from the diff. Given uncertainty, I'll present each item with best-estimate line numbers and, for the new file, note they're approximate. Actually\u2014the requirement is important, so let me not fabricate precise numbers. I'll give the best estimates and flag approximation for the new file.\n\nActually, I can be more precise for the new file by counting the diff lines shown, since the diff literally shows all 183 lines. Let me count the body: the diff shows the full new file. Counting lines in the provided hunk: it's shown fully. Let me count actual lines:\n\n1 `/**`\n2 ` * @license`\n3 ` * Copyright 2025 Google LLC`\n4 ` * SPDX-License-Identifier: Apache-2.0`\n5 ` */`\n6 (blank)\n7 `import {`\n8 `  SlashCommand,`\n9 `  SlashCommandActionReturn,`\n10 `  CommandContext,`\n11 `  CommandKind,`\n12 `} from './types.js';`\n13 `import {`\n14 `  Config,`\n15 `  getMCPServerPrompts,`\n16 `  getErrorMessage,`\n17 `  invokeMcpPrompt,`\n18 `  connectToMcpServer,`\n19 `} from '@google/gemini-cli-core';`\n20 (blank)\n21 `export function createPromptCommands(config: Config | null): SlashCommand[] {`\n22 `  const promptCommands: SlashCommand[] = [];`\n23 `  if (config) {`\n24 `    const mcpServers = config.getMcpServers() || {};`\n25 `    for (const serverName in mcpServers) {`\n26 `      const prompts = getMCPServerPrompts(serverName) || [];`\n27 `      for (const prompt of prompts) {`\n28 `        const commandName = \\`${prompt.name}\\`;`\n29 `        const newPromptCommand: SlashCommand = {`\n30 `          name: commandName,`\n31 `          description: prompt.description || \\`Invoke prompt ${prompt.name}\\`,`\n32 `          kind: CommandKind.BUILT_IN,`\n33 `          subCommands: [`\n34 `            {`\n35 `              name: 'help',`\n36 `              description: 'Show help for this prompt',`\n37 `              kind: CommandKind.BUILT_IN,`\n38 `              action: async (): Promise<SlashCommandActionReturn> => {`\n39 `                if (!prompt.arguments || prompt.arguments.length === 0) {`\n40 `                  return {`\n41 `                    type: 'message',`\n42 `                    messageType: 'info',`\n43 `                    content: \\`Prompt \\\"${prompt.name}\\\" has no arguments.\\`,`\n44 `                  };`\n45 `                }`\n46 (blank)\n47 `                let helpMessage = \\`Arguments for \\\"${prompt.name}\\\":\\n\\n\\`;`\n48 `                for (const arg of prompt.arguments) {`\n49 `                  helpMessage += \\`  --${arg.name}\\n\\`;`\n50 `                  if (arg.description) {`\n51 `                    helpMessage += \\`    ${arg.description}\\n\\`;`\n52 `                  }`\n53 `                  helpMessage += \\`    (required: ${arg.required ? 'yes' : 'no'})\\n\\n\\`;`\n54 `                }`\n55 `                return {`\n56 `                  type: 'message',`\n57 `                  messageType: 'info',`\n58 `                  content: helpMessage,`\n59 `                };`\n60 `              },`\n61 `            },`\n62 `          ],`\n63 `          action: async (`\n64 `            context: CommandContext,`\n65 `            args: string,`\n66 `          ): Promise<SlashCommandActionReturn> => {`\n67 `            const { config } = context.services;`\n68 `            if (!config) {`\n69 `              return {`\n70 `                type: 'message',`\n71 `                messageType: 'error',`\n72 `                content: 'Config not loaded.',`\n73 `              };`\n74 `            }`\n75 (blank)\n76 `            const promptArgs = args.trim();`\n77 (blank)\n78 `            const argValues: { [key: string]: string } = {};`\n79 `            // arg parsing: --key=\\\"value\\\" or --key=value`\n80 `            const argRegex = /--([^=]+)=(?:\\\"((?:\\\\.|[^\\\"\\\\])*)\\\"|([^ ]*))/g;`\n81 `            let match;`\n82 `            while ((match = argRegex.exec(promptArgs)) !== null) {`\n83 `              const key = match[1];`\n84 `              const value = match[2] ?? match[3]; // Quoted or unquoted value`\n85 `              argValues[key] = value;`\n86 `            }`\n87 (blank)\n88 `            const promptInputs: Record<string, unknown> = {};`\n89 `            if (prompt.arguments) {`\n90 `              for (const arg of prompt.arguments) {`\n91 `                const value = argValues[arg.name];`\n92 `                if (value) {`\n93 `                  promptInputs[arg.name] = value;`\n94 `                } else if (arg.required) {`\n95 `                  return {`\n96 `                    type: 'message',`\n97 `                    messageType: 'error',`\n98 `                    content: \\`Missing required argument: --${arg.name}\\`,`\n99 `                  };`\n100 `                }`\n101 `              }`\n102 `            }`\n103 (blank)\n104 `            const mcpServer = config.getMcpServers()?.[serverName];`\n105 `            if (!mcpServer) {`\n106 `              return {`\n107 `                type: 'message',`\n108 `                messageType: 'error',`\n109 `                content: \\`MCP server not found: ${serverName}\\`,`\n110 `              };`\n111 `            }`\n112 (blank)\n113 `            let mcpClient;`\n114 `            try {`\n115 `              mcpClient = await connectToMcpServer(`\n116 `                serverName,`\n117 `                mcpServer,`\n118 `                false,`\n119 `              );`\n120 `              const result = await invokeMcpPrompt(`\n121 `                serverName,`\n122 `                mcpClient,`\n123 `                prompt.name,`\n124 `                promptInputs,`\n125 `              );`\n126 (blank)\n127 `              if (result.error) {`\n128 `                return {`\n129 `                  type: 'message',`\n130 `                  messageType: 'error',`\n131 `                  content: \\`Error invoking prompt: ${result.error}\\`,`\n132 `                };`\n133 `              }`\n134 (blank)\n135 `              if (!result.messages?.[0]?.content?.text) {`\n136 `                return {`\n137 `                  type: 'message',`\n138 `                  messageType: 'error',`\n139 `                  content:`\n140 `                    'Received an empty or invalid prompt response from the server.',`\n141 `                };`\n142 `              }`\n143 (blank)\n144 `              return {`\n145 `                type: 'submit_prompt',`\n146 `                content: JSON.stringify(result.messages[0].content.text),`\n147 `              };`\n148 `            } catch (error) {`\n149 `              return {`\n150 `                type: 'message',`\n151 `                messageType: 'error',`\n152 `                content: \\`Error: ${getErrorMessage(error)}\\`,`\n153 `              };`\n154 `            } finally {`\n155 `              mcpClient?.close();`\n156 `            }`\n157 `          },`\n158 `          completion: async (_: CommandContext, partialArg: string) => {`\n159 `            if (!prompt || !prompt.arguments) {`\n160 `              return [];`\n161 `            }`\n162 (blank)\n163 `            const suggestions: string[] = [];`\n164 `            const usedArgNames = new Set(`\n165 `              (partialArg.match(/--([^=]+)/g) || []).map((s) => s.substring(2)),`\n166 `            );`\n167 (blank)\n168 `            for (const arg of prompt.arguments) {`\n169 `              if (!usedArgNames.has(arg.name)) {`\n170 `                suggestions.push(\\`${partialArg}--${arg.name}=\\\"\\\"\\`);`\n171 `              }`\n172 `            }`\n173 (blank)\n174 `            return suggestions;`\n175 `          },`\n176 `        };`\n177 `        promptCommands.push(newPromptCommand);`\n178 `      }`\n179 `    }`\n180 `  }`\n181 (blank)\n182 `  return promptCommands;`\n183 `}`\n\nGood, that gives precise line numbers for the new file:\n- Name collision: line 28 (`commandName = prompt.name`) and 30.\n- submit_prompt JSON.stringify: line 146.\n- finally close: line 155.\n- `if (value)` truthiness: line 92.\n- unknown-arg silent ignore: 82-86.\n- completion concatenation: line 170.\n\nFor mcp-client.ts I need line numbers. The hunks:\n- `@@ -33,6 +40,8 @@` adds imports + `export type DiscoveredMCPPrompt = Prompt;` (that's ~line 43).\n- `@@ -62,6 +71,11 @@` adds `const mcpServerPromptsInternal` (~line 74-76).\n- `@@ -125,6 +139,15 @@` adds getMCPServerPrompts (~142-148).\n- `@@ -383,6 +406,7 @@` onerror adds prompt delete (~line 409).\n- `@@ -397,6 +421,8 @@` adds `await discoverPrompts()` (~line 424).\n- `@@ -411,7 +437,9 @@` reformat of error log (~440).\n- `@@ -459,15 +487,91 @@` discoverTools throw removal ~line 491, discoverPrompts ~495-520, invokeMcpPrompt ~530-560.\n\nI'll cite approximate line numbers with \"~\" for the existing-file modifications, since the hunks give context but not exact numbers. Actually the hunk `@@ -459,15 +487,91 @@` means the new region starts at line 487. The removed throw `if (discoveredTools.length === 0)` was at new-file position ~ line 489 (the lines just after `@@ -459,15 +487,91`). Given discoverTools body, the throw lines were around new line 501. I'll say ~line 501.\n\ndiscoverPrompts function: starts ~line 505 (after reformat). invokeMcpPrompt: ~line 530+. \n\nThe invokeMcpPrompt error log with `promptParams` interpolation: ~line 555.\n\nI'll present with approximate numbers for mcp-client.ts and mark them as from hunk ranges.\n\nNow also the mcpCommand.ts items:\n- Connected status message building: old hunk `@@ -160,9 +163,26 @@` \u2192 new lines 163-188. The `(0 tools)` fallback ~line 183.\n- Tools/Prompts header + no-available message: `@@ -186,6 +206,7 @@` and `@@ -222,12 +243,41 @@` \u2192 new ~206-280.\n- The DISCONNECTED needsAuthHint branch for serverTools>0: ~line 274-277.\n\nLet me also reconsider item about `discoverTools` test \u2014 fine.\n\nOne more: in mcpClient.ts, `discoverPrompts` is called BEFORE `discoverTools` in connectAndDiscover (`@@ -397,6 +421,8 @@` adds `await discoverPrompts` before `const tools = await discoverTools`). Good\u2014that's intentional ordering so prompts and tools both available.\n\nBut the removed throw in discoverTools: `@@ -459,15 +487,91 @@` shows `-    if (discoveredTools.length === 0) { -      throw Error('No enabled tools found'); -    }` removed. This is a behavior change \u2014 no longer errors on no tools. Callers like `discoverTools` consumers may rely on throw to surface misconfig. Worth flagging as potential regression, maybe intentional for the prompts-only server case. Medium severity/flag.\n\nNow, the vacuum test concern (mcp-client.test.ts): the \"should do nothing if no prompts are discovered\" test spies on `console.debug` and asserts not called, but implementation never calls console.debug. That test is vacuous. From the diff hunk `@@ -50,6 +51,73 @@` (lines ~78-118). Line ~96 for the spy.\n\nAlso note: the implementation always sets map even when empty, so \"do nothing\" isn't accurate, and the `consoleLogSpy` (console.debug) is pointless. Cite mcp-client.test.ts ~line 95-110.\n\nAlso in mcpCommand.test.ts, the empty-prompts mock returns `[]` \u2014 but getMCPServerPrompts is a plain `vi.fn()` mock (`getMCPServerPrompts: vi.fn()`), mocked to return `[]` in beforeEach. But note the FIRST mcpCommand test changes the \"Connected (1 tools)\" to \"(1 tool)\"\u2014pluralization now depends on serverPrompts being empty so only tools shown. Fine.\n\nNow, importantly: I cannot verify the big timing concern against source, and I cannot verify what `submit_prompt` expects. I'll present these with appropriate hedges and note what's needed to confirm.\n\nLet me write the final review. Order most severe first:",
+        "path": "packages/cli/src/ui/commands/promptCommands.ts",
+        "start_line": 164,
+        "end_line": 164,
+        "observation_id": "271162dbc19f019b",
+        "claimed_path": "promptCommands.ts",
+        "path_resolution": "basename",
+        "merged_from": []
+      },
+      {
+        "content": "2. **REAL DEFECT (wrong result):** double-stringification of prompt text at promptCommands.ts:146.\n\n3. **SECURITY/HARDENING + functional collision:** unnamespaced prompt command names that can collide across servers and shadow built-ins. promptCommands.ts:28-30, and BuiltinCommandLoader appending them last.",
+        "path": "packages/cli/src/ui/commands/promptCommands.ts",
+        "start_line": 146,
+        "end_line": 146,
+        "observation_id": "64afac747113d396",
+        "claimed_path": "promptCommands.ts",
+        "path_resolution": "basename",
+        "merged_from": [
+          "50b31b203eb9af93"
+        ]
+      },
+      {
+        "content": "7. **MINOR:** `mcpClient?.close()` not awaited in finally. promptCommands.ts:155.",
+        "path": "packages/cli/src/ui/commands/promptCommands.ts",
+        "start_line": 155,
+        "end_line": 155,
+        "observation_id": "b52407866eeed0f6",
+        "claimed_path": "promptCommands.ts",
+        "path_resolution": "basename",
+        "merged_from": []
+      },
+      {
+        "content": "10. **MINOR:** completion concatenation may produce malformed suggestions (no space handling). promptCommands.ts:170.",
+        "path": "packages/cli/src/ui/commands/promptCommands.ts",
+        "start_line": 170,
+        "end_line": 170,
+        "observation_id": "e2c63d59489d5e39",
+        "claimed_path": "promptCommands.ts",
+        "path_resolution": "basename",
+        "merged_from": []
+      },
+      {
+        "content": "## Most severe first\n\n**1. (REAL DEFECT \u2014 very likely the feature doesn't fire) Prompt commands are built before prompts are ever discovered.** In `BuiltinCommandLoader.ts`, `createPromptCommands(this.config)` runs synchronously when the command list is constructed. But `mcpClient.ts` only populates `mcpServerPromptsInternal` *asynchronously* inside `connectAndDiscover` \u2192 `discoverPrompts`. At loader-construction time, `getMCPServerPrompts(serverName)` in `promptCommands.ts:26` returns `undefined`/empty for any server that isn't already connected+cached, so `createPromptCommands` emits an empty list and nothing ever rebuilds it when prompts arrive later. Concrete failure: after a fresh start, `/mcp` shows prompts but none of the generated prompt slash-commands exist; the whole new feature is a no-op except in a narrow race. **Caveat:** this hinges on whether the loader is refreshed on connection state changes \u2014 I could not verify that because the runtime scheduling code isn't available here. This needs confirmation against `BuiltinCommandLoader`'s lifecycle and where/when `connectAndDiscover` is scheduled.\n\n**2. (REAL DEFECT \u2014 wrong result) Double-stringification of prompt text.** `promptCommands.ts:146`: `content: JSON.stringify(result.messages[0].content.text)`. The check above it (`line 135`) treats `result.messages[0].content.text` as a plain string. `JSON.stringify` of a string wraps it in literal quote characters and escapes embedded newlines/quotes, so the prompt submitted to the model is an escaped JSON literal (`\"...\"` with `\\n`, `\\\"`) rather than the prompt's actual text. Failure: any prompt whose text contains newlines or quotes reaches the model corrupted. Should be `content.text` (and `content` is accessed as `.text` on a single message, not a structured payload, so there's no reason to stringify).\n\n**3. (SECURITY/HARDENING + REAL FUNCTIONAL DEFECT) Unnamespaced prompt names collide and can shadow built-ins.** `promptCommands.ts:28-30` names each command `${prompt.name}` with no server prefix and `kind: BUILT_IN`, appended last in `BuiltinCommandLoader.ts`. Two consequences:\n- Two servers exposing the same prompt name (e.g. `summarize`, `review`) produce two commands with the same `name`; the later one silently shadows the earlier, and the earlier is unreachable. Concrete failure: a user with two MCP servers both offering `summarize` can only ever reach one of them, with no way to disambiguate.\n- A stray/malicious MCP server can register a prompt named `help`, `quit`, `status`, `mcp`, etc., overriding the real built-in command. There is no reserved-name validation and no namespace. This is a hardening/validation gap worth closing.\n\n**4. (BEHAVIORAL REGRESSION RISK) Removal of the `No enabled tools found` guard in `discoverTools`.** `mcp-client.ts` (~line 501) deletes `if (discoveredTools.length === 0) throw Error('No enabled tools found');`. Every existing caller of `discoverTools` that relied on \"error or non-empty\" to detect a misconfigured/empty server now silently receives `[]`. If that removal was only for the prompts-are-enough case, it's a scope creep that masks real config errors elsewhere. Should be confirmed intentional per caller.\n\n**5. (DEFECT \u2014 edge) `if (value)` truthiness makes empty-string arguments impossible.** `promptCommands.ts:92`: an argument passed as `--foo=\"\"` evaluates `value === \"\"` falsy and is treated as missing \u2014 so a required arg can't be passed as empty (`Missing required argument`), and an optional empty string is silently dropped. Use `value !== undefined`.\n\n**6. (DEFECT \u2014 minor) Object interpolated into a log string.** `mcp-client.ts` (~line 555) in `invokeMcpPrompt`'s catch: `` `... ${promptParams}: ${...}` `` interpolates the `Record` directly, yielding the useless literal `[object Object]` in the error log. Pass `JSON.stringify(promptParams)`.\n\n**7. (DEFECT \u2014 minor) `mcpClient?.close()` not awaited in the `finally`.** `promptCommands.ts:155`. `Client.close()` is async and can reject; calling without `await` risks an unhandled rejection and doesn't guarantee the socket is released before control returns.\n\n**8. (MISLEADING / DEAD TEST) The \"do nothing if no prompts\" test is vacuous.** `mcp-client.test.ts` (~line 95): it spies on `console.debug` and asserts it's never called, but the implementation under test never calls `console.debug` (it calls `console.error` only on failure). The test would pass even if the implementation logged on success, so it asserts nothing real. Additionally, the implementation is not \"doing nothing\" on empty results \u2014 it unconditionally `set`s the map to `[]` \u2014 so the test name doesn't match behavior. Replace the spy with an assertion on `getMCPServerPrompts('test-server')`.\n\n**9. (MISSING VALIDATION \u2014 minor) Unknown `--key=` args are silently ignored.** `promptCommands.ts:82-86`: any `--unknown=value` is collected then never matched against `prompt.arguments`, with no warning \u2014 a typo in an argument name produces a silently successful prompt invocation missing that input. Also all values stay strings (`Record<string, unknown>` of strings), so non-string MCP prompt argument types (numbers, booleans) can never be passed faithfully.\n\n**10. (UNCLEAR LOGIC \u2014 minor) `completion` can emit malformed suggestions.** `promptCommands.ts:170`: `` `${partialArg}--${arg.name}=\"\"` `` blindly concatenates. With `partialArg` ending mid-token or without a trailing space it produces lines like `--foo--bar=\"\"`; there's no leading-space handling when `partialArg` is empty vs. partial.\n\n**11. (STALE STATE \u2014 low) Prompt cache is only cleared in `onerror`, not on the connect-failure path.** `mcp-client.ts` (~line 409) deletes `mcpServerPromptsInternal` on the client `onerror`, but the `catch` around `connectAndDiscover` (~line 440) and clean reconnects don't clear it \u2014 a server that stops offering prompts can keep stale entries shown via `getMCPServerPrompts`. Low severity but easy to miss.\n\n---\n\n**Items I could not fully adjudicate** because the source tree is absent here, and which would need live-code confirmation: **#1** (loader construction vs. discovery timing), the semantic expected of `submit_prompt`'s `content` (#2's premise that it's a plain string), and whether removing the `discoverTools` throw (#4) is intended across all callers. The remaining items (3, 5\u201311) stand on the diff alone.## Review Findings",
+        "path": "packages/cli/src/services/BuiltinCommandLoader.ts",
+        "start_line": 135,
+        "end_line": 135,
+        "observation_id": "0b65137e534b637e",
+        "claimed_path": "BuiltinCommandLoader.ts",
+        "path_resolution": "basename",
+        "merged_from": [
+          "30c0f91ff6587ae4"
+        ]
+      },
+      {
+        "content": "### 1. **Critical: Resource leak in `promptCommands.ts`** \u2014 `packages/cli/src/ui/commands/promptCommands.ts:160-166`\n\nThe `finally` block closes `mcpClient` but `mcpClient` is only assigned inside the `try` block. If `connectToMcpServer` throws, `mcpClient` is `undefined` and `mcpClient?.close()` is a no-op \u2014 **but** if `connectToMcpServer` succeeds and `invokeMcpPrompt` throws, the client is closed. However, if `invokeMcpPrompt` returns an error result (not thrown), the client is **not closed** because the function returns early at lines 146-151 and 153-158 without reaching `finally`. The `finally` only runs on exception or after the `try` block completes normally \u2014 but the early `return` statements exit the `async` function **before** `finally` runs.\n\n**Failure scenario**: User invokes a prompt, server returns an error response (not an exception). The function returns an error message at line 146-151, `mcpClient` is never closed. Repeated invocations leak connections.\n\n**Fix**: Move the cleanup to a `try/finally` that wraps only the invocation, or use a `using`/`defer` pattern, or ensure every return path closes.\n\n---",
+        "path": "packages/cli/src/ui/commands/promptCommands.ts",
+        "start_line": 146,
+        "end_line": 146,
+        "observation_id": "cf5b0bfb8c529a85",
+        "claimed_path": "promptCommands.ts",
+        "path_resolution": "basename",
+        "merged_from": []
+      },
+      {
+        "content": "### 2. **Critical: `mcpClient` used before assignment** \u2014 `packages/cli/src/ui/commands/promptCommands.ts:163`\n\n```typescript\n} finally {\n  mcpClient?.close();\n}\n```\n\n`mcpClient` is declared at line 118 (`let mcpClient;`) but only assigned at line 125 inside the `try`. If `connectToMcpServer` throws, `mcpClient` is `undefined` \u2014 the optional chaining handles this. **But** TypeScript with `strictNullChecks` will complain that `mcpClient` is used before assignment if the `try` block doesn't definitely assign it. Actually, since it's `let mcpClient;` (no initializer), it's `undefined` \u2014 the optional chaining is fine at runtime, but TS may error. More importantly, the logic is fragile.\n\n---",
+        "path": "packages/cli/src/ui/commands/promptCommands.ts",
+        "start_line": 163,
+        "end_line": 163,
+        "observation_id": "33b96ba271b6a3a9",
+        "claimed_path": "packages/cli/src/ui/commands/promptCommands.ts",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "### 3. **Bug: Argument parsing regex doesn't handle spaces in unquoted values** \u2014 `packages/cli/src/ui/commands/promptCommands.ts:128-133`\n\n```typescript\nconst argRegex = /--([^=]+)=(?:\\\"((?:\\\\.|[^\\\"\\\\])*)\\\"|([^ ]*))/g;\n```\n\nThe unquoted alternative `([^ ]*)` stops at the first space. So `--arg=hello world` parses as `arg=\"hello\"` and leaves `world` as a stray token. MCP prompt arguments often need spaces (e.g., file paths, sentences).\n\n**Failure scenario**: User runs `/prompt-name --arg=\"hello world\"` \u2192 works (quoted). User runs `/prompt-name --arg=hello world` \u2192 `arg` gets `\"hello\"`, `world` is ignored silently.\n\n---",
+        "path": "packages/cli/src/ui/commands/promptCommands.ts",
+        "start_line": 128,
+        "end_line": 128,
+        "observation_id": "665020d3fd39d291",
+        "claimed_path": "packages/cli/src/ui/commands/promptCommands.ts",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "### 4. **Bug: Completion suggests already-used args incorrectly** \u2014 `packages/cli/src/ui/commands/promptCommands.ts:177-187`\n\n```typescript\nconst usedArgNames = new Set(\n  (partialArg.match(/--([^=]+)/g) || []).map((s) => s.substring(2)),\n);\n```\n\nThis matches `--arg=` anywhere in the string, including inside quoted values. If user types `--foo=\"--bar\"`, it thinks `--bar` is used.\n\n**Failure scenario**: User types `--description=\"--verbose\"` \u2192 completion won't suggest `--verbose` because it's \"used\".\n\n---",
+        "path": "packages/cli/src/ui/commands/promptCommands.ts",
+        "start_line": 177,
+        "end_line": 177,
+        "observation_id": "b10f904b45178cb1",
+        "claimed_path": "packages/cli/src/ui/commands/promptCommands.ts",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "### 5. **Bug: `serverName` closure captures last loop value** \u2014 `packages/cli/src/ui/commands/promptCommands.ts:74-168`\n\nThe `createPromptCommands` function loops over servers and prompts, creating a command for each. The `action` and `completion` closures capture `serverName` and `prompt` from the loop. Since these are `const` in the `for...of`/`for...in` loops, each iteration gets a fresh binding \u2014 **this is actually correct in modern TS/JS**. But the `for (const serverName in mcpServers)` uses `in` which iterates string keys, and `for (const prompt of prompts)` uses `of` \u2014 both create per-iteration bindings. **This is fine**, but worth noting the pattern is easy to get wrong.\n\n---",
+        "path": "packages/cli/src/ui/commands/promptCommands.ts",
+        "start_line": 74,
+        "end_line": 74,
+        "observation_id": "9dcef3a937f9f11e",
+        "claimed_path": "packages/cli/src/ui/commands/promptCommands.ts",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "### 6. **Defect: `discoverPrompts` swallows \"Method not found\" silently but logs other errors** \u2014 `packages/core/src/tools/mcp-client.ts:509-525`\n\n```typescript\nif (\n  error instanceof Error &&\n  !error.message?.includes('Method not found')\n) {\n  console.error(...);\n}\n```\n\nString-matching on error messages is fragile. The SDK may throw a specific error type (e.g., `MCPError` with `code: -32601`). Relying on message text breaks if the SDK changes wording or localizes.\n\n**Better**: Check `error instanceof McpError && error.code === ErrorCode.MethodNotFound` (or similar SDK-provided type).\n\n---",
+        "path": "packages/core/src/tools/mcp-client.ts",
+        "start_line": 509,
+        "end_line": 509,
+        "observation_id": "f379ec6aebee551d",
+        "claimed_path": "packages/core/src/tools/mcp-client.ts",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "### 7. **Defect: `discoverPrompts` doesn't clear prompts on partial failure** \u2014 `packages/core/src/tools/mcp-client.ts:509-525`\n\nIf `mcpClient.request` throws after `mcpServerPromptsInternal.set` (line 505), the catch block deletes the entry. But if it succeeds partially (e.g., returns some prompts then throws on subsequent call?), the map retains stale data. The current code only calls `request` once, so this is theoretical, but the pattern of \"set then maybe delete\" is error-prone. Use a transactional approach: collect results, then atomically set.\n\n---",
+        "path": "packages/core/src/tools/mcp-client.ts",
+        "start_line": 509,
+        "end_line": 509,
+        "observation_id": "3e48857502dd076c",
+        "claimed_path": "packages/core/src/tools/mcp-client.ts",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "### 9. **Missing validation: `prompt.arguments` can be undefined** \u2014 `packages/cli/src/ui/commands/promptCommands.ts:93, 135, 180`\n\nThe code checks `if (prompt.arguments)` at lines 93 and 135, but at line 180 (`for (const arg of prompt.arguments)`) it assumes existence because of the guard at line 176 (`if (!prompt || !prompt.arguments)`). However, `prompt` comes from the loop variable which is guaranteed non-null, but `prompt.arguments` could be `undefined` if the schema allows it. The `DiscoveredMCPPrompt = Prompt` type from SDK \u2014 need to check if `arguments` is optional. If so, line 180 crashes.\n\n---",
+        "path": "packages/cli/src/ui/commands/promptCommands.ts",
+        "start_line": 93,
+        "end_line": 93,
+        "observation_id": "f9a28e0c4562f7bc",
+        "claimed_path": "packages/cli/src/ui/commands/promptCommands.ts",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "### 10. **Inconsistent pluralization fix is incomplete** \u2014 `packages/cli/src/ui/commands/mcpCommand.ts:163-178`\n\nThe diff fixes \"1 tools\" \u2192 \"1 tool\" and adds prompts, but the disconnected case at line 227 still says \"No tools available\" (changed to \"No tools or prompts available\" at line 255). However, line 251-253:\n```typescript\n} else if (serverTools.length === 0) {\n  message += '  No tools available';\n```\nThis branch is hit when `serverTools.length === 0` but `serverPrompts.length > 0` (since the `if (serverTools.length === 0 && serverPrompts.length === 0)` at line 249 catches the both-zero case). So if a server has prompts but no tools, it shows \"No tools available\" \u2014 misleading.\n\n---",
+        "path": "packages/cli/src/ui/commands/mcpCommand.ts",
+        "start_line": 163,
+        "end_line": 163,
+        "observation_id": "fe92e970352b4631",
+        "claimed_path": "packages/cli/src/ui/commands/mcpCommand.ts",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "### 12. **Missing test: `createPromptCommands` with null config** \u2014 `packages/cli/src/services/BuiltinCommandLoader.test.ts`\n\nThe test at line 96-100 verifies `createPromptCommandsMock` is called with `null`, but there's no test for what `createPromptCommands` returns when `config` is null (should return `[]`). The function handles it (line 5: `if (config)`), but no test covers this branch.\n\n---",
+        "path": "packages/cli/src/services/BuiltinCommandLoader.test.ts",
+        "start_line": 96,
+        "end_line": 96,
+        "observation_id": "0fd31a6cef8e6381",
+        "claimed_path": "packages/cli/src/services/BuiltinCommandLoader.test.ts",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "### 13. **Dead code: `mcpCommand` mock in test now has shape but production uses different shape** \u2014 `packages/cli/src/services/BuiltinCommandLoader.test.ts:55-62`\n\nThe mock provides `{ name, description, kind }` but the real `mcpCommand` in `mcpCommand.ts` is a factory function returning `SlashCommand`. The test mock doesn't match the real interface \u2014 it works because the test only checks `name`, but it's a misleading mock.\n\n---",
+        "path": "packages/cli/src/services/BuiltinCommandLoader.test.ts",
+        "start_line": 55,
+        "end_line": 55,
+        "observation_id": "f02a5ce2e073cd95",
+        "claimed_path": "packages/cli/src/services/BuiltinCommandLoader.test.ts",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "### 15. **Type safety: `DiscoveredMCPPrompt = Prompt` re-exports SDK type** \u2014 `packages/core/src/tools/mcp-client.ts:43`\n\n```typescript\nexport type DiscoveredMCPPrompt = Prompt;\n```\n\nThis leaks the SDK's `Prompt` type into the public API. If the SDK changes, it's a breaking change. Better to define a local interface with only the fields used (`name`, `description`, `arguments`).\n\n---\n\n### 16. **Missing error handling: `connectToMcpServer` can return null/undefined?** \u2014 `packages/cli/src/ui/commands/promptCommands.ts:125`\n\n```typescript\nmcpClient = await connectToMcpServer(serverName, mcpServer, false);\n```\n\nNo check if `mcpClient` is valid before using it. If it returns `null` (on failure?), the subsequent `invokeMcpPrompt` call will crash. The `try/catch` catches it, but a explicit null check would be clearer.\n\n---",
+        "path": "packages/core/src/tools/mcp-client.ts",
+        "start_line": 43,
+        "end_line": 43,
+        "observation_id": "83d7928a2c4d517a",
+        "claimed_path": "packages/core/src/tools/mcp-client.ts",
+        "path_resolution": "exact",
+        "merged_from": [
+          "105ca733e53ec79c"
+        ]
+      },
+      {
+        "content": "### 17. **Naming inconsistency: `createPromptCommands` vs other command factories** \u2014 `packages/cli/src/services/BuiltinCommandLoader.ts:66`\n\nOther factories: `ideCommand(config)`, `restoreCommand(config)` \u2014 singular, return one command. `createPromptCommands(config)` \u2014 plural, returns array. The spread `...createPromptCommands(this.config)` works but the naming suggests a different pattern. Consider `createPromptCommandFactories` or make it consistent.\n\n---",
+        "path": "packages/cli/src/services/BuiltinCommandLoader.ts",
+        "start_line": 66,
+        "end_line": 66,
+        "observation_id": "ccbde8404e81f01c",
+        "claimed_path": "packages/cli/src/services/BuiltinCommandLoader.ts",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "### 18. **Missing cleanup on server disconnect** \u2014 `packages/core/src/tools/mcp-client.ts:383-386`\n\n```typescript\nmcpServerPromptsInternal.delete(mcpServerName);\n```\n\nAdded in `onerror` handler, but not in the `onclose` handler (if exists). If the connection closes cleanly, prompts may stale. Check if there's an `onclose` handler elsewhere.\n\n---\n\n### Summary by severity\n\n| Severity | Count | Items |\n|----------|-------|-------|\n| Critical | 2 | #1 (resource leak), #2 (use-before-assign) |\n| Bug | 4 | #3 (arg parsing), #4 (completion), #10 (misleading \"no tools\"), #9 (possible undefined access) |\n| Defect | 4 | #6 (string-match error), #7 (stale cache), #8 (double logging), #16 (missing null check) |\n| Test gap | 2 | #11 (brittle tests), #12 (missing null config test) |\n| Design/Maintainability | 4 | #13 (misleading mock), #14 (race), #15 (SDK type leak), #17 (naming), #18 (incomplete cleanup) |\n\n---\n\n**Top 3 to fix before merge:**",
+        "path": "packages/core/src/tools/mcp-client.ts",
+        "start_line": 383,
+        "end_line": 383,
+        "observation_id": "af9d10ada22ff0a7",
+        "claimed_path": "packages/core/src/tools/mcp-client.ts",
+        "path_resolution": "exact",
+        "merged_from": [
+          "7335c03031abe1f9",
+          "72b0d540dceb4ae9"
+        ]
+      }
+    ]
+  },
+  "rundir": "/home/mjarnold/.cache/llm-panel/runs/aacr-up-zdc2ndhq-e5e2ee568bb3/20260830-155812-915026",
+  "extractor": "3",
+  "unlocated": [
+    {
+      "content": "1. **REAL DEFECT (wrong result / likely core feature bug):** prompt commands built from an empty prompt set because discovery is async and `createPromptCommands` runs synchronously at loader construction \u2014 BuiltinCommandLoader.ts (createPromptCommands call), promptCommands.ts:26. Need to verify loader construction vs discovery timing. This is high-suspicion; the feature would no-op for any server ",
+      "observation_id": "7975a1d2399caf20",
+      "claimed_path": "BuiltinCommandLoader.ts",
+      "path_resolution": "basename"
+    },
+    {
+      "content": "4. **BEHAVIORAL REGRESSION RISK:** removal of the \"No enabled tools found\" throw in discoverTools. mcp-client.ts ~501.\n\n5. **DEFECT/EDGE:** `if (value)` truthiness \u2014 empty string args impossible / treated as missing. promptCommands.ts:92.",
+      "observation_id": "23e91bf422e30022",
+      "claimed_path": "mcp-client.ts",
+      "path_resolution": "basename"
+    },
+    {
+      "content": "6. **MINOR DEFECT:** `promptParams` object interpolated into log string \u2192 `[object Object]`. mcp-client.ts ~555.",
+      "observation_id": "7f1fe5f6b97e62d0",
+      "claimed_path": "mcp-client.ts",
+      "path_resolution": "basename"
+    },
+    {
+      "content": "8. **VACUOUS TEST:** mcp-client.test.ts \"do nothing\" test spies on never-called console.debug. mcp-client.test.ts ~95.\n\n9. **MINOR:** unknown `--key` args silently ignored \u2014 no validation/error. promptCommands.ts:82-86. Also no type coercion for non-string arg types.",
+      "observation_id": "94adfba3b28e2651",
+      "claimed_path": "mcp-client.test.ts",
+      "path_resolution": "basename"
+    },
+    {
+      "content": "11. **STALE STATE:** mcpServerPromptsInternal only deleted in onerror, not in the connect failure path / clean disconnect; potential stale prompt list. mcp-client.ts ~409/440. Low.\n\nAlso: **duplicated/unused** \u2014 no.\n\nLet me also note: `const commandName = \\`${prompt.name}\\`` \u2014 this is just `prompt.name`; template literal is pointless (could be `commandName` = prompt.name). Trivial style, skip.\n\nAl",
+      "observation_id": "9ae1961508417214",
+      "claimed_path": "mcp-client.ts",
+      "path_resolution": "basename"
+    },
+    {
+      "content": "### 8. **Defect: `invokeMcpPrompt` logs error then re-throws, but `promptCommands.ts` catches and wraps** \u2014 `packages/core/src/tools/mcp-client.ts:549-565` vs `packages/cli/src/ui/commands/promptCommands.ts:159-165`\n\n`invokeMcpPrompt` logs via `console.error` then `throw error`. The caller (`promptCommands.ts`) catches and returns a user-facing error message. This results in **duplicate logging**:",
+      "observation_id": "7491c2809b11aae9",
+      "claimed_path": "promptCommands.ts",
+      "path_resolution": "basename"
+    },
+    {
+      "content": "### 11. **Test fragility: `mcpCommand.test.ts` relies on exact ANSI strings** \u2014 Multiple lines\n\nTests check for exact escape sequences like `\ud83d\udfe2 \\u001b[1mserver1\\u001b[0m - Ready (1 tool)`. Any formatting change (color, spacing, emoji) breaks tests. Use a helper to strip ANSI or test structure, not render output.\n\n---",
+      "observation_id": "bde8e657f4c6b2ad",
+      "claimed_path": "mcpCommand.test.ts",
+      "path_resolution": "basename"
+    },
+    {
+      "content": "### 14. **Potential race: `mcpServerPromptsInternal` map accessed concurrently** \u2014 `packages/core/src/tools/mcp-client.ts`\n\n`mcpServerPromptsInternal` is a module-level `Map` mutated by `discoverPrompts` (called from `connectAndDiscover`) and read by `getMCPServerPrompts`. If multiple connections to the same server happen concurrently (unlikely but possible), there's a race. Not a high-severity is",
+      "observation_id": "2afbf20c1a83c150",
+      "claimed_path": "packages/core/src/tools/mcp-client.ts",
+      "path_resolution": "exact"
+    },
+    {
+      "content": "1. Resource leak in `promptCommands.ts` action handler (early returns bypass `finally`)\n2. Argument parsing doesn't handle unquoted spaces\n3. `discoverPrompts` string-matching on error message",
+      "observation_id": "703a1e1dc780ae36",
+      "claimed_path": "promptCommands.ts",
+      "path_resolution": "basename"
+    }
+  ]
+}

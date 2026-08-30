@@ -1,0 +1,689 @@
+{
+  "review": {
+    "comments": [
+      {
+        "content": "1. **High \u2014 `CertificateTool.java:432`**  \n   `--ca-keyusage` accepts CA usages that omit `keyCertSign`, even when `cert` mode immediately uses that CA to issue certificates.  \n   **Scenario:** `elasticsearch-certutil cert --ca-keyusage cRLSign ...` \u2192 the generated CA signs the leaf certificate while its critical key-usage extension explicitly forbids certificate signing; validators that enforce issuer key usage reject the chain.",
+        "path": "x-pack/plugin/security/cli/src/main/java/org/elasticsearch/xpack/security/cli/CertificateTool.java",
+        "start_line": 432,
+        "end_line": 432,
+        "observation_id": "6bb9f08dffb785e0",
+        "claimed_path": "CertificateTool.java",
+        "path_resolution": "basename",
+        "merged_from": []
+      },
+      {
+        "content": "2. **High \u2014 `HttpCertificateCommand.java:772`**  \n   The HTTP-certificate prompt accepts key-usage sets that cannot authenticate an HTTP TLS server.  \n   **Scenario:** select `nonRepudiation` as the sole key usage \u2192 the RSA server certificate has neither `digitalSignature` nor `keyEncipherment`; TLS certificate selection or handshake fails instead of yielding a usable Elasticsearch HTTP certificate.",
+        "path": "x-pack/plugin/security/cli/src/main/java/org/elasticsearch/xpack/security/cli/HttpCertificateCommand.java",
+        "start_line": 772,
+        "end_line": 772,
+        "observation_id": "45a7568eccafe457",
+        "claimed_path": "HttpCertificateCommand.java",
+        "path_resolution": "basename",
+        "merged_from": []
+      },
+      {
+        "content": "3. **Medium \u2014 `CertGenUtils.java:305`**  \n   `generateSignedCertificate` adds `keyCertSign` without checking `isCa`, permitting an RFC-invalid certificate whose key usage says it signs certificates but whose basic constraints say it is not a CA.  \n   **Scenario:** generate an HTTP certificate with `digitalSignature,keyCertSign` \u2192 the certificate has `basicConstraints CA:false` and critical `keyCertSign`, violating RFC 5280\u2019s requirement that `keyCertSign` implies `cA=true`.",
+        "path": "x-pack/plugin/security/cli/src/main/java/org/elasticsearch/xpack/security/cli/CertGenUtils.java",
+        "start_line": 305,
+        "end_line": 305,
+        "observation_id": "46a27c51f0059a16",
+        "claimed_path": "CertGenUtils.java",
+        "path_resolution": "basename",
+        "merged_from": []
+      },
+      {
+        "content": "4. **Medium \u2014 `CertGenUtils.java:481`**  \n   Key-usage combinations are validated only by name; the required dependency of `encipherOnly` and `decipherOnly` on `keyAgreement` is not enforced.  \n   **Scenario:** enter `encipherOnly` or `decipherOnly` alone \u2192 the tool emits a critical key-usage extension with `keyAgreement=false`, which RFC 5280 explicitly prohibits.",
+        "path": "x-pack/plugin/security/cli/src/main/java/org/elasticsearch/xpack/security/cli/CertGenUtils.java",
+        "start_line": 481,
+        "end_line": 481,
+        "observation_id": "9b92dee33fee4eee",
+        "claimed_path": "CertGenUtils.java",
+        "path_resolution": "basename",
+        "merged_from": []
+      },
+      {
+        "content": "5. **Medium \u2014 `HttpCertificateCommand.java:1041`**  \n   Java\u2019s `String.split(\",\")` discards trailing empty fields, so an input consisting solely of delimiters bypasses the blank-entry check and becomes an empty usage list.  \n   **Scenario:** enter `,` at either key-usage prompt \u2192 `resolvedKeyUsages` is empty, `buildKeyUsage` returns `null`, and the generated HTTP certificate or CA has no key-usage extension despite this change\u2019s default and validation intent.",
+        "path": "x-pack/plugin/security/cli/src/main/java/org/elasticsearch/xpack/security/cli/HttpCertificateCommand.java",
+        "start_line": 1041,
+        "end_line": 1041,
+        "observation_id": "8ea1b3cab58b3fc9",
+        "claimed_path": "HttpCertificateCommand.java",
+        "path_resolution": "basename",
+        "merged_from": []
+      },
+      {
+        "content": "6. **Low \u2014 `CertificateTool.java:281`**  \n   `--ca-keyusage` is made unavailable with existing-CA path options but not with `--self-signed`; the self-signed branch at line 967 does not consume this option.  \n   **Scenario:** `elasticsearch-certutil cert --self-signed --ca-keyusage keyCertSign ...` succeeds, but the generated certificate has no key-usage extension\u2014the accepted option is silently ignored.",
+        "path": "x-pack/plugin/security/cli/src/main/java/org/elasticsearch/xpack/security/cli/CertificateTool.java",
+        "start_line": 281,
+        "end_line": 281,
+        "observation_id": "85d4f8ac82ada6ad",
+        "claimed_path": "CertificateTool.java",
+        "path_resolution": "basename",
+        "merged_from": []
+      },
+      {
+        "content": "7. **Low \u2014 `HttpCertificateCommandTests.java:383`**  \n   `randomSubsetOf` may return an empty set, but supplying its comma-delimited representation (`\"\"`) causes `tryReadInput` to select the nonempty default rather than an empty usage set.  \n   **Scenario:** the random subset is empty \u2192 the CA is generated with `keyCertSign,cRLSign`, while `assertExpectedKeyUsage(..., caKeyUsage)` expects no bits, producing a flaky test failure.\n\nChecked the supplied diff; the workspace contains no source checkout, so additional call-site verification was not possible.## 1. `cert` subcommand: documented `--ca-keyusage` flag is accepted but completely ignored (and its documented default never applies)",
+        "path": "x-pack/plugin/security/cli/src/test/java/org/elasticsearch/xpack/security/cli/HttpCertificateCommandTests.java",
+        "start_line": 383,
+        "end_line": 383,
+        "observation_id": "926ad95a58a0a2ed",
+        "claimed_path": "HttpCertificateCommandTests.java",
+        "path_resolution": "basename",
+        "merged_from": [
+          "cf60b86e3c036f78"
+        ]
+      },
+      {
+        "content": "- `x-pack/plugin/security/cli/src/main/java/org/elasticsearch/xpack/security/cli/CertificateGenerateTool.java:406` \u2014 the `cert` command's on-the-fly CA generation (`getCAInfo`) passes a hard-coded `null` key usage: `generateCACertificate(x500Principal, keyPair, days, null)`.\n- But the flag is registered for the very same command: `CertificateTool.java:253` (`acceptCertificateAuthorityKeyUsage()` added inside `acceptsCertificateAuthority()`, which the `cert` command invokes for its `--ca`/`--ca-cert` options), and the docs advertise it for `cert` (`docs/reference/elasticsearch/command-line-tools/certutil.md:19`) with default `keyCertSign,cRLSign` (`certutil.md:102-104`).\n\nFailure scenario: user runs `bin/elasticsearch-certutil cert --ca-keyusage keyCertSign,cRLSign --name node1` exactly per the docs synopsis. The command parses cleanly, generates a CA with **no keyUsage extension at all**, and prints nothing about it. The identical CA operation via the `ca` subcommand (`CertificateTool.java:432-433`) produces a CA *with* the extension. A user relying on the documented default (e.g. because a downstream policy/validator requires KU on the chain) silently gets different artifacts depending on which subcommand they used.\n\n## 2. RFC 5280 violations are issued by design: `keyCertSign` can be dropped from a CA, and `encipherOnly`/`decipherOnly` accepted without `keyAgreement`",
+        "path": "x-pack/plugin/security/cli/src/main/java/org/elasticsearch/xpack/security/cli/CertificateGenerateTool.java",
+        "start_line": 406,
+        "end_line": 406,
+        "observation_id": "75260d1c0abe3966",
+        "claimed_path": "x-pack/plugin/security/cli/src/main/java/org/elasticsearch/xpack/security/cli/CertificateGenerateTool.java",
+        "path_resolution": "exact",
+        "merged_from": [
+          "07e7d7f7016902c5"
+        ]
+      },
+      {
+        "content": "- `x-pack/plugin/security/cli/src/main/java/org/elasticsearch/xpack/security/cli/CertGenUtils.java:480-487` \u2014 `buildKeyUsage` blindly ORs any combination; there is no rule check.",
+        "path": "x-pack/plugin/security/cli/src/main/java/org/elasticsearch/xpack/security/cli/CertGenUtils.java",
+        "start_line": 480,
+        "end_line": 480,
+        "observation_id": "2f18b5460c7cbd4b",
+        "claimed_path": "x-pack/plugin/security/cli/src/main/java/org/elasticsearch/xpack/security/cli/CertGenUtils.java",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "- `HttpCertificateCommand.java:1042-1066` (`readKeyUsage`) validates only that each name is in the list, and `HttpCertificateCommand.java:759-773` / `942-961` explicitly offer all nine values for both CA and leaf prompts.\n\nFailure scenario: `elasticsearch-certutil http` \u2192 \"change options\" \u2192 CA key usage \u2192 user enters `digitalSignature` (a perfectly rational choice, prompted by the tool). The generated CA cert carries critical KU `digitalSignature` and no `keyCertSign`; per RFC 5280 a non-`keyCertSign` CA may not sign, and JSSE/OpenSSL chain building rejects the CA's own signature over the leaf (`keyUsage` present without `keyCertSign` \u2192 \"does not allow certificate signing\" class of failure). Same for `certutil ca --ca-keyusage encipherOnly`: RFC 5280 \u00a74.2.1.3 forbids `encipherOnly`/`decipherOnly` when `keyAgreement` is unset, so the tool can mint certificates that strict validators (OpenSSL `x509_strict`, conformance linters) reject. The PR claims RFC 5280 compliance while issuing certificates that violate it.\n\n## 3. `ca` subcommand now unconditionally applies a critical default KU with no opt-out, and the two CA entry points silently diverge",
+        "path": "x-pack/plugin/security/cli/src/main/java/org/elasticsearch/xpack/security/cli/HttpCertificateCommand.java",
+        "start_line": 1042,
+        "end_line": 1042,
+        "observation_id": "ba05e8997c8c1f70",
+        "claimed_path": "HttpCertificateCommand.java",
+        "path_resolution": "basename",
+        "merged_from": [
+          "ed9cfe8515643dd8"
+        ]
+      },
+      {
+        "content": "- `x-pack/plugin/security/cli/src/main/java/org/elasticsearch/xpack/security/cli/CertificateTool.java:114` (`DEFAULT_CA_KEY_USAGE`) and `:432-433` (`buildKeyUsage(getCaKeyUsage(options))` \u2014 never null, since `getCaKeyUsage` at `:332-345` always returns the default when the flag is absent, and an empty flag value also falls back to the default).\n\nFailure scenario: an existing deployment that regenerated its identity after upgrade with plain `bin/elasticsearch-certutil ca` (whose p12 was used as the TLS server/client identity, a pattern present in older ES quickstart docs) now gets a certificate with critical KU `keyCertSign,cRLSign` and no way to request the previous KU-less form \u2014 the flag can't express \"no key usage\". Validators that enforce end-entity key usage (Java trust managers on the client-auth and some server paths) reject the previously-working identity, and a fresh `cert --ca \u2026`-signed chain from the *same* p12 behaves differently than a chain from a `cert`-auto-generated CA, which has no KU at all (`CertificateGenerateTool.java:406`). The change is intent for HTTP certs per the changelog, but it is applied unconditionally to a storage-of-record artifact with no upgrade warning and no escape hatch.\n\n## 4. Flaky test: `randomSubsetOf` can be empty, producing a guaranteed assertion failure",
+        "path": "x-pack/plugin/security/cli/src/main/java/org/elasticsearch/xpack/security/cli/CertificateTool.java",
+        "start_line": 114,
+        "end_line": 114,
+        "observation_id": "c3e65c5b5969bea5",
+        "claimed_path": "x-pack/plugin/security/cli/src/main/java/org/elasticsearch/xpack/security/cli/CertificateTool.java",
+        "path_resolution": "exact",
+        "merged_from": [
+          "57dfdab147e37075"
+        ]
+      },
+      {
+        "content": "- `x-pack/plugin/security/cli/src/test/java/org/elasticsearch/xpack/security/cli/HttpCertificateCommandTests.java:383` \u2014 `caKeyUsage = randomSubsetOf(CertGenUtils.KEY_USAGE_MAPPINGS.keySet())`; `randomSubsetOf` may return the empty set (note the sibling test in `CertGenUtilsTests.java` deliberately uses `randomNonEmptySubsetOf`, so the empty case is real).\n- `:387` \u2014 `addTextInput(\"\")` for the key-usage prompt; empty input makes `tryReadInput` return the **default** (`DEFAULT_CA_KEY_USAGE`), so the CA actually gets `keyCertSign,cRLSign`.\n- `:474` \u2014 `assertExpectedKeyUsage(caCertKey.v1(), caKeyUsage)` then expects **all nine bits clear**.\n\nFailure scenario: when the random \"change defaults\" branch is taken and the random subset is empty (probability \u2248 2\u207b\u2079 \u2248 0.2% per run), the CA is emitted with `keyCertSign`+`cRLSign` while the assertion expects no bits set \u2192 AssertionError; the test fails non-deterministically in CI for no reason other than randomization.\n\n## 5. CLI-mode key-usage input is never validated up front: a typo or blank token surfaces as a raw stack trace after the key pair is already generated",
+        "path": "x-pack/plugin/security/cli/src/test/java/org/elasticsearch/xpack/security/cli/HttpCertificateCommandTests.java",
+        "start_line": 383,
+        "end_line": 383,
+        "observation_id": "a2737c49662c9731",
+        "claimed_path": "x-pack/plugin/security/cli/src/test/java/org/elasticsearch/xpack/security/cli/HttpCertificateCommandTests.java",
+        "path_resolution": "exact",
+        "merged_from": [
+          "bc868ebfe862ef02"
+        ]
+      },
+      {
+        "content": "- `x-pack/plugin/security/cli/src/main/java/org/elasticsearch/xpack/security/cli/CertificateTool.java:339-344` \u2014 `getCaKeyUsage` passes tokens straight through (`splitStringByCommaToArray`, no trim, no validation).",
+        "path": "x-pack/plugin/security/cli/src/main/java/org/elasticsearch/xpack/security/cli/CertificateTool.java",
+        "start_line": 339,
+        "end_line": 339,
+        "observation_id": "05a23c89e996d6a7",
+        "claimed_path": "x-pack/plugin/security/cli/src/main/java/org/elasticsearch/xpack/security/cli/CertificateTool.java",
+        "path_resolution": "exact",
+        "merged_from": []
+      },
+      {
+        "content": "- `CertGenUtils.java:483-485` \u2014 `buildKeyUsage` throws `IllegalArgumentException(\"Unknown keyUsage: \u2026\")` for typos, wrong case (`DigitalSignature`, explicitly rejected per `CertGenUtilsTests`), or empty tokens from `--ca-keyusage \"keyCertSign,,cRLSign\"`.\n\nFailure scenario: `bin/elasticsearch-certutil ca --ca-keyusage KeyCertSign` (or a trailing comma) \u2192 uncaught `IllegalArgumentException` stack trace instead of a clean CLI error, thrown only inside `generateCA` after the CA key pair has already been generated (`CertificateTool.java:432`); the interactive `http` path handles identical input with a friendly re-prompt (`HttpCertificateCommand.java:1052-1061`). For the `csr`/`cert` case there is no validation at all (see item 1).\n\n## 6. `cert --self-signed --ca-keyusage \u2026` is accepted and silently dropped",
+        "path": "x-pack/plugin/security/cli/src/main/java/org/elasticsearch/xpack/security/cli/CertGenUtils.java",
+        "start_line": 483,
+        "end_line": 483,
+        "observation_id": "098c96f45657da13",
+        "claimed_path": "CertGenUtils.java",
+        "path_resolution": "basename",
+        "merged_from": [
+          "362a93b9d69f8c5c"
+        ]
+      },
+      {
+        "content": "- `x-pack/plugin/security/cli/src/main/java/org/elasticsearch/xpack/security/cli/CertificateGenerateTool.java:967-971` \u2014 the self-signed branch of `generateCertificateAndKey` calls `generateSignedCertificate(\u2026, days)`, which resolves to the overload delegating with `keyUsage = null` (`CertGenUtils.java:176-179`), while the flag is registered for this command (`CertificateTool.java:253`).\n\nFailure scenario: user follows the doc synopsis and combines `cert --self-signed --ca-keyusage keyCertSign,cRLSign`; there is no CA and the self-signed cert gets no key usage, with no warning \u2014 the flag is a silent no-op on this documented path.\n\n---\n\nAfter a full pass over every hunk (changelog, docs, `AutoConfigureNode` + tests, `CertGenUtils` + tests, `CertificateGenerateTool` + tests, `CertificateTool` + tests, `HttpCertificateCommand` + tests), the items above are everything I can point at as defects. The remaining hunks (CSR criticality flag, `KEY_USAGE_BITS`/`KEY_USAGE_MAPPINGS` encoding, `tryReadInput` instanceof-Collection branch, docs/changelog) I checked and found nothing pointable.### Defects Found",
+        "path": "x-pack/plugin/security/cli/src/main/java/org/elasticsearch/xpack/security/cli/CertificateGenerateTool.java",
+        "start_line": 967,
+        "end_line": 967,
+        "observation_id": "894f744e6bdb6b37",
+        "claimed_path": "x-pack/plugin/security/cli/src/main/java/org/elasticsearch/xpack/security/cli/CertificateGenerateTool.java",
+        "path_resolution": "exact",
+        "merged_from": [
+          "c856c5f9500b4028"
+        ]
+      },
+      {
+        "content": "#### 1. **CertGenUtils.java:305-311** \u2014 KeyUsage extension marked critical unconditionally, violating RFC 5280 for non-CA certs\n```java\nif (keyUsage != null) {\n    // as per RFC 5280 (section 4.2.1.3), if the key usage is present, then it SHOULD be marked as critical.\n    final boolean isCritical = true;\n    builder.addExtension(Extension.keyUsage, isCritical, keyUsage);\n}\n```\n**Failure scenario:** Generate an end-entity (non-CA) certificate with `keyUsage=digitalSignature,keyEncipherment`. The KeyUsage extension is marked critical. RFC 5280 \u00a74.2.1.3 says KeyUsage **SHOULD** be critical (not MUST), and common practice marks it critical only for CA certificates. Some validators (e.g., Windows CryptoAPI, older Java) reject non-CA certs with critical KeyUsage containing `keyEncipherment` + `digitalSignature` because they expect non-critical for EE certs. Result: TLS handshake failures with strict validators.\n\n---",
+        "path": "x-pack/plugin/security/cli/src/main/java/org/elasticsearch/xpack/security/cli/CertGenUtils.java",
+        "start_line": 305,
+        "end_line": 305,
+        "observation_id": "c65f251f7d6a7369",
+        "claimed_path": "CertGenUtils.java",
+        "path_resolution": "basename",
+        "merged_from": []
+      },
+      {
+        "content": "#### 2. **CertGenUtils.java:318-320** \u2014 `generateCSR` overload drops keyUsage parameter silently\n```java\nstatic PKCS10CertificationRequest generateCSR(KeyPair keyPair, X500Principal principal, GeneralNames sanList) throws IOException,\n    OperatorCreationException {\n    return generateCSR(keyPair, principal, sanList, Set.of());\n}\n```\n**Failure scenario:** Caller invokes the 4-arg `generateCSR(keyPair, principal, sanList)` expecting keyUsage in the CSR (per the new 6-arg overload). The call delegates to `generateCSR(keyPair, principal, sanList, null, Set.of())` \u2014 `keyUsage=null` is passed, so no KeyUsage extension is added to the CSR. The CSR is missing the keyUsage the caller expected. No error, just silent omission.\n\n---",
+        "path": "x-pack/plugin/security/cli/src/main/java/org/elasticsearch/xpack/security/cli/CertGenUtils.java",
+        "start_line": 318,
+        "end_line": 318,
+        "observation_id": "84167cb079f6111e",
+        "claimed_path": "CertGenUtils.java",
+        "path_resolution": "basename",
+        "merged_from": []
+      },
+      {
+        "content": "#### 3. **CertGenUtils.java:471-492** \u2014 `buildKeyUsage` treats whitespace inconsistently vs `isValidKeyUsage`\n```java\npublic static KeyUsage buildKeyUsage(Collection<String> keyUsages) {\n    ...\n    for (String keyUsageName : keyUsages) {\n        keyUsageName = keyUsageName.trim();  // trimmed HERE\n        ...\n        Integer keyUsageValue = findKeyUsageByName(keyUsageName);  // uses trimmed\n    }\n}\n\nprivate static Integer findKeyUsageByName(String keyUsageName) {\n    if (keyUsageName == null) return null;\n    return KEY_USAGE_MAPPINGS.get(keyUsageName.trim());  // trimmed AGAIN\n}\n```\n```java\npublic static boolean isValidKeyUsage(String keyUsage) {\n    return findKeyUsageByName(keyUsage) != null;  // trims inside findKeyUsageByName\n}\n```\n**Failure scenario:** User passes `\" digitalSignature \"` (leading/trailing spaces). `isValidKeyUsage(\" digitalSignature \")` \u2192 `true` (trimmed in `findKeyUsageByName`). But `buildKeyUsage(List.of(\" digitalSignature \"))` \u2192 trims in loop, then trims again in `findKeyUsageByName` \u2014 works but double-trim is harmless. **Real defect:** `buildKeyUsage` trims in the loop, but if a caller bypasses `buildKeyUsage` and calls `findKeyUsageByName` directly with a string containing **internal** whitespace like `\"key CertSign\"`, `isValidKeyUsage` returns `false` (no match after trim), but `buildKeyUsage` would also fail. The inconsistency is that `isValidKeyUsage` validates the *whole string* after trim, while `buildKeyUsage` splits by comma **then** trims each part. Input `\"digitalSignature, keyEncipherment\"` \u2192 split \u2192 `[\"digitalSignature\", \" keyEncipherment\"]` \u2192 trim \u2192 both valid. But `\"digitalSignature ,keyEncipherment\"` \u2192 `[\"digitalSignature \", \"keyEncipherment\"]` \u2192 first trims to valid. **No actual bug here, but the double-trim in `findKeyUsageByName` is redundant.**\n\nWait \u2014 let me re-read. `buildKeyUsage` does `keyUsageName.trim()` then passes to `findKeyUsageByName` which *also* does `.trim()`. Double trim is harmless. But `isValidKeyUsage` calls `findKeyUsageByName` directly which trims. So `\" keyCertSign \"` validates as true. This is consistent. **Not a defect.**\n\n---",
+        "path": "x-pack/plugin/security/cli/src/main/java/org/elasticsearch/xpack/security/cli/CertGenUtils.java",
+        "start_line": 471,
+        "end_line": 471,
+        "observation_id": "962536555492f727",
+        "claimed_path": "CertGenUtils.java",
+        "path_resolution": "basename",
+        "merged_from": [
+          "4cb6188aebe59465"
+        ]
+      },
+      {
+        "content": "#### 4. **CertGenUtils.java:484-487** \u2014 `buildKeyUsage` throws IAE on unknown keyUsage but doesn't list valid options\n```java\nif (keyUsageValue == null) {\n    throw new IllegalArgumentException(\"Unknown keyUsage: \" + keyUsageName);\n}\n```\n**Failure scenario:** User runs `elasticsearch-certutil ca --ca-keyusage \"keyCertSign,invalidUsage\"`. Error: `Unknown keyUsage: invalidUsage`. User has no idea what valid values are. Should include valid options in error message (like `readKeyUsage` does in HttpCertificateCommand.java:1050-1060).\n\n---",
+        "path": "x-pack/plugin/security/cli/src/main/java/org/elasticsearch/xpack/security/cli/CertGenUtils.java",
+        "start_line": 484,
+        "end_line": 484,
+        "observation_id": "f46f0460827e514a",
+        "claimed_path": "CertGenUtils.java",
+        "path_resolution": "basename",
+        "merged_from": []
+      },
+      {
+        "content": "#### 5. **CertificateTool.java:278-297** \u2014 `caKeyUsageSpec` availability conflicts with `caPkcs12PathSpec`/`caCertPathSpec` but not with `caKeyPathSpec`\n```java\nif (caPkcs12PathSpec != null) {\n    builder = builder.availableUnless(caPkcs12PathSpec);\n}\nif (caCertPathSpec != null) {\n    builder = builder.availableUnless(caCertPathSpec);\n}\ncaKeyUsageSpec = builder.withRequiredArg();\n```\n**Failure scenario:** User provides `--ca-key` (existing CA private key) + `--ca-keyusage`. The `caKeyUsageSpec` is **allowed** (no `availableUnless(caKeyPathSpec)`). But if `--ca-key` is provided, the CA cert is loaded from `--ca-cert`/`--ca-key`, not generated \u2014 so `--ca-keyusage` is ignored silently. User expects their keyUsage to apply but it doesn't. Should also conflict with `caKeyPathSpec`.\n\n---",
+        "path": "x-pack/plugin/security/cli/src/main/java/org/elasticsearch/xpack/security/cli/CertificateTool.java",
+        "start_line": 278,
+        "end_line": 278,
+        "observation_id": "0bf48435c12a1500",
+        "claimed_path": "CertificateTool.java",
+        "path_resolution": "basename",
+        "merged_from": []
+      },
+      {
+        "content": "#### 6. **CertificateTool.java:396-401** \u2014 `generateCA` uses `getCaKeyUsage` which returns default even when CA is loaded from file\n```java\nfinal KeyUsage caKeyUsage = CertGenUtils.buildKeyUsage(getCaKeyUsage(options));\nX509Certificate caCert = CertGenUtils.generateCACertificate(x500Principal, keyPair, getDays(options), caKeyUsage);\n```\n**Failure scenario:** User runs `certutil ca --ca-cert existing-ca.pem --ca-key existing-key.pem --ca-keyusage \"keyCertSign\"`. The `generateCA` method is called (line 396), but when `--ca-cert`/`--ca-key` are provided, the method should **load** the existing CA, not generate a new one. Looking at the full method (not in diff), if it loads existing CA, the `caKeyUsage` is computed but never used. The keyUsage from the existing CA cert is what matters. The computed `caKeyUsage` is discarded. Silent ignore.\n\n---",
+        "path": "x-pack/plugin/security/cli/src/main/java/org/elasticsearch/xpack/security/cli/CertificateTool.java",
+        "start_line": 396,
+        "end_line": 396,
+        "observation_id": "58f8441e59ad097b",
+        "claimed_path": "CertificateTool.java",
+        "path_resolution": "basename",
+        "merged_from": []
+      },
+      {
+        "content": "#### 7. **HttpCertificateCommand.java:339, 372** \u2014 CSR and self-signed cert generation use `buildKeyUsage(cert.keyUsage)` but `cert.keyUsage` can be `DEFAULT_CERT_KEY_USAGE` which includes `keyEncipherment` \u2014 invalid for CSR per RFC 5280\n```java\n// Line 339: CSR generation\nbuildKeyUsage(cert.keyUsage),\n\n// Line 372: Self-signed cert generation  \nbuildKeyUsage(cert.keyUsage),\n```\n**Failure scenario:** User generates HTTP certificate with default keyUsage `digitalSignature,keyEncipherment`. For CSR (line 339), RFC 5280 \u00a74.2.1.3 says KeyUsage in CSR **SHOULD NOT** include `keyEncipherment` (only for issued certs). Some CAs reject CSRs with `keyEncipherment`. For self-signed cert (line 372), `keyEncipherment` is valid. But the same `cert.keyUsage` is used for both. If user customizes to add `keyCertSign`, the CSR gets `keyCertSign` which is invalid for EE cert CSR.\n\n---",
+        "path": "x-pack/plugin/security/cli/src/main/java/org/elasticsearch/xpack/security/cli/HttpCertificateCommand.java",
+        "start_line": 339,
+        "end_line": 339,
+        "observation_id": "a1459a094ac8724e",
+        "claimed_path": "HttpCertificateCommand.java",
+        "path_resolution": "basename",
+        "merged_from": []
+      },
+      {
+        "content": "#### 8. **HttpCertificateCommand.java:904-939** \u2014 `createNewCA` uses `generateSignedCertificate` with `keyUsage` but passes `null` for signatureAlgorithm\n```java\nX509Certificate caCert = generateSignedCertificate(\n    dn, null, keyPair, null, null, true,\n    notBefore, notAfter, null,  // signatureAlgorithm = null\n    buildKeyUsage(keyUsage), Set.of()\n);\n```\nThe `generateSignedCertificate` at line 192+ expects `signatureAlgorithm` parameter. Passing `null` is fine (uses default). **Not a defect.**\n\n---",
+        "path": "x-pack/plugin/security/cli/src/main/java/org/elasticsearch/xpack/security/cli/HttpCertificateCommand.java",
+        "start_line": 904,
+        "end_line": 904,
+        "observation_id": "626e5b84f16b024e",
+        "claimed_path": "HttpCertificateCommand.java",
+        "path_resolution": "basename",
+        "merged_from": []
+      },
+      {
+        "content": "#### 9. **HttpCertificateCommand.java:1039-1060** \u2014 `readKeyUsage` rejects empty input but `tryReadInput` returns default on empty\n```java\nprivate static List<String> readKeyUsage(Terminal terminal, List<String> defaultKeyUsage) {\n    return tryReadInput(terminal, \"Key Usage\", defaultKeyUsage, input -> {\n        final String[] keyUsages = input.split(\",\");\n        ...\n        if (keyUsage.isEmpty()) {\n            terminal.println(\"Key usage cannot be blank or empty\");\n            return null;  // signals retry\n        }\n        ...\n    });\n}\n```\n```java\nprivate static <T> T tryReadInput(Terminal terminal, String prompt, T defaultValue, Function<String, T> parser) {\n    final String input = terminal.readText(prompt + \" [\" + defaultStr + \"] \");\n    if (Strings.isEmpty(input)) {\n        return defaultValue;  // empty input \u2192 return default\n    }\n    return parser.apply(input);\n}\n```\n**Failure scenario:** User at prompt \"Key Usage [digitalSignature,keyEncipherment] \" presses Enter (empty input). `tryReadInput` sees empty input \u2192 returns `defaultKeyUsage` directly, **bypassing the parser**. The parser's empty-check is never reached. This is fine \u2014 empty input uses default. **But:** if user types `\"\"` (empty string after prompt), same behavior. **Not a defect.**\n\n**Actual defect:** If user types `,` (just comma), `input.split(\",\")` \u2192 `[\"\", \"\"]`. Loop sees first `keyUsage=\"\"` after trim \u2192 \"Key usage cannot be blank or empty\" \u2192 returns `null` \u2192 `tryReadInput` loops again. Correct. If user types `digitalSignature,` (trailing comma) \u2192 `[\"digitalSignature\", \"\"]` \u2192 second is empty \u2192 error. Correct.\n\n---",
+        "path": "x-pack/plugin/security/cli/src/main/java/org/elasticsearch/xpack/security/cli/HttpCertificateCommand.java",
+        "start_line": 1039,
+        "end_line": 1039,
+        "observation_id": "5af62c15b0b9c9ad",
+        "claimed_path": "HttpCertificateCommand.java",
+        "path_resolution": "basename",
+        "merged_from": [
+          "9754c618da0a8248"
+        ]
+      },
+      {
+        "content": "#### 10. **HttpCertificateCommand.java:1165-1178** \u2014 `tryReadInput` handles `Collection` default but `readKeyUsage` passes `List<String>` which is a `Collection`, so `defaultStr` becomes comma-delimited. But `readKeySize` passes `int` default. **Inconsistency:** `readKeyUsage` returns `List<String>`, but `tryReadInput`'s parser returns `List<String>`. The `defaultValue` is `List<String>`. The `defaultStr` formatting handles `Collection`. **Works correctly. Not a defect.**\n\n---",
+        "path": "x-pack/plugin/security/cli/src/main/java/org/elasticsearch/xpack/security/cli/HttpCertificateCommand.java",
+        "start_line": 1165,
+        "end_line": 1165,
+        "observation_id": "9bebedf5340ed64d",
+        "claimed_path": "HttpCertificateCommand.java",
+        "path_resolution": "basename",
+        "merged_from": []
+      },
+      {
+        "content": "#### 11. **AutoConfigureNode.java:414, 429, 445, 473** \u2014 Hardcoded `Set.of()` for extendedKeyUsages in transport certs, but HTTP cert gets `serverAuth`\n```java\n// Transport CA (line 414)\nSet.of()\n\n// Transport cert (line 429)\nSet.of()\n\n// HTTP CA (line 445)\nSet.of()\n\n// HTTP cert (line 473)\nSet.of(new ExtendedKeyUsage(KeyPurposeId.id_kp_serverAuth))\n```\n**Failure scenario:** Auto-generated transport certificates have **no ExtendedKeyUsage**. RFC 5280 doesn't require EKU for transport, but some TLS libraries (e.g., Go's `crypto/tls` with `RootCAs`) may reject certs without EKU for client/server auth. Transport certs used for inter-node communication need `clientAuth` + `serverAuth` EKU. Currently they have none. Result: TLS handshake failures with strict clients.\n\n---",
+        "path": "x-pack/plugin/security/cli/src/main/java/org/elasticsearch/xpack/security/cli/AutoConfigureNode.java",
+        "start_line": 414,
+        "end_line": 414,
+        "observation_id": "e55fed986ea67d2b",
+        "claimed_path": "AutoConfigureNode.java",
+        "path_resolution": "basename",
+        "merged_from": []
+      },
+      {
+        "content": "#### 12. **AutoConfigureNode.java:445** \u2014 HTTP CA gets `buildKeyUsage(DEFAULT_CA_KEY_USAGE)` but `DEFAULT_CA_KEY_USAGE = [\"keyCertSign\", \"cRLSign\"]`. Missing `digitalSignature` which some CA operations need.\n**Failure scenario:** HTTP CA used for OCSP signing (needs `digitalSignature`). The CA cert lacks `digitalSignature` in KeyUsage. OCSP responses signed by this CA fail validation. Unlikely in Elasticsearch context but spec violation.\n\n---",
+        "path": "x-pack/plugin/security/cli/src/main/java/org/elasticsearch/xpack/security/cli/AutoConfigureNode.java",
+        "start_line": 445,
+        "end_line": 445,
+        "observation_id": "456d55a7d2f636d4",
+        "claimed_path": "AutoConfigureNode.java",
+        "path_resolution": "basename",
+        "merged_from": []
+      },
+      {
+        "content": "#### 13. **CertificateGenerateTool.java:406** \u2014 `generateCACertificate` called with `null` keyUsage\n```java\nCertificate caCert = CertGenUtils.generateCACertificate(x500Principal, keyPair, days, null);\n```\n**Failure scenario:** User runs `elasticsearch-certutil ca` (non-interactive). No `--ca-keyusage` option exists in this tool (only in `CertificateTool`). The CA cert gets **no KeyUsage extension**. RFC 5280 \u00a74.2.1.3: CA certificates **MUST** have KeyUsage with `keyCertSign` set. Missing KeyUsage \u2192 CA cert non-compliant \u2192 some validators reject it. This tool path produces non-compliant CA certs.\n\n---",
+        "path": "x-pack/plugin/security/cli/src/main/java/org/elasticsearch/xpack/security/cli/CertificateGenerateTool.java",
+        "start_line": 406,
+        "end_line": 406,
+        "observation_id": "74b6800b7ec3153d",
+        "claimed_path": "CertificateGenerateTool.java",
+        "path_resolution": "basename",
+        "merged_from": []
+      },
+      {
+        "content": "#### 14. **CertificateTool.java:933-937** \u2014 `generateCertificateAndKey` call missing `isCa` and `keyUsage` parameters\n```java\nprivate static CertificateAndKey generateCertificateAndKey(\n    ...\n) {\n    ...\n    Certificate certificate = CertGenUtils.generateSignedCertificate(\n        keyPair,\n        null,\n        null,\n        days  // only 4 args! Old signature\n    );\n```\nWait, the diff shows:\n```java\n-                    keyPair,\n-                    null,\n-                    null,\n-                    false,\n-                    days,\n-                    null\n+                    days\n```\nThe call now passes only `keyPair, null, null, days` \u2014 4 arguments. But `generateSignedCertificate` overloads:\n- 8-arg: `(principal, sanList, keyPair, caCert, caPrivKey, isCa, days, signatureAlgorithm)` \u2014 deprecated\n- 10-arg: `(principal, sanList, keyPair, caCert, caPrivKey, isCa, days, signatureAlgorithm, keyUsage, extendedKeyUsages)`\n\nThe call `generateSignedCertificate(keyPair, null, null, days)` \u2014 what overload matches? Looking at line 107-111:\n```java\npublic static X509Certificate generateSignedCertificate(\n    X500Principal principal,\n    GeneralNames subjectAltNames,\n    KeyPair keyPair,\n    X509Certificate caCert,\n    PrivateKey caPrivKey,\n    int days\n) {\n    return generateSignedCertificate(principal, subjectAltNames, keyPair, caCert, caPrivKey, false, days, null, null, Set.of());\n}\n```\nThis 6-arg overload takes `(principal, sanList, keyPair, caCert, caPrivKey, days)`. But the call passes `(keyPair, null, null, days)` \u2014 **KeyPair as first arg (should be principal)**. This is a **compile error** or wrong overload resolution.\n\nWait, the method at line 107 has signature:\n```java\ngenerateSignedCertificate(X500Principal, GeneralNames, KeyPair, X509Certificate, PrivateKey, int)\n```\nThe call at line 933-937:\n```java\ngenerateSignedCertificate(keyPair, null, null, days)\n```\nFirst arg is `KeyPair`, but overload expects `X500Principal`. **This won't compile.** Unless there's another overload taking `(KeyPair, GeneralNames, X509Certificate, PrivateKey, int)` \u2014 but there isn't in the diff. **Definite compile failure.**\n\n---",
+        "path": "x-pack/plugin/security/cli/src/main/java/org/elasticsearch/xpack/security/cli/CertificateTool.java",
+        "start_line": 933,
+        "end_line": 933,
+        "observation_id": "40840116e4ad0143",
+        "claimed_path": "CertificateTool.java",
+        "path_resolution": "basename",
+        "merged_from": []
+      },
+      {
+        "content": "#### 15. **CertificateToolTests.java:1197-1210** \u2014 Test passes `--ca-keyusage` with empty string, but `getCaKeyUsage` treats empty string as default\n```java\nfinal String caKeyUsage = randomFrom(\"\", Strings.collectionToCommaDelimitedString(CertificateTool.DEFAULT_CA_KEY_USAGE));\n...\n\"--ca-keyusage\", caKeyUsage\n```\n```java\n// CertificateTool.java:330-340\nfinal List<String> getCaKeyUsage(OptionSet options) {\n    if (options.has(caKeyUsageSpec)) {\n        String rawCaKeyUsage = caKeyUsageSpec.value(options);\n        if (Strings.isNullOrEmpty(rawCaKeyUsage)) {\n            return DEFAULT_CA_KEY_USAGE;  // empty string \u2192 default\n        }\n        return List.of(Strings.splitStringByCommaToArray(rawCaKeyUsage));\n    } else {\n        return DEFAULT_CA_KEY_USAGE;\n    }\n}\n```\n**Failure scenario:** Test passes `--ca-keyusage \"\"` (empty string). `getCaKeyUsage` returns `DEFAULT_CA_KEY_USAGE`. Test expects this? The test doesn't assert keyUsage. But the **defect**: user explicitly passes `--ca-keyusage \"\"` intending \"no keyUsage\", but gets default. No way to disable KeyUsage for CA via CLI. Should allow empty to mean \"no keyUsage extension\".\n\n---",
+        "path": "x-pack/plugin/security/cli/src/test/java/org/elasticsearch/xpack/security/cli/CertificateToolTests.java",
+        "start_line": 1197,
+        "end_line": 1197,
+        "observation_id": "9cc9dc8be0fc0afb",
+        "claimed_path": "CertificateToolTests.java",
+        "path_resolution": "basename",
+        "merged_from": []
+      },
+      {
+        "content": "#### 16. **HttpCertificateCommand.java:692-710** \u2014 `caKeyUsage` randomized from `KEY_USAGE_MAPPINGS.keySet()` but `DEFAULT_CA_KEY_USAGE` only has `keyCertSign,cRLSign`. Random subset may include `digitalSignature,keyEncipherment` etc. which are invalid for CA.\n```java\ncaKeyUsage = randomSubsetOf(CertGenUtils.KEY_USAGE_MAPPINGS.keySet());\n```\n**Failure scenario:** Test generates CA with `keyUsage=digitalSignature,keyEncipherment` (no `keyCertSign`). CA cert cannot sign other certs. Test may pass (doesn't validate CA functionality) but produces invalid CA. Should constrain CA keyUsage to valid CA usages (`keyCertSign`, `cRLSign`, optionally `digitalSignature` for OCSP).\n\n---",
+        "path": "x-pack/plugin/security/cli/src/main/java/org/elasticsearch/xpack/security/cli/HttpCertificateCommand.java",
+        "start_line": 692,
+        "end_line": 692,
+        "observation_id": "b3a01ce8fe76d963",
+        "claimed_path": "HttpCertificateCommand.java",
+        "path_resolution": "basename",
+        "merged_from": []
+      },
+      {
+        "content": "#### 17. **HttpCertificateCommandTests.java:692-709** \u2014 CSR verification expects `keyUsage` extension with `digitalSignature|keyEncipherment`\n```java\nassertThat(\n    extensions.getExtensionOIDs(),\n    arrayContainingInAnyOrder(Extension.subjectAlternativeName, Extension.keyUsage, Extension.extendedKeyUsage)\n);\n...\nKeyUsage keyUsage = KeyUsage.fromExtensions(extensions);\nassertThat(keyUsage, is(equalTo(new KeyUsage(KeyUsage.digitalSignature | KeyUsage.keyEncipherment))));\n```\n**Failure scenario:** If `cert.keyUsage` is customized (e.g., user adds `keyAgreement`), the test expects exactly `digitalSignature|keyEncipherment`. Test will fail for valid custom keyUsage. Test is brittle \u2014 asserts exact default, not that keyUsage is present and matches input.\n\n---",
+        "path": "x-pack/plugin/security/cli/src/test/java/org/elasticsearch/xpack/security/cli/HttpCertificateCommandTests.java",
+        "start_line": 692,
+        "end_line": 692,
+        "observation_id": "c99d22a15ab58493",
+        "claimed_path": "HttpCertificateCommandTests.java",
+        "path_resolution": "basename",
+        "merged_from": []
+      },
+      {
+        "content": "#### 18. **CertGenUtils.java:471-492** \u2014 `buildKeyUsage` accepts duplicate keyUsage names (line 489-491 test shows this is intentional). But `KEY_USAGE_BITS` mapping has 9 bits (0-8). `KeyUsage` constructor takes `int usageBits`. If all 9 bits set, `usageBits = 0x1FF = 511`. Valid. **No defect.**\n\n---",
+        "path": "x-pack/plugin/security/cli/src/main/java/org/elasticsearch/xpack/security/cli/CertGenUtils.java",
+        "start_line": 471,
+        "end_line": 471,
+        "observation_id": "bade4e8d181f456c",
+        "claimed_path": "CertGenUtils.java",
+        "path_resolution": "basename",
+        "merged_from": []
+      },
+      {
+        "content": "#### 19. **HttpCertificateCommand.java:138-147** \u2014 `CertOptions` constructor adds `keyUsage` field but `equals`/`hashCode`/`toString` not shown. If not overridden, default `Object` implementations used. **Failure scenario:** Two `CertOptions` with same fields but different `keyUsage` list instances \u2192 `equals` returns `false`. Used in `Set`/`Map` \u2192 duplicates not detected. Not in diff but likely missing.\n\n---",
+        "path": "x-pack/plugin/security/cli/src/main/java/org/elasticsearch/xpack/security/cli/HttpCertificateCommand.java",
+        "start_line": 138,
+        "end_line": 138,
+        "observation_id": "5142de4b221bfb36",
+        "claimed_path": "HttpCertificateCommand.java",
+        "path_resolution": "basename",
+        "merged_from": []
+      },
+      {
+        "content": "#### 20. **CertificateTool.java:204** \u2014 `DEFAULT_CA_KEY_USAGE = List.of(\"keyCertSign\", \"cRLSign\")` \u2014 immutable list. **HttpCertificateCommand.java:99** duplicates: `static final List<String> DEFAULT_CA_KEY_USAGE = List.of(\"keyCertSign\", \"cRLSign\");`. **Duplication.** Not a runtime defect but maintenance hazard.\n\n---",
+        "path": "x-pack/plugin/security/cli/src/main/java/org/elasticsearch/xpack/security/cli/CertificateTool.java",
+        "start_line": 204,
+        "end_line": 204,
+        "observation_id": "930f208e1c2ae2ee",
+        "claimed_path": "CertificateTool.java",
+        "path_resolution": "basename",
+        "merged_from": []
+      },
+      {
+        "content": "#### 21. **AutoConfigureNode.java:411, 424, 438, 464** \u2014 Calls to `generateSignedCertificate` with `null` for `keyUsage` (transport CA, transport cert, HTTP CA) and `buildKeyUsage(DEFAULT_CERT_KEY_USAGE)` for HTTP cert. But the method signature at line 192 expects `KeyUsage keyUsage` (not nullable in signature but null allowed per line 305 `if (keyUsage != null)`). **Works.** But transport certs get no KeyUsage. See defect #11.\n\n---",
+        "path": "x-pack/plugin/security/cli/src/main/java/org/elasticsearch/xpack/security/cli/AutoConfigureNode.java",
+        "start_line": 411,
+        "end_line": 411,
+        "observation_id": "365ae48d58e6b5dd",
+        "claimed_path": "AutoConfigureNode.java",
+        "path_resolution": "basename",
+        "merged_from": []
+      },
+      {
+        "content": "#### 22. **CertGenUtils.java:254-260** \u2014 Overload with `ZonedDateTime` params calls 10-arg with `null` keyUsage:\n```java\npublic static X509Certificate generateSignedCertificate(\n    ...\n    String signatureAlgorithm,\n    KeyUsage keyUsage,\n    Set<ExtendedKeyUsage> extendedKeyUsages\n) {\n    ...\n    return generateSignedCertificate(\n        principal, subjectAltNames, keyPair, caCert, caPrivKey, isCa,\n        notBefore, notAfter, signatureAlgorithm,\n        null,  // keyUsage = null\n        Set.of()\n    );\n}\n```\n**Failure scenario:** Caller uses this overload expecting to pass `keyUsage` \u2014 but it's hardcoded to `null`. The `keyUsage` parameter is **ignored**. This overload should pass `keyUsage` to the 10-arg version.\n\n---",
+        "path": "x-pack/plugin/security/cli/src/main/java/org/elasticsearch/xpack/security/cli/CertGenUtils.java",
+        "start_line": 254,
+        "end_line": 254,
+        "observation_id": "d7e45c0ef9ad0dab",
+        "claimed_path": "CertGenUtils.java",
+        "path_resolution": "basename",
+        "merged_from": []
+      },
+      {
+        "content": "#### 23. **CertGenUtils.java:176-182** \u2014 6-arg overload (principal, sanList, keyPair, caCert, caPrivKey, days) delegates to 10-arg with `null, Set.of()` for keyUsage and extendedKeyUsages:\n```java\nreturn generateSignedCertificate(principal, subjectAltNames, keyPair, caCert, caPrivKey, false, days, null, null, Set.of());\n```\nThe 8th arg is `signatureAlgorithm=null`, 9th is `keyUsage=null`, 10th is `extendedKeyUsages=Set.of()`. **Correct.** But the 7-arg overload at line 123 (removed in diff) had `signatureAlgorithm` param. The new 6-arg drops it. Callers using 7-arg with custom signatureAlgorithm now use 6-arg and lose it. **Breaking change.**\n\n---",
+        "path": "x-pack/plugin/security/cli/src/main/java/org/elasticsearch/xpack/security/cli/CertGenUtils.java",
+        "start_line": 176,
+        "end_line": 176,
+        "observation_id": "28e2ea628cad4901",
+        "claimed_path": "CertGenUtils.java",
+        "path_resolution": "basename",
+        "merged_from": []
+      },
+      {
+        "content": "#### 24. **CertificateToolTests.java:415-424** \u2014 Test uses `randomBoolean() ? null : CertificateTool.DEFAULT_CA_KEY_USAGE` for caKeyUsage, then passes to `buildKeyUsage`. If `null`, `buildKeyUsage(null)` returns `null` (line 474-476). **Correct.** But test doesn't verify the resulting cert's keyUsage. Silent gap.\n\n---",
+        "path": "x-pack/plugin/security/cli/src/test/java/org/elasticsearch/xpack/security/cli/CertificateToolTests.java",
+        "start_line": 415,
+        "end_line": 415,
+        "observation_id": "5f7fe97dd9e357dc",
+        "claimed_path": "CertificateToolTests.java",
+        "path_resolution": "basename",
+        "merged_from": []
+      },
+      {
+        "content": "#### 25. **HttpCertificateCommand.java:736-758** \u2014 `getCertificateConfiguration` prompts for keyUsage but `readKeyUsage` validates each name. If user enters valid names, OK. But the prompt shows all 9 keyUsage names including `encipherOnly`/`decipherOnly` which **require `keyAgreement`** per RFC 5280. User can select `encipherOnly` without `keyAgreement` \u2192 invalid cert. No validation.\n\n---",
+        "path": "x-pack/plugin/security/cli/src/main/java/org/elasticsearch/xpack/security/cli/HttpCertificateCommand.java",
+        "start_line": 736,
+        "end_line": 736,
+        "observation_id": "771957322159acb3",
+        "claimed_path": "HttpCertificateCommand.java",
+        "path_resolution": "basename",
+        "merged_from": []
+      },
+      {
+        "content": "#### 26. **CertGenUtils.java:272-311** \u2014 KeyUsage extension added as critical. For CSR (line 347), also added as critical:\n```java\nif (keyUsage != null) {\n    extGen.addExtension(Extension.keyUsage, true, keyUsage);  // critical = true\n}\n```\nRFC 5280 \u00a74.2.1.3: KeyUsage in CSR **SHOULD NOT** be critical. Some CAs reject critical KeyUsage in CSR.\n\n---",
+        "path": "x-pack/plugin/security/cli/src/main/java/org/elasticsearch/xpack/security/cli/CertGenUtils.java",
+        "start_line": 272,
+        "end_line": 272,
+        "observation_id": "d85d0d9b3f34522b",
+        "claimed_path": "CertGenUtils.java",
+        "path_resolution": "basename",
+        "merged_from": []
+      },
+      {
+        "content": "#### 27. **HttpCertificateCommand.java:339, 372** \u2014 Both CSR and self-signed cert use same `cert.keyUsage`. For CSR, `keyEncipherment` should not be present. For self-signed, it's fine. **Same as defect #7.**\n\n---",
+        "path": "x-pack/plugin/security/cli/src/main/java/org/elasticsearch/xpack/security/cli/HttpCertificateCommand.java",
+        "start_line": 339,
+        "end_line": 339,
+        "observation_id": "7e2b171fd870ecb0",
+        "claimed_path": "HttpCertificateCommand.java",
+        "path_resolution": "basename",
+        "merged_from": []
+      },
+      {
+        "content": "#### 28. **AutoConfigureNodeTests.java:289-300** \u2014 `verifyKeyUsageAndExtendedKeyUsage` calls `assertExpectedKeyUsage(httpCertificate, HttpCertificateCommand.DEFAULT_CERT_KEY_USAGE)`. But `DEFAULT_CERT_KEY_USAGE = [\"digitalSignature\", \"keyEncipherment\"]`. The test verifies HTTP cert has these. **Correct.** But transport certs not tested for KeyUsage (they have none).\n\n---",
+        "path": "x-pack/plugin/security/cli/src/test/java/org/elasticsearch/xpack/security/cli/AutoConfigureNodeTests.java",
+        "start_line": 289,
+        "end_line": 289,
+        "observation_id": "efb16a41781e24bd",
+        "claimed_path": "AutoConfigureNodeTests.java",
+        "path_resolution": "basename",
+        "merged_from": []
+      },
+      {
+        "content": "#### 29. **CertGenUtilsTests.java:161-180** \u2014 Test verifies custom keyUsages but for `endEntityKeyUsage` randomly null. When null, asserts `getKeyUsage()` returns null and no critical extension. **Correct.**\n\n---",
+        "path": "x-pack/plugin/security/cli/src/test/java/org/elasticsearch/xpack/security/cli/CertGenUtilsTests.java",
+        "start_line": 161,
+        "end_line": 161,
+        "observation_id": "5bcb2fc0f1072416",
+        "claimed_path": "CertGenUtilsTests.java",
+        "path_resolution": "basename",
+        "merged_from": []
+      },
+      {
+        "content": "#### 30. **CertificateGenerateTool.java:403-406** \u2014 Only change is adding `null` keyUsage param. But this tool has no `--ca-keyusage` option. Users **cannot** set CA keyUsage via this tool. Inconsistent with `CertificateTool` which has the option.\n\n---",
+        "path": "x-pack/plugin/security/cli/src/main/java/org/elasticsearch/xpack/security/cli/CertificateGenerateTool.java",
+        "start_line": 403,
+        "end_line": 403,
+        "observation_id": "b195f30f32a6125a",
+        "claimed_path": "CertificateGenerateTool.java",
+        "path_resolution": "basename",
+        "merged_from": []
+      },
+      {
+        "content": "#### 31. **CertificateTool.java:274-297** \u2014 `acceptCertificateAuthorityKeyUsage` adds `caKeyUsageSpec` with `availableUnless(caPkcs12PathSpec)` and `availableUnless(caCertPathSpec)`. But not `availableUnless(caKeyPathSpec)`. **Same as defect #5.**\n\n---",
+        "path": "x-pack/plugin/security/cli/src/main/java/org/elasticsearch/xpack/security/cli/CertificateTool.java",
+        "start_line": 274,
+        "end_line": 274,
+        "observation_id": "b3c5afa410c77f58",
+        "claimed_path": "CertificateTool.java",
+        "path_resolution": "basename",
+        "merged_from": []
+      },
+      {
+        "content": "#### 32. **HttpCertificateCommand.java:859-892** \u2014 `createNewCA` prompts for keyUsage but uses `DEFAULT_CA_KEY_USAGE` as default. User can change. **Correct.** But the prompt lists all 9 keyUsage names (line 950-952) including invalid-for-CA ones. No guidance.\n\n---",
+        "path": "x-pack/plugin/security/cli/src/main/java/org/elasticsearch/xpack/security/cli/HttpCertificateCommand.java",
+        "start_line": 859,
+        "end_line": 859,
+        "observation_id": "367753c3bbf73895",
+        "claimed_path": "HttpCertificateCommand.java",
+        "path_resolution": "basename",
+        "merged_from": []
+      },
+      {
+        "content": "#### 33. **CertGenUtils.java:471-492** \u2014 `buildKeyUsage` uses `TreeMap` for `KEY_USAGE_MAPPINGS` (sorted keys). But `KEY_USAGE_BITS` is `Map.of` (insertion order, Java 9+ preserves). Iteration order differs. **Not a bug** since both are only used for lookup by key.\n\n---",
+        "path": "x-pack/plugin/security/cli/src/main/java/org/elasticsearch/xpack/security/cli/CertGenUtils.java",
+        "start_line": 471,
+        "end_line": 471,
+        "observation_id": "625515edae7eadca",
+        "claimed_path": "CertGenUtils.java",
+        "path_resolution": "basename",
+        "merged_from": []
+      },
+      {
+        "content": "#### 34. **HttpCertificateCommand.java:1039-1078** \u2014 `tryReadInput` for `Collection` default formats as comma-delimited. But `readKeyUsage` parser splits by comma. If a keyUsage name **contains a comma** (none do), it would break. **Not applicable.**\n\n---",
+        "path": "x-pack/plugin/security/cli/src/main/java/org/elasticsearch/xpack/security/cli/HttpCertificateCommand.java",
+        "start_line": 1039,
+        "end_line": 1039,
+        "observation_id": "ace3796472afaa17",
+        "claimed_path": "HttpCertificateCommand.java",
+        "path_resolution": "basename",
+        "merged_from": []
+      },
+      {
+        "content": "#### 35. **AutoConfigureNode.java:102-104** \u2014 New imports:\n```java\nimport static org.elasticsearch.xpack.security.cli.CertGenUtils.buildKeyUsage;\nimport static org.elasticsearch.xpack.security.cli.HttpCertificateCommand.DEFAULT_CA_KEY_USAGE;\nimport static org.elasticsearch.xpack.security.cli.HttpCertificateCommand.DEFAULT_CERT_KEY_USAGE;\n```\n**Circular dependency risk:** `AutoConfigureNode` imports from `HttpCertificateCommand`, but `HttpCertificateCommand` imports from `CertGenUtils`. `AutoConfigureNode` also imports from `CertGenUtils`. No cycle yet. But `HttpCertificateCommand` doesn't import `AutoConfigureNode`. **OK.**\n\n---",
+        "path": "x-pack/plugin/security/cli/src/main/java/org/elasticsearch/xpack/security/cli/AutoConfigureNode.java",
+        "start_line": 102,
+        "end_line": 102,
+        "observation_id": "8445042779177011",
+        "claimed_path": "AutoConfigureNode.java",
+        "path_resolution": "basename",
+        "merged_from": [
+          "a4ee81376ebfd3e4"
+        ]
+      },
+      {
+        "content": "#### 36. **CertGenUtils.java:54-55** \u2014 Imports `java.util.Collection`, `java.util.Collections` but `KEY_USAGE_MAPPINGS` uses `TreeMap` and `Map.of`. `Collections.unmodifiableMap` used. **OK.**\n\n---",
+        "path": "x-pack/plugin/security/cli/src/main/java/org/elasticsearch/xpack/security/cli/CertGenUtils.java",
+        "start_line": 54,
+        "end_line": 54,
+        "observation_id": "5fca1afd14bbdecb",
+        "claimed_path": "CertGenUtils.java",
+        "path_resolution": "basename",
+        "merged_from": []
+      },
+      {
+        "content": "#### 37. **CertificateTool.java:110** \u2014 `DEFAULT_CA_KEY_USAGE` is `List<String>`. **HttpCertificateCommand.java:99** duplicates. **Maintenance hazard.**\n\n---",
+        "path": "x-pack/plugin/security/cli/src/main/java/org/elasticsearch/xpack/security/cli/CertificateTool.java",
+        "start_line": 110,
+        "end_line": 110,
+        "observation_id": "ab38e1ba1e531d9d",
+        "claimed_path": "CertificateTool.java",
+        "path_resolution": "basename",
+        "merged_from": []
+      },
+      {
+        "content": "#### 38. **HttpCertificateCommandTests.java:369-380** \u2014 Test randomizes `caKeyUsage` from `KEY_USAGE_MAPPINGS.keySet()` (all 9). Then asserts `assertExpectedKeyUsage(caCertKey.v1(), caKeyUsage)`. But `assertExpectedKeyUsage` expects keyUsage to be **critical**. For CA cert, critical is correct. But if random subset doesn't include `keyCertSign`, the CA cert is invalid but test passes. **Test doesn't validate semantic correctness.**\n\n---",
+        "path": "x-pack/plugin/security/cli/src/test/java/org/elasticsearch/xpack/security/cli/HttpCertificateCommandTests.java",
+        "start_line": 369,
+        "end_line": 369,
+        "observation_id": "01e7d30c839ba44a",
+        "claimed_path": "HttpCertificateCommandTests.java",
+        "path_resolution": "basename",
+        "merged_from": []
+      },
+      {
+        "content": "#### 39. **HttpCertificateCommandTests.java:486-495** \u2014 Test asserts `assertExpectedKeyUsage(certAndKey.v1(), HttpCertificateCommand.DEFAULT_CERT_KEY_USAGE)`. But `cert.keyUsage` might have been customized in `getCertificateConfiguration` (line 756). The test randomizes whether to change defaults (line 369: `if (randomBoolean())`). If changed, `cert.keyUsage` \u2260 `DEFAULT_CERT_KEY_USAGE`. Test will fail. **Flaky test.**\n\n---",
+        "path": "x-pack/plugin/security/cli/src/test/java/org/elasticsearch/xpack/security/cli/HttpCertificateCommandTests.java",
+        "start_line": 486,
+        "end_line": 486,
+        "observation_id": "fd9620ef4f23d032",
+        "claimed_path": "HttpCertificateCommandTests.java",
+        "path_resolution": "basename",
+        "merged_from": []
+      },
+      {
+        "content": "#### 40. **HttpCertificateCommandTests.java:692-709** \u2014 `verifyCertificationRequest` expects CSR to have `keyUsage` extension with `digitalSignature|keyEncipherment`. But if test runs with customized `keyUsage` (line 369 path), the CSR will have different keyUsage. Test asserts exact value. **Flaky test.**\n\n---",
+        "path": "x-pack/plugin/security/cli/src/test/java/org/elasticsearch/xpack/security/cli/HttpCertificateCommandTests.java",
+        "start_line": 692,
+        "end_line": 692,
+        "observation_id": "23f6177f20944631",
+        "claimed_path": "HttpCertificateCommandTests.java",
+        "path_resolution": "basename",
+        "merged_from": []
+      },
+      {
+        "content": "#### 41. **CertGenUtils.java:305-311** \u2014 KeyUsage added as critical extension. For end-entity certs, this may cause interop issues. **Same as defect #1.**\n\n---",
+        "path": "x-pack/plugin/security/cli/src/main/java/org/elasticsearch/xpack/security/cli/CertGenUtils.java",
+        "start_line": 305,
+        "end_line": 305,
+        "observation_id": "4238a0620b35c8a7",
+        "claimed_path": "CertGenUtils.java",
+        "path_resolution": "basename",
+        "merged_from": []
+      },
+      {
+        "content": "#### 42. **CertificateTool.java:933-937** \u2014 The call `generateSignedCertificate(keyPair, null, null, days)` \u2014 let me verify the method resolution. The class has:\n- Line 107: `generateSignedCertificate(X500Principal, GeneralNames, KeyPair, X509Certificate, PrivateKey, int)` \u2014 6 args\n- Line 123 (removed): 8-arg with signatureAlgorithm\n- Line 192: 10-arg with keyUsage, extendedKeyUsages\n\nThe call has 4 args: `(KeyPair, null, null, int)`. No matching method. **Compile error.** Unless there's a 4-arg overload not shown. The diff shows the old call had 6 args: `(keyPair, null, null, false, days, null)`. The new call has 4 args. The 6-arg overload expects `(X500Principal, GeneralNames, KeyPair, X509Certificate, PrivateKey, int)`. First arg mismatch. **Definite compile failure.**\n\n---",
+        "path": "x-pack/plugin/security/cli/src/main/java/org/elasticsearch/xpack/security/cli/CertificateTool.java",
+        "start_line": 933,
+        "end_line": 933,
+        "observation_id": "0f119799ad8a0470",
+        "claimed_path": "CertificateTool.java",
+        "path_resolution": "basename",
+        "merged_from": []
+      },
+      {
+        "content": "#### 43. **CertGenUtils.java:223-229** \u2014 Overload with `signatureAlgorithm` but no `keyUsage`:\n```java\npublic static X509Certificate generateSignedCertificate(\n    ...\n    String signatureAlgorithm,\n    Set<ExtendedKeyUsage> extendedKeyUsages\n) {\n    return generateSignedCertificate(\n        ...\n        signatureAlgorithm,\n        null,  // keyUsage = null\n        Set.of()\n    );\n}\n```\nThis overload **drops** the `keyUsage` parameter (sets to null). Callers using this overload cannot specify keyUsage. **API gap.**\n\n---",
+        "path": "x-pack/plugin/security/cli/src/main/java/org/elasticsearch/xpack/security/cli/CertGenUtils.java",
+        "start_line": 223,
+        "end_line": 223,
+        "observation_id": "812981b8da65b15e",
+        "claimed_path": "CertGenUtils.java",
+        "path_resolution": "basename",
+        "merged_from": []
+      },
+      {
+        "content": "#### 44. **CertGenUtils.java:176** \u2014 6-arg overload delegates to 10-arg with `null` for signatureAlgorithm, keyUsage, and `Set.of()` for extendedKeyUsages:\n```java\nreturn generateSignedCertificate(principal, subjectAltNames, keyPair, caCert, caPrivKey, false, days, null, null, Set.of());\n```\nThe 8th arg is `signatureAlgorithm`, 9th is `keyUsage`, 10th is `extendedKeyUsages`. So `keyUsage=null` passed. **Correct for this overload.**\n\n---",
+        "path": "x-pack/plugin/security/cli/src/main/java/org/elasticsearch/xpack/security/cli/CertGenUtils.java",
+        "start_line": 176,
+        "end_line": 176,
+        "observation_id": "4e8ed52fd68a09b9",
+        "claimed_path": "CertGenUtils.java",
+        "path_resolution": "basename",
+        "merged_from": []
+      },
+      {
+        "content": "#### 45. **AutoConfigureNode.java:473** \u2014 HTTP cert generation:\n```java\nSet.of(new ExtendedKeyUsage(KeyPurposeId.id_kp_serverAuth))\n```\nBut no `clientAuth`. HTTP cert used for both client and server? Elasticsearch HTTP layer is server-only (receives requests). Client auth is separate. **OK.**\n\n---",
+        "path": "x-pack/plugin/security/cli/src/main/java/org/elasticsearch/xpack/security/cli/AutoConfigureNode.java",
+        "start_line": 473,
+        "end_line": 473,
+        "observation_id": "1f6173fe6b4f81e5",
+        "claimed_path": "AutoConfigureNode.java",
+        "path_resolution": "basename",
+        "merged_from": []
+      },
+      {
+        "content": "#### 46. **HttpCertificateCommand.java:339** \u2014 CSR generation for HTTP cert:\n```java\nbuildKeyUsage(cert.keyUsage),\nSet.of(new ExtendedKeyUsage(KeyPurposeId.id_kp_serverAuth))\n```\nCSR gets `serverAuth` EKU. But CSR is for **server** certificate. Correct. However, KeyUsage in CSR includes `keyEncipherment` which is not standard for CSR. See defect #7.\n\n---",
+        "path": "x-pack/plugin/security/cli/src/main/java/org/elasticsearch/xpack/security/cli/HttpCertificateCommand.java",
+        "start_line": 339,
+        "end_line": 339,
+        "observation_id": "9601f0efc769c575",
+        "claimed_path": "HttpCertificateCommand.java",
+        "path_resolution": "basename",
+        "merged_from": []
+      },
+      {
+        "content": "#### 47. **HttpCertificateCommand.java:372** \u2014 Self-signed HTTP cert:\n```java\nbuildKeyUsage(cert.keyUsage),\nSet.of(new ExtendedKeyUsage(KeyPurposeId.id_kp_serverAuth))\n```\nSelf-signed cert gets `keyEncipherment` in KeyUsage. Valid for TLS server cert. **OK.**\n\n---",
+        "path": "x-pack/plugin/security/cli/src/main/java/org/elasticsearch/xpack/security/cli/HttpCertificateCommand.java",
+        "start_line": 372,
+        "end_line": 372,
+        "observation_id": "f2bc7de9d66db465",
+        "claimed_path": "HttpCertificateCommand.java",
+        "path_resolution": "basename",
+        "merged_from": []
+      },
+      {
+        "content": "#### 48. **CertificateTool.java:429** \u2014 `generateCA` in `CertificateCommand`:\n```java\nfinal KeyUsage caKeyUsage = CertGenUtils.buildKeyUsage(getCaKeyUsage(options));\nX509Certificate caCert = CertGenUtils.generateCACertificate(x500Principal, keyPair, getDays(options), caKeyUsage);\n```\nBut this is only called when **generating** new CA (not loading existing). The `generateCA` method likely has logic to load existing CA if `--ca-cert`/`--ca-key` provided. If so, `caKeyUsage` computed but unused. **Same as defect #6.**\n\n---",
+        "path": "x-pack/plugin/security/cli/src/main/java/org/elasticsearch/xpack/security/cli/CertificateTool.java",
+        "start_line": 429,
+        "end_line": 429,
+        "observation_id": "bc7156b969239067",
+        "claimed_path": "CertificateTool.java",
+        "path_resolution": "basename",
+        "merged_from": []
+      },
+      {
+        "content": "#### 49. **CertGenUtils.java:474-476** \u2014 `buildKeyUsage(null)` returns `null`. `buildKeyUsage(empty list)` returns `null`. **Consistent.** But `CertificateTool.getCaKeyUsage` returns `DEFAULT_CA_KEY_USAGE` when option not present OR when empty string. User cannot opt-out of KeyUsage for CA. **Same as defect #15.**\n\n---",
+        "path": "x-pack/plugin/security/cli/src/main/java/org/elasticsearch/xpack/security/cli/CertGenUtils.java",
+        "start_line": 474,
+        "end_line": 474,
+        "observation_id": "0eac3db9694bfee2",
+        "claimed_path": "CertGenUtils.java",
+        "path_resolution": "basename",
+        "merged_from": []
+      },
+      {
+        "content": "#### 50. **HttpCertificateCommand.java:939-952** \u2014 `createNewCA` calls `generateSignedCertificate` with `buildKeyUsage(keyUsage)`. The `keyUsage` list comes from user input (validated by `readKeyUsage`). **Correct.**\n\n---\n\nLet me consolidate the **real, distinct defects** with concrete failure scenarios:\n\n---",
+        "path": "x-pack/plugin/security/cli/src/main/java/org/elasticsearch/xpack/security/cli/HttpCertificateCommand.java",
+        "start_line": 939,
+        "end_line": 939,
+        "observation_id": "47beecdfe5b2bb3c",
+        "claimed_path": "HttpCertificateCommand.java",
+        "path_resolution": "basename",
+        "merged_from": []
+      },
+      {
+        "content": "### Summary of Distinct Defects\n\n| # | File:Line | Defect | Failure Scenario |\n|---|-----------|--------|------------------|\n| 1 | CertGenUtils.java:305-311 | KeyUsage always marked critical | Non-CA cert with critical KeyUsage rejected by strict validators (Windows, older Java) |\n| 2 | CertGenUtils.java:318-320 | 4-arg `generateCSR` drops keyUsage silently | Caller expects KeyUsage in CSR but gets none; no error |\n| 3 | CertGenUtils.java:484-487 | `buildKeyUsage` error message lacks valid options | User gets \"Unknown keyUsage: foo\" with no hint of valid values |\n| 4 | CertificateTool.java:278-297 | `--ca-keyusage` not conflicting with `--ca-key` | User provides existing CA key + `--ca-keyusage`; keyUsage ignored silently |\n| 5 | CertificateTool.java:396-401 | `generateCA` computes keyUsage but ignores it when loading existing CA | `--ca-cert --ca-key --ca-keyusage` \u2192 keyUsage discarded |\n| 6 | HttpCertificateCommand.java:339,372 | CSR gets `keyEncipherment` in KeyUsage (invalid per RFC 5280) | CA rejects CSR with `keyEncipherment` |\n| 7 | HttpCertificateCommand.java:347 | CSR KeyUsage marked critical (should not be) | CA rejects CSR with critical KeyUsage |\n| 8 | AutoConfigureNode.java:414,429 | Transport certs lack ExtendedKeyUsage | Strict TLS clients reject transport certs without `clientAuth`/`serverAuth` EKU |\n| 9 | CertificateGenerateTool.java:406 | CA cert generated without KeyUsage (no `--ca-keyusage` option) | Non-compliant CA cert (RFC 5280 requires `keyCertSign`); validators reject |\n| 10 | CertificateTool.java:933-937 | `generateSignedCertificate(keyPair, null, null, days)` \u2014 wrong overload, compile error | Code doesn't compile; `KeyPair` passed where `X500Principal` expected |\n| 11 | CertGenUtils.java:223-229 | Overload with `signatureAlgorithm` drops `keyUsage` (hardcoded null) | Caller using this overload cannot set KeyUsage |\n| 12 | HttpCertificateCommandTests.java:369-380, 486-495, 692-709 | Tests assume default keyUsage but randomize it | Flaky test failures when randomization picks non-default |\n| 13 | HttpCertificateCommand.java:736-758 | No validation that `encipherOnly`/`decipherOnly` require `keyAgreement` | User selects `encipherOnly` alone \u2192 invalid cert per RFC 5280 |\n| 14 | CertificateTool.java:110 / HttpCertificateCommand.java:99 | Duplicate `DEFAULT_CA_KEY_USAGE` constant | Maintenance hazard; drift risk |\n| 15 | CertificateTool.java:330-340 | Empty `--ca-keyusage` value returns default, no way to disable | User wants no KeyUsage on CA but cannot achieve it |\n\n---\n\n**Total: 15 distinct defects.** The most severe are #10 (compile error), #1 (interop breakage), #9 (non-compliant CA certs), and #6/#7 (CSR rejection by CAs).",
+        "path": "x-pack/plugin/security/cli/src/main/java/org/elasticsearch/xpack/security/cli/CertGenUtils.java",
+        "start_line": 305,
+        "end_line": 305,
+        "observation_id": "e16298a330993922",
+        "claimed_path": "CertGenUtils.java",
+        "path_resolution": "basename",
+        "merged_from": []
+      }
+    ]
+  },
+  "rundir": "/home/mjarnold/.cache/llm-panel/runs/aacr-up-1expaq74-56f4554e496e/20260830-154439-809984",
+  "extractor": "3",
+  "unlocated": []
+}
