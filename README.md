@@ -233,7 +233,11 @@ nothing.
   variance floor (single-judge re-extractions of both runs, evaluator replicate included)
   put a same-judge re-run at up to ±3 human-ref matches of 150 with zero evaluator noise —
   human-ref effects under ~5–7 pp of recall are inside re-run noise at n=35, which every
-  subgroup claim so far was. See `recall/benchmarks/results-volume-3judge/README.md`,
+  subgroup claim so far was. A declared cost cut over all of it settled the default:
+  volume's recall is bought at half broad's precision and ~16–18 findings read per
+  validated hit (defect: 6.1), so the default stays `defect`; the only candidate for a
+  future default change is `broad` (`recall/benchmarks/cost-cut/README.md`). See
+  `recall/benchmarks/results-volume-3judge/README.md`,
   `recall/benchmarks/results-human-2arm/README.md` and
   `recall/benchmarks/results-human-2arm-orgpt/README.md`.
   An earlier version of this bullet split recall by a DEFECT/IMPROVEMENT classifier I
