@@ -12,13 +12,10 @@ and asks them to defend or withdraw. The output is a single self-contained HTML 
 that second round is grouped **by the finding being argued about**, so comparing what five
 models said about one line of code doesn't mean holding five documents in your head.
 
-To be precise about what that grouping is and isn't: it keys on the rebuttal letter each
-finding is given (A1, B2 …), so it collects the _discussion_ around one judge's finding. It
-is **not** semantic clustering — two judges independently raising the same underlying defect
-stay two findings, and with `--rebut` omitted there is no grouping at all.
-
 It is not a voting machine. A panel _generates candidate defects_; it does not establish
-truth by counting agreements. Every finding still has to be checked against the code.
+truth by counting agreements. Every finding still has to be checked against the code — and
+the tool's other half, [`recall/`](#what-it-actually-catches), exists to measure what the
+panel misses rather than assert what it catches.
 
 ```
 llm-panel --diff "Which of these changes is most likely to be wrong?"
@@ -31,6 +28,12 @@ citation-overlap tables show where the panel's attention landed (three judges re
 [cline](https://github.com/cline/cline) PR, converging on one line of `TerminalProcess.ts`):
 
 ![panel report: scoreboard, bench, and citation-overlap tables](docs/report.png)
+
+**Contents:** [What's here](#whats-here) · [Install](#install) ·
+[Configure your roster](#configure-your-roster) · [Using it](#using-it) ·
+[What it actually catches](#what-it-actually-catches) ·
+[On real PRs](#on-real-prs-aacr-bench) · [Tests](#tests) ·
+[Known limitations](#known-limitations)
 
 ## What's here
 
@@ -103,7 +106,9 @@ than silently ignored:
 `llm-panel --list` shows the roster offline and marks config-defined judges.
 `llm-panel --check` actually pings each one. `llm-panel --help-config` prints this schema.
 
-**How to pick judges — and why "one per vendor" is _not_ the answer.** It is tempting to
+### Picking judges
+
+**"One per vendor" is _not_ the answer.** It is tempting to
 treat vendor labels as a proxy for independent opinions. The evidence says they aren't:
 [Kohli 2026](https://arxiv.org/html/2605.29800) measured cross-family judge correlation at
 φ̄=0.389 against same-family 0.437 — barely different — with the three _most_ correlated pairs
@@ -134,6 +139,10 @@ built-in roster would run a panel you didn't ask for, and bill you for it.
   including you, who would describe it favourably.
 - `--rebut` adds the anonymised second round. Worth it whenever a finding would trigger
   real work: the first run of it killed three confident findings that were simply wrong.
+  To be precise about the report's grouping of that round: it keys on the rebuttal letter
+  each finding is given (A1, B2 …), so it collects the _discussion_ around one judge's
+  finding. It is **not** semantic clustering — two judges independently raising the same
+  underlying defect stay two findings, and without `--rebut` there is no grouping at all.
 - `--judges a,b,c` overrides the default panel. `codex~2` runs the same model a second
   time as a **full, separate judge** — its own file, its own letter, its own row.
   Collapsing repeats would hide exactly the disagreement that makes them worth running.
@@ -201,6 +210,63 @@ Three results worth knowing before you trust any of the output:
   whether chasing a false lead costs you more than missing a real defect. Caveat worth
   stating: one proven fixture, eleven reviews.
 
+## On real PRs (AACR-Bench)
+
+The planted corpus above is a development instrument; the real-world numbers come from
+running the panel over [AACR-Bench](https://github.com/alibaba/aacr-bench) PRs and
+scoring the findings with **upstream's own evaluator** — a real LLM judge doing
+path → line → semantic matching, so the numbers are theirs, not a self-graded matcher's.
+On 18 PRs at full roster (extractor-3 re-measurements, 2026-08-28):
+
+| `--prompt-style`   | semantic recall | precision | findings read per validated hit |
+| ------------------ | --------------- | --------- | ------------------------------- |
+| `defect` (default) | 12.2%           | 16.5%     | 6.1                             |
+| `broad`            | 26.0%           | 13.2%     | 7.6                             |
+| `volume`           | 25.2%           | 7.9%      | 12.6                            |
+
+`broad` — asking for what a careful maintainer would actually raise — doubles the
+default's recall (McNemar on paired references, p = 0.0005). But the `volume` control
+shows what that class of gain is made of: it is the `defect` prompt plus one
+exhaustiveness clause, reaches the same recall (p = 1.0 vs broad), and pays for it with
+half of broad's precision. On a 35-PR replication the ordering holds on both transports
+while every arm's precision falls (broad ~9.7%, volume ~5.5–6.1%, ~16–18 findings read
+per hit). A declared cost cut over all of it settled the product default: **it stays
+`defect`**; the only candidate for a future default change is `broad`
+(`recall/benchmarks/cost-cut/README.md`).
+
+What keeps these numbers honest:
+
+- **The variance floor is measured.** Re-running the same judge on the same 35 PRs moves
+  up to ±3 human-reference matches of 150, with an evaluator replicate at exactly zero —
+  so effects under ~5–7 pp of recall are re-run noise at this n, which every subgroup
+  claim so far was (`recall/benchmarks/results-human-2arm-orgpt/perjudge35/`).
+- **Three earlier readings were withdrawn on re-measurement**: a DEFECT/IMPROVEMENT
+  split (my classifier was circular), "broad finds different hits" (pre-registered
+  replication on 35 fresh PRs, p = 0.40), and a transport/harness effect (its 13-PR
+  foothold did not survive a re-run; a same-transport re-run of another judge moved as
+  much). The audit trail is in the benchmark READMEs; nothing above rests on a withdrawn
+  claim.
+- **Diff-in-prompt review is the measured condition** — each panel runs in an empty
+  directory with the diff in the prompt. The paired repo-checkout arm moves recall
+  12.2% → 15.4% (p = 0.48) while _losing_ 7 of the diff arm's matches and gaining 11:
+  repo access changes what judges attend to more than it strictly adds
+  (`recall/benchmarks/results-checkout-3judge/README.md`).
+- **Location agreement overstates semantic agreement ~2x** (22.8% of references had a
+  finding at the right file and line; 12.2% had one a judge called the same concern) —
+  which is why scoring is delegated upstream instead of done by a local matcher.
+- **A degraded roster costs about half the recall** (6.5% vs 12.2% with one judge's
+  quota spent and a 300s timeout, same extractor). Check who actually answered before
+  reading any number.
+- **The panel does not discriminate accepted from rejected reviewer comments**
+  (12.2% vs 11.1%, Fisher p = 1.0).
+- **Unlocated findings are withheld from upstream, not handed over empty** — upstream's
+  filters treat a missing path or line as match-everything, and passing them through
+  inflated line matches from 20 to 50 on the first scoring run.
+
+Full run ledgers: `recall/benchmarks/results-human-2arm/README.md` and
+`results-human-2arm-orgpt/README.md`; data licensing in
+`recall/benchmarks/PROVENANCE.md`.
+
 ## Tests
 
 ```sh
@@ -229,68 +295,9 @@ nothing.
   code, tests, and execution is still yours to do.
 - **Recall is measured on a 27-defect Python corpus.** That number does not transfer to
   other languages or to defect classes the corpus doesn't contain.
-- **On real PRs, what you ask for determines what you get.** Scored by
-  [AACR-Bench](https://github.com/alibaba/aacr-bench)'s **own** evaluator with a real LLM
-  judge, on 18 PRs at full roster: the shipped `defect` prompt scores **12.2% semantic
-  recall / 16.5% precision**, and a `broad` prompt asking for what a careful maintainer
-  would actually raise scores **26.0% / 13.2%** — 2.13x the recall for a slightly lower hit
-  rate and 2.7x the output. That gain is exactly volume: findings x2.67, precision x0.80
-  (McNemar on the paired references, p = 0.0005). Figures are extractor-3 re-measurements
-  (2026-08-28); extractor 2 silently dropped plain `- path:line` bullets, and the loss fell
-  on the `defect` arms, not `broad`.
-  A volume-matched control settles what that gain is: the `defect` prompt told only to be
-  exhaustive scores **25.2%** (31/123, vs broad p = 1.0) — but with 392 findings at 7.9%
-  precision to broad's 243 at 13.2%. Verbosity alone buys the recall; the broad prompt's
-  content buys efficiency. An earlier draft added "and a different set of hits (more
-  human-authored references)"; a pre-registered replication on 35 fresh PRs (150
-  human-authored references) found broad 12.0% vs volume 10.7%, one-sided p = 0.40 — the
-  claim is withdrawn. A transport-controlled re-run (every panel through one harness) found
-  8.7% vs 15.3%, and the claim's one foothold — a 13-PR subset that had run through the
-  codex CLI — did not survive a re-run; a per-judge cut showed a same-transport re-run of
-  another judge moved as much, so the subset was noise, not a harness effect. A full-sample
-  variance floor (single-judge re-extractions of both runs, evaluator replicate included)
-  put a same-judge re-run at up to ±3 human-ref matches of 150 with zero evaluator noise —
-  human-ref effects under ~5–7 pp of recall are inside re-run noise at n=35, which every
-  subgroup claim so far was. A declared cost cut over all of it settled the default:
-  volume's recall is bought at half broad's precision and ~16–18 findings read per
-  validated hit (defect: 6.1), so the default stays `defect`; the only candidate for a
-  future default change is `broad` (`recall/benchmarks/cost-cut/README.md`). See
-  `recall/benchmarks/results-volume-3judge/README.md`,
-  `recall/benchmarks/results-human-2arm/README.md` and
-  `recall/benchmarks/results-human-2arm-orgpt/README.md`.
-  An earlier version of this bullet split recall by a DEFECT/IMPROVEMENT classifier I
-  wrote; that split was circular and is withdrawn — on the benchmark's own `category`
-  field the `defect` prompt recalls both classes at the same rate. The default stays
-  `defect`; both ship behind `--prompt-style`. See
-  `recall/benchmarks/results-broad-3judge/README.md`.
-- **The benchmark judges read the diff, not the repository.** `aacr-upstream` runs each
-  panel in an empty temporary directory with the diff in the prompt, so the numbers above
-  are diff-in-prompt review. A reviewer with the checkout — as the benchmark's own
-  reviewers have — can see callers, tests and history that these judges cannot.
-  The paired repo-access arm (`--cwd-mode checkout`, same instances and roster) puts the
-  judges in a shallow checkout of the PR head: recall moves 12.2% → 15.4% (15 → 19 of the
-  same 123 references) but McNemar p = 0.48, and the checkout **loses 7** of the clean
-  arm's matches while gaining 11 — repo access changes what judges attend to rather than
-  strictly adding. Findings rise 91 → 157 at precision 16.5% → 12.1%, sitting between the
-  clean and broad arms on every axis. See
-  `recall/benchmarks/results-checkout-3judge/README.md`.
-- **Location agreement overstates semantic agreement ~2x.** 22.8% of references had a
-  finding at the right file and line; 12.2% had one a judge called the same concern. A
-  location-based matcher cannot detect that gap about itself, which is why scoring is
-  delegated upstream.
-- **A degraded roster costs about half the recall.** The same sample with one judge's quota
-  spent and a 300s timeout scores 6.5% semantic recall against 12.2% — same extractor
-  (3), so only roster and timeout differ. Two instances returned nothing at 300s purely by hitting
-  the cap while holding 20 of the 123 references.
-- **There is no valid-vs-rejected gap to read.** Under extractor 3 the panel matched 12.2%
-  of accepted review comments and 11.1% of _rejected_ ones — ratio 1.10, Fisher exact
-  p = 1.0. (Extractor 2 had reported 3.80x at p = 0.194; the recovered bullets matched
-  rejected comments at the same rate as accepted ones.) The panel does not discriminate
-  comments reviewers accepted from ones they rejected.
-- **Unlocated findings are withheld from upstream, not handed over empty.** Upstream skips
-  its path filter when the generated path is falsy and its line filter when the line is
-  None, so a location-less comment matches _every_ reference. Passing them through inflated
-  line matches from 20 to 50 on the first scoring run.
+- **The headline recall numbers are prompt- and condition-specific.** They move with
+  `--prompt-style`, roster health, and diff-vs-checkout context — see
+  [On real PRs](#on-real-prs-aacr-bench) before quoting any of them.
 - **Every other fixture has verified _scope_, not proven absence.** Their known unplanted
   defects are recorded in each `truth.json` and re-checked by execution in
   `validate_corpus.py`, so a judge that finds one is not scored as wrong. Anything not yet
