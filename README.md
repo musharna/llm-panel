@@ -37,7 +37,7 @@ citation-overlap tables show where the panel's attention landed (three judges re
 
 ## What's here
 
-|                        |                                                                                        |
+| tool                   | what it does                                                                           |
 | ---------------------- | -------------------------------------------------------------------------------------- |
 | `llm-panel`            | asks the judges, in parallel, and writes the run to disk                               |
 | `panel-report`         | renders a run as one self-contained HTML page, grouped by claim                        |
@@ -85,8 +85,9 @@ Yours will be different. Point the roster at models you actually have:
 
 Copy [`roster.example.json`](roster.example.json) to
 `~/.config/llm-panel/roster.json` (`$XDG_CONFIG_HOME` honoured; `$LLM_PANEL_CONFIG` wins).
-It is strict JSON — no comments, no trailing commas — because a typo'd key is fatal rather
-than silently ignored:
+It is strict JSON — no comments, no trailing commas — and a malformed config is **fatal**
+and names the offending key, because quietly falling back to the built-in roster would run
+a panel you didn't ask for, and bill you for it:
 
 ```json
 {
@@ -129,9 +130,6 @@ Two practical constraints: wall-clock is the **slowest** judge, not the sum, so 
 model sets the pace for every run; and `claude-*` are deliberately absent from the default,
 because when Claude wrote the code under review a Claude judge shares the author's blind
 spots. Add it explicitly when that isn't the case — it is strong.
-
-A malformed config is **fatal** and names the offending key. Quietly falling back to the
-built-in roster would run a panel you didn't ask for, and bill you for it.
 
 ## Using it
 
