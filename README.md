@@ -280,4 +280,7 @@ nothing.
 
 ## License
 
-MIT — see [LICENSE](LICENSE).
+MIT — see [LICENSE](LICENSE). The MIT grant covers the code in this repository; the
+benchmark data under `recall/benchmarks/` contains third-party material (PR diffs and
+review-comment text) that stays under its upstream terms — see
+[recall/benchmarks/PROVENANCE.md](recall/benchmarks/PROVENANCE.md).
