@@ -229,7 +229,11 @@ nothing.
   claim is withdrawn. A transport-controlled re-run (every panel through one harness) found
   8.7% vs 15.3%, and the claim's one foothold — a 13-PR subset that had run through the
   codex CLI — did not survive a re-run; a per-judge cut showed a same-transport re-run of
-  another judge moved as much, so the subset was noise, not a harness effect. See `recall/benchmarks/results-volume-3judge/README.md`,
+  another judge moved as much, so the subset was noise, not a harness effect. A full-sample
+  variance floor (single-judge re-extractions of both runs, evaluator replicate included)
+  put a same-judge re-run at up to ±3 human-ref matches of 150 with zero evaluator noise —
+  human-ref effects under ~5–7 pp of recall are inside re-run noise at n=35, which every
+  subgroup claim so far was. See `recall/benchmarks/results-volume-3judge/README.md`,
   `recall/benchmarks/results-human-2arm/README.md` and
   `recall/benchmarks/results-human-2arm-orgpt/README.md`.
   An earlier version of this bullet split recall by a DEFECT/IMPROVEMENT classifier I
