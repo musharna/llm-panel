@@ -1,5 +1,9 @@
 # llm-panel
 
+[![controls](https://github.com/musharna/llm-panel/actions/workflows/controls.yml/badge.svg)](https://github.com/musharna/llm-panel/actions/workflows/controls.yml)
+[![license: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+[![python: 3.11+](https://img.shields.io/badge/python-3.11%2B-blue.svg)](pyproject.toml)
+
 Put the same question to several models independently, then read every answer in full.
 
 Judges run in parallel, never see each other's work, and answer from their own reading of
@@ -22,6 +26,12 @@ panel-report --open          # render the newest run and open it
 panel-triage --bad           # which runs went wrong, across every run root
 ```
 
+The rendered report — the scoreboard counts spend and names who answered; the
+citation-overlap tables show where the panel's attention landed (three judges reviewing a
+[cline](https://github.com/cline/cline) PR, converging on one line of `TerminalProcess.ts`):
+
+![panel report: scoreboard, bench, and citation-overlap tables](docs/report.png)
+
 ## What's here
 
 |                        |                                                                                        |
@@ -33,14 +43,19 @@ panel-triage --bad           # which runs went wrong, across every run root
 | `recall/aacr-upstream` | runs the panel over AACR-Bench PRs and hands the findings to **upstream's** evaluator  |
 | `recall/aacr-score`    | invokes that evaluator, and refuses to report a number from a judge that isn't running |
 | `claimlib.py`          | the one measurement boundary: reviews → span-grounded observations                     |
-| `*-controls`           | the regression suites — 715 controls, every one tied to a defect that shipped          |
+| `*-controls`           | the regression suites — 810 controls, every one tied to a defect that shipped          |
 
 ## Install
 
-Pure Python 3.11+ standard library. No dependencies, no build step, nothing to pip install.
+Pure Python 3.11+ standard library. No dependencies, no build step. Each tool is one
+readable file, so either install route runs identical code:
 
 ```sh
-git clone <this repo> ~/llm-panel
+# as a package (entry points: llm-panel, panel-report, panel-triage)
+uv tool install llm-panel        # or: pipx install llm-panel
+
+# or as the files themselves
+git clone https://github.com/musharna/llm-panel ~/llm-panel
 ln -s ~/llm-panel/{llm-panel,panel-report,panel-triage} ~/.local/bin/
 ```
 
@@ -189,13 +204,16 @@ Three results worth knowing before you trust any of the output:
 ## Tests
 
 ```sh
-./claimlib-controls              #  77
-./llm-panel-controls             # 277
-./panel-report-controls          # 307
+./claimlib-controls              #  83
+./llm-panel-controls             # 279
+./panel-report-controls          # 310
 ./panel-triage-controls          #  15
-./recall/aacr-upstream-controls  #  39
+./recall/aacr-upstream-controls  #  96
+./recall/aacr-recut-controls     #  27
 cd recall && ./panel-recall selftest && python3 validate_corpus.py
 ```
+
+CI runs all six suites on every push (Python 3.11 and 3.13).
 
 Every control corresponds to a defect that **shipped**, and each asserts the fixed
 behaviour _and_ — where the pre-fix input is representable — that the broken version would
