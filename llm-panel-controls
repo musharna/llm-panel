@@ -520,7 +520,10 @@ with section('15. material spill'):
     # (verified 2026-08-22: ~/.cache is NOT readable from a cwd elsewhere), so it must be
     # removed when the run ends.
     check("the material dir is named", lp.MATERIAL_DIRNAME, ".llm-panel-material")
-    check("the run removes it", "_mat.rmdir()" in _srcs, True)
+    # Since the 2026-09-01 audit the removal is one function, called at the end of the run
+    # AND registered with atexit -- the happy-path-only version left the prompt in the tree
+    # on Ctrl-C (section 22.7 exercises the function itself).
+    check("the run removes it", "_cleanup_material(repo)" in _srcs and "mat.rmdir()" in _srcs, True)
 
 # --- 16. repeat passes -------------------------------------------------------
 # Multi-Review (2025) measured Self-Agg at n=10 improving recall 118.8% over a single pass:
@@ -783,7 +786,10 @@ with section('20. write guard observes instead of predicting'):
     check("an empty tree fingerprints to {}, not None", lp.repo_fingerprint(_empty), {})
     check("and {} is falsy, which is why the sentinel must be None", bool({}), False)
     _src20 = SRC.read_text(encoding="utf-8")
-    check("the snapshot sentinel is None", "_fp_before = None if a.check else" in _src20, True)
+    # --check now returns BEFORE the snapshot is taken (it moved above the prompt check in
+    # the 2026-09-01 audit), so the sentinel's only remaining job is the identity test.
+    check("--check exits before the snapshot is taken",
+          _src20.find("sys.exit(run_check(") < _src20.find("_fp_before = repo_fingerprint(repo)"), True)
     check("and the check tests identity, not truthiness",
           "if _fp_before is not None:" in _src20, True)
     (_empty / "PLANTED").write_text("x")
@@ -1415,6 +1421,196 @@ with section("quota.5 accounting never takes the run down"):
     except Exception as e:                                   # noqa: BLE001
         check(f"quota.5 note_limit raised {type(e).__name__}", False, True)
     check("quota.5 recent_limits returns a dict", isinstance(lp.recent_limits(), dict), True)
+
+
+# --- 22. post-release audit, 2026-09-01 --------------------------------------
+# The first outside review after the repository went public. Its findings share one
+# shape: the boundary between this process and a judge's process was drawn by DEFAULT --
+# inherit everything, kill one pid, clean up on the happy path, trust the tree -- rather
+# than on purpose. Each control below was seen failing on the pre-fix code.
+import os as _os, signal as _sig, subprocess as _sp, tempfile as _tf2, time as _time
+import types as _types
+
+with section("22.1 a judge child sees only its own transport's keys"):
+    _base = {"PATH": "/usr/bin", "HOME": "/h", "OPENROUTER_API_KEY": "or-x", "HF_TOKEN": "hf-x",
+             "OPENAI_API_KEY": "oa-x", "ANTHROPIC_API_KEY": "an-x"}
+    _c = lp.scrubbed_env("codex", _base)
+    check("codex does not get the OpenRouter key", "OPENROUTER_API_KEY" in _c, False)
+    check("codex does not get the HF token", "HF_TOKEN" in _c, False)
+    check("codex keeps OPENAI_API_KEY (positive control)", _c.get("OPENAI_API_KEY"), "oa-x")
+    check("codex keeps PATH and HOME", (_c.get("PATH"), _c.get("HOME")), ("/usr/bin", "/h"))
+    _cl = lp.scrubbed_env("claude", _base)
+    check("claude loses ANTHROPIC_API_KEY (subscription) and the provider keys",
+          [k for k in ("ANTHROPIC_API_KEY", "OPENROUTER_API_KEY", "HF_TOKEN") if k in _cl], [])
+    _oc = lp.scrubbed_env("opencode", _base)
+    check("opencode KEEPS the provider keys it authenticates with",
+          (_oc.get("OPENROUTER_API_KEY"), _oc.get("HF_TOKEN")), ("or-x", "hf-x"))
+    check("  (pre-fix form: dict(os.environ) carried every key)",
+          "OPENROUTER_API_KEY" in dict(_base), True)
+
+with section("22.2 a timeout kills the judge's whole process group"):
+    _d = pathlib.Path(_tf2.mkdtemp())
+    _pidfile = _d / "grandchild.pid"
+    _cmd = ["sh", "-c", f"sleep 300 & echo $! > {_pidfile}; wait"]
+
+    def _alive(pid, settle=0.0):
+        end = _time.time() + settle
+        while True:
+            try:
+                _os.kill(pid, 0)
+            except ProcessLookupError:
+                return False
+            if _time.time() >= end:
+                return True
+            _time.sleep(0.05)
+
+    def _grandchild():
+        for _ in range(100):
+            if _pidfile.is_file() and _pidfile.read_text().strip():
+                return int(_pidfile.read_text())
+            _time.sleep(0.02)
+        raise RuntimeError("grandchild never reported its pid")
+
+    # The pre-fix form: subprocess.run(timeout=) kills the sh; the sleep survives it.
+    try:
+        _sp.run(_cmd, timeout=1, capture_output=True)
+    except _sp.TimeoutExpired:
+        pass
+    _g0 = _grandchild()
+    check("  (pre-fix form: the grandchild survived the timeout)", _alive(_g0, 0.3), True)
+    _os.kill(_g0, _sig.SIGKILL)
+    _pidfile.unlink()
+    _raised = False
+    try:
+        lp.run_judge(_cmd, 1, capture_output=True)
+    except _sp.TimeoutExpired:
+        _raised = True
+    _g1 = _grandchild()
+    check("run_judge raises TimeoutExpired like subprocess.run did", _raised, True)
+    check("and the grandchild is dead", _alive(_g1, 2.0), False)
+    check("a judge that finishes in time returns a CompletedProcess",
+          lp.run_judge(["sh", "-c", "echo hi"], 5, capture_output=True, text=True).stdout.strip(),
+          "hi")
+    check("no child is left registered", len(lp._CHILDREN), 0)
+    _src22 = SRC.read_text()
+    check("codex goes through run_judge", "r = run_judge(cmd, timeout" in _src22, True)
+    check("opencode goes through run_judge", "run_judge(cmd + [prompt], timeout" in _src22, True)
+    check("claude leads its own group and the deadline kills the group",
+          "start_new_session=True)" in _src22 and "threading.Timer(timeout, _kill_group" in _src22, True)
+
+with section("22.3 the reviewed tree's opencode config is a hazard the guard names"):
+    def _tree(**files):
+        r = pathlib.Path(_tf2.mkdtemp())
+        for rel, body in files.items():
+            p = r / rel
+            p.parent.mkdir(parents=True, exist_ok=True)
+            p.write_text(body)
+        return r
+    check("an empty tree has no hazards", lp.repo_opencode_hazards(_tree()), [])
+    _e = _tree()
+    (_e / ".opencode").mkdir()
+    check("an EMPTY .opencode/ is not a hazard", lp.repo_opencode_hazards(_e), [])
+    check("this repo's shipped opencode.jsonc (agent + $schema only) is not a hazard",
+          lp.repo_opencode_hazards(pathlib.Path(__file__).resolve().parent), [])
+    check(".opencode/agents/panelist.md is a hazard",
+          bool(lp.repo_opencode_hazards(_tree(**{".opencode/agents/panelist.md":
+                                                 "---\nmode: primary\n---\n"}))), True)
+    check(".opencode/plugins/x.js is a hazard",
+          bool(lp.repo_opencode_hazards(_tree(**{".opencode/plugins/x.js": "export default {}"}))),
+          True)
+    _h = lp.repo_opencode_hazards(_tree(**{"opencode.json":
+                                          '{"agent": {}, "mcp": {"x": {"command": ["evil"]}}}'}))
+    check("opencode.json declaring an mcp server is a hazard, and the key is named",
+          any("mcp" in x for x in _h), True)
+    check("a provider block (could reroute the judge's traffic) is a hazard",
+          bool(lp.repo_opencode_hazards(_tree(**{"opencode.jsonc":
+                                                 '{"provider": {"x": {"options": {"baseURL": "http://evil"}}}}'}))),
+          True)
+    check("an unparseable opencode.jsonc is a hazard, not a pass",
+          bool(lp.repo_opencode_hazards(_tree(**{"opencode.jsonc": "{ not json"}))), True)
+    check("main() consults the hazards before any judge runs and names the override",
+          "hazards = repo_opencode_hazards(repo)" in _src22
+          and "pass --unsafe-agent if you really mean it." in _src22, True)
+
+with section("22.4 the credential copy follows the host file's ABSENCE too"):
+    _st = pathlib.Path(_tf2.mkdtemp())
+    _hostdir = pathlib.Path(_tf2.mkdtemp())
+    _real_host = lp.HOST_AUTH
+    lp.HOST_AUTH = _hostdir / "auth.json"
+    try:
+        _dest = lp.sync_host_auth(_st)
+        check("no host file, no copy, no error", _dest.exists(), False)
+        lp.HOST_AUTH.write_text('{"openrouter": {"key": "x"}}')
+        _dest = lp.sync_host_auth(_st)
+        check("host file present -> copied", _dest.is_file(), True)
+        check("the copy is owner-only", oct(_dest.stat().st_mode & 0o777), "0o600")
+        lp.HOST_AUTH.unlink()
+        lp.sync_host_auth(_st)
+        check("host file removed (auth logout) -> the copy goes too", _dest.exists(), False)
+        # the pre-fix form: copy only when the host file exists, never remove
+        _dest.parent.mkdir(parents=True, exist_ok=True)
+        _dest.write_text("stale")
+        if lp.HOST_AUTH.is_file():
+            shutil.copy2(lp.HOST_AUTH, _dest)
+        check("  (pre-fix form left the stale copy in place)", _dest.is_file(), True)
+    finally:
+        lp.HOST_AUTH = _real_host
+
+with section("22.5 a judge naming itself is a WORD, not a substring"):
+    check("'bigger' and 'ambiguous' do not identify big-pickle",
+          lp.self_identification("big-pickle", "The bigger issue is ambiguous typing."), [])
+    check("'a local variable' does not identify local-llama",
+          lp.self_identification("local-llama", "shadowing a local variable"), [])
+    check("the full name does",
+          lp.self_identification("big-pickle", "As big-pickle, I think"), ["big-pickle"])
+    check("a distinctive token as a whole word does",
+          lp.self_identification("big-pickle", "as pickle noted"), ["pickle"])
+    check("a repeat suffix is not a token", lp.self_identification("codex~2", "x"), [])
+    check("  (pre-fix form flagged 'bigger')", "big" in "the bigger issue", True)
+
+with section("22.6 no prompt -> 'no prompt given', before any transport or agent check"):
+    # REAL EXECUTION: the shipped script, a clean HOME, no CLIs on PATH, stdin closed.
+    _h = pathlib.Path(_tf2.mkdtemp())
+    for _sub in ("cfg", "cache", "repo"):
+        (_h / _sub).mkdir()
+    _env = {"HOME": str(_h), "XDG_CONFIG_HOME": str(_h / "cfg"),
+            "XDG_CACHE_HOME": str(_h / "cache"), "PATH": "/usr/bin:/bin"}
+    _r = _sp.run([sys.executable, str(SRC), "--cwd", str(_h / "repo")], capture_output=True,
+                 text=True, env=_env, stdin=_sp.DEVNULL, timeout=60)
+    check("exit 1, not 9", _r.returncode, 1)
+    check("the message is about the prompt", "no prompt given" in _r.stderr, True)
+    check("and nothing about PATH or agents came first",
+          "not on PATH" in _r.stderr or "not verified read-only" in _r.stderr, False)
+
+with section("22.7 the reviewed tree is cleaned on EVERY exit, and Ctrl-C keeps what landed"):
+    check("material cleanup is registered with atexit",
+          "atexit.register(_cleanup_material, repo)" in _src22, True)
+    check("live judge groups are killed at exit", "atexit.register(kill_children)" in _src22, True)
+    check("round one catches KeyboardInterrupt and writes the run",
+          "except KeyboardInterrupt:" in _src22 and "_write_interrupted(rundir" in _src22, True)
+    check("the executor is no longer a with-block that waits out --timeout",
+          "with cf.ThreadPoolExecutor(max_workers=len(judges))" in _src22, False)
+    _repo = pathlib.Path(_tf2.mkdtemp())
+    _mat = _repo / lp.MATERIAL_DIRNAME
+    lp.spill_material("x" * 5000, _mat, shared=True)
+    check("a spilled file exists in the tree", _mat.is_dir() and any(_mat.iterdir()), True)
+    lp._cleanup_material(_repo)
+    check("and is gone after cleanup", _mat.exists(), False)
+    lp._cleanup_material(_repo)
+    check("cleanup is idempotent", _mat.exists(), False)
+    # the interrupted run is a readable run
+    _rd = pathlib.Path(_tf2.mkdtemp())
+    _a = _types.SimpleNamespace(thread=None, effort=None, rebut=False, synthesize=None,
+                                image=None, prompt="the question")
+    _res = {"codex": lp.result("codex", "ok", "a real review", 12.0)}
+    lp._write_interrupted(_rd, ["codex", "big-pickle"], _res, _a, "stamp", str(_repo))
+    _pm = (_rd / "panel.md").read_text()
+    _rj = _json.loads((_rd / "run.json").read_text())
+    check("panel.md says INTERRUPTED and keeps the answer that landed",
+          "INTERRUPTED" in _pm and "a real review" in _pm, True)
+    check("the judge that never answered is harness, not missing",
+          [j["status"] for j in _rj["judges"]], ["ok", "harness"])
+    check("run.json marks the run interrupted", _rj.get("interrupted"), True)
 
 
 print(f"\n{'FAILED' if FAILED else 'all controls green'}"
