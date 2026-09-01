@@ -35,6 +35,9 @@ VERBOSE = "-v" in sys.argv
 # controls happily verified the installed binary and reported green. Found by codex.
 _sib = pathlib.Path(__file__).resolve().parent / "panel-report"
 SRC = _sib if _sib.is_file() else pathlib.Path.home() / ".local/bin/panel-report"
+# A real run directory, copied verbatim into the repo for the real-execution controls.
+_SHIPPED_RUN = (pathlib.Path(__file__).resolve().parent
+                / "fixtures/runs/mini-c9c77efac7e0/20260822-063506-690137")
 spec = importlib.util.spec_from_loader("pr", importlib.machinery.SourceFileLoader("pr", str(SRC)))
 pr = importlib.util.module_from_spec(spec)
 sys.argv = ["panel-report", "--help-noop"]
@@ -540,7 +543,9 @@ with section('24. judge identity colour'):
 # and the step most likely to drop a minority finding -- the same rule the consensus table
 # follows. This control guards the mechanical part: that it renders and fills.
 with section('25. glance panel renders'):
-    _runs = [d for d in pr.find_runs()][:6]
+    # The shipped real run is always in the set, so this section runs on a machine with no
+    # local runs at all -- it used to depend on the author's ~/.cache.
+    _runs = [_SHIPPED_RUN] + [d for d in pr.find_runs() if d != _SHIPPED_RUN][:5]
     _checked = 0
     for _d in _runs:
         try:
@@ -794,9 +799,10 @@ def _run(revs):
                            "meta": {}, "family": "X"} for n, t in revs.items()}}
 
 
-# REAL EXECUTION at the boundary -- the shipped loader on a real run directory, not a fixture.
-_REAL = pathlib.Path("/home/user/.cache/llm-panel/runs/mini-c9c77efac7e0/"
-                     "20260822-063506-690137")
+# REAL EXECUTION at the boundary -- the shipped loader on a real run directory, copied
+# verbatim into the repo. Bound to /home/user/.cache it existed on one laptop, and the
+# first CI run after the repo went public was the first run of this suite anywhere else.
+_REAL = _SHIPPED_RUN
 try:
     _ROWS = pr.attention_view(pr.load_run(_REAL))[0] if _REAL.is_dir() else []
 except Exception:                                          # noqa: BLE001

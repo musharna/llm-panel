@@ -1,0 +1,38 @@
+// The opencode agent every llm-panel opencode judge runs as.
+//
+// Merge the `agent.panelist` block into ~/.config/opencode/opencode.jsonc, or leave this
+// file at the root of a repository you review with llm-panel: opencode reads project-local
+// config too, and llm-panel's read-only check consults both. Without it, llm-panel refuses
+// to start an opencode judge (exit 9) -- opencode's default `build` agent will happily edit
+// the tree it is reviewing, and a panel runs several judges concurrently in your live
+// working tree.
+{
+  "$schema": "https://opencode.ai/config.json",
+  "agent": {
+    "panelist": {
+      "description": "Read-only judge for llm-panel. Answers from the prompt alone; cannot touch the repo.",
+      // MUST be "primary": `opencode run --agent X` rejects a subagent and then SILENTLY
+      // FALLS BACK to the write-capable `build` agent, printing only a warning. Declared
+      // "subagent" on 2026-08-20 and every judge ran with full write access while
+      // appearing to be sandboxed.
+      "mode": "primary",
+      // `tools` is what actually governs the Write tool. The `permission` map below has no
+      // "write" key at all (its vocabulary is bash/edit/webfetch/read/...), so `edit: deny`
+      // alone did NOT stop a judge from writing a file -- verified. Read-only tools stay ON
+      // so opencode judges can inspect surrounding code the way the codex judge does under
+      // `-s read-only`. llm-panel treats any enabled tool it does not know to be read-only
+      // as writable, so adding a tool here means adding it to READ_ONLY_TOOLS as well.
+      "tools": {
+        "write": false, "edit": false, "patch": false,
+        "bash": false, "webfetch": false, "task": false,
+        "websearch": false, "skill": false,
+        "read": true, "grep": true, "glob": true, "list": true
+      },
+      "permission": { "edit": "deny", "bash": "deny", "webfetch": "deny" },
+      // The prompt must match the tool grant above. It used to say "you have no tools and
+      // do not need any" WHILE read/grep/glob/list were enabled, so judges declined to check
+      // claims against the code they could actually read.
+      "prompt": "You are one judge on an independent panel. Answer the question directly and concisely. You have READ-ONLY tools (read, grep, glob, list) over the current directory: use them to verify a claim against the actual code whenever that is what settles it, and say what you checked. You cannot write, edit, or run anything, and you must not try. If the material is insufficient to judge, say exactly what is missing rather than guessing."
+    }
+  }
+}
