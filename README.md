@@ -1,8 +1,9 @@
 # llm-panel
 
 [![controls](https://github.com/musharna/llm-panel/actions/workflows/controls.yml/badge.svg)](https://github.com/musharna/llm-panel/actions/workflows/controls.yml)
-[![license: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
-[![python: 3.11+](https://img.shields.io/badge/python-3.11%2B-blue.svg)](pyproject.toml)
+[![pypi](https://img.shields.io/pypi/v/llm-panel.svg)](https://pypi.org/project/llm-panel/)
+[![license: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](https://github.com/musharna/llm-panel/blob/main/LICENSE)
+[![python: 3.11+](https://img.shields.io/badge/python-3.11%2B-blue.svg)](https://github.com/musharna/llm-panel/blob/main/pyproject.toml)
 
 Put the same question to several models independently, then read every answer in full.
 
@@ -43,20 +44,10 @@ citation-overlap tables show where the panel's attention landed (three judges re
 
 ## What's here
 
-```mermaid
-%%{init: {"theme": "neutral", "flowchart": {"wrappingWidth": 320}}}%%
-flowchart TB
-  Q["question  (+ --diff, or stdin)"] --> LP["llm-panel"]
-  LP --> A["judge A"]
-  LP -- "in parallel<br/>blind to each other<br/>reading your repo" --> B["judge B"]
-  LP --> C["judge C"]
-  A & B & C --> RUN["run directory<br/>one .md and one .prompt.md per judge,<br/>panel.md, run.json"]
-  A & B & C -.-> RB
-  RB["round 2, only with --rebut<br/>each judge sees the others' findings,<br/>anonymised as Reviewer A / B / C,<br/>and defends or withdraws"] -.-> RUN
-  style RB stroke-dasharray: 6 4
-  RUN --> REP["panel-report<br/>one self-contained HTML page,<br/>rebuttals grouped by finding"]
-  RUN --> TRI["panel-triage<br/>the runs that failed"]
-```
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/musharna/llm-panel/main/docs/whats-here-dark.svg">
+  <img alt="flow: a question (plus --diff or stdin) goes to llm-panel, which asks judges A, B and C in parallel, blind to each other and reading your repo; their answers land in a run directory (one .md and one .prompt.md per judge, panel.md, run.json); with --rebut a second round shows each judge the others' findings anonymised as Reviewer A/B/C and asks it to defend or withdraw; panel-report renders the run as one self-contained HTML page and panel-triage finds the runs that failed" src="https://raw.githubusercontent.com/musharna/llm-panel/main/docs/whats-here-light.svg" width="560">
+</picture>
 
 | tool                   | what it does                                                                           |
 | ---------------------- | -------------------------------------------------------------------------------------- |
@@ -71,8 +62,9 @@ flowchart TB
 
 ## Install
 
-Pure Python 3.11+ standard library. No dependencies, no build step. Each tool is one
-readable file, so either install route runs identical code:
+Pure Python 3.11+ standard library on Linux, macOS or WSL — it needs POSIX file locks and
+process groups, and says so on Windows instead of tracing back. No dependencies, no build
+step. Each tool is one readable file, so either install route runs identical code:
 
 ```sh
 # as a package (entry points: llm-panel, panel-report, panel-triage)
@@ -99,12 +91,17 @@ and you need at most one to start:
 If none are present the panel still runs, fails loudly, exits 4, and tells you what to
 install. A missing tool is one judge's problem, never the whole panel's.
 
+Two transports skip the CLI: `ollama` uses its local HTTP API, and `orvision` calls
+OpenRouter's HTTP API directly with your OpenRouter key so that the `vis-*` judges (grok,
+kimi, gemini, gpt) can look at an `--image`.
+
 ### The read-only agent for `opencode` judges
 
 `opencode` judges run as an agent named `panelist` that can read the repo but not write
 to it, and `llm-panel` refuses to start an opencode judge until that agent is defined and
 verified read-only (exit 9) — opencode's default `build` agent will happily edit the tree
-it is reviewing. The definition ships as [`opencode.jsonc`](opencode.jsonc): merge its
+it is reviewing. The definition ships as
+[`opencode.jsonc`](https://github.com/musharna/llm-panel/blob/main/opencode.jsonc): merge its
 `agent.panelist` block into `~/.config/opencode/opencode.jsonc`, or keep the file at the
 root of a repo you review with it — opencode reads project-local config too.
 
@@ -113,7 +110,7 @@ root of a repo you review with it — opencode reads project-local config too.
 **The built-in judge list is a default, not a fixture — it names the author's accounts.**
 Yours will be different. Point the roster at models you actually have:
 
-Copy [`roster.example.json`](roster.example.json) to
+Copy [`roster.example.json`](https://github.com/musharna/llm-panel/blob/main/roster.example.json) to
 `~/.config/llm-panel/roster.json` (`$XDG_CONFIG_HOME` honoured; `$LLM_PANEL_CONFIG` wins).
 It is strict JSON — no comments, no trailing commas — and a malformed config is **fatal**
 and names the offending key, because quietly falling back to the built-in roster would run
@@ -146,7 +143,8 @@ treat vendor labels as a proxy for independent opinions. The evidence says they 
 being cross-family, and found that restricting to one judge per family made effective
 independence **worse** (n_eff 1.93 vs 2.18). Family is display metadata here, not policy.
 
-The six-judge set above did score 6/6 against this corpus where a two-vendor panel scored
+The six-judge set above did score 6/6 against the planted-defect corpus described under
+[What it actually catches](#what-it-actually-catches), where a two-vendor panel scored
 4/6, but **treat that as debugging evidence, not as a result**: the roster was repaired
 _because_ of what happened on those very fixtures, so the comparison is in-sample, and the
 six defects live in only two files (effective n≈2, 95% CI 61–100%).
@@ -175,6 +173,16 @@ spots. Add it explicitly when that isn't the case — it is strong.
   time as a **full, separate judge** — its own file, its own letter, its own row.
   Collapsing repeats would hide exactly the disagreement that makes them worth running.
 - `--thread NAME` keeps a persistent conversation per judge. For design questions, not review.
+- `--image PATH` (repeatable) attaches an image. Only the `vis-*` and `claude-*` judges can
+  look at it; every other judge reports `unavailable` rather than answering blind, and
+  `--vision-check TEXT` makes each judge quote something visible before it is believed.
+- `--live` prints each answer the moment it lands instead of waiting for the slowest judge;
+  `--stream` echoes tokens as they arrive, which only ollama and claude judges can honour.
+  Without either, a heartbeat still names who is still working.
+- `--runs` lists past panels for this repo (`--all-repos` for every repo) and `--show`
+  prints the latest report. `--effort {low,…,max}` sets reasoning effort where a judge has
+  the setting; `--timeout SECONDS` caps each judge, and a judge over the deadline is killed
+  as a whole process group and reported `harness`. `-f FILE` reads the prompt from a file.
 - Long questions go via stdin: `llm-panel - <<'ASK' … ASK`.
 
 Judges reading through `codex`/`opencode`/`claude` can **read your repo**. `ollama` judges
@@ -182,9 +190,11 @@ answer from the prompt alone with no tool loop, so they cannot verify a claim ag
 Treat their findings accordingly.
 
 Exit codes are deliberate and `llm-panel --help` lists them: 0 every judge answered ·
-4 degraded panel (a judge never ran — our failure, reported as such) · 7/8 `--diff` could
-not produce a diff / had nothing to review · 9 the opencode agent or the reviewed tree is
-not verified safe · 130 interrupted, with whatever landed kept in the run directory.
+1 usage, config, or a failure of this program · 2 `--file` could not be read · 4 degraded
+panel (a judge never ran — our failure, reported as such) · 7/8 `--diff` could not produce
+a diff / had nothing to review · 9 the opencode agent or the reviewed tree is not verified
+safe · 11/12 `--repeat` out of range / a repeat suffix typed by hand · 130 interrupted,
+with whatever landed kept in the run directory.
 
 The rebuttal round as rendered — every position each judge took on each finding, grouped
 by the finding under dispute, disagreements marked CONTESTED. This run: four free-tier
@@ -256,7 +266,8 @@ The planted corpus above is a development instrument; the real-world numbers com
 running the panel over [AACR-Bench](https://github.com/alibaba/aacr-bench) PRs and
 scoring the findings with **upstream's own evaluator** — a real LLM judge doing
 path → line → semantic matching, so the numbers are theirs, not a self-graded matcher's.
-On 18 PRs at full roster (extractor-3 re-measurements, 2026-08-28):
+The prompt style is a flag of that harness, `recall/aacr-upstream --prompt-style`, not of
+`llm-panel`. On 18 PRs at full roster (extractor-3 re-measurements, 2026-08-28):
 
 | `--prompt-style`   | semantic recall | precision | findings read per validated hit |
 | ------------------ | --------------- | --------- | ------------------------------- |
@@ -279,38 +290,24 @@ per hit). A declared cost cut over all of it settled the product default: **it s
 `defect`**; the only candidate for a future default change is `broad`
 (`recall/benchmarks/cost-cut/README.md`).
 
-What keeps these numbers honest:
+Three things to know before quoting any of it:
 
 - **The variance floor is measured.** Re-running the same judge on the same 35 PRs moves
   up to ±3 human-reference matches of 150, with an evaluator replicate at exactly zero —
   so effects under ~5–7 pp of recall are re-run noise at this n, which every subgroup
-  claim so far was (`recall/benchmarks/results-human-2arm-orgpt/perjudge35/`).
-- **Three earlier readings were withdrawn on re-measurement**: a DEFECT/IMPROVEMENT
-  split (my classifier was circular), "broad finds different hits" (pre-registered
-  replication on 35 fresh PRs, p = 0.40), and a transport/harness effect (its 13-PR
-  foothold did not survive a re-run; a same-transport re-run of another judge moved as
-  much). The audit trail is in the benchmark READMEs; nothing above rests on a withdrawn
-  claim.
-- **Diff-in-prompt review is the measured condition** — each panel runs in an empty
-  directory with the diff in the prompt. The paired repo-checkout arm moves recall
-  12.2% → 15.4% (p = 0.48) while _losing_ 7 of the diff arm's matches and gaining 11:
-  repo access changes what judges attend to more than it strictly adds
-  (`recall/benchmarks/results-checkout-3judge/README.md`).
+  claim so far was.
+- **Three earlier readings were withdrawn on re-measurement** — a DEFECT/IMPROVEMENT
+  split (the classifier was circular), "broad finds different hits" (pre-registered
+  replication on 35 fresh PRs, p = 0.40), and a transport effect that did not survive a
+  re-run. Nothing above rests on a withdrawn claim.
 - **Location agreement overstates semantic agreement ~2x** (22.8% of references had a
   finding at the right file and line; 12.2% had one a judge called the same concern) —
   which is why scoring is delegated upstream instead of done by a local matcher.
-- **A degraded roster costs about half the recall** (6.5% vs 12.2% with one judge's
-  quota spent and a 300s timeout, same extractor). Check who actually answered before
-  reading any number.
-- **The panel does not discriminate accepted from rejected reviewer comments**
-  (12.2% vs 11.1%, Fisher p = 1.0).
-- **Unlocated findings are withheld from upstream, not handed over empty** — upstream's
-  filters treat a missing path or line as match-everything, and passing them through
-  inflated line matches from 20 to 50 on the first scoring run.
 
-Full run ledgers: `recall/benchmarks/results-human-2arm/README.md` and
-`results-human-2arm-orgpt/README.md`; data licensing in
-`recall/benchmarks/PROVENANCE.md`.
+The rest — the repo-checkout arm, what a degraded roster costs, accepted-vs-rejected
+comments, why unlocated findings are withheld from upstream — with every run ledger and
+the data licensing, is in
+[`recall/benchmarks/README.md`](https://github.com/musharna/llm-panel/blob/main/recall/benchmarks/README.md).
 
 ## Tests
 
@@ -359,7 +356,8 @@ nothing.
 
 ## License
 
-MIT — see [LICENSE](LICENSE). The MIT grant covers the code in this repository; the
-benchmark data under `recall/benchmarks/` contains third-party material (PR diffs and
-review-comment text) that stays under its upstream terms — see
-[recall/benchmarks/PROVENANCE.md](recall/benchmarks/PROVENANCE.md).
+MIT — see [LICENSE](https://github.com/musharna/llm-panel/blob/main/LICENSE). The MIT
+grant covers the code in this repository; the benchmark data under `recall/benchmarks/`
+contains third-party material (PR diffs and review-comment text) that stays under its
+upstream terms — see
+[recall/benchmarks/PROVENANCE.md](https://github.com/musharna/llm-panel/blob/main/recall/benchmarks/PROVENANCE.md).
