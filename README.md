@@ -23,6 +23,12 @@ panel-report --open          # render the newest run and open it
 panel-triage --bad           # which runs went wrong, across every run root
 ```
 
+A real run, with the waiting compressed: three judges asked in parallel (two free-tier,
+one on a ChatGPT plan) landing as they finish, the scoreboard from `panel.md`, and
+`panel-report` rendering it ([recording](docs/demo.cast)):
+
+![terminal: llm-panel asks three judges in parallel, reports each as it lands, then head -n 12 panel.md shows the scoreboard and panel-report writes the HTML page](docs/demo.gif)
+
 The rendered report — the scoreboard counts spend and names who answered; the
 citation-overlap tables show where the panel's attention landed (three judges reviewing a
 [cline](https://github.com/cline/cline) PR, converging on one line of `TerminalProcess.ts`):
@@ -36,6 +42,21 @@ citation-overlap tables show where the panel's attention landed (three judges re
 [Known limitations](#known-limitations)
 
 ## What's here
+
+```mermaid
+%%{init: {"theme": "neutral", "flowchart": {"wrappingWidth": 320}}}%%
+flowchart TB
+  Q["question  (+ --diff, or stdin)"] --> LP["llm-panel"]
+  LP --> A["judge A"]
+  LP -- "in parallel<br/>blind to each other<br/>reading your repo" --> B["judge B"]
+  LP --> C["judge C"]
+  A & B & C --> RUN["run directory<br/>one .md and one .prompt.md per judge,<br/>panel.md, run.json"]
+  A & B & C -.-> RB
+  RB["round 2, only with --rebut<br/>each judge sees the others' findings,<br/>anonymised as Reviewer A / B / C,<br/>and defends or withdraws"] -.-> RUN
+  style RB stroke-dasharray: 6 4
+  RUN --> REP["panel-report<br/>one self-contained HTML page,<br/>rebuttals grouped by finding"]
+  RUN --> TRI["panel-triage<br/>the runs that failed"]
+```
 
 | tool                   | what it does                                                                           |
 | ---------------------- | -------------------------------------------------------------------------------------- |
@@ -228,6 +249,11 @@ On 18 PRs at full roster (extractor-3 re-measurements, 2026-08-28):
 | `defect` (default) | 12.2%           | 16.5%     | 6.1                             |
 | `broad`            | 26.0%           | 13.2%     | 7.6                             |
 | `volume`           | 25.2%           | 7.9%      | 12.6                            |
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/bench-dark.png">
+  <img alt="recall against precision for the three prompt styles; error bars are the ±2 pp re-run noise floor" src="docs/bench-light.png" width="660">
+</picture>
 
 `broad` — asking for what a careful maintainer would actually raise — doubles the
 default's recall (McNemar on paired references, p = 0.0005). But the `volume` control
