@@ -1,5 +1,38 @@
 # Changelog
 
+## 0.1.2 — 2026-09-01
+
+The first outside review after the repository went public. Its findings share one shape:
+the boundary between `llm-panel` and a judge's process was drawn by default.
+
+- **Reviewing a repository means trusting its `.opencode/` and `opencode.json[c]`.**
+  opencode loads plugins, tools and agent definitions from the tree it is pointed at, and
+  the read-only guard only ever read `opencode.json[c] -> agent`. A repository shipping
+  `.opencode/agents/panelist.md` with bash allowed passed the guard and ran as you, with
+  your keys. `llm-panel` now refuses (exit 9) when the tree carries any of that;
+  `--unsafe-agent` overrides. A claude judge gets a note about project hooks/`.mcp.json`.
+- **A judge child sees only its own transport's keys.** The OpenRouter/HF keys loaded for
+  opencode were inherited by codex and claude.
+- **A timeout kills the judge's whole process group.** `codex` on PATH is a Node launcher;
+  killing it left the native binary running the turn on plan quota after the panel had
+  reported `harness`. The claude deadline does the same, which also unblocks its read loop.
+- **The reviewed tree is cleaned on every exit, and Ctrl-C keeps what landed.** A Ctrl-C
+  used to block for the full `--timeout` and then write nothing, leaving the prompt --
+  `--diff` untracked-file contents included -- in `<repo>/.llm-panel-material/`, where the
+  next `--diff` panel sent it to every judge. Exit 130 now writes a panel marked
+  INTERRUPTED with every answer that arrived.
+- The host credential copy follows the host file's absence (`opencode auth logout`
+  revoked nothing for the judges); copies are 0600; a per-run temp state dir is removed.
+- The rebuttal-round self-identification warning matches whole words, so `big-pickle` no
+  longer warns on "bigger".
+- "no prompt given" comes before the transport warnings and the agent guard; `--diff`
+  outside a git repository, an unreadable `--file`, an unwritable cache directory and
+  undecodable argv bytes are sentences instead of tracebacks; `--diff` refuses a diff over
+  400 KB; judge text is stripped of terminal escape sequences before it is printed or
+  written; `limits.json` writes are locked; run directories are owner-only; `--help` lists
+  the exit codes; `panel-report --list` with no runs says so and exits 1; `--list` names
+  the file a key was read from; CI runs 3.12 as well.
+
 ## 0.1.1 — 2026-09-01
 
 - Ship `opencode.jsonc`, the read-only `panelist` agent every opencode judge runs as.

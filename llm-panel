@@ -56,7 +56,10 @@ judge refusing.
 import argparse, concurrent.futures as cf, datetime, json, os, pathlib, re, shutil, subprocess, sys, time
 import atexit
 import base64
-import fcntl
+try:
+    import fcntl                      # POSIX only; main() says so on Windows instead of a traceback
+except ImportError:                   # pragma: no cover
+    fcntl = None
 import hashlib
 import random
 import secrets
@@ -64,7 +67,7 @@ import signal
 import threading
 import urllib.error, urllib.request
 
-__version__ = "0.1.1"
+__version__ = "0.1.2"
 
 # name -> (kind, model-id).  kind: "codex" uses the ChatGPT plan; "opencode" uses opencode run.
 ROSTER = {
@@ -771,10 +774,20 @@ def note_limit(judge, msg, reset):
     """
     try:
         f = pathlib.Path(STATE) / LIMIT_STATE
-        cur = json.loads(f.read_text()) if f.is_file() else {}
-        cur[judge] = {"at": now(), "reset_hint": reset, "message": msg}
         f.parent.mkdir(parents=True, exist_ok=True)
-        f.write_text(json.dumps(cur, indent=2, sort_keys=True) + "\n")
+        # Read-modify-write under a lock: judges report from their own threads, and two
+        # limits landing together used to lose one of them.
+        with open(f, "a+", encoding="utf-8") as fh:
+            fcntl.flock(fh, fcntl.LOCK_EX)
+            fh.seek(0)
+            try:
+                cur = json.loads(fh.read() or "{}")
+            except ValueError:
+                cur = {}
+            cur[judge] = {"at": now(), "reset_hint": reset, "message": msg}
+            fh.seek(0)
+            fh.truncate()
+            fh.write(json.dumps(cur, indent=2, sort_keys=True) + "\n")
     except OSError:
         pass          # accounting must never take the run down
 
@@ -785,6 +798,24 @@ def recent_limits():
         return json.loads(f.read_text()) if f.is_file() else {}
     except (OSError, json.JSONDecodeError):
         return {}
+
+
+_C0 = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]")
+
+
+def clean_judge_text(s):
+    """Judge output is printed to a terminal and written to panel.md verbatim -- minus
+    escape sequences. A hostile repository can make a judge quote text that contains
+    them, and a terminal would obey. Newlines and tabs stay; ANSI and C0 controls go."""
+    if not s:
+        return s
+    return _C0.sub("", strip_ansi(s))
+
+
+def clean_prompt(s):
+    """argv arrives with undecodable bytes as surrogates; writing them to prompt.md raised
+    UnicodeEncodeError. Replace them, keep everything else."""
+    return s.encode("utf-8", "surrogateescape").decode("utf-8", "replace")
 
 
 def result(name, status, text, secs, meta=None):
@@ -799,6 +830,7 @@ def result(name, status, text, secs, meta=None):
     accounting belongs where they all converge.
     """
     meta = meta or {}
+    text = clean_judge_text(text)
     if status == "unavailable":
         limited, _ = is_usage_limit(text)
         # The reset hint is read STRUCTURALLY ("try again in/at X"), not gated on the
@@ -952,6 +984,20 @@ EFFORT_LEVELS = ("low", "medium", "high", "xhigh", "max")
 
 
 MATERIAL_DIRNAME = ".llm-panel-material"
+DIFF_MAX_CHARS = 400_000
+
+EXIT_CODES_HELP = """\
+exit codes:
+  0   every judge answered
+  1   usage, config, or a failure of this program
+  2   --file could not be read
+  4   degraded panel: at least one judge never ran (our failure, not a refusal)
+  7   --diff: not a git repository, git failed, or the diff is too large
+  8   --diff: nothing uncommitted to review
+  9   the opencode agent is not verified read-only, or the reviewed tree carries opencode
+      configuration the judges would run (--unsafe-agent overrides both)
+  11  --repeat out of range        12  a repeat suffix was supplied by hand
+  130 interrupted; what had landed is in the run directory"""
 # What THIS process wrote. Cleanup used to glob `material-*.md` and unlink every match, so a
 # finishing run deleted a CONCURRENT run's file -- and that run's judges, each holding a 2 KB
 # excerpt ending in "READ THAT FILE NOW", got ENOENT and answered from the excerpt with
@@ -1007,8 +1053,6 @@ def spill_material(prompt, material_dir, keep=2000, shared=False):
     if material_dir.is_symlink():
         raise OSError(f"{material_dir} is a symlink; refusing to spill through it")
     material_dir.mkdir(parents=True, exist_ok=True)
-    if material_dir.resolve() != material_dir.absolute().resolve(strict=False):
-        raise OSError(f"{material_dir} does not resolve to itself")
     # ROOT CAUSE: the NAME encoded CONTENT identity while the LIFETIME is governed by RUN
     # identity. Two concurrent panels asking the same question hashed to the same filename;
     # only the creator recorded ownership, but the creator still deleted it on finishing --
@@ -1930,6 +1974,15 @@ def collect_diff(repo):
         if r.returncode != 0:
             die(f"git {' '.join(a)} failed: {r.stderr.strip()[:300]}", 7)
         return r.stdout
+    # Outside a repository `git diff` prints 300 characters of its own usage text, which
+    # is what the user used to see. Say the one thing that applies.
+    try:
+        _inside = subprocess.run(["git", "-C", repo, "rev-parse", "--is-inside-work-tree"],
+                                 capture_output=True).returncode == 0
+    except FileNotFoundError:
+        die("--diff needs git on PATH", 7)
+    if not _inside:
+        die(f"--diff needs a git repository, and {repo} is not one", 7)
     # `git diff HEAD` fails outright before the first commit, so --diff could not
     # review a brand-new repository at all. Staged-vs-empty-tree works either way.
     has_head = subprocess.run(["git", "-C", repo, "rev-parse", "--verify", "HEAD"],
@@ -1938,6 +1991,13 @@ def collect_diff(repo):
     untracked = git("ls-files", "--others", "--exclude-standard")
     if not diff.strip() and not untracked.strip():
         die("--diff found no uncommitted changes; nothing to review", 8)
+    if len(diff) > DIFF_MAX_CHARS:
+        # CLI transports spill an oversized prompt to a file; the HTTP ones (ollama, the
+        # vision judges) would send the whole thing. A multi-megabyte lockfile diff is not
+        # a review anyone asked for.
+        die(f"--diff is {len(diff) // 1024} KB, more than the {DIFF_MAX_CHARS // 1024} KB a "
+            f"panel will read; narrow it (review a branch, or `git add -p` and review the "
+            f"index) or write the material yourself and pass --file", 7)
     out = ["Here are the uncommitted changes in this repository. Review them.", "",
            "```diff", diff.rstrip(), "```"]
     files = [f for f in untracked.splitlines() if f.strip()]
@@ -2493,7 +2553,9 @@ def run_check(judges, repo, timeout, agent):
 
 
 def main():
-    ap = argparse.ArgumentParser()
+    ap = argparse.ArgumentParser(
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog=EXIT_CODES_HELP)
     ap.add_argument("--version", action="version", version=f"%(prog)s {__version__}")
     ap.add_argument("prompt", nargs="?")
     ap.add_argument("-f", "--file")
@@ -2567,6 +2629,10 @@ def main():
 
     global STATE, STREAM_ECHO
     STREAM_ECHO = a.stream
+    if fcntl is None:
+        # After parse_args on purpose: --help and --version still work anywhere.
+        die("llm-panel needs a POSIX system (file locks, process groups); on Windows, run it "
+            "under WSL")
     repo = os.path.abspath(a.cwd)
     if not os.path.isdir(repo):
         die(f"--cwd is not a directory: {repo}")
@@ -2590,6 +2656,10 @@ def main():
                              f"tree; using {STATE}\n")
             # A per-run temp dir gets its own credential copies; do not leave them behind.
             atexit.register(lambda s=STATE: shutil.rmtree(s / "state", ignore_errors=True))
+            if cache_is_inside(STATE, repo):
+                # `--cwd /` puts even the temp dir inside the reviewed tree.
+                die(f"no cache location outside the reviewed tree {repo}; set XDG_CACHE_HOME "
+                    f"to a directory that is not under it")
         sys.stderr.write(f"llm-panel: XDG_CACHE_HOME points inside the reviewed repo, "
                          f"where judges could read earlier answers; using {STATE}\n")
     # Panel output lives OUTSIDE the reviewed repo. It used to be written to
@@ -2638,6 +2708,8 @@ def main():
         print("configured, not what answers today.  Run --check to actually ping them.")
         print("codex/opencode judges can READ the repo; ollama judges answer from the")
         print("prompt alone (no tool loop), so they cannot verify a claim against code.")
+        for _var, _src in sorted(_LOADED_FROM.items()):
+            print(f"{_var} was read from {_src} (not in the environment)")
         # Same root cause once more: FROM_CONFIG records only judges the config ADDED, so
         # a delete-only config reported "No roster config" while plainly having been
         # applied -- the listing described the input it did not receive rather than the
@@ -2770,7 +2842,11 @@ def main():
 
     if a.check:
         if a.judges is None:
-            judges = list(ROSTER)
+            # The same name rule as --judges: a config could define `../x`, and a judge
+            # name is a path component (see _NAME_OK).
+            judges = [j for j in ROSTER if _NAME_OK.match(j)]
+            for _bad in (j for j in ROSTER if not _NAME_OK.match(j)):
+                sys.stderr.write(f"llm-panel: skipping judge {_bad!r}: illegal name\n")
         # 180s is plenty when the box is idle, but this laptop shares cores with
         # other sessions' jobs; honour an explicit --timeout so contention does not
         # get misread as 13 dead judges.
@@ -2794,11 +2870,16 @@ def main():
     if a.file:
         if a.prompt:
             die("give a prompt as an argument or via --file, not both")
-        a.prompt = sys.stdin.read() if a.file == "-" else pathlib.Path(a.file).read_text()
+        try:
+            a.prompt = (sys.stdin.read() if a.file == "-"
+                        else pathlib.Path(a.file).read_text(encoding="utf-8", errors="replace"))
+        except OSError as e:
+            die(f"--file {a.file}: {e.strerror or e}", 2)
     elif not a.prompt and not sys.stdin.isatty():
         a.prompt = sys.stdin.read()
     if not a.prompt or not a.prompt.strip():
         die("no prompt given (--list shows judges, --check pings them, --show reprints)")
+    a.prompt = clean_prompt(a.prompt)
     if a.diff:
         a.prompt = a.prompt.rstrip() + "\n\n" + collect_diff(repo)
 
@@ -2863,8 +2944,13 @@ def main():
     # pid in the name: two panels started in the same SECOND used to share a
     # rundir and overwrite each other's per-judge files and panel.md.
     rundir = outdir / f"{stamp}-{os.getpid()}"
-    rundir.mkdir(parents=True, exist_ok=True)
-    (rundir / "prompt.md").write_text(a.prompt)
+    try:
+        rundir.mkdir(parents=True, exist_ok=True)
+        os.chmod(rundir, 0o700)           # the prompt and every review live here
+        (rundir / "prompt.md").write_text(a.prompt)
+    except OSError as e:
+        die(f"cannot write the run directory {rundir}: {e.strerror or e}. Point "
+            f"XDG_CACHE_HOME at somewhere writable.")
     # Whatever ends this process -- sys.exit, an exception, Ctrl-C -- the reviewed tree is
     # left as it was found and no judge keeps running on quota after we are gone.
     atexit.register(_cleanup_material, repo)

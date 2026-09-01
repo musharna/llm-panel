@@ -2056,7 +2056,8 @@ def main():
     ap.add_argument("--list", action="store_true", help="list recent runs and exit")
     ap.add_argument("--repo", help="only consider runs whose repo key contains this")
     ap.add_argument("--out", help="output html path")
-    ap.add_argument("--open", action="store_true", help="open it in a Windows browser (WSL)")
+    ap.add_argument("--open", action="store_true",
+                    help="open it in your browser (xdg-open / open; the Windows browser under WSL)")
     ap.add_argument("--webfonts", action="store_true",
                     help="load Newsreader/Public Sans/IBM Plex Mono from Google Fonts. Off "
                          "by default: a report about private code should not announce "
@@ -2067,6 +2068,7 @@ def main():
     if a.list:
         # Counts only -- do NOT call load_run(), which reads every judge's review, rebuttal
         # and prompt file just to print a number. That is an I/O storm on a large cache.
+        shown = 0
         for d in find_runs(20, a.repo):
             rj = d / "run.json"
             if rj.is_file():
@@ -2083,6 +2085,11 @@ def main():
                 when = first or d.name[:15]
                 n = len(jl.group(1).split(",")) if jl else "?"
             print(f"{when:<28} {n} judges  {d.parent.name:<26} {d}")
+            shown += 1
+        if not shown:
+            # Silence with exit 0 read as "nothing to say"; every sibling command names
+            # where it looked.
+            sys.exit(f"no panel runs found under {RUNS}")
         return 0
 
     d = pathlib.Path(a.rundir).expanduser() if a.rundir else (find_runs(1, a.repo) or [None])[0]

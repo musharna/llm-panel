@@ -1613,6 +1613,95 @@ with section("22.7 the reviewed tree is cleaned on EVERY exit, and Ctrl-C keeps 
     check("run.json marks the run interrupted", _rj.get("interrupted"), True)
 
 
+# --- 23. the nits from the same audit ------------------------------------------
+# Small each, and every one a first-contact impression: a traceback where a sentence was
+# owed, git's usage text where "not a repository" was owed, a help page that never said
+# what exit 9 meant.
+def _run23(args, env, stdin=_sp.DEVNULL):
+    return _sp.run([sys.executable, str(SRC)] + args, capture_output=True, text=True,
+                   env=env, stdin=stdin, timeout=60)
+
+_nd = pathlib.Path(_tf2.mkdtemp())
+for _sub in ("cfg", "cache", "repo"):
+    (_nd / _sub).mkdir()
+_env23 = {"HOME": str(_nd), "XDG_CONFIG_HOME": str(_nd / "cfg"),
+          "XDG_CACHE_HOME": str(_nd / "cache"), "PATH": _os.environ.get("PATH", "/usr/bin:/bin")}
+
+with section("23.1 --diff outside a git repository says so, in one line"):
+    _r = _run23(["--cwd", str(_nd / "repo"), "--diff", "review this"], _env23)
+    check("exit 7", _r.returncode, 7)
+    check("the message names the cause, not git's usage text",
+          "not a git repository" in _r.stderr or "is not one" in _r.stderr, True)
+    check("and is one line, not a usage dump", "usage: git diff" in _r.stderr, False)
+
+with section("23.2 --file that cannot be read is exit 2, not a traceback"):
+    _r = _run23(["--cwd", str(_nd / "repo"), "--file", str(_nd / "nope.md")], _env23)
+    check("exit 2", _r.returncode, 2)
+    check("no traceback", "Traceback" in _r.stderr, False)
+    check("names the flag and the file", "--file" in _r.stderr and "nope.md" in _r.stderr, True)
+
+with section("23.3 an unwritable cache dir is a sentence, not a traceback"):
+    _blk = _nd / "blocked"
+    _blk.write_text("not a directory")
+    _env_blk = dict(_env23, XDG_CACHE_HOME=str(_blk), PATH="/usr/bin:/bin")
+    # codex is not on this PATH (one warning, not fatal) and is not an opencode judge, so
+    # the run reaches the run-directory write and fails THERE.
+    _r = _run23(["--cwd", str(_nd / "repo"), "--judges", "codex", "hello"], _env_blk)
+    check("exit 1", _r.returncode, 1)
+    check("no traceback", "Traceback" in _r.stderr, False)
+    check("names the run directory and the remedy",
+          "run directory" in _r.stderr and "XDG_CACHE_HOME" in _r.stderr, True)
+
+with section("23.4 undecodable argv bytes do not crash the prompt write"):
+    _p = lp.clean_prompt("ok \udcff x")
+    check("surrogates are replaced", "\udcff" in _p, False)
+    check("everything else survives", _p.startswith("ok ") and _p.endswith(" x"), True)
+    check("and the result is writable", bool(_p.encode("utf-8")), True)
+
+with section("23.5 judge text loses escape sequences, keeps newlines and tabs"):
+    _t = lp.result("x", "ok", "a\x1b[31mred\x1b[0m\nline\t2\x07\x1b]0;title\x07", 1.0)["text"]
+    check("ANSI colour and OSC sequences are gone", "\x1b" in _t, False)
+    check("C0 controls are gone", "\x07" in _t, False)
+    check("newline and tab stay", "\n" in _t and "\t" in _t, True)
+    check("the words are intact", _t.startswith("ared\nline\t2"), True)
+
+with section("23.6 limits.json survives concurrent writers"):
+    _real_state = lp.STATE
+    lp.STATE = pathlib.Path(_tf2.mkdtemp())
+    try:
+        import threading as _th
+        _ts = [_th.Thread(target=lp.note_limit, args=(f"j{i}", "m", None)) for i in range(12)]
+        for _t_ in _ts:
+            _t_.start()
+        for _t_ in _ts:
+            _t_.join()
+        _seen = set(_json.loads((lp.STATE / lp.LIMIT_STATE).read_text()))
+        check("every writer's entry is present", len(_seen), 12)
+        check("the write is locked", "fcntl.flock(fh, fcntl.LOCK_EX)" in _src22, True)
+    finally:
+        lp.STATE = _real_state
+
+with section("23.7 --help lists the exit codes"):
+    _r = _run23(["--help"], _env23)
+    check("exit 0", _r.returncode, 0)
+    check("an exit-codes section", "exit codes:" in _r.stdout, True)
+    check("including the ones a first run hits", all(f"\n  {c}" in _r.stdout for c in ("4", "7", "9", "130")), True)
+
+with section("23.8 the rest, by source"):
+    _s23 = SRC.read_text(encoding="utf-8")
+    check("--check applies the judge-name rule to roster names",
+          "judges = [j for j in ROSTER if _NAME_OK.match(j)]" in _s23, True)
+    check("the tautological resolve() guard is gone", "does not resolve to itself" in _s23, False)
+    check("the symlink guard that did the work remains", "is a symlink; refusing to spill" in _s23, True)
+    check("--list names where a key was read from", "_LOADED_FROM.items()" in _s23, True)
+    check("the run directory is owner-only", "os.chmod(rundir, 0o700)" in _s23, True)
+    check("the temp-state fallback is re-checked against the tree",
+          _s23.count("cache_is_inside(STATE, repo)") >= 3, True)
+    check("--diff has a size ceiling", "DIFF_MAX_CHARS" in _s23 and "len(diff) > DIFF_MAX_CHARS" in _s23, True)
+    check("Windows gets a sentence after --help/--version still work",
+          "fcntl = None" in _s23 and "if fcntl is None:" in _s23, True)
+
+
 print(f"\n{'FAILED' if FAILED else 'all controls green'}"
       f" ({len(FAILED)} failing)" if FAILED else "\nall controls green")
 for f in FAILED:
