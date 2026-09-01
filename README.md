@@ -151,6 +151,13 @@ Judges reading through `codex`/`opencode`/`claude` can **read your repo**. `olla
 answer from the prompt alone with no tool loop, so they cannot verify a claim against code.
 Treat their findings accordingly.
 
+The rebuttal round as rendered — every position each judge took on each finding, grouped
+by the finding under dispute, disagreements marked CONTESTED. This run: four free-tier
+judges asked to review llm-panel's own failure-classification code; one failed and is
+reported as `harness`, the other three upheld 7 findings, rejected 4, and missed 6:
+
+![rebuttal round: positions grouped by the finding being argued about](docs/rebuttal.png)
+
 ## What it actually catches
 
 `recall/panel-recall` is the part most tools like this don't have: a corpus of defects
