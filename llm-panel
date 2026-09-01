@@ -54,11 +54,13 @@ but it is not zero -- and if it ever bites, it is reported as `harness`, not as 
 judge refusing.
 """
 import argparse, concurrent.futures as cf, datetime, json, os, pathlib, re, shutil, subprocess, sys, time
+import atexit
 import base64
 import fcntl
 import hashlib
 import random
 import secrets
+import signal
 import threading
 import urllib.error, urllib.request
 
@@ -339,6 +341,197 @@ def stored_providers():
         return set(json.loads(HOST_AUTH.read_text()))
     except Exception:
         return set()
+
+
+# --- what a judge child may see, and how it dies -------------------------------------------
+# Post-release audit, 2026-09-01. Four findings share one shape: the boundary between this
+# process and a judge's process was drawn by default (inherit everything, kill one pid, clean
+# up on the happy path) rather than on purpose.
+
+def scrubbed_env(kind, base=None):
+    """The environment a judge child gets: everything, minus keys meant for OTHER transports.
+
+    The provider keys this tool loads for opencode (OPENROUTER_API_KEY, HF_TOKEN, ...) are
+    not codex's or claude's business, yet both children inherited the whole environment. A
+    prompt-injected "run `env` and quote it" then put the OpenRouter key into a transcript
+    sent to OpenAI and into panel.md -- `-s read-only` restricts writes, not reads or the
+    environment. opencode keeps them: they are how its judges authenticate.
+    """
+    env = dict(os.environ if base is None else base)
+    drop = set()
+    if kind != "opencode":
+        drop |= set(PROVIDER_ENV.values())
+    if kind == "claude":
+        drop.add("ANTHROPIC_API_KEY")      # removed so claude runs on the subscription
+    for k in drop:
+        env.pop(k, None)
+    return env
+
+
+_CHILDREN = set()          # live judge processes, each the leader of its own process group
+
+
+def _kill_group(p):
+    """SIGKILL the child's whole process group; fall back to the child alone."""
+    try:
+        os.killpg(os.getpgid(p.pid), signal.SIGKILL)
+    except (ProcessLookupError, PermissionError, OSError):
+        try:
+            p.kill()
+        except OSError:
+            pass
+
+
+def kill_children():
+    """Every live judge process group -- for the interrupt and exit paths."""
+    for p in list(_CHILDREN):
+        _kill_group(p)
+
+
+def run_judge(cmd, timeout, capture_output=False, **kw):
+    """subprocess.run for a judge: the child leads its own process group, and a timeout
+    kills the GROUP.
+
+    `subprocess.run(timeout=)` SIGKILLs the direct child only. `codex` on PATH is a Node
+    launcher that spawns the native binary and forwards SIGINT/SIGTERM/SIGHUP -- SIGKILL
+    cannot be forwarded -- so after the panel reported `harness: timed out after 900s` the
+    real judge kept running the turn on plan quota. Probed with a stand-in grandchild.
+    """
+    if capture_output:
+        kw["stdout"] = kw["stderr"] = subprocess.PIPE
+    p = subprocess.Popen(cmd, start_new_session=True, **kw)
+    _CHILDREN.add(p)
+    try:
+        out, err = p.communicate(timeout=timeout)
+    except subprocess.TimeoutExpired:
+        _kill_group(p)
+        out, err = p.communicate()
+        raise subprocess.TimeoutExpired(cmd, timeout, output=out, stderr=err)
+    finally:
+        _CHILDREN.discard(p)
+    return subprocess.CompletedProcess(cmd, p.returncode, out, err)
+
+
+def sync_host_auth(statedir):
+    """Mirror the host opencode credential into a judge's isolated data dir -- and its ABSENCE.
+
+    The copy is re-taken when the host file is newer, so a rotated token propagates. It was
+    never removed when the host file went away: after `opencode auth logout` every judge kept
+    authenticating with a copy of the credential the user had just revoked, one per judge
+    name ever used. Returns the destination path.
+    """
+    dest = statedir / "opencode" / "auth.json"
+    if HOST_AUTH.is_file():
+        try:
+            if not dest.is_file() or dest.stat().st_mtime < HOST_AUTH.stat().st_mtime:
+                dest.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(HOST_AUTH, dest)
+                os.chmod(dest, 0o600)
+        except OSError as e:
+            # Swallowed, this reverses blame: the isolated copy keeps a STALE key, the
+            # provider answers 401, and the run reports the provider rejecting us when the
+            # real cause was our own failure to propagate the credential. Say it at the
+            # moment it happens -- by the time the 401 arrives the evidence is gone.
+            sys.stderr.write(f"llm-panel: WARNING could not copy host credentials to "
+                             f"{dest}: {e}. The judge will use whatever key is already "
+                             f"there, which may be stale -- an auth failure after this "
+                             f"is OURS, not the provider's.\n")
+    elif dest.is_file():
+        try:
+            dest.unlink()
+        except OSError:
+            pass
+    return dest
+
+
+def _jsonc_loads(raw):
+    """JSONC: inline `//`, `/* */` and trailing commas. String-aware, so a `//` inside a
+    value survives. The first version stripped only whole-line `//` and json.loads raised,
+    the guard returned None, and main() exited 9 calling a valid read-only agent 'not
+    defined'; the second enumerated `//` and trailing commas and missed `/* */`."""
+    raw = re.sub(r'("(?:[^"\\]|\\.)*")|//[^\n]*|/\*.*?\*/',
+                 lambda m: m.group(1) or "", raw, flags=re.S)
+    raw = re.sub(r",(\s*[}\]])", r"\1", raw)
+    return json.loads(raw)
+
+
+def repo_opencode_hazards(repo):
+    """What the reviewed tree could make opencode EXECUTE or redefine. Empty means nothing.
+
+    opencode loads project config from the directory it runs in -- plugins under
+    `.opencode/` run at startup, `mcp` servers declared in opencode.json[c] are spawned, a
+    `.opencode/agents/<name>.md` redefines an agent -- and agent_can_write sees none of it,
+    because it reads only opencode.json[c] -> agent. A repository could ship any of them,
+    and reviewing it would run that code as the user, with the user's keys in the
+    environment. The whole `.opencode/` directory counts, not a list of subdirectory names:
+    the set of things opencode will load from there is theirs to grow.
+    """
+    root = pathlib.Path(repo)
+    found = []
+    d = root / ".opencode"
+    if d.is_dir():
+        entries = sorted(e.name for e in d.iterdir())
+        if entries:
+            found.append(f"{d}/ ({', '.join(entries[:6])}"
+                         f"{', ...' if len(entries) > 6 else ''}) -- opencode loads "
+                         f"plugins, tools and agent definitions from here")
+    for fn in ("opencode.jsonc", "opencode.json"):
+        p = root / fn
+        if not p.is_file():
+            continue
+        try:
+            cfg = _jsonc_loads(p.read_text())
+        except (OSError, ValueError):
+            found.append(f"{p} (could not be parsed, so it cannot be vouched for)")
+            continue
+        extra = sorted(k for k in (cfg if isinstance(cfg, dict) else {})
+                       if k not in ("$schema", "agent"))
+        if extra:
+            found.append(f"{p} declares {', '.join(extra)} -- anything beyond `agent` "
+                         f"can spawn servers or reroute the judge's provider")
+    return found
+
+
+_GENERIC_TOKENS = {"local", "flash", "ultra", "light", "small", "large", "turbo", "free",
+                   "think", "thinking", "coder", "chat", "vision", "mini", "micro"}
+
+
+def self_identification(judge, text):
+    """Tokens of a judge's name that its own review contains as WORDS. Advisory.
+
+    `big-pickle` used to be split into ['big', 'pickle'] and substring-matched, so 'ambiguous'
+    and 'bigger' made most --rebut runs warn that the judge had named itself. Whole words
+    only, at least five letters, and not a word any model description uses.
+    """
+    low = (text or "").lower()
+    name = judge.lower()
+    if name in low:
+        return [name]
+    return [w for w in re.split(r"[-/~]", name)
+            if len(w) >= 5 and w not in _GENERIC_TOKENS
+            and re.search(r"\b" + re.escape(w) + r"\b", low)]
+
+
+def _cleanup_material(repo):
+    """Remove this run's spilled prompt material from the reviewed tree. Idempotent.
+
+    Ran only on the happy path: a Ctrl-C, or any exception after round one, left
+    `<repo>/.llm-panel-material/material-*.md` -- the whole prompt, --diff untracked-file
+    contents included -- inside the tree, untracked, where the NEXT --diff panel embedded
+    it and sent it to every judge. Now registered with atexit as well.
+    """
+    mat = pathlib.Path(repo) / MATERIAL_DIRNAME
+    if not mat.is_dir():
+        return
+    for f in sorted(_SPILLED):
+        try:
+            f.unlink()
+        except OSError:
+            pass                          # already gone, or never ours to remove
+    try:
+        mat.rmdir()                       # only when empty -- a concurrent run may still
+    except OSError:                       # be using its own file in here
+        pass
 # A STARTING POINT, not a recommendation backed by evidence. `deepseek` was dropped on
 # 2026-08-25 because the model behind it is dead (reproducible `UnknownError` on three
 # separate probes) -- a default judge that never answers silently runs every panel a hand
@@ -1007,8 +1200,8 @@ def _ask(name, prompt, repo, timeout, agent="panelist", session_file=None,
                 cmd = ["codex", "exec", "resume"] + base + ["-m", model, sid, prompt]
             else:
                 cmd = ["codex", "exec"] + base + ["-C", repo, "-s", "read-only", "-m", model, prompt]
-            r = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout,
-                               stdin=subprocess.DEVNULL)
+            r = run_judge(cmd, timeout, capture_output=True, text=True,
+                          stdin=subprocess.DEVNULL, env=scrubbed_env("codex"))
             if r.returncode != 0:
                 # stdout, not stderr: codex puts its real error in the --json stream.
                 said = codex_json_error(r.stdout)
@@ -1138,11 +1331,12 @@ def _ask(name, prompt, repo, timeout, agent="panelist", session_file=None,
             return result(name, "ok", text, time.time() - t0, meta)
 
         if kind == "claude":
-            # ANTHROPIC_API_KEY is REMOVED so this runs on the subscription.
+            # ANTHROPIC_API_KEY is REMOVED so this runs on the subscription, and the other
+            # transports' provider keys with it (see scrubbed_env).
             # --disallowedTools is what actually sandboxes it: --allowedTools is an
             # auto-approve allowlist, not a restriction, and a judge given
             # "Read,Grep,Glob" that way still created a file when asked (verified).
-            env = {k: v for k, v in os.environ.items() if k != "ANTHROPIC_API_KEY"}
+            env = scrubbed_env("claude")
             # stream-json + --include-partial-messages is what makes a Claude judge
             # watchable, and it costs nothing to use: the run STILL ends with the same
             # `result` event carrying total_cost_usd, session_id, usage and stop_reason.
@@ -1165,8 +1359,13 @@ def _ask(name, prompt, repo, timeout, agent="panelist", session_file=None,
             sid = read_session(session_file)
             if sid:
                 cmd += ["--resume", sid]
+            # Own process group, like every other judge: the deadline below kills the
+            # GROUP. Killing the child alone left any grandchild holding our stdout pipe,
+            # and the read loop runs to pipe EOF -- so --timeout was not a deadline.
             p = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-                                 text=True, cwd=repo, env=env, stdin=subprocess.DEVNULL)
+                                 text=True, cwd=repo, env=env, stdin=subprocess.DEVNULL,
+                                 start_new_session=True)
+            _CHILDREN.add(p)
             # stderr is drained on its own thread. Reading it only after stdout is
             # exhausted would deadlock the moment claude writes more than a pipe
             # buffer's worth of warnings while we are still consuming deltas.
@@ -1179,7 +1378,7 @@ def _ask(name, prompt, repo, timeout, agent="panelist", session_file=None,
             # handler below already knows how to report, with the partial answer
             # attached, so a slow judge still tells you what it managed to say.
             d, deltas = {}, []
-            killer = threading.Timer(timeout, p.kill)
+            killer = threading.Timer(timeout, _kill_group, args=(p,))
             killer.start()
             try:
                 for line in p.stdout:
@@ -1202,6 +1401,7 @@ def _ask(name, prompt, repo, timeout, agent="panelist", session_file=None,
                 p.wait()
             finally:
                 killer.cancel()
+                _CHILDREN.discard(p)
                 if STREAM_ECHO:
                     ECHO.close(name)
             if not d:
@@ -1342,24 +1542,8 @@ def _ask(name, prompt, repo, timeout, agent="panelist", session_file=None,
         statedir = STATE / "state" / name
         statedir.mkdir(parents=True, exist_ok=True)
         # Carry the host credentials into the isolated dir, or `opencode auth login` keys
-        # would be invisible to every judge. Re-copied when the source changes, so a
-        # refreshed/rotated token propagates on the next run.
-        if HOST_AUTH.is_file():
-            dest = statedir / "opencode" / "auth.json"
-            try:
-                if not dest.is_file() or dest.stat().st_mtime < HOST_AUTH.stat().st_mtime:
-                    dest.parent.mkdir(parents=True, exist_ok=True)
-                    shutil.copy2(HOST_AUTH, dest)
-            except OSError as e:
-                # Swallowed, this reverses blame: the isolated copy keeps a STALE key, the
-                # provider answers 401, and the run reports the provider rejecting us when
-                # the real cause was our own failure to propagate the credential. Say it at
-                # the moment it happens -- by the time the 401 arrives the evidence is gone.
-                # Raised by codex and or-deepseek.
-                sys.stderr.write(f"llm-panel: WARNING could not copy host credentials to "
-                                 f"{dest}: {e}. The judge will use whatever key is already "
-                                 f"there, which may be stale -- an auth failure after this "
-                                 f"is OURS, not the provider's.\n")
+        # would be invisible to every judge -- and carry their absence too (sync_host_auth).
+        sync_host_auth(statedir)
         env["XDG_DATA_HOME"] = str(statedir)
         # --format json: parse events structurally. The old parser stripped ANSI and
         # dropped lines starting with ">"/"@", then flagged failure on the SUBSTRING
@@ -1402,8 +1586,8 @@ def _ask(name, prompt, repo, timeout, agent="panelist", session_file=None,
         # is answerable: how long until the child was spawned, and how long it then ran.
         _spawn = time.time()
         try:
-            r = subprocess.run(cmd + [prompt], capture_output=True, text=True,
-                               timeout=timeout, cwd=repo, env=env, stdin=subprocess.DEVNULL)
+            r = run_judge(cmd + [prompt], timeout, capture_output=True, text=True,
+                          cwd=repo, env=env, stdin=subprocess.DEVNULL)
         except subprocess.TimeoutExpired:
             _t = time.time()
             sys.stderr.write(f"  · {name}: timed out; {_t - _spawn:.1f}s in the subprocess, "
@@ -1633,9 +1817,7 @@ def run_rebuttals(judges, results, prompt, repo, timeout, agent, rundir, log, li
     # anonymisation is already defeated for that judge no matter how the letters are drawn.
     # It is a name list, so it will miss cases -- which is why it WARNS instead of gating.
     for _j in answered:
-        _txt = (results[_j].get("text") or "").lower()
-        _self = [w for w in re.split(r"[-/]", _j.lower()) if len(w) > 2]
-        _hit = [w for w in _self if w in _txt]
+        _hit = self_identification(_j, results[_j].get("text") or "")
         if _hit:
             log(f"llm-panel: WARNING {_j}'s review contains {_hit} — it may have identified "
                 f"itself to the other judges; round-2 anonymity is best-effort.\n")
@@ -1929,6 +2111,32 @@ def cost_note(meta):
     return ", ".join(bits)
 
 
+def _write_interrupted(rundir, judges, results, a, stamp, repo):
+    """A Ctrl-C panel still leaves a readable run: what landed, and who never answered."""
+    for j in judges:
+        if j not in results:
+            results[j] = result(j, "harness",
+                                "interrupted (Ctrl-C) before this judge answered", 0.0)
+    lines = [f"# Panel — {now()}", "",
+             "**INTERRUPTED** — round one was cut short. Judges marked `harness` below "
+             "never answered; the panel is not a panel.", "",
+             f"Judges: {', '.join(judges)}", ""]
+    lines += summary_table(judges, results) + ["", "## Question", "", a.prompt, ""]
+    for j in judges:
+        r = results[j]
+        if r["status"] == "ok":
+            lines += [f"\n---\n\n## {j}  (`{ROSTER[j][1]}`) — {r['secs']}s", "", r["text"], ""]
+    (rundir / "panel.md").write_text("\n".join(lines))
+    (rundir / "run.json").write_text(json.dumps({
+        "stamp": stamp, "when": now(), "repo": repo, "thread": a.thread,
+        "effort": a.effort, "rebut": bool(a.rebut), "synthesize": a.synthesize,
+        "images": [str(pathlib.Path(i).resolve()) for i in (a.image or [])],
+        "letters": {}, "prompt": a.prompt, "interrupted": True,
+        "judges": [_judge_record(j, results[j], rundir) for j in judges],
+        "phases": {"rebuttal": None, "synthesis": None},
+    }, indent=1))
+
+
 def summary_table(judges, results):
     """A scoreboard above the reviews: who answered, how long, what it cost.
 
@@ -2206,19 +2414,7 @@ def agent_can_write(agent, repo=None):
             if not path.is_file():
                 continue
             try:
-                # JSONC allows INLINE comments and trailing commas. Stripping only
-                # whole-line `//` left both, json.loads raised, the guard returned None,
-                # and main() exited 9 telling the user their perfectly good read-only
-                # agent was "not verified read-only". Caught by codex 2026-08-22.
-                raw = path.read_text()
-                # `/* ... */` too. The previous fix enumerated `//` and trailing commas and
-                # missed the third JSONC construct, so a valid config still returned None and
-                # main() exited 9 claiming a defined, read-only agent was "not defined".
-                # A LIST OF NAMES AGAIN. String-aware so a `//` or `/*` inside a value survives.
-                raw = re.sub(r'("(?:[^"\\]|\\.)*")|//[^\n]*|/\*.*?\*/',
-                             lambda m: m.group(1) or "", raw, flags=re.S)
-                raw = re.sub(r",(\s*[}\]])", r"\1", raw)
-                cfg = json.loads(raw)
+                cfg = _jsonc_loads(path.read_text())    # comments and trailing commas, see there
             except (OSError, ValueError):
                 return None
             v = _agent_writable_from(cfg, agent)
@@ -2392,6 +2588,8 @@ def main():
             STATE = pathlib.Path(_tf.mkdtemp(prefix="llm-panel-"))
             sys.stderr.write(f"llm-panel: the usual fallback is also inside the reviewed "
                              f"tree; using {STATE}\n")
+            # A per-run temp dir gets its own credential copies; do not leave them behind.
+            atexit.register(lambda s=STATE: shutil.rmtree(s / "state", ignore_errors=True))
         sys.stderr.write(f"llm-panel: XDG_CACHE_HOME points inside the reviewed repo, "
                          f"where judges could read earlier answers; using {STATE}\n")
     # Panel output lives OUTSIDE the reviewed repo. It used to be written to
@@ -2570,6 +2768,40 @@ def main():
             f"tree the judges can read, so they may find earlier judges' answers there. "
             f"Delete it to keep this panel independent.\n")
 
+    if a.check:
+        if a.judges is None:
+            judges = list(ROSTER)
+        # 180s is plenty when the box is idle, but this laptop shares cores with
+        # other sessions' jobs; honour an explicit --timeout so contention does not
+        # get misread as 13 dead judges.
+        cap = a.timeout if explicit_timeout else 180
+        sys.exit(run_check(judges, repo, cap, a.agent))
+
+    # The question comes BEFORE the transport warnings and the agent guard below: with no
+    # prompt at all, a fresh install used to print three "not on PATH" lines and exit 9
+    # about opencode agents, and "no prompt given" -- the only message that applied --
+    # never appeared. Validate what the user typed before what the machine has.
+    # A BARE `-` means stdin, the same as `-f -`. It is the near-universal CLI convention,
+    # and both README.md and the /panel skill document `llm-panel - <<'ASK' ... ASK` -- but
+    # only `-f -` was implemented, so the bare form set prompt="-", which is non-empty, and
+    # the branch below never ran. The heredoc was discarded and the literal dash was sent
+    # to the judges as the question. Found by dogfooding: a 6-judge panel with rebuttals
+    # ran to completion on a one-character prompt. Every judge refused to review and named
+    # the cause, which is the right behaviour and still a wasted run -- documenting a form
+    # the code does not implement is a defect in whichever half you choose to call wrong.
+    if a.prompt == "-":
+        a.prompt = None
+    if a.file:
+        if a.prompt:
+            die("give a prompt as an argument or via --file, not both")
+        a.prompt = sys.stdin.read() if a.file == "-" else pathlib.Path(a.file).read_text()
+    elif not a.prompt and not sys.stdin.isatty():
+        a.prompt = sys.stdin.read()
+    if not a.prompt or not a.prompt.strip():
+        die("no prompt given (--list shows judges, --check pings them, --show reprints)")
+    if a.diff:
+        a.prompt = a.prompt.rstrip() + "\n\n" + collect_diff(repo)
+
     # A missing binary is ONE judge's problem. Dying here meant an absent opencode
     # cancelled the whole panel before Codex was ever asked -- and ollama judges
     # were refused for want of a CLI this program no longer uses (it speaks HTTP).
@@ -2595,6 +2827,25 @@ def main():
                 f"ships with llm-panel as opencode.jsonc "
                 f"(https://github.com/musharna/llm-panel/blob/main/opencode.jsonc): merge its "
                 f"agent.panelist block into ~/.config/opencode/opencode.jsonc.", 9)
+        # The agent may be read-only and the REPOSITORY still gets to run code: opencode
+        # loads plugins, tools and agent definitions from the tree it is pointed at.
+        hazards = repo_opencode_hazards(repo)
+        if hazards and not a.unsafe_agent:
+            die("the repository under review carries opencode configuration that the judges "
+                "would load and run as you, with your keys in their environment:\n  - "
+                + "\n  - ".join(hazards)
+                + "\nReviewing a repository means trusting its .opencode/ and opencode.json[c]. "
+                  "Remove or inspect them, or pass --unsafe-agent if you really mean it.", 9)
+    if any(ROSTER[j][0] == "claude" for j in judges):
+        # Not verified whether `claude -p` honours a project's hooks without a trust
+        # prompt; say what is there rather than guess either way.
+        _cl = [p for p in (pathlib.Path(repo) / ".claude").glob("settings*.json")
+               if p.is_file() and '"hooks"' in p.read_text(errors="replace")]
+        _cl += [p for p in [pathlib.Path(repo) / ".mcp.json"] if p.is_file()]
+        if _cl:
+            sys.stderr.write("llm-panel: NOTE the repository declares claude hooks/MCP servers "
+                             f"({', '.join(str(p) for p in _cl)}); a claude judge may load "
+                             "them. Inspect before trusting a tree you did not write.\n")
 
     # Snapshot the tree BEFORE any judge runs. The config guard above is advisory -- it
     # cannot see `OPENCODE_CONFIG_CONTENT`, tool defaults for names it does not enumerate,
@@ -2606,37 +2857,7 @@ def main():
     # A predicate that cannot tell two states apart, in the code written to catch predicates
     # that cannot tell two states apart. Every unit test of fingerprint_delta passed; only
     # running a real panel with a file planted mid-run exposed it.
-    _fp_before = None if a.check else repo_fingerprint(repo)
-
-    if a.check:
-        if a.judges is None:
-            judges = list(ROSTER)
-        # 180s is plenty when the box is idle, but this laptop shares cores with
-        # other sessions' jobs; honour an explicit --timeout so contention does not
-        # get misread as 13 dead judges.
-        cap = a.timeout if explicit_timeout else 180
-        sys.exit(run_check(judges, repo, cap, a.agent))
-
-    # A BARE `-` means stdin, the same as `-f -`. It is the near-universal CLI convention,
-    # and both README.md and the /panel skill document `llm-panel - <<'ASK' ... ASK` -- but
-    # only `-f -` was implemented, so the bare form set prompt="-", which is non-empty, and
-    # the branch below never ran. The heredoc was discarded and the literal dash was sent
-    # to the judges as the question. Found by dogfooding: a 6-judge panel with rebuttals
-    # ran to completion on a one-character prompt. Every judge refused to review and named
-    # the cause, which is the right behaviour and still a wasted run -- documenting a form
-    # the code does not implement is a defect in whichever half you choose to call wrong.
-    if a.prompt == "-":
-        a.prompt = None
-    if a.file:
-        if a.prompt:
-            die("give a prompt as an argument or via --file, not both")
-        a.prompt = sys.stdin.read() if a.file == "-" else pathlib.Path(a.file).read_text()
-    elif not a.prompt and not sys.stdin.isatty():
-        a.prompt = sys.stdin.read()
-    if not a.prompt or not a.prompt.strip():
-        die("no prompt given (--list shows judges, --check pings them, --show reprints)")
-    if a.diff:
-        a.prompt = a.prompt.rstrip() + "\n\n" + collect_diff(repo)
+    _fp_before = repo_fingerprint(repo)
 
     stamp = datetime.datetime.now().astimezone().strftime("%Y%m%d-%H%M%S")
     # pid in the name: two panels started in the same SECOND used to share a
@@ -2644,6 +2865,10 @@ def main():
     rundir = outdir / f"{stamp}-{os.getpid()}"
     rundir.mkdir(parents=True, exist_ok=True)
     (rundir / "prompt.md").write_text(a.prompt)
+    # Whatever ends this process -- sys.exit, an exception, Ctrl-C -- the reviewed tree is
+    # left as it was found and no judge keeps running on quota after we are gone.
+    atexit.register(_cleanup_material, repo)
+    atexit.register(kill_children)
 
     sessions = {}
     if a.thread:
@@ -2698,20 +2923,24 @@ def main():
                                 if _rec.get("reset_hint") else "")
                              + " — trying anyway\n")
     results = {}
-    with cf.ThreadPoolExecutor(max_workers=len(judges)) as ex:
-        peers = {}
-        for j in judges:
-            peers[provider_of(j)] = peers.get(provider_of(j), 0) + 1
-        futs = {ex.submit(ask, j, a.prompt, repo, a.timeout, a.agent,
-                          sessions.get(j), a.keep_alive,
-                          peers[provider_of(j)],
-                          rundir / f"{j}.live.md", a.effort, a.image, a.vision_check,
-                          pathlib.Path(repo) / MATERIAL_DIRNAME, True): j for j in judges}
-        # Heartbeat. ollama and claude judges stream token-by-token; opencode emits
-        # its whole answer as ONE json text event and codex only emits item.completed,
-        # so for THOSE the honest live signal is "still working, N seconds in" rather
-        # than a token feed that does not exist. Do not promise streaming for all.
-        pending, t_start = set(futs), time.time()
+    # Not a `with` block: its __exit__ waits for every running judge, so a Ctrl-C during
+    # the heartbeat blocked for the full --timeout and then exited with NOTHING written --
+    # answers that had already landed were never emitted, no panel.md, no run.json.
+    ex = cf.ThreadPoolExecutor(max_workers=len(judges))
+    peers = {}
+    for j in judges:
+        peers[provider_of(j)] = peers.get(provider_of(j), 0) + 1
+    futs = {ex.submit(ask, j, a.prompt, repo, a.timeout, a.agent,
+                      sessions.get(j), a.keep_alive,
+                      peers[provider_of(j)],
+                      rundir / f"{j}.live.md", a.effort, a.image, a.vision_check,
+                      pathlib.Path(repo) / MATERIAL_DIRNAME, True): j for j in judges}
+    # Heartbeat. ollama and claude judges stream token-by-token; opencode emits
+    # its whole answer as ONE json text event and codex only emits item.completed,
+    # so for THOSE the honest live signal is "still working, N seconds in" rather
+    # than a token feed that does not exist. Do not promise streaming for all.
+    pending, t_start = set(futs), time.time()
+    try:
         while pending:
             done, pending = cf.wait(pending, timeout=20)
             for fut in done:
@@ -2726,6 +2955,22 @@ def main():
                 sys.stderr.write(f"  … {int(time.time() - t_start)}s — still working: "
                                  f"{', '.join(waiting)}\n")
                 sys.stderr.flush()
+    except KeyboardInterrupt:
+        kill_children()
+        ex.shutdown(wait=False, cancel_futures=True)
+        for fut, j in futs.items():
+            if fut.done() and j not in results:
+                try:
+                    r = fut.result()
+                    results[j] = r
+                    emit(rundir, j, a.prompt, r, a.live)
+                except Exception:              # noqa: BLE001 -- keeping what landed
+                    pass
+        _write_interrupted(rundir, judges, results, a, stamp, repo)
+        sys.stderr.write(f"\nllm-panel: interrupted -- {sum(1 for r in results.values() if r['status'] == 'ok')} "
+                         f"of {len(judges)} answers kept in {rundir}\n")
+        sys.exit(130)
+    ex.shutdown(wait=True)
 
     hdr = f"# Panel — {now()}"
     if a.thread:
@@ -2913,18 +3158,8 @@ def main():
         },
     }, indent=1))
     # The material lived in the reviewed tree because that is the only place a judge's read
-    # tool reaches. It does not stay there.
-    _mat = pathlib.Path(repo) / MATERIAL_DIRNAME
-    if _mat.is_dir():
-        for _f in sorted(_SPILLED):
-            try:
-                _f.unlink()
-            except OSError:
-                pass                      # already gone, or never ours to remove
-        try:
-            _mat.rmdir()                  # only when empty -- a concurrent run may still
-        except OSError:                   # be using its own file in here
-            pass
+    # tool reaches. It does not stay there -- and the atexit hook covers every other exit.
+    _cleanup_material(repo)
 
     # DID a judge touch the tree? Reported after the panel so the reviews are not lost, and
     # loudly, because silence was the failure mode every previous version had.
