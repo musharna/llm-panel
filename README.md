@@ -25,15 +25,15 @@ panel-triage --bad           # which runs went wrong, across every run root
 
 A real run, with the waiting compressed: three judges asked in parallel (two free-tier,
 one on a ChatGPT plan) landing as they finish, the scoreboard from `panel.md`, and
-`panel-report` rendering it ([recording](docs/demo.cast)):
+`panel-report` rendering it ([recording](https://github.com/musharna/llm-panel/blob/main/docs/demo.cast)):
 
-![terminal: llm-panel asks three judges in parallel, reports each as it lands, then head -n 12 panel.md shows the scoreboard and panel-report writes the HTML page](docs/demo.gif)
+![terminal: llm-panel asks three judges in parallel, reports each as it lands, then head -n 12 panel.md shows the scoreboard and panel-report writes the HTML page](https://raw.githubusercontent.com/musharna/llm-panel/main/docs/demo.gif)
 
 The rendered report — the scoreboard counts spend and names who answered; the
 citation-overlap tables show where the panel's attention landed (three judges reviewing a
 [cline](https://github.com/cline/cline) PR, converging on one line of `TerminalProcess.ts`):
 
-![panel report: scoreboard, bench, and citation-overlap tables](docs/report.png)
+![panel report: scoreboard, bench, and citation-overlap tables](https://raw.githubusercontent.com/musharna/llm-panel/main/docs/report.png)
 
 **Contents:** [What's here](#whats-here) · [Install](#install) ·
 [Configure your roster](#configure-your-roster) · [Using it](#using-it) ·
@@ -177,7 +177,7 @@ by the finding under dispute, disagreements marked CONTESTED. This run: four fre
 judges asked to review llm-panel's own failure-classification code; one failed and is
 reported as `harness`, the other three upheld 7 findings, rejected 4, and missed 6:
 
-![rebuttal round: positions grouped by the finding being argued about](docs/rebuttal.png)
+![rebuttal round: positions grouped by the finding being argued about](https://raw.githubusercontent.com/musharna/llm-panel/main/docs/rebuttal.png)
 
 ## What it actually catches
 
@@ -251,8 +251,8 @@ On 18 PRs at full roster (extractor-3 re-measurements, 2026-08-28):
 | `volume`           | 25.2%           | 7.9%      | 12.6                            |
 
 <picture>
-  <source media="(prefers-color-scheme: dark)" srcset="docs/bench-dark.png">
-  <img alt="recall against precision for the three prompt styles; error bars are the ±2 pp re-run noise floor" src="docs/bench-light.png" width="660">
+  <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/musharna/llm-panel/main/docs/bench-dark.png">
+  <img alt="recall against precision for the three prompt styles; error bars are the ±2 pp re-run noise floor" src="https://raw.githubusercontent.com/musharna/llm-panel/main/docs/bench-light.png" width="660">
 </picture>
 
 `broad` — asking for what a careful maintainer would actually raise — doubles the
