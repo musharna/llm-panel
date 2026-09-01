@@ -99,6 +99,15 @@ and you need at most one to start:
 If none are present the panel still runs, fails loudly, exits 4, and tells you what to
 install. A missing tool is one judge's problem, never the whole panel's.
 
+### The read-only agent for `opencode` judges
+
+`opencode` judges run as an agent named `panelist` that can read the repo but not write
+to it, and `llm-panel` refuses to start an opencode judge until that agent is defined and
+verified read-only (exit 9) — opencode's default `build` agent will happily edit the tree
+it is reviewing. The definition ships as [`opencode.jsonc`](opencode.jsonc): merge its
+`agent.panelist` block into `~/.config/opencode/opencode.jsonc`, or keep the file at the
+root of a repo you review with it — opencode reads project-local config too.
+
 ## Configure your roster
 
 **The built-in judge list is a default, not a fixture — it names the author's accounts.**

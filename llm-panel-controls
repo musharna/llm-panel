@@ -23,6 +23,8 @@ VERBOSE = "-v" in sys.argv
 
 _sib = pathlib.Path(__file__).resolve().parent / "llm-panel"
 SRC = _sib if _sib.is_file() else pathlib.Path.home() / ".local/bin/llm-panel"
+# Real run directories the real-execution controls replay, copied verbatim into the repo.
+FIXTURES = pathlib.Path(__file__).resolve().parent / "fixtures"
 spec = importlib.util.spec_from_loader("lp", importlib.machinery.SourceFileLoader("lp", str(SRC)))
 lp = importlib.util.module_from_spec(spec)
 sys.argv = ["llm-panel", "--help-noop"]
@@ -90,8 +92,10 @@ with section('1. multi-turn claude answer'):
     check("  (pre-fix form kept only the fragment)",
           len(_prefix(["x" * 5000], {"result": "y" * 100})), 100)
 
-    # replayed against the REAL artifacts of the run that exposed it, when present
-    _R = pathlib.Path.home() / ".llm-panel/runs/mjarnold-5de41d3c2d5a/20260821-212351-167027"
+    # replayed against the REAL artifacts of the run that exposed it. They ship with the
+    # suite: bound to ~/.llm-panel they existed on one laptop, and the first CI run after
+    # the repo went public was the first run of this suite anywhere else (2026-09-01).
+    _R = FIXTURES / "runs/mjarnold-5de41d3c2d5a/20260821-212351-167027"
     if (_R / "claude-opus.live.md").is_file():
         _live = (_R / "claude-opus.live.md").read_text(encoding="utf-8")
         _kept = (_R / "claude-opus.md").read_text(encoding="utf-8")
@@ -127,6 +131,19 @@ with section('2. write boundary fails toward unsafe'):
         finally:
             lp.CONFIG_DIR = _real
 
+    def _shipped():
+        """The verdict on the opencode.jsonc THIS REPO SHIPS, with no user config in the way.
+
+        These controls used to read ~/.config/opencode -- the author's installed copy --
+        under the name "the shipped config", while the repo shipped none: a fresh install
+        exited 9 for every opencode judge and the suite could not see it.
+        """
+        lp.CONFIG_DIR = pathlib.Path(_tf.mkdtemp())
+        try:
+            return lp.agent_can_write("panelist", FIXTURES.parent)
+        finally:
+            lp.CONFIG_DIR = _real
+
     W = {"write": False, "edit": False, "patch": False, "bash": False}
     check("array-form tools answers instead of crashing",
           _verdict({"agent": {"panelist": {"tools": ["read", "write"]}}}), True)
@@ -147,8 +164,7 @@ with section('2. write boundary fails toward unsafe'):
                                                      "glob": True, "list": True}}}}), False)
     check("an undefined agent is unknown, not safe",
           _verdict({"agent": {"other": {"tools": {}}}}), None)
-    check("THE SHIPPED opencode.jsonc still certifies panelist read-only",
-          lp.agent_can_write("panelist"), False)
+    check("THE SHIPPED opencode.jsonc still certifies panelist read-only", _shipped(), False)
     # repo-local override: opencode loads a project config from the tree under review
     _r = pathlib.Path(_tf.mkdtemp())
     _cfg({"agent": {"panelist": {"tools": {"write": True}}}}, _r)
@@ -548,9 +564,8 @@ with section('17. protocol traffic is not an answer'):
     check("multiple messages are joined",
           lp.stream_text('{"item":{"type":"agent_message","text":"a"}}\n'
                          '{"item":{"type":"agent_message","text":"b"}}'), "a\nb")
-    # replayed against the REAL artifact from the run that exposed it
-    _art = pathlib.Path("/home/mjarnold/.cache/llm-panel/runs/mini-c9c77efac7e0/"
-                        "20260822-023521-3057141/codex.md")
+    # replayed against the REAL artifact from the run that exposed it (shipped with the suite)
+    _art = FIXTURES / "runs/mini-c9c77efac7e0/20260822-023521-3057141/codex.md"
     if _art.is_file():
         _raw = _art.read_text(encoding="utf-8", errors="replace")
         _t17 = lp.stream_text(_raw)
@@ -559,6 +574,10 @@ with section('17. protocol traffic is not an answer'):
               any(l.strip().startswith("{") for l in _t17.splitlines()), False)
         check("  (the raw artifact WAS almost entirely protocol)",
               sum(1 for l in _raw.splitlines() if l.strip().startswith("{")) > 40, True)
+    else:
+        # This one skipped SILENTLY on any machine without the artifact -- the same defect
+        # the two replay controls above had already been fixed for.
+        FAILED.append(f"real run 17: {_art} is missing -- the control did not run")
 
 # --- 18. the 2026-08-22 re-audit (third pass) --------------------------------
 # claude-opus returned 8 findings, ALL REAL, and cleared a long list explicitly. The most
@@ -726,7 +745,7 @@ with section('19. audit 4'):
           _v9({"agent": {"panelist": {"tools": {**_W, "read": True}}}}), False)
     check("the open-set guard survives the change",
           _v9({"agent": {"panelist": {"tools": {**_W, "shell": True}}}}), True)
-    check("THE SHIPPED config still clears", lp.agent_can_write("panelist"), False)
+    check("THE SHIPPED config still clears", _shipped(), False)
 
 # --- 20. fifth audit -- the write guard pivots from predicting to OBSERVING --
 # Six rounds of judges have shown the config guard cannot be sound: opencode ENABLES tools by
@@ -795,7 +814,7 @@ with section('20. write guard observes instead of predicting'):
           _v({"agent": {"panelist": {"permission": {"*": "deny", "read": "allow"}}}}), False)
     check("an allowed non-read-only verb does not",
           _v({"agent": {"panelist": {"permission": {"*": "deny", "bash": "allow"}}}}), True)
-    check("THE SHIPPED config still clears", lp.agent_can_write("panelist"), False)
+    check("THE SHIPPED config still clears", _shipped(), False)
 
     # spill hardening from the same audit
     _big = "BRIEF\n" + "x" * 140000

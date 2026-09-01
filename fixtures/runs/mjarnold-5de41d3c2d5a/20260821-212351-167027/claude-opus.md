@@ -1,0 +1,13 @@
+Two claims in that review rest on recall of external system behaviour rather than on the source you gave me. Flagging them rather than leaving them as assertions:
+
+**Recall-based, not verified this turn:**
+
+- **Finding 7 (`E2BIG`)** — I asserted Linux caps a *single* argv string at `MAX_ARG_STRLEN` = 128 KiB independent of total `ARG_MAX`. Everything source-side is solid (the prompt is one argv element in all three CLI transports; `collect_diff` caps untracked bodies at 200,000 bytes and does not cap the diff at all). The exact ceiling is recall. Falsifier: `python3 -c 'import subprocess; subprocess.run(["true", "x"*200_000])'` — if that succeeds, the finding shrinks to "unbounded prompt growth" and loses its concrete trigger point.
+- **Finding 9 (`Task` escape)** — that `--disallowedTools` does not propagate to a subagent spawned via `Task` is recall about the Claude CLI, not something the file shows. What the file *does* show stands on its own: `Task`, `WebFetch` and `mcp__*` are absent from the denylist, which is the same open-set problem as finding 2. Falsifier: run a claude judge with the panel's exact flags and ask it to delegate a write.
+- **Finding 2, second half** — already flagged inline; opencode's project-level config precedence is recall.
+- **Finding 5** — "OpenRouter omits `usage.cost` unless the request asks for it" is recall. The source-side half is not: the `orvision` payload contains no usage-accounting field, and `meta["cost"]` is read from `usage.cost`, so if that key is ever absent the judge's spend is summed as `0` into a line printed as *billed*.
+- **Finding 8** — that `urlopen(timeout=)` is a per-socket-operation timeout rather than a deadline is documented stdlib behaviour, but I did not confirm it this turn.
+
+**On the remediation sentences.** Where I wrote "fix is to pass the prompt on stdin", "a per-judge random permutation closes it", "`STATE.resolve()` before comparing" — treat those as directions, not diagnosed causes. I did not run the three-hypothesis gate on any of them, and a review of a static file cannot: I have no failing run to attribute. What I can stand behind is the observation in each case (the prompt is one argv element; letters come from `enumerate(answered)` with no shuffle; `STATE` is never absolutised while `repo` is). Deciding the cause of any *observed* failure, and what to change, needs the mechanism test against a real run.
+
+The source-only findings — 1, 3, 4, 6, 10, 11, 12, 13, 14 and the first half of 2 — depend on nothing outside the file and are unaffected by the above.

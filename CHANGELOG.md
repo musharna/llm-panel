@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.1.1 — 2026-09-01
+
+- Ship `opencode.jsonc`, the read-only `panelist` agent every opencode judge runs as.
+  0.1.0 refused to start opencode judges on a machine that had not defined it (exit 9)
+  and never said where to get it; the refusal now points at the file.
+- The controls suites run on a clean machine: the two real run directories they replay
+  ship as `fixtures/runs/`, and the "shipped config" controls read the shipped file, not
+  `~/.config`. Found by the first CI run after the repository went public -- every
+  earlier green run was on the author's laptop.
+
 ## 0.1.0 — 2026-08-31
 
 First tagged release; everything before this line was built in private.
