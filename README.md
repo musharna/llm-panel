@@ -67,7 +67,7 @@ flowchart TB
 | `recall/aacr-upstream` | runs the panel over AACR-Bench PRs and hands the findings to **upstream's** evaluator  |
 | `recall/aacr-score`    | invokes that evaluator, and refuses to report a number from a judge that isn't running |
 | `claimlib.py`          | the one measurement boundary: reviews → span-grounded observations                     |
-| `*-controls`           | the regression suites — 810 controls, every one tied to a defect that shipped          |
+| `*-controls`           | the regression suites — 890 controls, every one tied to a defect that shipped          |
 
 ## Install
 
@@ -180,6 +180,11 @@ spots. Add it explicitly when that isn't the case — it is strong.
 Judges reading through `codex`/`opencode`/`claude` can **read your repo**. `ollama` judges
 answer from the prompt alone with no tool loop, so they cannot verify a claim against code.
 Treat their findings accordingly.
+
+Exit codes are deliberate and `llm-panel --help` lists them: 0 every judge answered ·
+4 degraded panel (a judge never ran — our failure, reported as such) · 7/8 `--diff` could
+not produce a diff / had nothing to review · 9 the opencode agent or the reviewed tree is
+not verified safe · 130 interrupted, with whatever landed kept in the run directory.
 
 The rebuttal round as rendered — every position each judge took on each finding, grouped
 by the finding under dispute, disagreements marked CONTESTED. This run: four free-tier
@@ -311,15 +316,15 @@ Full run ledgers: `recall/benchmarks/results-human-2arm/README.md` and
 
 ```sh
 ./claimlib-controls              #  83
-./llm-panel-controls             # 279
-./panel-report-controls          # 310
+./llm-panel-controls             # 356
+./panel-report-controls          # 313
 ./panel-triage-controls          #  15
 ./recall/aacr-upstream-controls  #  96
 ./recall/aacr-recut-controls     #  27
 cd recall && ./panel-recall selftest && python3 validate_corpus.py
 ```
 
-CI runs all six suites on every push (Python 3.11 and 3.13).
+CI runs all six suites on every push (Python 3.11, 3.12 and 3.13).
 
 Every control corresponds to a defect that **shipped**, and each asserts the fixed
 behaviour _and_ — where the pre-fix input is representable — that the broken version would
@@ -331,6 +336,15 @@ nothing.
 - **The judge roster's shipped defaults will not work for you** until you configure it.
 - **Judges can read the working tree.** `--diff` sends untracked file contents to remote
   APIs. Don't point it at a repo holding secrets you haven't gitignored.
+- **Reviewing a repository means trusting its `.opencode/` and `opencode.json[c]`.**
+  opencode loads plugins, tools and agent definitions from the tree it is pointed at, so
+  a repository can ship code that a judge would run as you. `llm-panel` refuses (exit 9)
+  when the tree carries any of that; `--unsafe-agent` overrides, and a claude judge gets a
+  note about project hooks instead, because whether `claude -p` loads them is unverified.
+- **A prompt over 128 KB is written to `<repo>/.llm-panel-material/` for the run** so
+  judges' read tools can reach it; it is removed when the run ends, on any exit. On a
+  shared host, the prompt is also visible in the judge processes' command lines while
+  they run.
 - **A panel is not a jury.** Independent models generate candidates; verification against
   code, tests, and execution is still yours to do.
 - **Recall is measured on a 27-defect Python corpus.** That number does not transfer to

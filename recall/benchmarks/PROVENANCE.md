@@ -57,3 +57,11 @@ only on that machine: the pointers are provenance records, not portable inputs.
 Re-deriving a results directory from its rundirs (`aacr-upstream reextract`) therefore
 only works where the runs were made; scoring the committed result JSONs with
 `aacr-score` works anywhere.
+
+## `fixtures/runs/` (repository root)
+
+Three real `llm-panel` run directories, copied verbatim for the controls suites: judges'
+reviews of this repository's own source by claude-opus, codex, and OpenRouter-hosted
+models (2026-08-21/22). The reviewed material is this repository (MIT); the model outputs
+are published under the same terms. They contain the author's home-directory paths and no
+credentials.
