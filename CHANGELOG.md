@@ -1,5 +1,17 @@
 # Changelog
 
+## Unreleased
+
+- README: the "What's here" diagram is a pre-rendered SVG (light and dark) instead of a
+  mermaid block, and every link is absolute, so the PyPI page renders it — PyPI has no
+  mermaid and treated the relative links as dead. The `orvision` vision transport,
+  `--image`/`--vision-check`, and the `--live`/`--stream`/`--runs`/`--show`/`--effort`/
+  `--timeout` flags are documented; the platform requirement (Linux, macOS or WSL) is
+  stated; the exit-code summary matches `--help`. The AACR-Bench detail moved to
+  `recall/benchmarks/README.md`, which now indexes every run ledger.
+- Every controls suite ends with `all N controls green`, so the counts the README quotes
+  have a source.
+
 ## 0.1.2 — 2026-09-01
 
 The first outside review after the repository went public. Its findings share one shape:
