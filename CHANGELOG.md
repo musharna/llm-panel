@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- The captured artifacts no longer name the author's machine. Benchmark `rundir` fields,
+  `BINARIES.txt` ledgers, the replayed fixture runs (whose prompts embed the tool's own
+  source), the demo recording and `docs/demo.sh` carried the private home path and Windows
+  profile verbatim; every copy now reads `/home/user` / `C:\Users\user`, and the fixture
+  run captured from the home directory itself is `fixtures/runs/user-5de41d3c2d5a`. A new
+  `privacy-controls` suite scans every git-tracked file (binaries included) for the
+  identifiers that leaked and runs in CI beside the other six, with a planted-hit
+  positive control so a scanner that reads nothing cannot go green.
 - The README's precision/recall chart is drawn by `docs/bench_chart.R` (ggplot2) from
   `docs/theme.R`, the one house style every figure in the repository sources; the
   matplotlib script it replaces is gone. Same numbers, same canvas, both colour schemes.

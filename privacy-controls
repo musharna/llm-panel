@@ -1,0 +1,142 @@
+#!/usr/bin/env python3
+"""Privacy controls for the llm-panel repository.
+
+This repository is public, and its fixtures are real run directories copied verbatim.
+On 2026-09-02 a sweep found ~470 copies of the author's home directory, Windows profile
+and scratch paths in those artifacts -- `rundir` fields in benchmark results, BINARIES.txt
+ledgers, prompt files that embed the tool's own source, the demo recording -- every one
+committed since 2026-08-25 without anything in the tree able to notice. Nothing that only
+ever runs on the machine it was written on can catch a path that is normal there.
+
+Each control here scans the GIT-TRACKED tree for a fixed set of identifiers that must
+never appear: the private home path, the Windows account name, hostnames, tailnet
+addresses and a session-trailer key. The set is closed on purpose (it names what leaked,
+not what might), so the structural control in panel-report-controls section 40 still
+carries the open-set case for the shipped source.
+
+Every pattern is assembled from fragments at import time so this file is clean under its
+own scan -- it is tracked, and it is scanned like everything else.
+
+    privacy-controls          # run them
+    privacy-controls -v       # show each
+"""
+import contextlib
+import pathlib
+import subprocess
+import sys
+import tempfile
+
+VERBOSE = "-v" in sys.argv
+ROOT = pathlib.Path(__file__).resolve().parent
+
+# Assembled, never spelled: a literal here would be its own finding.
+FORBIDDEN = [
+    "/home/" + "mjar" + "nold",        # the private home path
+    "a2b" + "32",                      # the Windows account (C:\Users\..., /mnt/c/Users/...)
+    "mjar" + "nold" + "gt76",          # hostname
+    "100.113." + "204.41",             # tailnet address
+    "100.91." + "179.102",             # tailnet address
+    "tail" + "86d19d",                 # tailnet name
+    "Claude-" + "Session:",            # commit-trailer key that names a private session
+]
+
+FAILED = []
+COUNT = 0
+
+
+@contextlib.contextmanager
+def section(name):
+    """A control that RAISES must report FAIL, not abort the suite."""
+    try:
+        yield
+    except Exception as e:                                # noqa: BLE001
+        FAILED.append(f"{name}: raised {type(e).__name__}: {e}")
+        print(f"  FAIL {name} -- raised {type(e).__name__}: {e}")
+
+
+def check(name, got, want):
+    global COUNT
+    COUNT += 1
+    ok = got == want
+    if not ok:
+        FAILED.append(f"{name}: got {got!r}, want {want!r}")
+    if VERBOSE or not ok:
+        print(f"  {'ok  ' if ok else 'FAIL'} {name}")
+
+
+def tracked_files(root):
+    """Every path git tracks under `root`, including binaries. Untracked files cannot leak."""
+    out = subprocess.run(["git", "-C", str(root), "ls-files", "-z"], capture_output=True, check=True).stdout
+    return [root / p.decode("utf-8") for p in out.split(b"\0") if p]
+
+
+def scan(paths, patterns=FORBIDDEN, rel=None):
+    """Return ['file:line: pattern', ...] for every forbidden byte string in every file.
+
+    Bytes, not text: a PNG or a mis-encoded fixture must be scanned, not skipped, and a
+    decode error must not turn into a pass. Line numbers count b'\\n' so they match grep -n.
+    `rel` makes the reported path relative, so a hit in a clone under a private home path
+    is not itself one.
+    """
+    needles = [p.encode("utf-8") for p in patterns]
+    hits = []
+    for path in paths:
+        if not path.is_file():
+            continue                                     # a tracked path git mv'd away mid-run
+        data = path.read_bytes()
+        if not any(n in data for n in needles):
+            continue
+        for lineno, line in enumerate(data.split(b"\n"), 1):
+            for n in needles:
+                if n in line:
+                    hits.append(f"{path.relative_to(rel) if rel else path}:{lineno}: {n.decode('utf-8')}")
+    return hits
+
+
+# --- 1. positive control: the scanner reports a planted hit with file:line ---------
+# A suite whose only assertion is "the tree is clean" passes on a scanner that reads
+# nothing. Plant each forbidden string in a temp file, one per line, and require every
+# one back with its line number. This is the control that must be SEEN TO FAIL: break
+# `scan` (return []) and 1.x goes red before anything else does.
+with section("1. a planted hit is reported with file:line"):
+    with tempfile.TemporaryDirectory(prefix="privacy-controls-") as _td:
+        _bad = pathlib.Path(_td) / "planted.json"
+        _bad.write_text("\n".join(f'{{"rundir": "x{p}y"}}' for p in FORBIDDEN) + "\n", encoding="utf-8")
+        _hits = scan([_bad])
+        check("1.1 every planted pattern is found", len(_hits), len(FORBIDDEN))
+        check("1.2 each hit carries file:line",
+              [h.startswith(f"{_bad}:{i}: ") for i, h in enumerate(_hits, 1)], [True] * len(FORBIDDEN))
+        _png = pathlib.Path(_td) / "b.png"
+        _png.write_bytes(b"\x89PNG\r\n\x1a\n\xff\xfe" + FORBIDDEN[0].encode() + b"\xff")
+        check("1.3 a binary file is scanned, not skipped", scan([_png]), [f"{_png}:3: {FORBIDDEN[0]}"])
+        _clean = pathlib.Path(_td) / "clean.md"
+        _clean.write_text("/home/user/.cache/llm-panel/runs\nC:\\Users\\user\\Downloads\n", encoding="utf-8")
+        check("1.4 the generic replacement is not a hit", scan([_clean]), [])
+
+# --- 2. negative control: the tracked tree is clean ---------------------------------
+# Everything `git ls-files` names, this file and the PNGs included. A hit here is the
+# leak recurring; the message names file:line so the fix is a one-line edit, not a hunt.
+with section("2. no tracked file names a private path, account, host or session"):
+    _files = tracked_files(ROOT)
+    check("2.1 git tracks the tree this suite is in", len(_files) > 100, True)
+    check("2.2 this file is among the scanned", pathlib.Path(__file__).resolve() in _files, True)
+    _hits = scan(_files, rel=ROOT)
+    for _h in _hits:
+        print(f"  LEAK {_h}")
+    check("2.3 tracked files with a forbidden string", _hits, [])
+
+# --- 3. the demo and fixture paths that leaked are now the generic form ------------
+# Regression for the specific artifacts the 2026-09-02 sweep found, so a re-capture that
+# reintroduces them is named by file rather than only by pattern.
+with section("3. the artifacts that leaked read the generic form"):
+    _cast = (ROOT / "docs/demo.cast").read_text(encoding="utf-8")
+    check("3.1 the demo recording writes its run under /home/user", "/home/user/.cache/llm-panel/runs/" in _cast, True)
+    check("3.2 the fixture run directory is renamed", (ROOT / "fixtures/runs/user-5de41d3c2d5a").is_dir(), True)
+    check("3.3 the demo script does not name a home directory",
+          "/home/" in (ROOT / "docs/demo.sh").read_text(encoding="utf-8"), False)
+
+
+print(f"\nFAILED ({len(FAILED)} of {COUNT} failing)" if FAILED else f"\nall {COUNT} controls green")
+for f in FAILED:
+    print("  -", f)
+sys.exit(1 if FAILED else 0)

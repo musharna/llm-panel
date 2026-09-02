@@ -12,13 +12,14 @@ pip installs work; the root files stay canonical.
 **Every fix ships with a control.** The `*-controls` suites are regression tests where
 each control corresponds to a defect that actually shipped. If you fix a bug, add a
 control that fails on the pre-fix code and says so in a comment — an assertion that
-passes on both the broken and fixed versions tells you nothing. Run the six suites
+passes on both the broken and fixed versions tells you nothing. Run the seven suites
 before pushing:
 
 ```sh
 python llm-panel-controls && python panel-report-controls && \
 python panel-triage-controls && python claimlib-controls && \
-python recall/aacr-upstream-controls && python recall/aacr-recut-controls
+python recall/aacr-upstream-controls && python recall/aacr-recut-controls && \
+python privacy-controls
 ```
 
 CI runs exactly these on 3.11 and 3.13.
