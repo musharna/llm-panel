@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+- The README's precision/recall chart is drawn by `docs/bench_chart.R` (ggplot2) from
+  `docs/theme.R`, the one house style every figure in the repository sources; the
+  matplotlib script it replaces is gone. Same numbers, same canvas, both colour schemes.
+
 ## 0.1.3 — 2026-09-01
 
 A documentation release: the only code change is one word of `--rebut` help text
