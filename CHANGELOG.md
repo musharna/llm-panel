@@ -5,6 +5,10 @@
 - The README's precision/recall chart is drawn by `docs/bench_chart.R` (ggplot2) from
   `docs/theme.R`, the one house style every figure in the repository sources; the
   matplotlib script it replaces is gone. Same numbers, same canvas, both colour schemes.
+- `recall/benchmarks/README.md` no longer lists `checkouts/` as browsable (it is
+  gitignored and rebuilt by `aacr-upstream checkout`) and says which `diffs-upstream/`
+  diffs are committed: the seed-42 samples' 27; the replication sample's 33 are a local
+  cache the results do not depend on.
 
 ## 0.1.3 — 2026-09-01
 

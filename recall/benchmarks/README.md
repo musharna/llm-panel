@@ -42,20 +42,29 @@ running. The three prompt styles are `aacr-upstream --prompt-style {defect,broad
 Each directory's README is the ledger for that run: what was declared before it, what
 was measured, and what was withdrawn.
 
-| directory                                 | what it is                                                                    |
-| ----------------------------------------- | ----------------------------------------------------------------------------- |
-| `results-clean-3judge/`                   | the headline result — clean 3-judge run                                       |
-| `results-clean-2judge/`                   | the roster-matched control, two judges                                        |
-| `results-broad-3judge/`                   | broad prompt vs defect prompt, the same panel asked a wider question          |
-| `results-volume-3judge/`                  | the volume arm — the defect prompt told not to stop                           |
-| `results-checkout-3judge/`                | the same panel standing in the repository instead of reading a diff           |
-| `results-human-2arm/`                     | human-authored references, broad vs volume, pre-registered                    |
-| `results-human-2arm-orgpt/`               | the transport-controlled replication of the above; `perjudge35/` is the floor |
-| `results-pilot-2judge/`                   | the pilot — 2 judges, degraded; not a headline result                         |
-| `cost-cut/`                               | the declared cost-efficiency cut that settled the default prompt              |
-| `reference-categories/`                   | what each reference comment asks for — RETRACTED 2026-08-26                   |
-| `scores/`, `upstream/`                    | the evaluator's outputs and upstream's own scoring inputs                     |
-| `diffs/`, `diffs-upstream/`, `checkouts/` | the PR material the panels were shown                                         |
+| directory                   | what it is                                                                               |
+| --------------------------- | ---------------------------------------------------------------------------------------- |
+| `results-clean-3judge/`     | the headline result — clean 3-judge run                                                  |
+| `results-clean-2judge/`     | the roster-matched control, two judges                                                   |
+| `results-broad-3judge/`     | broad prompt vs defect prompt, the same panel asked a wider question                     |
+| `results-volume-3judge/`    | the volume arm — the defect prompt told not to stop                                      |
+| `results-checkout-3judge/`  | the same panel standing in the repository instead of reading a diff                      |
+| `results-human-2arm/`       | human-authored references, broad vs volume, pre-registered                               |
+| `results-human-2arm-orgpt/` | the transport-controlled replication of the above; `perjudge35/` is the floor            |
+| `results-pilot-2judge/`     | the pilot — 2 judges, degraded; not a headline result                                    |
+| `cost-cut/`                 | the declared cost-efficiency cut that settled the default prompt                         |
+| `reference-categories/`     | what each reference comment asks for — RETRACTED 2026-08-26                              |
+| `scores/`, `upstream/`      | the evaluator's outputs and upstream's own scoring inputs                                |
+| `diffs/`, `diffs-upstream/` | the PR diffs the panels were shown — see the note below on what is committed             |
+| `checkouts/`                | shallow clones for the checkout arm — gitignored; `aacr-upstream checkout` rebuilds them |
+
+What is committed under `diffs-upstream/`: the diffs of the 2026-08-25 samples
+(`upstream/pos-seed42-n20.jsonl`, `neg-seed42-n10.jsonl`), fetched once from GitHub's
+compare API and kept as the exact bytes the panels saw. Of the 35-PR replication sample
+(`upstream/pos-human-n35.jsonl`, 2026-08-28), only the two PRs it shares with the seed-42
+sample have a committed diff; the other 33 live in the local cache, which
+`aacr-upstream run` refills from the same API. The committed result and score JSONs do
+not need them — `aacr-score` works from those alone.
 
 Data licensing: the PR diffs and review-comment text are third-party material under
 their upstream terms — see [PROVENANCE.md](PROVENANCE.md).
