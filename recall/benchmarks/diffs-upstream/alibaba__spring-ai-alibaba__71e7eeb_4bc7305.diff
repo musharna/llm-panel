@@ -1,0 +1,213 @@
+diff --git a/spring-ai-alibaba-jmanus/pom.xml b/spring-ai-alibaba-jmanus/pom.xml
+index f3610a6081..a56508ac30 100644
+--- a/spring-ai-alibaba-jmanus/pom.xml
++++ b/spring-ai-alibaba-jmanus/pom.xml
+@@ -7,7 +7,7 @@
+     <groupId>com.alibaba.cloud.ai</groupId>
+     <name>Spring AI Alibaba JManus</name>
+     <artifactId>spring-ai-alibaba-jmanus</artifactId>
+-    <version>0.1.0</version>
++    <version>0.1.1</version>
+ 
+     <!-- The required dependencies are maintained separately by the JManus module -->
+     <properties>
+diff --git a/spring-ai-alibaba-jmanus/src/main/java/com/alibaba/cloud/ai/example/manus/dynamic/agent/entity/DynamicAgentEntity.java b/spring-ai-alibaba-jmanus/src/main/java/com/alibaba/cloud/ai/example/manus/dynamic/agent/entity/DynamicAgentEntity.java
+index 22c2358df1..cbab808c4e 100644
+--- a/spring-ai-alibaba-jmanus/src/main/java/com/alibaba/cloud/ai/example/manus/dynamic/agent/entity/DynamicAgentEntity.java
++++ b/spring-ai-alibaba-jmanus/src/main/java/com/alibaba/cloud/ai/example/manus/dynamic/agent/entity/DynamicAgentEntity.java
+@@ -42,9 +42,9 @@ public class DynamicAgentEntity {
+ 	@Column(nullable = false, length = 1000)
+ 	private String agentDescription;
+ 
+-	@Column(nullable = false, length = 40000)
++	@Column(length = 40000)
+ 	@Deprecated
+-	private String systemPrompt;
++	private String systemPrompt = " ";
+ 
+ 	@Column(nullable = false, length = 40000)
+ 	private String nextStepPrompt;
+diff --git a/spring-ai-alibaba-jmanus/src/main/java/com/alibaba/cloud/ai/example/manus/dynamic/agent/service/AgentServiceImpl.java b/spring-ai-alibaba-jmanus/src/main/java/com/alibaba/cloud/ai/example/manus/dynamic/agent/service/AgentServiceImpl.java
+index a7fb26d5c9..0987dfc641 100644
+--- a/spring-ai-alibaba-jmanus/src/main/java/com/alibaba/cloud/ai/example/manus/dynamic/agent/service/AgentServiceImpl.java
++++ b/spring-ai-alibaba-jmanus/src/main/java/com/alibaba/cloud/ai/example/manus/dynamic/agent/service/AgentServiceImpl.java
+@@ -197,7 +197,7 @@ private DynamicAgentEntity mergePrompts(DynamicAgentEntity entity, String agentN
+ 			log.warn(
+ 					"Agent[{}]的SystemPrompt不为空， 但属性已经废弃，只保留nextPrompt， 本次将agent 的内容合并，如需要该内容在prompt生效，请直接更新界面的唯一的那个prompt , 当前制定的值: {}",
+ 					agentName, nextPrompt);
+-			entity.setSystemPrompt(null);
++			entity.setSystemPrompt(" ");
+ 		}
+ 		return entity;
+ 	}
+diff --git a/spring-ai-alibaba-jmanus/src/main/java/com/alibaba/cloud/ai/example/manus/tool/browser/actions/InputTextAction.java b/spring-ai-alibaba-jmanus/src/main/java/com/alibaba/cloud/ai/example/manus/tool/browser/actions/InputTextAction.java
+index 2f1bd22083..bfd6149a20 100644
+--- a/spring-ai-alibaba-jmanus/src/main/java/com/alibaba/cloud/ai/example/manus/tool/browser/actions/InputTextAction.java
++++ b/spring-ai-alibaba-jmanus/src/main/java/com/alibaba/cloud/ai/example/manus/tool/browser/actions/InputTextAction.java
+@@ -19,8 +19,9 @@
+ import java.util.Random;
+ 
+ import com.microsoft.playwright.ElementHandle;
++import com.microsoft.playwright.Locator;
+ import com.microsoft.playwright.Page;
+-
++import com.microsoft.playwright.options.WaitForSelectorState;
+ import com.alibaba.cloud.ai.example.manus.tool.browser.BrowserUseTool;
+ import com.alibaba.cloud.ai.example.manus.tool.browser.InteractiveElement;
+ import com.alibaba.cloud.ai.example.manus.tool.code.ToolExecuteResult;
+@@ -41,58 +42,50 @@ public ToolExecuteResult execute(BrowserRequestVO request) throws Exception {
+ 			return new ToolExecuteResult("Index and text are required for 'input_text' action");
+ 		}
+ 
+-		// 获取交互元素（InteractiveElement）
+-		List<InteractiveElement> interactiveElements = getInteractiveElements(page);
++		// 获取交互元素（InteractiveElement），支持所有 frame（包括 iframe）
++		List<InteractiveElement> interactiveElements = getInteractiveElements(page); // 已支持递归
++																						// frame
+ 		if (index < 0 || index >= interactiveElements.size()) {
+ 			return new ToolExecuteResult("Element with index " + index + " not found");
+ 		}
+ 
+-		com.alibaba.cloud.ai.example.manus.tool.browser.InteractiveElement inputElement = interactiveElements
+-			.get(index);
++		InteractiveElement inputElement = interactiveElements.get(index);
++
+ 		String tagName = inputElement.getTagName();
+ 		if (!"input".equals(tagName) && !"textarea".equals(tagName)) {
+ 			return new ToolExecuteResult("Element at index " + index + " is not an input element");
+ 		}
+ 
+-		// 先清空输入框内容
+-		ElementHandle handle = inputElement.getLocator().elementHandle();
+-		handle.click();
+-		handle.fill("");
+-
+-		// 再输入新内容
+-		typeWithHumanDelay(handle, text);
+-		// 直接通过 InteractiveElementRegistry 刷新缓存，避免使用已废弃方法
+-		return new ToolExecuteResult("成功输入: '" + text + "' 到指定的对象.其索引编号为 ： " + index);
+-	}
+-
+-	private void typeWithHumanDelay(ElementHandle element, String text) {
+-		// 模拟人类输入速度
+-		Random random = new Random();
+-
+-		// 首先点击元素以确保获得焦点
+-		element.click();
++		// 获取元素定位器
++		Locator elementLocator = inputElement.getLocator();
++		// 3. 尝试 fill
++		try {
++			elementLocator.fill(""); // 先清空
++			// 设置每个字符输入间隔 100ms，可根据需要调整
++			com.microsoft.playwright.Locator.PressSequentiallyOptions options = new com.microsoft.playwright.Locator.PressSequentiallyOptions()
++				.setDelay(100);
++			elementLocator.pressSequentially(text, options);
+ 
+-		for (char c : text.toCharArray()) {
++		}
++		catch (Exception e) {
++			// 4. fill 失败，尝试 pressSequentially
+ 			try {
+-				// 使用type方法代替evaluate，以触发正确的键盘事件
+-				element.type(String.valueOf(c), new ElementHandle.TypeOptions().setDelay(random.nextInt(100) + 50));
+-
+-				// 在字符之间添加一个短暂的停顿，使输入更加自然
+-				Thread.sleep(random.nextInt(50) + 20);
++				elementLocator.fill(""); // 再清空一次
++				elementLocator.fill(text); // 直接填充
+ 			}
+-			catch (InterruptedException e) {
+-				Thread.currentThread().interrupt();
+-				break;
++			catch (Exception e2) {
++				// 5. 还不行，直接用 JS 赋值并触发 input 事件
++				try {
++					elementLocator.evaluate(
++							"(el, value) => { el.value = value; el.dispatchEvent(new Event('input', { bubbles: true })); }",
++							text);
++				}
++				catch (Exception e3) {
++					return new ToolExecuteResult("输入失败: " + e3.getMessage());
++				}
+ 			}
+ 		}
+-
+-		try {
+-			// 输入完成后增加一个短暂的停顿
+-			Thread.sleep(random.nextInt(150) + 100);
+-		}
+-		catch (InterruptedException e) {
+-			Thread.currentThread().interrupt();
+-		}
++		return new ToolExecuteResult("成功输入: '" + text + "' 到指定的对象.其索引编号为 ： " + index);
+ 	}
+ 
+ }
+diff --git a/spring-ai-alibaba-jmanus/src/main/java/com/alibaba/cloud/ai/example/manus/tool/browser/actions/MoveToAndClickAction.java b/spring-ai-alibaba-jmanus/src/main/java/com/alibaba/cloud/ai/example/manus/tool/browser/actions/MoveToAndClickAction.java
+index bccc707d19..1ae834f515 100644
+--- a/spring-ai-alibaba-jmanus/src/main/java/com/alibaba/cloud/ai/example/manus/tool/browser/actions/MoveToAndClickAction.java
++++ b/spring-ai-alibaba-jmanus/src/main/java/com/alibaba/cloud/ai/example/manus/tool/browser/actions/MoveToAndClickAction.java
+@@ -43,12 +43,38 @@ public ToolExecuteResult execute(BrowserRequestVO request) throws Exception {
+ 
+ 		// 记录点击前的窗口状态
+ 		List<String> beforeWindowHandles = page.context().pages().stream().map(Page::url).toList();
+-
++		boolean isDebug = getBrowserUseTool().getManusProperties().getBrowserDebug();
+ 		try {
+-			// 使用 Playwright 的 mouse API 移动并点击
++			// 1. 滚动到目标位置（让目标点尽量在视窗中央）
++			int scrollX = Math.max(0, x - page.viewportSize().width / 2);
++			int scrollY = Math.max(0, y - page.viewportSize().height / 2);
++			page.evaluate("(args) => window.scrollTo({left: args[0], top: args[1], behavior: 'instant'})",
++					new Object[] { scrollX, scrollY });
++
++			String markerId = "__move_click_marker__";
++			if (isDebug) {
++				// 2. 注入大红点（仅debug模式）
++				page.evaluate("(args) => {\n" + "  const [x, y, id] = args;\n"
++						+ "  let dot = document.getElementById(id);\n" + "  if (!dot) {\n"
++						+ "    dot = document.createElement('div');\n" + "    dot.id = id;\n"
++						+ "    dot.style.position = 'absolute';\n" + "    dot.style.left = x + 'px';\n"
++						+ "    dot.style.top = y + 'px';\n" + "    dot.style.width = '24px';\n"
++						+ "    dot.style.height = '24px';\n" + "    dot.style.background = 'red';\n"
++						+ "    dot.style.borderRadius = '50%';\n" + "    dot.style.zIndex = 99999;\n"
++						+ "    dot.style.boxShadow = '0 0 8px 4px #f00';\n" + "    dot.style.pointerEvents = 'none';\n"
++						+ "    document.body.appendChild(dot);\n" + "  }\n" + "}", new Object[] { x, y, markerId });
++			}
++
++			// 3. 鼠标移动并点击
+ 			page.mouse().move(x, y);
+ 			page.mouse().click(x, y);
+ 			log.info("Clicked at position ({}, {})", x, y);
++
++			if (isDebug) {
++				// 4. 移除大红点（仅debug模式）
++				page.evaluate("(id) => { const dot = document.getElementById(id); if (dot) dot.remove(); }",
++						new Object[] { markerId });
++			}
+ 		}
+ 		catch (Exception e) {
+ 			log.error("Failed to click at position ({}, {})", x, y, e);
+diff --git a/spring-ai-alibaba-jmanus/src/main/java/com/alibaba/cloud/ai/example/manus/tool/browser/actions/NavigateAction.java b/spring-ai-alibaba-jmanus/src/main/java/com/alibaba/cloud/ai/example/manus/tool/browser/actions/NavigateAction.java
+index 9a663d1f22..bbb0c7bed8 100644
+--- a/spring-ai-alibaba-jmanus/src/main/java/com/alibaba/cloud/ai/example/manus/tool/browser/actions/NavigateAction.java
++++ b/spring-ai-alibaba-jmanus/src/main/java/com/alibaba/cloud/ai/example/manus/tool/browser/actions/NavigateAction.java
+@@ -38,12 +38,12 @@ public ToolExecuteResult execute(BrowserRequestVO request) throws Exception {
+ 		if (url == null) {
+ 			return new ToolExecuteResult("URL is required for 'navigate' action");
+ 		}
++		// 自动补全 URL 前缀
++		if (!url.startsWith("http://") && !url.startsWith("https://")) {
++			url = "https://" + url;
++		}
+ 		Page page = getCurrentPage(); // 获取 Playwright 的 Page 实例
+-		page.navigate(url, new Page.NavigateOptions().setTimeout(timeout * 1000)); // 使用
+-																					// Playwright
+-																					// 的
+-																					// navigate
+-																					// 方法
++		page.navigate(url, new Page.NavigateOptions().setTimeout(timeout * 1000));
+ 
+ 		// 在调用 page.content() 之前，确保页面已完全加载
+ 		page.waitForLoadState(LoadState.DOMCONTENTLOADED, new WaitForLoadStateOptions().setTimeout(timeout * 1000));

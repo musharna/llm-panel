@@ -1,0 +1,595 @@
+diff --git a/.eslintrc.json b/.eslintrc.json
+index 0d0e7445b45c8d..76ce0a75b88690 100644
+--- a/.eslintrc.json
++++ b/.eslintrc.json
+@@ -63,6 +63,16 @@
+     ],
+     "no-duplicate-imports": [
+       "error"
++    ],
++    "valid-jsdoc": [
++      "error",
++      {
++        "requireReturn": false,
++        "requireReturnType": true,
++        "requireParamDescription": false,
++        "requireReturnDescription": false,
++        "requireParamType": true
++      }
+     ]
+   }
+ }
+diff --git a/src/cameras/PerspectiveCamera.js b/src/cameras/PerspectiveCamera.js
+index 95cef7f4a20f61..5183f010c2cd5b 100644
+--- a/src/cameras/PerspectiveCamera.js
++++ b/src/cameras/PerspectiveCamera.js
+@@ -62,7 +62,7 @@ class PerspectiveCamera extends Camera {
+ 	 * The default film gauge is 35, so that the focal length can be specified for
+ 	 * a 35mm (full frame) camera.
+ 	 *
+-	 * Values for focal length and film gauge must have the same unit.
++	 * @param {number} focalLength - Values for focal length and film gauge must have the same unit.
+ 	 */
+ 	setFocalLength( focalLength ) {
+ 
+@@ -76,6 +76,8 @@ class PerspectiveCamera extends Camera {
+ 
+ 	/**
+ 	 * Calculates the focal length from the current .fov and .filmGauge.
++	 *
++	 * @returns {number}
+ 	 */
+ 	getFocalLength() {
+ 
+@@ -109,6 +111,10 @@ class PerspectiveCamera extends Camera {
+ 	/**
+ 	 * Computes the 2D bounds of the camera's viewable rectangle at a given distance along the viewing direction.
+ 	 * Sets minTarget and maxTarget to the coordinates of the lower-left and upper-right corners of the view rectangle.
++	 *
++	 * @param {number} distance
++	 * @param {number} minTarget
++	 * @param {number} maxTarget
+ 	 */
+ 	getViewBounds( distance, minTarget, maxTarget ) {
+ 
+@@ -124,7 +130,10 @@ class PerspectiveCamera extends Camera {
+ 
+ 	/**
+ 	 * Computes the width and height of the camera's viewable rectangle at a given distance along the viewing direction.
+-	 * Copies the result into the target Vector2, where x is width and y is height.
++	 *
++	 * @param {number} distance
++	 * @param {Vector2} target - Vector2 target used to store result where x is width and y is height.
++	 * @returns {Vector2}
+ 	 */
+ 	getViewSize( distance, target ) {
+ 
+@@ -168,6 +177,13 @@ class PerspectiveCamera extends Camera {
+ 	 *   camera.setViewOffset( fullWidth, fullHeight, w * 2, h * 1, w, h );
+ 	 *
+ 	 *   Note there is no reason monitors have to be the same size or in a grid.
++	 *
++	 * @param {number} fullWidth
++	 * @param {number} fullHeight
++	 * @param {number} x
++	 * @param {number} y
++	 * @param {number} width
++	 * @param {number} height
+ 	 */
+ 	setViewOffset( fullWidth, fullHeight, x, y, width, height ) {
+ 
+diff --git a/src/extras/PMREMGenerator.js b/src/extras/PMREMGenerator.js
+index c0429ed7ee5814..e18fd3f9d1310c 100644
+--- a/src/extras/PMREMGenerator.js
++++ b/src/extras/PMREMGenerator.js
+@@ -102,6 +102,12 @@ class PMREMGenerator {
+ 	 * in radians to be applied to the scene before PMREM generation. Optional near
+ 	 * and far planes ensure the scene is rendered in its entirety (the cubeCamera
+ 	 * is placed at the origin).
++	 *
++	 * @param {Scene} scene
++	 * @param {number} sigma
++	 * @param {number} near
++	 * @param {number} far
++	 * @return {WebGLRenderTarget}
+ 	 */
+ 	fromScene( scene, sigma = 0, near = 0.1, far = 100 ) {
+ 
+@@ -137,6 +143,10 @@ class PMREMGenerator {
+ 	 * or HDR. The ideal input image size is 1k (1024 x 512),
+ 	 * as this matches best with the 256 x 256 cubemap output.
+ 	 * The smallest supported equirectangular image size is 64 x 32.
++	 *
++	 * @param {Texture} equirectangular
++	 * @param {WebGLRenderTarget} [renderTarget=null] - Optional render target.
++	 * @return {WebGLRenderTarget}
+ 	 */
+ 	fromEquirectangular( equirectangular, renderTarget = null ) {
+ 
+@@ -149,6 +159,10 @@ class PMREMGenerator {
+ 	 * or HDR. The ideal input cube size is 256 x 256,
+ 	 * as this matches best with the 256 x 256 cubemap output.
+ 	 * The smallest supported cube size is 16 x 16.
++	 *
++	 * @param {Texture} cubemap
++	 * @param {null} [renderTarget=null] - Optional render target.
++	 * @return {WebGLRenderTarget}
+ 	 */
+ 	fromCubemap( cubemap, renderTarget = null ) {
+ 
+@@ -466,6 +480,12 @@ class PMREMGenerator {
+ 	 * the blur latitudinally (around the poles), and then longitudinally (towards
+ 	 * the poles) to approximate the orthogonally-separable blur. It is least
+ 	 * accurate at the poles, but still does a decent job.
++	 *
++	 * @param {WebGLRenderTarget} cubeUVRenderTarget
++	 * @param {number} lodIn
++	 * @param {number} lodOut
++	 * @param {number} sigma
++	 * @param {Vector3} [poleAxis]
+ 	 */
+ 	_blur( cubeUVRenderTarget, lodIn, lodOut, sigma, poleAxis ) {
+ 
+diff --git a/src/extras/TextureUtils.js b/src/extras/TextureUtils.js
+index c98bd1eb2ffbd8..c54a985c633a67 100644
+--- a/src/extras/TextureUtils.js
++++ b/src/extras/TextureUtils.js
+@@ -69,6 +69,12 @@ function fill( texture ) {
+ /**
+  * Given the width, height, format, and type of a texture. Determines how many
+  * bytes must be used to represent the texture.
++ *
++ * @param {Number} width
++ * @param {Number} height
++ * @param {Number} format
++ * @param {Number} type
++ * @return {Number} The number of bytes required to represent the texture.
+  */
+ function getByteLength( width, height, format, type ) {
+ 
+diff --git a/src/nodes/code/ExpressionNode.js b/src/nodes/code/ExpressionNode.js
+index 58d673156fda7e..2dcc305715511d 100644
+--- a/src/nodes/code/ExpressionNode.js
++++ b/src/nodes/code/ExpressionNode.js
+@@ -19,7 +19,7 @@ class ExpressionNode extends Node {
+ 	 * Constructs a new expression node.
+ 	 *
+ 	 * @param {String} [snippet=''] - The native code snippet.
+-	 * @param {String} [includes='void'] - The node type.
++	 * @param {String} [nodeType='void'] - The node type.
+ 	 */
+ 	constructor( snippet = '', nodeType = 'void' ) {
+ 
+diff --git a/src/nodes/core/IndexNode.js b/src/nodes/core/IndexNode.js
+index 9f2a423ff74985..a00f441479df5f 100644
+--- a/src/nodes/core/IndexNode.js
++++ b/src/nodes/core/IndexNode.js
+@@ -25,7 +25,7 @@ class IndexNode extends Node {
+ 	/**
+ 	 * Constructs a new index node.
+ 	 *
+-	 * @param {('vertex'|'instance'|'subgroup'|'invocationLocal'|'invocationSubgroup'|'draw')} value - The scope of the index node.
++	 * @param {('vertex'|'instance'|'subgroup'|'invocationLocal'|'invocationSubgroup'|'draw')} scope - The scope of the index node.
+ 	 */
+ 	constructor( scope ) {
+ 
+diff --git a/src/nodes/core/Node.js b/src/nodes/core/Node.js
+index 38cebd0686b55c..03cbab2f02d86a 100644
+--- a/src/nodes/core/Node.js
++++ b/src/nodes/core/Node.js
+@@ -125,6 +125,7 @@ class Node extends EventDispatcher {
+ 	 *
+ 	 * @type {Boolean}
+ 	 * @default false
++	 * @param {boolean} value
+ 	 */
+ 	set needsUpdate( value ) {
+ 
+@@ -531,9 +532,9 @@ class Node extends EventDispatcher {
+ 	/**
+ 	 * The method can be implemented to update the node's internal state before it is used to render an object.
+ 	 * The {@link Node#updateBeforeType} property defines how often the update is executed.
++	 * This method should return an optional bool that indicates whether the implementation actually performed an update or not (e.g. due to caching).
+ 	 *
+ 	 * @param {NodeFrame} frame - A reference to the current node frame.
+-	 * @return {Boolean?} An optional bool that indicates whether the implementation actually performed an update or not (e.g. due to caching).
+ 	 */
+ 	updateBefore( /*frame*/ ) {
+ 
+@@ -544,9 +545,9 @@ class Node extends EventDispatcher {
+ 	/**
+ 	 * The method can be implemented to update the node's internal state after it was used to render an object.
+ 	 * The {@link Node#updateAfterType} property defines how often the update is executed.
++	 * This method should return an optional bool that indicates whether the implementation actually performed an update or not (e.g. due to caching).
+ 	 *
+ 	 * @param {NodeFrame} frame - A reference to the current node frame.
+-	 * @return {Boolean?} An optional bool that indicates whether the implementation actually performed an update or not (e.g. due to caching).
+ 	 */
+ 	updateAfter( /*frame*/ ) {
+ 
+@@ -557,9 +558,9 @@ class Node extends EventDispatcher {
+ 	/**
+ 	 * The method can be implemented to update the node's internal state when it is used to render an object.
+ 	 * The {@link Node#updateType} property defines how often the update is executed.
++	 * This method should return an optional bool that indicates whether the implementation actually performed an update or not (e.g. due to caching).
+ 	 *
+ 	 * @param {NodeFrame} frame - A reference to the current node frame.
+-	 * @return {Boolean?} An optional bool that indicates whether the implementation actually performed an update or not (e.g. due to caching).
+ 	 */
+ 	update( /*frame*/ ) {
+ 
+diff --git a/src/nodes/core/NodeBuilder.js b/src/nodes/core/NodeBuilder.js
+index 34945ee7684601..d371dded2620c7 100644
+--- a/src/nodes/core/NodeBuilder.js
++++ b/src/nodes/core/NodeBuilder.js
+@@ -797,7 +797,7 @@ class NodeBuilder {
+ 	 * resolved to `textureSize` in GLSL.
+ 	 *
+ 	 * @abstract
+-	 * @param {String} name - The method name to resolve.
++	 * @param {String} method - The method name to resolve.
+ 	 * @return {String} The resolved method name.
+ 	 */
+ 	getMethod( method ) {
+@@ -896,7 +896,7 @@ class NodeBuilder {
+ 	/**
+ 	 * Returns a cache for the given node.
+ 	 *
+-	 * @param {Node} Node - The node.
++	 * @param {Node} node - The node.
+ 	 * @param {Boolean} [parent=true] - Whether this node refers to a shared parent cache or not.
+ 	 * @return {NodeCache} The cache.
+ 	 */
+@@ -999,7 +999,7 @@ class NodeBuilder {
+ 	/**
+ 	 * Calling this method increases the usage count for the given node by one.
+ 	 *
+-	 * @param {Node} Node - The node to increase the usage count for.
++	 * @param {Node} node - The node to increase the usage count for.
+ 	 * @return {Number} The updated usage count.
+ 	 */
+ 	increaseUsage( node ) {
+@@ -1319,7 +1319,7 @@ class NodeBuilder {
+ 	/**
+ 	 * Returns the type for a given typed array.
+ 	 *
+-	 * @param {TypedArray} type - The typed array.
++	 * @param {TypedArray} array - The typed array.
+ 	 * @return {String} The type.
+ 	 */
+ 	getTypeFromArray( array ) {
+@@ -1871,7 +1871,7 @@ class NodeBuilder {
+ 	/**
+ 	 * Generates a code flow based on a TSL function: Fn().
+ 	 *
+-	 * @param {ShaderNodeInternal} node - A function code will be generated based on the input.
++	 * @param {ShaderNodeInternal} shaderNode - A function code will be generated based on the input.
+ 	 * @return {Object}
+ 	 */
+ 	flowShaderNode( shaderNode ) {
+diff --git a/src/nodes/core/TempNode.js b/src/nodes/core/TempNode.js
+index bfd47c2274c3d6..53a0bea55aaea2 100644
+--- a/src/nodes/core/TempNode.js
++++ b/src/nodes/core/TempNode.js
+@@ -19,7 +19,7 @@ class TempNode extends Node {
+ 	/**
+ 	 * Constructs a temp node.
+ 	 *
+-	 * @param {String} nodeType - The node type.
++	 * @param {String} type - The node type.
+ 	 */
+ 	constructor( type ) {
+ 
+@@ -39,6 +39,7 @@ class TempNode extends Node {
+ 	/**
+ 	 * Whether this node is used more than once in context of other nodes.
+ 	 *
++	 * @param {NodeBuilder} builder - The node builder.
+ 	 * @return {Boolean} A flag that indicates if there is more than one dependency to other nodes.
+ 	 */
+ 	hasDependencies( builder ) {
+diff --git a/src/nodes/display/NormalMapNode.js b/src/nodes/display/NormalMapNode.js
+index 2457fdf482c7a7..8e4348b1d82470 100644
+--- a/src/nodes/display/NormalMapNode.js
++++ b/src/nodes/display/NormalMapNode.js
+@@ -57,7 +57,7 @@ class NormalMapNode extends TempNode {
+ 	/**
+ 	 * Constructs a new normal map node.
+ 	 *
+-	 * @param {Node} textureNode - Represents the normal map data.
++	 * @param {Node} node - Represents the normal map data.
+ 	 * @param {Node?} [scaleNode=null] - Controls the intensity of the effect.
+ 	 */
+ 	constructor( node, scaleNode = null ) {
+diff --git a/src/nodes/display/ScreenNode.js b/src/nodes/display/ScreenNode.js
+index 2e500121d3f2b5..e86b5f7cd8783b 100644
+--- a/src/nodes/display/ScreenNode.js
++++ b/src/nodes/display/ScreenNode.js
+@@ -93,7 +93,6 @@ class ScreenNode extends Node {
+ 	 * from the current renderer.
+ 	 *
+ 	 * @param {NodeFrame} frame - A reference to the current node frame.
+-	 * @return {Boolean?} An optional bool that indicates whether the implementation actually performed an update or not (e.g. due to caching).
+ 	 */
+ 	update( { renderer } ) {
+ 
+diff --git a/src/nodes/functions/BasicLightingModel.js b/src/nodes/functions/BasicLightingModel.js
+index 8eb728b3394523..e495320372b153 100644
+--- a/src/nodes/functions/BasicLightingModel.js
++++ b/src/nodes/functions/BasicLightingModel.js
+@@ -26,7 +26,7 @@ class BasicLightingModel extends LightingModel {
+ 	/**
+ 	 * Implements the baked indirect lighting with its modulation.
+ 	 *
+-	 * @param {ContextNode} input - The current node context.
++	 * @param {ContextNode} context - The current node context.
+ 	 * @param {StackNode} stack - The current stack.
+ 	 * @param {NodeBuilder} builder - The current node builder.
+ 	 */
+@@ -61,7 +61,7 @@ class BasicLightingModel extends LightingModel {
+ 	/**
+ 	 * Implements the environment mapping.
+ 	 *
+-	 * @param {ContextNode} input - The current node context.
++	 * @param {ContextNode} context - The current node context.
+ 	 * @param {StackNode} stack - The current stack.
+ 	 * @param {NodeBuilder} builder - The current node builder.
+ 	 */
+diff --git a/src/nodes/functions/PhysicalLightingModel.js b/src/nodes/functions/PhysicalLightingModel.js
+index 9d5b46ba03a037..9e0b41798e77c1 100644
+--- a/src/nodes/functions/PhysicalLightingModel.js
++++ b/src/nodes/functions/PhysicalLightingModel.js
+@@ -473,7 +473,7 @@ class PhysicalLightingModel extends LightingModel {
+ 	 * Depending on what features are requested, the method prepares certain node variables
+ 	 * which are later used for lighting computations.
+ 	 *
+-	 * @param {ContextNode} input - The current node context.
++	 * @param {ContextNode} context - The current node context.
+ 	 */
+ 	start( context ) {
+ 
+@@ -641,7 +641,7 @@ class PhysicalLightingModel extends LightingModel {
+ 	/**
+ 	 * Implements the indirect lighting.
+ 	 *
+-	 * @param {ContextNode} input - The current node context.
++	 * @param {ContextNode} context - The current node context.
+ 	 * @param {StackNode} stack - The current stack.
+ 	 * @param {NodeBuilder} builder - The current node builder.
+ 	 */
+@@ -758,7 +758,7 @@ class PhysicalLightingModel extends LightingModel {
+ 	/**
+ 	 * Used for final lighting accumulations depending on the requested features.
+ 	 *
+-	 * @param {ContextNode} input - The current node context.
++	 * @param {ContextNode} context - The current node context.
+ 	 * @param {StackNode} stack - The current stack.
+ 	 * @param {NodeBuilder} builder - The current node builder.
+ 	 */
+diff --git a/src/nodes/functions/ShadowMaskModel.js b/src/nodes/functions/ShadowMaskModel.js
+index 36c7a77dc9f7f1..19d6523d705573 100644
+--- a/src/nodes/functions/ShadowMaskModel.js
++++ b/src/nodes/functions/ShadowMaskModel.js
+@@ -39,7 +39,7 @@ class ShadowMaskModel extends LightingModel {
+ 	/**
+ 	 * Uses the shadow mask to produce the final color.
+ 	 *
+-	 * @param {ContextNode} input - The current node context.
++	 * @param {ContextNode} context - The current node context.
+ 	 */
+ 	finish( context ) {
+ 
+diff --git a/src/nodes/geometry/RangeNode.js b/src/nodes/geometry/RangeNode.js
+index a3786116de83ac..a7f8c2995774f3 100644
+--- a/src/nodes/geometry/RangeNode.js
++++ b/src/nodes/geometry/RangeNode.js
+@@ -62,6 +62,7 @@ class RangeNode extends Node {
+ 	/**
+ 	 * Returns the vector length which is computed based on the range definition.
+ 	 *
++	 * @param {NodeBuilder} builder - The current node builder.
+ 	 * @return {Number} The vector length.
+ 	 */
+ 	getVectorLength( builder ) {
+diff --git a/src/nodes/lighting/PointLightNode.js b/src/nodes/lighting/PointLightNode.js
+index a6348555e9063c..b6358f7c2bd3fa 100644
+--- a/src/nodes/lighting/PointLightNode.js
++++ b/src/nodes/lighting/PointLightNode.js
+@@ -90,6 +90,8 @@ class PointLightNode extends AnalyticLightNode {
+ 
+ 	/**
+ 	 * Overwritten to setup point light specific shadow.
++	 *
++	 * @return {Node}
+ 	 */
+ 	setupShadowNode() {
+ 
+diff --git a/src/nodes/pmrem/PMREMNode.js b/src/nodes/pmrem/PMREMNode.js
+index 84eb6b1115bf03..824e8fcfa12c6d 100644
+--- a/src/nodes/pmrem/PMREMNode.js
++++ b/src/nodes/pmrem/PMREMNode.js
+@@ -107,7 +107,7 @@ class PMREMNode extends TempNode {
+ 	/**
+ 	 * Constructs a new function overloading node.
+ 	 *
+-	 * @param {Texture} texture - The input texture.
++	 * @param {Texture} value - The input texture.
+ 	 * @param {Node<vec2>} [uvNode=null] - The uv node.
+ 	 * @param {Node<float>} [levelNode=null] - The level node.
+ 	 */
+@@ -203,6 +203,7 @@ class PMREMNode extends TempNode {
+ 	/**
+ 	 * The node's texture value.
+ 	 *
++	 * @param {Texture} value
+ 	 * @type {Texture}
+ 	 */
+ 	set value( value ) {
+diff --git a/src/nodes/utils/MaxMipLevelNode.js b/src/nodes/utils/MaxMipLevelNode.js
+index ba40cc3b4efe27..310321b9c3a213 100644
+--- a/src/nodes/utils/MaxMipLevelNode.js
++++ b/src/nodes/utils/MaxMipLevelNode.js
+@@ -23,7 +23,7 @@ class MaxMipLevelNode extends UniformNode {
+ 	/**
+ 	 * Constructs a new max mip level node.
+ 	 *
+-	 * @param {TextureNode} node - The texture node to compute the max mip level for.
++	 * @param {TextureNode} textureNode - The texture node to compute the max mip level for.
+ 	 */
+ 	constructor( textureNode ) {
+ 
+diff --git a/src/nodes/utils/Oscillators.js b/src/nodes/utils/Oscillators.js
+index bb8857193c358d..f1ab19ab1d72dc 100644
+--- a/src/nodes/utils/Oscillators.js
++++ b/src/nodes/utils/Oscillators.js
+@@ -6,7 +6,7 @@ import { time } from './Timer.js';
+  * Generates a sine wave oscillation based on a timer.
+  *
+  * @method
+- * @param {Node<float>} time - The timer to generate the oscillation with.
++ * @param {Node<float>} t - The timer to generate the oscillation with.
+  * @return {Node<float>} The oscillation node.
+  */
+ export const oscSine = ( t = time ) => t.add( 0.75 ).mul( Math.PI * 2 ).sin().mul( 0.5 ).add( 0.5 );
+@@ -15,7 +15,7 @@ export const oscSine = ( t = time ) => t.add( 0.75 ).mul( Math.PI * 2 ).sin().mu
+  * Generates a square wave oscillation based on a timer.
+  *
+  * @method
+- * @param {Node<float>} time - The timer to generate the oscillation with.
++ * @param {Node<float>} t - The timer to generate the oscillation with.
+  * @return {Node<float>} The oscillation node.
+  */
+ export const oscSquare = ( t = time ) => t.fract().round();
+@@ -24,7 +24,7 @@ export const oscSquare = ( t = time ) => t.fract().round();
+  * Generates a triangle wave oscillation based on a timer.
+  *
+  * @method
+- * @param {Node<float>} time - The timer to generate the oscillation with.
++ * @param {Node<float>} t - The timer to generate the oscillation with.
+  * @return {Node<float>} The oscillation node.
+  */
+ export const oscTriangle = ( t = time ) => t.add( 0.5 ).fract().mul( 2 ).sub( 1 ).abs();
+@@ -33,7 +33,7 @@ export const oscTriangle = ( t = time ) => t.add( 0.5 ).fract().mul( 2 ).sub( 1
+  * Generates a sawtooth wave oscillation based on a timer.
+  *
+  * @method
+- * @param {Node<float>} time - The timer to generate the oscillation with.
++ * @param {Node<float>} t - The timer to generate the oscillation with.
+  * @return {Node<float>} The oscillation node.
+  */
+ export const oscSawtooth = ( t = time ) => t.fract();
+diff --git a/src/nodes/utils/Packing.js b/src/nodes/utils/Packing.js
+index 81c7837f9748e2..6bef18ccb80328 100644
+--- a/src/nodes/utils/Packing.js
++++ b/src/nodes/utils/Packing.js
+@@ -15,7 +15,7 @@ export const directionToColor = ( node ) => nodeObject( node ).mul( 0.5 ).add( 0
+  * Unpacks a color value into a direction vector.
+  *
+  * @method
+- * @param {Node<vec3>} color - The color to unpack.
++ * @param {Node<vec3>} node - The color to unpack.
+  * @return {Node<vec3>} The direction.
+  */
+ export const colorToDirection = ( node ) => nodeObject( node ).mul( 2.0 ).sub( 1 );
+diff --git a/src/nodes/utils/RemapNode.js b/src/nodes/utils/RemapNode.js
+index 377f8e8bc092ca..4e87c7ef82bfe0 100644
+--- a/src/nodes/utils/RemapNode.js
++++ b/src/nodes/utils/RemapNode.js
+@@ -21,7 +21,7 @@ class RemapNode extends Node {
+ 	 *
+ 	 * @param {Node} node - The node that should be remapped.
+ 	 * @param {Node} inLowNode - The source or current lower bound of the range.
+-	 * @param {Node} inLowNode - The source or current upper bound of the range.
++	 * @param {Node} inHighNode - The source or current upper bound of the range.
+ 	 * @param {Node} [outLowNode=float(0)] - The target lower bound of the range.
+ 	 * @param {Node} [outHighNode=float(1)] - The target upper bound of the range.
+ 	 */
+diff --git a/src/nodes/utils/StorageArrayElementNode.js b/src/nodes/utils/StorageArrayElementNode.js
+index ded2ea41c24112..26748692be5bea 100644
+--- a/src/nodes/utils/StorageArrayElementNode.js
++++ b/src/nodes/utils/StorageArrayElementNode.js
+@@ -23,7 +23,7 @@ class StorageArrayElementNode extends ArrayElementNode {
+ 	/**
+ 	 * Constructs storage buffer element node.
+ 	 *
+-	 * @param {StorageBufferNode} node - The storage buffer node.
++	 * @param {StorageBufferNode} storageBufferNode - The storage buffer node.
+ 	 * @param {Node} indexNode - The index node that defines the element access.
+ 	 */
+ 	constructor( storageBufferNode, indexNode ) {
+@@ -44,6 +44,7 @@ class StorageArrayElementNode extends ArrayElementNode {
+ 	/**
+ 	 * The storage buffer node.
+ 	 *
++	 * @param {Node} value
+ 	 * @type {StorageBufferNode}
+ 	 */
+ 	set storageBufferNode( value ) {
+diff --git a/src/renderers/common/extras/PMREMGenerator.js b/src/renderers/common/extras/PMREMGenerator.js
+index def9fe20c5fa67..1f9d70a5b4e303 100644
+--- a/src/renderers/common/extras/PMREMGenerator.js
++++ b/src/renderers/common/extras/PMREMGenerator.js
+@@ -128,6 +128,13 @@ class PMREMGenerator {
+ 	 * in radians to be applied to the scene before PMREM generation. Optional near
+ 	 * and far planes ensure the scene is rendered in its entirety (the cubeCamera
+ 	 * is placed at the origin).
++	 *
++	 * @param {Scene} scene - The scene to be captured.
++	 * @param {Number} [sigma=0] - The blur radius in radians.
++	 * @param {Number} [near=0.1] - The near plane distance.
++	 * @param {Number} [far=100] - The far plane distance.
++	 * @param {RenderTarget?} [renderTarget=null] - The render target to use.
++	 * @return {RenderTarget} The resulting PMREM.
+ 	 */
+ 	fromScene( scene, sigma = 0, near = 0.1, far = 100, renderTarget = null ) {
+ 
+@@ -180,6 +187,10 @@ class PMREMGenerator {
+ 	 * Generates a PMREM from an equirectangular texture, which can be either LDR
+ 	 * or HDR. The ideal input image size is 1k (1024 x 512),
+ 	 * as this matches best with the 256 x 256 cubemap output.
++	 *
++	 * @param {Texture} equirectangular - The equirectangular texture to be converted.
++	 * @param {RenderTarget?} [renderTarget=null] - The render target to use.
++	 * @return {RenderTarget} The resulting PMREM.
+ 	 */
+ 	fromEquirectangular( equirectangular, renderTarget = null ) {
+ 
+@@ -213,6 +224,10 @@ class PMREMGenerator {
+ 	 * Generates a PMREM from an cubemap texture, which can be either LDR
+ 	 * or HDR. The ideal input cube size is 256 x 256,
+ 	 * as this matches best with the 256 x 256 cubemap output.
++	 *
++	 * @param {Texture} cubemap - The cubemap texture to be converted.
++	 * @param {RenderTarget?} [renderTarget=null] - The render target to use.
++	 * @return {RenderTarget} The resulting PMREM.
+ 	 */
+ 	fromCubemap( cubemap, renderTarget = null ) {
+ 
+@@ -562,6 +577,12 @@ class PMREMGenerator {
+ 	 * the blur latitudinally (around the poles), and then longitudinally (towards
+ 	 * the poles) to approximate the orthogonally-separable blur. It is least
+ 	 * accurate at the poles, but still does a decent job.
++	 *
++	 * @param {RenderTarget} cubeUVRenderTarget - The cubemap render target.
++	 * @param {Number} lodIn - The input level-of-detail.
++	 * @param {Number} lodOut - The output level-of-detail.
++	 * @param {Number} sigma - The blur radius in radians.
++	 * @param {Vector3} [poleAxis] - The pole axis.
+ 	 */
+ 	_blur( cubeUVRenderTarget, lodIn, lodOut, sigma, poleAxis ) {
+ 
+diff --git a/src/renderers/webxr/WebXRManager.js b/src/renderers/webxr/WebXRManager.js
+index 01a3e5e4b51314..60b7ba41f84185 100644
+--- a/src/renderers/webxr/WebXRManager.js
++++ b/src/renderers/webxr/WebXRManager.js
+@@ -457,6 +457,10 @@ class WebXRManager extends EventDispatcher {
+ 		 * the cameras' projection and world matrices have already been set.
+ 		 * And that near and far planes are identical for both cameras.
+ 		 * Visualization of this technique: https://computergraphics.stackexchange.com/a/4765
++		 *
++		 * @param {ArrayCamera} camera - The camera to update.
++		 * @param {PerspectiveCamera} cameraL - The left camera.
++		 * @param {PerspectiveCamera} cameraR - The right camera.
+ 		 */
+ 		function setProjectionFromUnion( camera, cameraL, cameraR ) {
+ 

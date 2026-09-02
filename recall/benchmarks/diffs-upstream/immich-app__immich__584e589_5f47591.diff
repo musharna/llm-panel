@@ -1,0 +1,1696 @@
+diff --git a/server/src/cores/storage.core.ts b/server/src/cores/storage.core.ts
+index 4cbf9631585dc..9985506f24b9f 100644
+--- a/server/src/cores/storage.core.ts
++++ b/server/src/cores/storage.core.ts
+@@ -2,7 +2,6 @@ import { randomUUID } from 'node:crypto';
+ import { dirname, join, resolve } from 'node:path';
+ import { APP_MEDIA_LOCATION } from 'src/constants';
+ import { AssetEntity } from 'src/entities/asset.entity';
+-import { PersonEntity } from 'src/entities/person.entity';
+ import { AssetFileType, AssetPathType, ImageFormat, PathType, PersonPathType, StorageFolder } from 'src/enum';
+ import { AssetRepository } from 'src/repositories/asset.repository';
+ import { ConfigRepository } from 'src/repositories/config.repository';
+@@ -85,7 +84,7 @@ export class StorageCore {
+     return join(APP_MEDIA_LOCATION, folder);
+   }
+ 
+-  static getPersonThumbnailPath(person: PersonEntity) {
++  static getPersonThumbnailPath(person: { id: string; ownerId: string }) {
+     return StorageCore.getNestedPath(StorageFolder.THUMBNAILS, person.ownerId, `${person.id}.jpeg`);
+   }
+ 
+@@ -135,7 +134,7 @@ export class StorageCore {
+     });
+   }
+ 
+-  async movePersonFile(person: PersonEntity, pathType: PersonPathType) {
++  async movePersonFile(person: { id: string; ownerId: string; thumbnailPath: string }, pathType: PersonPathType) {
+     const { id: entityId, thumbnailPath } = person;
+     switch (pathType) {
+       case PersonPathType.FACE: {
+diff --git a/server/src/database.ts b/server/src/database.ts
+index d6e63928047c7..38b3ca3a1dbc9 100644
+--- a/server/src/database.ts
++++ b/server/src/database.ts
+@@ -1,6 +1,15 @@
+ import { Selectable } from 'kysely';
+ import { Exif as DatabaseExif } from 'src/db';
+-import { AlbumUserRole, AssetFileType, AssetStatus, AssetType, MemoryType, Permission, UserStatus } from 'src/enum';
++import {
++  AlbumUserRole,
++  AssetFileType,
++  AssetStatus,
++  AssetType,
++  MemoryType,
++  Permission,
++  SourceType,
++  UserStatus,
++} from 'src/enum';
+ import { OnThisDayData, UserMetadataItem } from 'src/types';
+ 
+ export type AuthUser = {
+@@ -199,6 +208,36 @@ export type Session = {
+ 
+ export type Exif = Omit<Selectable<DatabaseExif>, 'updatedAt' | 'updateId'>;
+ 
++export type Person = {
++  createdAt: Date;
++  id: string;
++  ownerId: string;
++  updatedAt: Date;
++  updateId: string;
++  isFavorite: boolean;
++  name: string;
++  birthDate: Date | null;
++  color: string | null;
++  faceAssetId: string | null;
++  isHidden: boolean;
++  thumbnailPath: string;
++};
++
++export type AssetFace = {
++  id: string;
++  deletedAt: Date | null;
++  assetId: string;
++  boundingBoxX1: number;
++  boundingBoxX2: number;
++  boundingBoxY1: number;
++  boundingBoxY2: number;
++  imageHeight: number;
++  imageWidth: number;
++  personId: string | null;
++  sourceType: SourceType;
++  person?: Person | null;
++};
++
+ const userColumns = ['id', 'name', 'email', 'profileImagePath', 'profileChangedAt'] as const;
+ 
+ export const columns = {
+diff --git a/server/src/dtos/asset-response.dto.ts b/server/src/dtos/asset-response.dto.ts
+index b12a4378fed18..985ad04729007 100644
+--- a/server/src/dtos/asset-response.dto.ts
++++ b/server/src/dtos/asset-response.dto.ts
+@@ -1,4 +1,5 @@
+ import { ApiProperty } from '@nestjs/swagger';
++import { AssetFace } from 'src/database';
+ import { PropertyLifecycle } from 'src/decorators';
+ import { AuthDto } from 'src/dtos/auth.dto';
+ import { ExifResponseDto, mapExif } from 'src/dtos/exif.dto';
+@@ -10,7 +11,6 @@ import {
+ } from 'src/dtos/person.dto';
+ import { TagResponseDto, mapTag } from 'src/dtos/tag.dto';
+ import { UserResponseDto, mapUser } from 'src/dtos/user.dto';
+-import { AssetFaceEntity } from 'src/entities/asset-face.entity';
+ import { AssetEntity } from 'src/entities/asset.entity';
+ import { AssetType } from 'src/enum';
+ import { mimeTypes } from 'src/utils/mime-types';
+@@ -71,7 +71,8 @@ export type AssetMapOptions = {
+   auth?: AuthDto;
+ };
+ 
+-const peopleWithFaces = (faces: AssetFaceEntity[]): PersonWithFacesResponseDto[] => {
++// TODO: this is inefficient
++const peopleWithFaces = (faces: AssetFace[]): PersonWithFacesResponseDto[] => {
+   const result: PersonWithFacesResponseDto[] = [];
+   if (faces) {
+     for (const face of faces) {
+diff --git a/server/src/dtos/person.dto.ts b/server/src/dtos/person.dto.ts
+index 49f3416b9ad5e..90490715efc44 100644
+--- a/server/src/dtos/person.dto.ts
++++ b/server/src/dtos/person.dto.ts
+@@ -1,11 +1,12 @@
+ import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
+ import { Type } from 'class-transformer';
+ import { IsArray, IsInt, IsNotEmpty, IsNumber, IsString, Max, Min, ValidateNested } from 'class-validator';
++import { Selectable } from 'kysely';
+ import { DateTime } from 'luxon';
++import { AssetFace, Person } from 'src/database';
++import { AssetFaces } from 'src/db';
+ import { PropertyLifecycle } from 'src/decorators';
+ import { AuthDto } from 'src/dtos/auth.dto';
+-import { AssetFaceEntity } from 'src/entities/asset-face.entity';
+-import { PersonEntity } from 'src/entities/person.entity';
+ import { SourceType } from 'src/enum';
+ import { asDateString } from 'src/utils/date';
+ import {
+@@ -219,7 +220,7 @@ export class PeopleResponseDto {
+   hasNextPage?: boolean;
+ }
+ 
+-export function mapPerson(person: PersonEntity): PersonResponseDto {
++export function mapPerson(person: Person): PersonResponseDto {
+   return {
+     id: person.id,
+     name: person.name,
+@@ -232,7 +233,7 @@ export function mapPerson(person: PersonEntity): PersonResponseDto {
+   };
+ }
+ 
+-export function mapFacesWithoutPerson(face: AssetFaceEntity): AssetFaceWithoutPersonResponseDto {
++export function mapFacesWithoutPerson(face: Selectable<AssetFaces>): AssetFaceWithoutPersonResponseDto {
+   return {
+     id: face.id,
+     imageHeight: face.imageHeight,
+@@ -245,9 +246,16 @@ export function mapFacesWithoutPerson(face: AssetFaceEntity): AssetFaceWithoutPe
+   };
+ }
+ 
+-export function mapFaces(face: AssetFaceEntity, auth: AuthDto): AssetFaceResponseDto {
++export function mapFaces(face: AssetFace, auth: AuthDto): AssetFaceResponseDto {
+   return {
+-    ...mapFacesWithoutPerson(face),
++    id: face.id,
++    imageHeight: face.imageHeight,
++    imageWidth: face.imageWidth,
++    boundingBoxX1: face.boundingBoxX1,
++    boundingBoxX2: face.boundingBoxX2,
++    boundingBoxY1: face.boundingBoxY1,
++    boundingBoxY2: face.boundingBoxY2,
++    sourceType: face.sourceType,
+     person: face.person?.ownerId === auth.user.id ? mapPerson(face.person) : null,
+   };
+ }
+diff --git a/server/src/entities/asset-face.entity.ts b/server/src/entities/asset-face.entity.ts
+deleted file mode 100644
+index dddb6b0f3fdab..0000000000000
+--- a/server/src/entities/asset-face.entity.ts
++++ /dev/null
+@@ -1,21 +0,0 @@
+-import { AssetEntity } from 'src/entities/asset.entity';
+-import { FaceSearchEntity } from 'src/entities/face-search.entity';
+-import { PersonEntity } from 'src/entities/person.entity';
+-import { SourceType } from 'src/enum';
+-
+-export class AssetFaceEntity {
+-  id!: string;
+-  assetId!: string;
+-  personId!: string | null;
+-  faceSearch?: FaceSearchEntity;
+-  imageWidth!: number;
+-  imageHeight!: number;
+-  boundingBoxX1!: number;
+-  boundingBoxY1!: number;
+-  boundingBoxX2!: number;
+-  boundingBoxY2!: number;
+-  sourceType!: SourceType;
+-  asset!: AssetEntity;
+-  person!: PersonEntity | null;
+-  deletedAt!: Date | null;
+-}
+diff --git a/server/src/entities/asset.entity.ts b/server/src/entities/asset.entity.ts
+index 21ea8e3f08f4e..9cf04f8d3b9e6 100644
+--- a/server/src/entities/asset.entity.ts
++++ b/server/src/entities/asset.entity.ts
+@@ -1,9 +1,8 @@
+ import { DeduplicateJoinsPlugin, ExpressionBuilder, Kysely, SelectQueryBuilder, sql } from 'kysely';
+ import { jsonArrayFrom, jsonObjectFrom } from 'kysely/helpers/postgres';
+-import { AssetFile, Exif, Tag, User } from 'src/database';
++import { AssetFace, AssetFile, Exif, Tag, User } from 'src/database';
+ import { DB } from 'src/db';
+ import { AlbumEntity } from 'src/entities/album.entity';
+-import { AssetFaceEntity } from 'src/entities/asset-face.entity';
+ import { AssetJobStatusEntity } from 'src/entities/asset-job-status.entity';
+ import { SharedLinkEntity } from 'src/entities/shared-link.entity';
+ import { StackEntity } from 'src/entities/stack.entity';
+@@ -49,7 +48,7 @@ export class AssetEntity {
+   tags?: Tag[];
+   sharedLinks!: SharedLinkEntity[];
+   albums?: AlbumEntity[];
+-  faces!: AssetFaceEntity[];
++  faces!: AssetFace[];
+   stackId?: string | null;
+   stack?: StackEntity | null;
+   jobStatus?: AssetJobStatusEntity;
+diff --git a/server/src/entities/face-search.entity.ts b/server/src/entities/face-search.entity.ts
+deleted file mode 100644
+index 701fd9e5802f5..0000000000000
+--- a/server/src/entities/face-search.entity.ts
++++ /dev/null
+@@ -1,7 +0,0 @@
+-import { AssetFaceEntity } from 'src/entities/asset-face.entity';
+-
+-export class FaceSearchEntity {
+-  face?: AssetFaceEntity;
+-  faceId!: string;
+-  embedding!: string;
+-}
+diff --git a/server/src/entities/person.entity.ts b/server/src/entities/person.entity.ts
+deleted file mode 100644
+index 76174443f9aa8..0000000000000
+--- a/server/src/entities/person.entity.ts
++++ /dev/null
+@@ -1,18 +0,0 @@
+-import { AssetFaceEntity } from 'src/entities/asset-face.entity';
+-
+-export class PersonEntity {
+-  id!: string;
+-  createdAt!: Date;
+-  updatedAt!: Date;
+-  updateId?: string;
+-  ownerId!: string;
+-  name!: string;
+-  birthDate!: Date | string | null;
+-  thumbnailPath!: string;
+-  faceAssetId!: string | null;
+-  faceAsset!: AssetFaceEntity | null;
+-  faces!: AssetFaceEntity[];
+-  isHidden!: boolean;
+-  isFavorite!: boolean;
+-  color?: string | null;
+-}
+diff --git a/server/src/queries/person.repository.sql b/server/src/queries/person.repository.sql
+index e6868ae3024b4..8283b08f4f750 100644
+--- a/server/src/queries/person.repository.sql
++++ b/server/src/queries/person.repository.sql
+@@ -95,41 +95,105 @@ where
+   "asset_faces"."id" = $1
+   and "asset_faces"."deletedAt" is null
+ 
+--- PersonRepository.getFaceByIdWithAssets
++-- PersonRepository.getFaceForFacialRecognitionJob
+ select
+-  "asset_faces".*,
++  "asset_faces"."id",
++  "asset_faces"."personId",
++  "asset_faces"."sourceType",
+   (
+     select
+       to_json(obj)
+     from
+       (
+         select
+-          "person".*
++          "assets"."ownerId",
++          "assets"."isArchived",
++          "assets"."fileCreatedAt"
+         from
+-          "person"
++          "assets"
+         where
+-          "person"."id" = "asset_faces"."personId"
++          "assets"."id" = "asset_faces"."assetId"
+       ) as obj
+-  ) as "person",
++  ) as "asset",
+   (
+     select
+       to_json(obj)
+     from
+       (
+         select
+-          "assets".*
++          "face_search".*
+         from
+-          "assets"
++          "face_search"
+         where
+-          "assets"."id" = "asset_faces"."assetId"
++          "face_search"."faceId" = "asset_faces"."id"
+       ) as obj
+-  ) as "asset"
++  ) as "faceSearch"
+ from
+   "asset_faces"
+ where
+   "asset_faces"."id" = $1
+   and "asset_faces"."deletedAt" is null
+ 
++-- PersonRepository.getPersonForThumbnailGenerationJob
++select
++  "person"."id",
++  "person"."ownerId",
++  "person"."faceAssetId",
++  to_json("face") as "face"
++from
++  "person"
++  left join lateral (
++    select
++      "asset_faces"."boundingBoxX1",
++      "asset_faces"."boundingBoxY1",
++      "asset_faces"."boundingBoxX2",
++      "asset_faces"."boundingBoxY2",
++      "asset_faces"."imageWidth",
++      "asset_faces"."imageHeight",
++      to_json("asset") as "asset"
++    from
++      "asset_faces"
++      left join lateral (
++        select
++          "assets"."originalPath",
++          "assets"."type",
++          json_build_object(
++            'exifImageWidth',
++            "exif"."exifImageWidth",
++            'exifImageHeight',
++            "exif"."exifImageHeight"
++          ) as "exifInfo",
++          (
++            select
++              coalesce(json_agg(agg), '[]')
++            from
++              (
++                select
++                  "asset_files"."path",
++                  "asset_files"."type"
++                from
++                  "asset_files"
++                where
++                  "assets"."id" = "asset_files"."assetId"
++                  and "asset_files"."type" = $1
++                limit
++                  $2
++              ) as agg
++          ) as "files"
++        from
++          "assets"
++          inner join "exif" on "exif"."assetId" = "assets"."id"
++        where
++          "assets"."id" = "asset_faces"."assetId"
++      ) as "asset" on true
++    where
++      "asset_faces"."id" = "person"."faceAssetId"
++      and "asset_faces"."deletedAt" is null
++  ) as "face" on true
++where
++  "person"."id" = $3
++  and "person"."faceAssetId" is not null
++
+ -- PersonRepository.reassignFace
+ update "asset_faces"
+ set
+diff --git a/server/src/repositories/person.repository.ts b/server/src/repositories/person.repository.ts
+index 751f97fdeb78b..bb7f06e0de444 100644
+--- a/server/src/repositories/person.repository.ts
++++ b/server/src/repositories/person.repository.ts
+@@ -1,14 +1,12 @@
+ import { Injectable } from '@nestjs/common';
+-import { ExpressionBuilder, Insertable, Kysely, Selectable, sql } from 'kysely';
+-import { jsonObjectFrom } from 'kysely/helpers/postgres';
++import { ExpressionBuilder, Insertable, Kysely, Selectable, sql, Updateable } from 'kysely';
++import { jsonArrayFrom, jsonBuildObject, jsonObjectFrom } from 'kysely/helpers/postgres';
+ import { InjectKysely } from 'nestjs-kysely';
+ import { AssetFaces, DB, FaceSearch, Person } from 'src/db';
+ import { ChunkedArray, DummyValue, GenerateSql } from 'src/decorators';
+-import { AssetFaceEntity } from 'src/entities/asset-face.entity';
+-import { PersonEntity } from 'src/entities/person.entity';
+-import { SourceType } from 'src/enum';
+-import { removeUndefinedKeys } from 'src/utils/database';
+-import { Paginated, PaginationOptions } from 'src/utils/pagination';
++import { AssetFileType, SourceType } from 'src/enum';
++import { removeUndefinedKeys, toJson } from 'src/utils/database';
++import { PaginationOptions } from 'src/utils/pagination';
+ 
+ export interface PersonSearchOptions {
+   minimumFaceCount: number;
+@@ -49,6 +47,19 @@ export interface DeleteFacesOptions {
+   sourceType: SourceType;
+ }
+ 
++export interface GetAllPeopleOptions {
++  ownerId?: string;
++  thumbnailPath?: string;
++  faceAssetId?: string | null;
++  isHidden?: boolean;
++}
++
++export interface GetAllFacesOptions {
++  personId?: string | null;
++  assetId?: string;
++  sourceType?: SourceType;
++}
++
+ export type UnassignFacesOptions = DeleteFacesOptions;
+ 
+ export type SelectFaceOptions = (keyof Selectable<AssetFaces>)[];
+@@ -99,19 +110,12 @@ export class PersonRepository {
+   }
+ 
+   @GenerateSql({ params: [[{ id: DummyValue.UUID }]] })
+-  async delete(entities: PersonEntity[]): Promise<void> {
+-    if (entities.length === 0) {
++  async delete(ids: string[]): Promise<void> {
++    if (ids.length === 0) {
+       return;
+     }
+ 
+-    await this.db
+-      .deleteFrom('person')
+-      .where(
+-        'person.id',
+-        'in',
+-        entities.map(({ id }) => id),
+-      )
+-      .execute();
++    await this.db.deleteFrom('person').where('person.id', 'in', ids).execute();
+   }
+ 
+   @GenerateSql({ params: [{ sourceType: SourceType.EXIF }] })
+@@ -121,7 +125,7 @@ export class PersonRepository {
+     await this.vacuum({ reindexVectors: sourceType === SourceType.MACHINE_LEARNING });
+   }
+ 
+-  getAllFaces(options: Partial<AssetFaceEntity> = {}): AsyncIterableIterator<AssetFaceEntity> {
++  getAllFaces(options: GetAllFacesOptions | undefined = {}): AsyncIterableIterator<Selectable<AssetFaces>> {
+     return this.db
+       .selectFrom('asset_faces')
+       .selectAll('asset_faces')
+@@ -130,10 +134,10 @@ export class PersonRepository {
+       .$if(!!options.sourceType, (qb) => qb.where('asset_faces.sourceType', '=', options.sourceType!))
+       .$if(!!options.assetId, (qb) => qb.where('asset_faces.assetId', '=', options.assetId!))
+       .where('asset_faces.deletedAt', 'is', null)
+-      .stream() as AsyncIterableIterator<AssetFaceEntity>;
++      .stream();
+   }
+ 
+-  getAll(options: Partial<PersonEntity> = {}): AsyncIterableIterator<PersonEntity> {
++  getAll(options: GetAllPeopleOptions | undefined = {}) {
+     return this.db
+       .selectFrom('person')
+       .selectAll('person')
+@@ -142,15 +146,11 @@ export class PersonRepository {
+       .$if(options.faceAssetId === null, (qb) => qb.where('person.faceAssetId', 'is', null))
+       .$if(!!options.faceAssetId, (qb) => qb.where('person.faceAssetId', '=', options.faceAssetId!))
+       .$if(options.isHidden !== undefined, (qb) => qb.where('person.isHidden', '=', options.isHidden!))
+-      .stream() as AsyncIterableIterator<PersonEntity>;
++      .stream();
+   }
+ 
+-  async getAllForUser(
+-    pagination: PaginationOptions,
+-    userId: string,
+-    options?: PersonSearchOptions,
+-  ): Paginated<PersonEntity> {
+-    const items = (await this.db
++  async getAllForUser(pagination: PaginationOptions, userId: string, options?: PersonSearchOptions) {
++    const items = await this.db
+       .selectFrom('person')
+       .selectAll('person')
+       .innerJoin('asset_faces', 'asset_faces.personId', 'person.id')
+@@ -198,7 +198,7 @@ export class PersonRepository {
+       .$if(!options?.withHidden, (qb) => qb.where('person.isHidden', '=', false))
+       .offset(pagination.skip ?? 0)
+       .limit(pagination.take + 1)
+-      .execute()) as PersonEntity[];
++      .execute();
+ 
+     if (items.length > pagination.take) {
+       return { items: items.slice(0, -1), hasNextPage: true };
+@@ -208,7 +208,7 @@ export class PersonRepository {
+   }
+ 
+   @GenerateSql()
+-  getAllWithoutFaces(): Promise<PersonEntity[]> {
++  getAllWithoutFaces() {
+     return this.db
+       .selectFrom('person')
+       .selectAll('person')
+@@ -216,11 +216,11 @@ export class PersonRepository {
+       .where('asset_faces.deletedAt', 'is', null)
+       .having((eb) => eb.fn.count('asset_faces.assetId'), '=', 0)
+       .groupBy('person.id')
+-      .execute() as Promise<PersonEntity[]>;
++      .execute();
+   }
+ 
+   @GenerateSql({ params: [DummyValue.UUID] })
+-  getFaces(assetId: string): Promise<AssetFaceEntity[]> {
++  getFaces(assetId: string) {
+     return this.db
+       .selectFrom('asset_faces')
+       .selectAll('asset_faces')
+@@ -228,11 +228,11 @@ export class PersonRepository {
+       .where('asset_faces.assetId', '=', assetId)
+       .where('asset_faces.deletedAt', 'is', null)
+       .orderBy('asset_faces.boundingBoxX1', 'asc')
+-      .execute() as Promise<AssetFaceEntity[]>;
++      .execute();
+   }
+ 
+   @GenerateSql({ params: [DummyValue.UUID] })
+-  getFaceById(id: string): Promise<AssetFaceEntity> {
++  getFaceById(id: string) {
+     // TODO return null instead of find or fail
+     return this.db
+       .selectFrom('asset_faces')
+@@ -240,25 +240,81 @@ export class PersonRepository {
+       .select(withPerson)
+       .where('asset_faces.id', '=', id)
+       .where('asset_faces.deletedAt', 'is', null)
+-      .executeTakeFirstOrThrow() as Promise<AssetFaceEntity>;
++      .executeTakeFirstOrThrow();
+   }
+ 
+   @GenerateSql({ params: [DummyValue.UUID] })
+-  getFaceByIdWithAssets(
+-    id: string,
+-    relations?: { faceSearch?: boolean },
+-    select?: SelectFaceOptions,
+-  ): Promise<AssetFaceEntity | undefined> {
++  getFaceForFacialRecognitionJob(id: string) {
+     return this.db
+       .selectFrom('asset_faces')
+-      .$if(!!select, (qb) => qb.select(select!))
+-      .$if(!select, (qb) => qb.selectAll('asset_faces'))
+-      .select(withPerson)
+-      .select(withAsset)
+-      .$if(!!relations?.faceSearch, (qb) => qb.select(withFaceSearch))
++      .select(['asset_faces.id', 'asset_faces.personId', 'asset_faces.sourceType'])
++      .select((eb) =>
++        jsonObjectFrom(
++          eb
++            .selectFrom('assets')
++            .select(['assets.ownerId', 'assets.isArchived', 'assets.fileCreatedAt'])
++            .whereRef('assets.id', '=', 'asset_faces.assetId'),
++        ).as('asset'),
++      )
++      .select(withFaceSearch)
+       .where('asset_faces.id', '=', id)
+       .where('asset_faces.deletedAt', 'is', null)
+-      .executeTakeFirst() as Promise<AssetFaceEntity | undefined>;
++      .executeTakeFirst();
++  }
++
++  @GenerateSql({ params: [DummyValue.UUID] })
++  getPersonForThumbnailGenerationJob(id: string) {
++    return this.db
++      .selectFrom('person')
++      .leftJoinLateral(
++        (eb) =>
++          eb
++            .selectFrom('asset_faces')
++            .leftJoinLateral(
++              (eb) =>
++                eb
++                  .selectFrom('assets')
++                  .innerJoin('exif', 'exif.assetId', 'assets.id')
++                  .select(['assets.originalPath', 'assets.type'])
++                  .select((eb) =>
++                    jsonBuildObject({
++                      exifImageWidth: eb.ref('exif.exifImageWidth'),
++                      exifImageHeight: eb.ref('exif.exifImageHeight'),
++                    }).as('exifInfo'),
++                  )
++                  .select((eb) =>
++                    jsonArrayFrom(
++                      eb
++                        .selectFrom('asset_files')
++                        .select(['asset_files.path', 'asset_files.type'])
++                        .whereRef('assets.id', '=', 'asset_files.assetId')
++                        .where('asset_files.type', '=', AssetFileType.PREVIEW)
++                        .limit(1),
++                    ).as('files'),
++                  )
++                  .whereRef('assets.id', '=', 'asset_faces.assetId')
++                  .as('asset'),
++              (join) => join.onTrue(),
++            )
++            .select([
++              'asset_faces.boundingBoxX1',
++              'asset_faces.boundingBoxY1',
++              'asset_faces.boundingBoxX2',
++              'asset_faces.boundingBoxY2',
++              'asset_faces.imageWidth',
++              'asset_faces.imageHeight',
++            ])
++            .select((eb) => toJson(eb, 'asset').as('asset'))
++            .whereRef('asset_faces.id', '=', 'person.faceAssetId')
++            .where('asset_faces.deletedAt', 'is', null)
++            .as('face'),
++        (join) => join.onTrue(),
++      )
++      .select(['person.id', 'person.ownerId', 'person.faceAssetId'])
++      .select((eb) => toJson(eb, 'face').as('face'))
++      .where('person.id', '=', id)
++      .where('person.faceAssetId', 'is not', null)
++      .executeTakeFirst();
+   }
+ 
+   @GenerateSql({ params: [DummyValue.UUID, DummyValue.UUID] })
+@@ -272,16 +328,18 @@ export class PersonRepository {
+     return Number(result.numChangedRows ?? 0);
+   }
+ 
+-  getById(personId: string): Promise<PersonEntity | null> {
+-    return (this.db //
+-      .selectFrom('person')
+-      .selectAll('person')
+-      .where('person.id', '=', personId)
+-      .executeTakeFirst() ?? null) as Promise<PersonEntity | null>;
++  getById(personId: string) {
++    return (
++      this.db //
++        .selectFrom('person')
++        .selectAll('person')
++        .where('person.id', '=', personId)
++        .executeTakeFirst() ?? null
++    );
+   }
+ 
+   @GenerateSql({ params: [DummyValue.UUID, DummyValue.STRING, { withHidden: true }] })
+-  getByName(userId: string, personName: string, { withHidden }: PersonNameSearchOptions): Promise<PersonEntity[]> {
++  getByName(userId: string, personName: string, { withHidden }: PersonNameSearchOptions) {
+     return this.db
+       .selectFrom('person')
+       .selectAll('person')
+@@ -296,7 +354,7 @@ export class PersonRepository {
+       )
+       .limit(1000)
+       .$if(!withHidden, (qb) => qb.where('person.isHidden', '=', false))
+-      .execute() as Promise<PersonEntity[]>;
++      .execute();
+   }
+ 
+   @GenerateSql({ params: [DummyValue.UUID, { withHidden: true }] })
+@@ -362,8 +420,8 @@ export class PersonRepository {
+     };
+   }
+ 
+-  create(person: Insertable<Person>): Promise<PersonEntity> {
+-    return this.db.insertInto('person').values(person).returningAll().executeTakeFirst() as Promise<PersonEntity>;
++  create(person: Insertable<Person>) {
++    return this.db.insertInto('person').values(person).returningAll().executeTakeFirstOrThrow();
+   }
+ 
+   async createAll(people: Insertable<Person>[]): Promise<string[]> {
+@@ -399,13 +457,13 @@ export class PersonRepository {
+     await query.selectFrom(sql`(select 1)`.as('dummy')).execute();
+   }
+ 
+-  async update(person: Partial<PersonEntity> & { id: string }): Promise<PersonEntity> {
++  async update(person: Updateable<Person> & { id: string }) {
+     return this.db
+       .updateTable('person')
+       .set(person)
+       .where('person.id', '=', person.id)
+       .returningAll()
+-      .executeTakeFirstOrThrow() as Promise<PersonEntity>;
++      .executeTakeFirstOrThrow();
+   }
+ 
+   async updateAll(people: Insertable<Person>[]): Promise<void> {
+@@ -437,7 +495,7 @@ export class PersonRepository {
+ 
+   @GenerateSql({ params: [[{ assetId: DummyValue.UUID, personId: DummyValue.UUID }]] })
+   @ChunkedArray()
+-  getFacesByIds(ids: AssetFaceId[]): Promise<AssetFaceEntity[]> {
++  getFacesByIds(ids: AssetFaceId[]) {
+     if (ids.length === 0) {
+       return Promise.resolve([]);
+     }
+@@ -457,17 +515,17 @@ export class PersonRepository {
+       .where('asset_faces.assetId', 'in', assetIds)
+       .where('asset_faces.personId', 'in', personIds)
+       .where('asset_faces.deletedAt', 'is', null)
+-      .execute() as Promise<AssetFaceEntity[]>;
++      .execute();
+   }
+ 
+   @GenerateSql({ params: [DummyValue.UUID] })
+-  getRandomFace(personId: string): Promise<AssetFaceEntity | undefined> {
++  getRandomFace(personId: string) {
+     return this.db
+       .selectFrom('asset_faces')
+       .selectAll('asset_faces')
+       .where('asset_faces.personId', '=', personId)
+       .where('asset_faces.deletedAt', 'is', null)
+-      .executeTakeFirst() as Promise<AssetFaceEntity | undefined>;
++      .executeTakeFirst();
+   }
+ 
+   @GenerateSql()
+diff --git a/server/src/repositories/search.repository.ts b/server/src/repositories/search.repository.ts
+index 736eb6dcc18d2..5a6785af2d468 100644
+--- a/server/src/repositories/search.repository.ts
++++ b/server/src/repositories/search.repository.ts
+@@ -162,7 +162,7 @@ export interface FaceEmbeddingSearch extends SearchEmbeddingOptions {
+   hasPerson?: boolean;
+   numResults: number;
+   maxDistance: number;
+-  minBirthDate?: Date;
++  minBirthDate?: Date | null;
+ }
+ 
+ export interface AssetDuplicateSearch {
+diff --git a/server/src/services/metadata.service.ts b/server/src/services/metadata.service.ts
+index 273165b5aec09..3bf0c6d5c78f1 100644
+--- a/server/src/services/metadata.service.ts
++++ b/server/src/services/metadata.service.ts
+@@ -9,11 +9,9 @@ import { constants } from 'node:fs/promises';
+ import path from 'node:path';
+ import { JOBS_ASSET_PAGINATION_SIZE } from 'src/constants';
+ import { StorageCore } from 'src/cores/storage.core';
+-import { Exif } from 'src/db';
++import { AssetFaces, Exif, Person } from 'src/db';
+ import { OnEvent, OnJob } from 'src/decorators';
+-import { AssetFaceEntity } from 'src/entities/asset-face.entity';
+ import { AssetEntity } from 'src/entities/asset.entity';
+-import { PersonEntity } from 'src/entities/person.entity';
+ import {
+   AssetType,
+   DatabaseLock,
+@@ -587,10 +585,10 @@ export class MetadataService extends BaseService {
+       return;
+     }
+ 
+-    const facesToAdd: (Partial<AssetFaceEntity> & { assetId: string })[] = [];
++    const facesToAdd: (Insertable<AssetFaces> & { assetId: string })[] = [];
+     const existingNames = await this.personRepository.getDistinctNames(asset.ownerId, { withHidden: true });
+     const existingNameMap = new Map(existingNames.map(({ id, name }) => [name.toLowerCase(), id]));
+-    const missing: (Partial<PersonEntity> & { ownerId: string })[] = [];
++    const missing: (Insertable<Person> & { ownerId: string })[] = [];
+     const missingWithFaceAsset: { id: string; ownerId: string; faceAssetId: string }[] = [];
+     for (const region of tags.RegionInfo.RegionList) {
+       if (!region.Name) {
+diff --git a/server/src/services/person.service.spec.ts b/server/src/services/person.service.spec.ts
+index 7012bc538bc57..d77f276d2268c 100644
+--- a/server/src/services/person.service.spec.ts
++++ b/server/src/services/person.service.spec.ts
+@@ -1,7 +1,7 @@
+ import { BadRequestException, NotFoundException } from '@nestjs/common';
++import { AssetFace } from 'src/database';
+ import { BulkIdErrorReason } from 'src/dtos/asset-ids.response.dto';
+ import { mapFaces, mapPerson, PersonResponseDto } from 'src/dtos/person.dto';
+-import { AssetFaceEntity } from 'src/entities/asset-face.entity';
+ import { CacheControl, Colorspace, ImageFormat, JobName, JobStatus, SourceType, SystemMetadataKey } from 'src/enum';
+ import { WithoutProperty } from 'src/repositories/asset.repository';
+ import { DetectedFaces } from 'src/repositories/machine-learning.repository';
+@@ -11,7 +11,7 @@ import { ImmichFileResponse } from 'src/utils/file';
+ import { assetStub } from 'test/fixtures/asset.stub';
+ import { authStub } from 'test/fixtures/auth.stub';
+ import { faceStub } from 'test/fixtures/face.stub';
+-import { personStub } from 'test/fixtures/person.stub';
++import { personStub, personThumbnailStub } from 'test/fixtures/person.stub';
+ import { systemConfigStub } from 'test/fixtures/system-config.stub';
+ import { factory } from 'test/small.factory';
+ import { makeStream, newTestService, ServiceMocks } from 'test/utils';
+@@ -24,6 +24,7 @@ const responseDto: PersonResponseDto = {
+   isHidden: false,
+   updatedAt: expect.any(Date),
+   isFavorite: false,
++  color: expect.any(String),
+ };
+ 
+ const statistics = { assets: 3 };
+@@ -90,6 +91,7 @@ describe(PersonService.name, () => {
+             isHidden: true,
+             isFavorite: false,
+             updatedAt: expect.any(Date),
++            color: expect.any(String),
+           },
+         ],
+       });
+@@ -118,6 +120,7 @@ describe(PersonService.name, () => {
+             isHidden: false,
+             isFavorite: true,
+             updatedAt: expect.any(Date),
++            color: personStub.isFavorite.color,
+           },
+           responseDto,
+         ],
+@@ -137,7 +140,6 @@ describe(PersonService.name, () => {
+     });
+ 
+     it('should throw a bad request when person is not found', async () => {
+-      mocks.person.getById.mockResolvedValue(null);
+       mocks.access.person.checkOwnerAccess.mockResolvedValue(new Set(['person-1']));
+       await expect(sut.getById(authStub.admin, 'person-1')).rejects.toBeInstanceOf(BadRequestException);
+       expect(mocks.access.person.checkOwnerAccess).toHaveBeenCalledWith(authStub.admin.user.id, new Set(['person-1']));
+@@ -161,7 +163,6 @@ describe(PersonService.name, () => {
+     });
+ 
+     it('should throw an error when personId is invalid', async () => {
+-      mocks.person.getById.mockResolvedValue(null);
+       mocks.access.person.checkOwnerAccess.mockResolvedValue(new Set(['person-1']));
+       await expect(sut.getThumbnail(authStub.admin, 'person-1')).rejects.toBeInstanceOf(NotFoundException);
+       expect(mocks.storage.createReadStream).not.toHaveBeenCalled();
+@@ -231,6 +232,7 @@ describe(PersonService.name, () => {
+         isHidden: false,
+         isFavorite: false,
+         updatedAt: expect.any(Date),
++        color: expect.any(String),
+       });
+       expect(mocks.person.update).toHaveBeenCalledWith({ id: 'person-1', birthDate: new Date('1976-06-30') });
+       expect(mocks.job.queue).not.toHaveBeenCalled();
+@@ -346,7 +348,6 @@ describe(PersonService.name, () => {
+ 
+   describe('handlePersonMigration', () => {
+     it('should not move person files', async () => {
+-      mocks.person.getById.mockResolvedValue(null);
+       await expect(sut.handlePersonMigration(personStub.noName)).resolves.toBe(JobStatus.FAILED);
+     });
+   });
+@@ -400,6 +401,7 @@ describe(PersonService.name, () => {
+         name: personStub.noName.name,
+         thumbnailPath: personStub.noName.thumbnailPath,
+         updatedAt: expect.any(Date),
++        color: personStub.noName.color,
+       });
+ 
+       expect(mocks.job.queue).not.toHaveBeenCalledWith();
+@@ -438,7 +440,7 @@ describe(PersonService.name, () => {
+ 
+       await sut.handlePersonCleanup();
+ 
+-      expect(mocks.person.delete).toHaveBeenCalledWith([personStub.noName]);
++      expect(mocks.person.delete).toHaveBeenCalledWith([personStub.noName.id]);
+       expect(mocks.storage.unlink).toHaveBeenCalledWith(personStub.noName.thumbnailPath);
+     });
+   });
+@@ -480,7 +482,7 @@ describe(PersonService.name, () => {
+       await sut.handleQueueDetectFaces({ force: true });
+ 
+       expect(mocks.person.deleteFaces).toHaveBeenCalledWith({ sourceType: SourceType.MACHINE_LEARNING });
+-      expect(mocks.person.delete).toHaveBeenCalledWith([personStub.withName]);
++      expect(mocks.person.delete).toHaveBeenCalledWith([personStub.withName.id]);
+       expect(mocks.storage.unlink).toHaveBeenCalledWith(personStub.withName.thumbnailPath);
+       expect(mocks.asset.getAll).toHaveBeenCalled();
+       expect(mocks.job.queueAll).toHaveBeenCalledWith([
+@@ -531,7 +533,7 @@ describe(PersonService.name, () => {
+           data: { id: assetStub.image.id },
+         },
+       ]);
+-      expect(mocks.person.delete).toHaveBeenCalledWith([personStub.randomPerson]);
++      expect(mocks.person.delete).toHaveBeenCalledWith([personStub.randomPerson.id]);
+       expect(mocks.storage.unlink).toHaveBeenCalledWith(personStub.randomPerson.thumbnailPath);
+     });
+   });
+@@ -698,7 +700,7 @@ describe(PersonService.name, () => {
+           data: { id: faceStub.face1.id, deferred: false },
+         },
+       ]);
+-      expect(mocks.person.delete).toHaveBeenCalledWith([personStub.randomPerson]);
++      expect(mocks.person.delete).toHaveBeenCalledWith([personStub.randomPerson.id]);
+       expect(mocks.storage.unlink).toHaveBeenCalledWith(personStub.randomPerson.thumbnailPath);
+     });
+   });
+@@ -731,7 +733,7 @@ describe(PersonService.name, () => {
+               id: 'asset-face-1',
+               assetId: assetStub.noResizePath.id,
+               personId: faceStub.face1.personId,
+-            } as AssetFaceEntity,
++            } as AssetFace,
+           ],
+         },
+       ]);
+@@ -848,8 +850,8 @@ describe(PersonService.name, () => {
+     });
+ 
+     it('should fail if face does not have asset', async () => {
+-      const face = { ...faceStub.face1, asset: null } as AssetFaceEntity & { asset: null };
+-      mocks.person.getFaceByIdWithAssets.mockResolvedValue(face);
++      const face = { ...faceStub.face1, asset: null };
++      mocks.person.getFaceForFacialRecognitionJob.mockResolvedValue(face);
+ 
+       expect(await sut.handleRecognizeFaces({ id: faceStub.face1.id })).toBe(JobStatus.FAILED);
+ 
+@@ -858,7 +860,7 @@ describe(PersonService.name, () => {
+     });
+ 
+     it('should skip if face already has an assigned person', async () => {
+-      mocks.person.getFaceByIdWithAssets.mockResolvedValue(faceStub.face1);
++      mocks.person.getFaceForFacialRecognitionJob.mockResolvedValue(faceStub.face1);
+ 
+       expect(await sut.handleRecognizeFaces({ id: faceStub.face1.id })).toBe(JobStatus.SKIPPED);
+ 
+@@ -880,7 +882,7 @@ describe(PersonService.name, () => {
+ 
+       mocks.systemMetadata.get.mockResolvedValue({ machineLearning: { facialRecognition: { minFaces: 1 } } });
+       mocks.search.searchFaces.mockResolvedValue(faces);
+-      mocks.person.getFaceByIdWithAssets.mockResolvedValue(faceStub.noPerson1);
++      mocks.person.getFaceForFacialRecognitionJob.mockResolvedValue(faceStub.noPerson1);
+       mocks.person.create.mockResolvedValue(faceStub.primaryFace1.person);
+ 
+       await sut.handleRecognizeFaces({ id: faceStub.noPerson1.id });
+@@ -910,7 +912,7 @@ describe(PersonService.name, () => {
+ 
+       mocks.systemMetadata.get.mockResolvedValue({ machineLearning: { facialRecognition: { minFaces: 1 } } });
+       mocks.search.searchFaces.mockResolvedValue(faces);
+-      mocks.person.getFaceByIdWithAssets.mockResolvedValue(faceStub.noPerson1);
++      mocks.person.getFaceForFacialRecognitionJob.mockResolvedValue(faceStub.noPerson1);
+       mocks.person.create.mockResolvedValue(faceStub.primaryFace1.person);
+ 
+       await sut.handleRecognizeFaces({ id: faceStub.noPerson1.id });
+@@ -940,7 +942,7 @@ describe(PersonService.name, () => {
+ 
+       mocks.systemMetadata.get.mockResolvedValue({ machineLearning: { facialRecognition: { minFaces: 1 } } });
+       mocks.search.searchFaces.mockResolvedValue(faces);
+-      mocks.person.getFaceByIdWithAssets.mockResolvedValue(faceStub.noPerson1);
++      mocks.person.getFaceForFacialRecognitionJob.mockResolvedValue(faceStub.noPerson1);
+       mocks.person.create.mockResolvedValue(faceStub.primaryFace1.person);
+ 
+       await sut.handleRecognizeFaces({ id: faceStub.noPerson1.id });
+@@ -965,7 +967,7 @@ describe(PersonService.name, () => {
+ 
+       mocks.systemMetadata.get.mockResolvedValue({ machineLearning: { facialRecognition: { minFaces: 1 } } });
+       mocks.search.searchFaces.mockResolvedValue(faces);
+-      mocks.person.getFaceByIdWithAssets.mockResolvedValue(faceStub.noPerson1);
++      mocks.person.getFaceForFacialRecognitionJob.mockResolvedValue(faceStub.noPerson1);
+       mocks.person.create.mockResolvedValue(personStub.withName);
+ 
+       await sut.handleRecognizeFaces({ id: faceStub.noPerson1.id });
+@@ -984,7 +986,7 @@ describe(PersonService.name, () => {
+       const faces = [{ ...faceStub.noPerson1, distance: 0 }] as FaceSearchResult[];
+ 
+       mocks.search.searchFaces.mockResolvedValue(faces);
+-      mocks.person.getFaceByIdWithAssets.mockResolvedValue(faceStub.noPerson1);
++      mocks.person.getFaceForFacialRecognitionJob.mockResolvedValue(faceStub.noPerson1);
+       mocks.person.create.mockResolvedValue(personStub.withName);
+ 
+       await sut.handleRecognizeFaces({ id: faceStub.noPerson1.id });
+@@ -1003,7 +1005,7 @@ describe(PersonService.name, () => {
+ 
+       mocks.systemMetadata.get.mockResolvedValue({ machineLearning: { facialRecognition: { minFaces: 3 } } });
+       mocks.search.searchFaces.mockResolvedValue(faces);
+-      mocks.person.getFaceByIdWithAssets.mockResolvedValue(faceStub.noPerson1);
++      mocks.person.getFaceForFacialRecognitionJob.mockResolvedValue(faceStub.noPerson1);
+       mocks.person.create.mockResolvedValue(personStub.withName);
+ 
+       await sut.handleRecognizeFaces({ id: faceStub.noPerson1.id });
+@@ -1025,7 +1027,7 @@ describe(PersonService.name, () => {
+ 
+       mocks.systemMetadata.get.mockResolvedValue({ machineLearning: { facialRecognition: { minFaces: 3 } } });
+       mocks.search.searchFaces.mockResolvedValueOnce(faces).mockResolvedValueOnce([]);
+-      mocks.person.getFaceByIdWithAssets.mockResolvedValue(faceStub.noPerson1);
++      mocks.person.getFaceForFacialRecognitionJob.mockResolvedValue(faceStub.noPerson1);
+       mocks.person.create.mockResolvedValue(personStub.withName);
+ 
+       await sut.handleRecognizeFaces({ id: faceStub.noPerson1.id, deferred: true });
+@@ -1047,7 +1049,6 @@ describe(PersonService.name, () => {
+     });
+ 
+     it('should skip a person not found', async () => {
+-      mocks.person.getById.mockResolvedValue(null);
+       await sut.handleGeneratePersonThumbnail({ id: 'person-1' });
+       expect(mocks.media.generateThumbnail).not.toHaveBeenCalled();
+     });
+@@ -1058,30 +1059,25 @@ describe(PersonService.name, () => {
+       expect(mocks.media.generateThumbnail).not.toHaveBeenCalled();
+     });
+ 
+-    it('should skip a person with a face asset id not found', async () => {
+-      mocks.person.getById.mockResolvedValue({ ...personStub.primaryPerson, faceAssetId: faceStub.middle.id });
+-      mocks.person.getFaceByIdWithAssets.mockResolvedValue(faceStub.face1);
++    it('should skip a person with face not found', async () => {
++      mocks.person.getPersonForThumbnailGenerationJob.mockResolvedValue(personThumbnailStub.noFace);
+       await sut.handleGeneratePersonThumbnail({ id: 'person-1' });
+       expect(mocks.media.generateThumbnail).not.toHaveBeenCalled();
+     });
+ 
+-    it('should skip a person with a face asset id without a thumbnail', async () => {
+-      mocks.person.getById.mockResolvedValue({ ...personStub.primaryPerson, faceAssetId: faceStub.middle.assetId });
+-      mocks.person.getFaceByIdWithAssets.mockResolvedValue(faceStub.face1);
+-      mocks.asset.getByIds.mockResolvedValue([assetStub.noResizePath]);
++    it('should skip a person with a face asset without a thumbnail', async () => {
++      mocks.person.getPersonForThumbnailGenerationJob.mockResolvedValue(personThumbnailStub.noPreview);
+       await sut.handleGeneratePersonThumbnail({ id: 'person-1' });
+       expect(mocks.media.generateThumbnail).not.toHaveBeenCalled();
+     });
+ 
+     it('should generate a thumbnail', async () => {
+-      mocks.person.getById.mockResolvedValue({ ...personStub.primaryPerson, faceAssetId: faceStub.middle.assetId });
+-      mocks.person.getFaceByIdWithAssets.mockResolvedValue(faceStub.middle);
+-      mocks.asset.getById.mockResolvedValue(assetStub.primaryImage);
++      mocks.person.getPersonForThumbnailGenerationJob.mockResolvedValue(personThumbnailStub.newThumbnailMiddle);
+       mocks.media.generateThumbnail.mockResolvedValue();
+ 
+       await sut.handleGeneratePersonThumbnail({ id: personStub.primaryPerson.id });
+ 
+-      expect(mocks.asset.getById).toHaveBeenCalledWith(faceStub.middle.assetId, { exifInfo: true, files: true });
++      expect(mocks.person.getPersonForThumbnailGenerationJob).toHaveBeenCalledWith(personStub.primaryPerson.id);
+       expect(mocks.storage.mkdirSync).toHaveBeenCalledWith('upload/thumbs/admin_id/pe/rs');
+       expect(mocks.media.generateThumbnail).toHaveBeenCalledWith(
+         assetStub.primaryImage.originalPath,
+@@ -1107,9 +1103,7 @@ describe(PersonService.name, () => {
+     });
+ 
+     it('should generate a thumbnail without going negative', async () => {
+-      mocks.person.getById.mockResolvedValue({ ...personStub.primaryPerson, faceAssetId: faceStub.start.assetId });
+-      mocks.person.getFaceByIdWithAssets.mockResolvedValue(faceStub.start);
+-      mocks.asset.getById.mockResolvedValue(assetStub.image);
++      mocks.person.getPersonForThumbnailGenerationJob.mockResolvedValue(personThumbnailStub.newThumbnailStart);
+       mocks.media.generateThumbnail.mockResolvedValue();
+ 
+       await sut.handleGeneratePersonThumbnail({ id: personStub.primaryPerson.id });
+@@ -1134,10 +1128,8 @@ describe(PersonService.name, () => {
+     });
+ 
+     it('should generate a thumbnail without overflowing', async () => {
+-      mocks.person.getById.mockResolvedValue({ ...personStub.primaryPerson, faceAssetId: faceStub.end.assetId });
+-      mocks.person.getFaceByIdWithAssets.mockResolvedValue(faceStub.end);
++      mocks.person.getPersonForThumbnailGenerationJob.mockResolvedValue(personThumbnailStub.newThumbnailEnd);
+       mocks.person.update.mockResolvedValue(personStub.primaryPerson);
+-      mocks.asset.getById.mockResolvedValue(assetStub.primaryImage);
+       mocks.media.generateThumbnail.mockResolvedValue();
+ 
+       await sut.handleGeneratePersonThumbnail({ id: personStub.primaryPerson.id });
+@@ -1220,7 +1212,6 @@ describe(PersonService.name, () => {
+     });
+ 
+     it('should throw an error when the primary person is not found', async () => {
+-      mocks.person.getById.mockResolvedValue(null);
+       mocks.access.person.checkOwnerAccess.mockResolvedValue(new Set(['person-1']));
+ 
+       await expect(sut.mergePerson(authStub.admin, 'person-1', { ids: ['person-2'] })).rejects.toBeInstanceOf(
+@@ -1233,7 +1224,6 @@ describe(PersonService.name, () => {
+ 
+     it('should handle invalid merge ids', async () => {
+       mocks.person.getById.mockResolvedValueOnce(personStub.primaryPerson);
+-      mocks.person.getById.mockResolvedValueOnce(null);
+       mocks.access.person.checkOwnerAccess.mockResolvedValueOnce(new Set(['person-1']));
+       mocks.access.person.checkOwnerAccess.mockResolvedValueOnce(new Set(['person-2']));
+ 
+diff --git a/server/src/services/person.service.ts b/server/src/services/person.service.ts
+index ec412ad30768b..0fa85f9ed6dcd 100644
+--- a/server/src/services/person.service.ts
++++ b/server/src/services/person.service.ts
+@@ -1,6 +1,8 @@
+ import { BadRequestException, Injectable, NotFoundException } from '@nestjs/common';
++import { Insertable, Updateable } from 'kysely';
+ import { FACE_THUMBNAIL_SIZE, JOBS_ASSET_PAGINATION_SIZE } from 'src/constants';
+ import { StorageCore } from 'src/cores/storage.core';
++import { AssetFaces, FaceSearch, Person } from 'src/db';
+ import { Chunked, OnJob } from 'src/decorators';
+ import { BulkIdErrorReason, BulkIdResponseDto } from 'src/dtos/asset-ids.response.dto';
+ import { AuthDto } from 'src/dtos/auth.dto';
+@@ -21,10 +23,6 @@ import {
+   PersonStatisticsResponseDto,
+   PersonUpdateDto,
+ } from 'src/dtos/person.dto';
+-import { AssetFaceEntity } from 'src/entities/asset-face.entity';
+-import { AssetEntity } from 'src/entities/asset.entity';
+-import { FaceSearchEntity } from 'src/entities/face-search.entity';
+-import { PersonEntity } from 'src/entities/person.entity';
+ import {
+   AssetFileType,
+   AssetType,
+@@ -243,9 +241,9 @@ export class PersonService extends BaseService {
+   }
+ 
+   @Chunked()
+-  private async delete(people: PersonEntity[]) {
++  private async delete(people: { id: string; thumbnailPath: string }[]) {
+     await Promise.all(people.map((person) => this.storageRepository.unlink(person.thumbnailPath)));
+-    await this.personRepository.delete(people);
++    await this.personRepository.delete(people.map((person) => person.id));
+     this.logger.debug(`Deleted ${people.length} people`);
+   }
+ 
+@@ -317,8 +315,8 @@ export class PersonService extends BaseService {
+     );
+     this.logger.debug(`${faces.length} faces detected in ${previewFile.path}`);
+ 
+-    const facesToAdd: (Partial<AssetFaceEntity> & { id: string; assetId: string })[] = [];
+-    const embeddings: FaceSearchEntity[] = [];
++    const facesToAdd: (Insertable<AssetFaces> & { id: string })[] = [];
++    const embeddings: FaceSearch[] = [];
+     const mlFaceIds = new Set<string>();
+     for (const face of asset.faces) {
+       if (face.sourceType === SourceType.MACHINE_LEARNING) {
+@@ -377,7 +375,10 @@ export class PersonService extends BaseService {
+     return JobStatus.SUCCESS;
+   }
+ 
+-  private iou(face: AssetFaceEntity, newBox: BoundingBox): number {
++  private iou(
++    face: { boundingBoxX1: number; boundingBoxY1: number; boundingBoxX2: number; boundingBoxY2: number },
++    newBox: BoundingBox,
++  ): number {
+     const x1 = Math.max(face.boundingBoxX1, newBox.x1);
+     const y1 = Math.max(face.boundingBoxY1, newBox.y1);
+     const x2 = Math.min(face.boundingBoxX2, newBox.x2);
+@@ -453,11 +454,7 @@ export class PersonService extends BaseService {
+       return JobStatus.SKIPPED;
+     }
+ 
+-    const face = await this.personRepository.getFaceByIdWithAssets(id, { faceSearch: true }, [
+-      'id',
+-      'personId',
+-      'sourceType',
+-    ]);
++    const face = await this.personRepository.getFaceForFacialRecognitionJob(id);
+     if (!face || !face.asset) {
+       this.logger.warn(`Face ${id} not found`);
+       return JobStatus.FAILED;
+@@ -551,34 +548,24 @@ export class PersonService extends BaseService {
+       return JobStatus.SKIPPED;
+     }
+ 
+-    const person = await this.personRepository.getById(data.id);
+-    if (!person?.faceAssetId) {
+-      this.logger.error(`Could not generate person thumbnail: person ${person?.id} has no face asset`);
+-      return JobStatus.FAILED;
+-    }
+-
+-    const face = await this.personRepository.getFaceByIdWithAssets(person.faceAssetId);
+-    if (!face) {
+-      this.logger.error(`Could not generate person thumbnail: face ${person.faceAssetId} not found`);
++    const person = await this.personRepository.getPersonForThumbnailGenerationJob(data.id);
++    if (!person?.face?.asset) {
++      this.logger.error(`Could not generate person thumbnail: person ${person} has no face asset`);
+       return JobStatus.FAILED;
+     }
+ 
+     const {
+-      assetId,
++      asset,
+       boundingBoxX1: x1,
+       boundingBoxX2: x2,
+       boundingBoxY1: y1,
+       boundingBoxY2: y2,
+       imageWidth: oldWidth,
+       imageHeight: oldHeight,
+-    } = face;
++    } = person.face;
+ 
+-    const asset = await this.assetRepository.getById(assetId, {
+-      exifInfo: true,
+-      files: true,
+-    });
+-    if (!asset) {
+-      this.logger.error(`Could not generate person thumbnail: asset ${assetId} does not exist`);
++    if (asset.files.length === 0) {
++      this.logger.error(`Could not generate person thumbnail: asset ${asset.originalPath} has no preview`);
+       return JobStatus.FAILED;
+     }
+ 
+@@ -634,7 +621,7 @@ export class PersonService extends BaseService {
+           continue;
+         }
+ 
+-        const update: Partial<PersonEntity> = {};
++        const update: Updateable<Person> & { id: string } = { id: primaryPerson.id };
+         if (!primaryPerson.name && mergePerson.name) {
+           update.name = mergePerson.name;
+         }
+@@ -644,7 +631,7 @@ export class PersonService extends BaseService {
+         }
+ 
+         if (Object.keys(update).length > 0) {
+-          primaryPerson = await this.personRepository.update({ id: primaryPerson.id, ...update });
++          primaryPerson = await this.personRepository.update(update);
+         }
+ 
+         const mergeName = mergePerson.name || mergePerson.id;
+@@ -672,14 +659,17 @@ export class PersonService extends BaseService {
+     return person;
+   }
+ 
+-  private async getInputDimensions(asset: AssetEntity, oldDims: ImageDimensions): Promise<InputDimensions> {
+-    if (!asset.exifInfo?.exifImageHeight || !asset.exifInfo.exifImageWidth) {
+-      throw new Error(`Asset ${asset.id} dimensions are unknown`);
+-    }
+-
+-    const previewFile = getAssetFile(asset.files, AssetFileType.PREVIEW);
+-    if (!previewFile) {
+-      throw new Error(`Asset ${asset.id} has no preview path`);
++  private async getInputDimensions(
++    asset: {
++      type: AssetType;
++      exifInfo: { exifImageWidth: number | null; exifImageHeight: number | null };
++      originalPath: string;
++      files: { path: string; type: AssetFileType }[];
++    },
++    oldDims: ImageDimensions,
++  ): Promise<InputDimensions> {
++    if (!asset.exifInfo.exifImageHeight || !asset.exifInfo.exifImageWidth) {
++      throw new Error(`Asset ${asset.originalPath} dimensions are unknown`);
+     }
+ 
+     if (asset.type === AssetType.IMAGE) {
+@@ -691,6 +681,11 @@ export class PersonService extends BaseService {
+       return { width, height, inputPath: asset.originalPath };
+     }
+ 
++    const previewFile = getAssetFile(asset.files, AssetFileType.PREVIEW);
++    if (!previewFile) {
++      throw new Error(`Asset ${asset.originalPath} has no preview path`);
++    }
++
+     const { width, height } = await this.mediaRepository.getImageDimensions(previewFile.path);
+     return { width, height, inputPath: previewFile.path };
+   }
+diff --git a/server/src/utils/database.ts b/server/src/utils/database.ts
+index 8e07f388a05dd..69e4acaf02880 100644
+--- a/server/src/utils/database.ts
++++ b/server/src/utils/database.ts
+@@ -1,4 +1,4 @@
+-import { Expression, sql } from 'kysely';
++import { Expression, ExpressionBuilder, ExpressionWrapper, Nullable, Selectable, Simplify, sql } from 'kysely';
+ 
+ export const asUuid = (id: string | Expression<string>) => sql<string>`${id}::uuid`;
+ 
+@@ -17,3 +17,25 @@ export const removeUndefinedKeys = <T extends object>(update: T, template: unkno
+ 
+   return update;
+ };
++
++/** Modifies toJson return type to not set all properties as nullable */
++export function toJson<DB, TB extends keyof DB & string, T extends TB | Expression<unknown>>(
++  eb: ExpressionBuilder<DB, TB>,
++  table: T,
++) {
++  return eb.fn.toJson<T>(table) as ExpressionWrapper<
++    DB,
++    TB,
++    Simplify<
++      T extends TB
++        ? Selectable<DB[T]> extends Nullable<infer N>
++          ? N | null
++          : Selectable<DB[T]>
++        : T extends Expression<infer O>
++          ? O extends Nullable<infer N>
++            ? N | null
++            : O
++          : never
++    >
++  >;
++}
+diff --git a/server/test/fixtures/asset.stub.ts b/server/test/fixtures/asset.stub.ts
+index 2d7bdc0fe7e58..b388c31e73bc2 100644
+--- a/server/test/fixtures/asset.stub.ts
++++ b/server/test/fixtures/asset.stub.ts
+@@ -7,7 +7,7 @@ import { authStub } from 'test/fixtures/auth.stub';
+ import { fileStub } from 'test/fixtures/file.stub';
+ import { userStub } from 'test/fixtures/user.stub';
+ 
+-const previewFile: AssetFile = {
++export const previewFile: AssetFile = {
+   id: 'file-1',
+   type: AssetFileType.PREVIEW,
+   path: '/uploads/user-id/thumbs/path.jpg',
+diff --git a/server/test/fixtures/face.stub.ts b/server/test/fixtures/face.stub.ts
+index 37fab86962dcd..fe5cbb9a56708 100644
+--- a/server/test/fixtures/face.stub.ts
++++ b/server/test/fixtures/face.stub.ts
+@@ -1,15 +1,17 @@
+-import { AssetFaceEntity } from 'src/entities/asset-face.entity';
+ import { SourceType } from 'src/enum';
+ import { assetStub } from 'test/fixtures/asset.stub';
+ import { personStub } from 'test/fixtures/person.stub';
+ 
+-type NonNullableProperty<T> = { [P in keyof T]: NonNullable<T[P]> };
+-
+ export const faceStub = {
+-  face1: Object.freeze<NonNullableProperty<AssetFaceEntity>>({
++  face1: Object.freeze({
+     id: 'assetFaceId1',
+     assetId: assetStub.image.id,
+-    asset: assetStub.image,
++    asset: {
++      ...assetStub.image,
++      libraryId: null,
++      updateId: '0d1173e3-4d80-4d76-b41e-57d56de21125',
++      stackId: null,
++    },
+     personId: personStub.withName.id,
+     person: personStub.withName,
+     boundingBoxX1: 0,
+@@ -22,7 +24,7 @@ export const faceStub = {
+     faceSearch: { faceId: 'assetFaceId1', embedding: '[1, 2, 3, 4]' },
+     deletedAt: new Date(),
+   }),
+-  primaryFace1: Object.freeze<AssetFaceEntity>({
++  primaryFace1: Object.freeze({
+     id: 'assetFaceId2',
+     assetId: assetStub.image.id,
+     asset: assetStub.image,
+@@ -38,7 +40,7 @@ export const faceStub = {
+     faceSearch: { faceId: 'assetFaceId2', embedding: '[1, 2, 3, 4]' },
+     deletedAt: null,
+   }),
+-  mergeFace1: Object.freeze<AssetFaceEntity>({
++  mergeFace1: Object.freeze({
+     id: 'assetFaceId3',
+     assetId: assetStub.image.id,
+     asset: assetStub.image,
+@@ -54,55 +56,7 @@ export const faceStub = {
+     faceSearch: { faceId: 'assetFaceId3', embedding: '[1, 2, 3, 4]' },
+     deletedAt: null,
+   }),
+-  start: Object.freeze<AssetFaceEntity>({
+-    id: 'assetFaceId5',
+-    assetId: assetStub.image.id,
+-    asset: assetStub.image,
+-    personId: personStub.newThumbnail.id,
+-    person: personStub.newThumbnail,
+-    boundingBoxX1: 5,
+-    boundingBoxY1: 5,
+-    boundingBoxX2: 505,
+-    boundingBoxY2: 505,
+-    imageHeight: 2880,
+-    imageWidth: 2160,
+-    sourceType: SourceType.MACHINE_LEARNING,
+-    faceSearch: { faceId: 'assetFaceId5', embedding: '[1, 2, 3, 4]' },
+-    deletedAt: null,
+-  }),
+-  middle: Object.freeze<AssetFaceEntity>({
+-    id: 'assetFaceId6',
+-    assetId: assetStub.image.id,
+-    asset: assetStub.image,
+-    personId: personStub.newThumbnail.id,
+-    person: personStub.newThumbnail,
+-    boundingBoxX1: 100,
+-    boundingBoxY1: 100,
+-    boundingBoxX2: 200,
+-    boundingBoxY2: 200,
+-    imageHeight: 500,
+-    imageWidth: 400,
+-    sourceType: SourceType.MACHINE_LEARNING,
+-    faceSearch: { faceId: 'assetFaceId6', embedding: '[1, 2, 3, 4]' },
+-    deletedAt: null,
+-  }),
+-  end: Object.freeze<AssetFaceEntity>({
+-    id: 'assetFaceId7',
+-    assetId: assetStub.image.id,
+-    asset: assetStub.image,
+-    personId: personStub.newThumbnail.id,
+-    person: personStub.newThumbnail,
+-    boundingBoxX1: 300,
+-    boundingBoxY1: 300,
+-    boundingBoxX2: 495,
+-    boundingBoxY2: 495,
+-    imageHeight: 500,
+-    imageWidth: 500,
+-    sourceType: SourceType.MACHINE_LEARNING,
+-    faceSearch: { faceId: 'assetFaceId7', embedding: '[1, 2, 3, 4]' },
+-    deletedAt: null,
+-  }),
+-  noPerson1: Object.freeze<AssetFaceEntity>({
++  noPerson1: Object.freeze({
+     id: 'assetFaceId8',
+     assetId: assetStub.image.id,
+     asset: assetStub.image,
+@@ -118,7 +72,7 @@ export const faceStub = {
+     faceSearch: { faceId: 'assetFaceId8', embedding: '[1, 2, 3, 4]' },
+     deletedAt: null,
+   }),
+-  noPerson2: Object.freeze<AssetFaceEntity>({
++  noPerson2: Object.freeze({
+     id: 'assetFaceId9',
+     assetId: assetStub.image.id,
+     asset: assetStub.image,
+@@ -134,7 +88,7 @@ export const faceStub = {
+     faceSearch: { faceId: 'assetFaceId9', embedding: '[1, 2, 3, 4]' },
+     deletedAt: null,
+   }),
+-  fromExif1: Object.freeze<AssetFaceEntity>({
++  fromExif1: Object.freeze({
+     id: 'assetFaceId9',
+     assetId: assetStub.image.id,
+     asset: assetStub.image,
+@@ -149,7 +103,7 @@ export const faceStub = {
+     sourceType: SourceType.EXIF,
+     deletedAt: null,
+   }),
+-  fromExif2: Object.freeze<AssetFaceEntity>({
++  fromExif2: Object.freeze({
+     id: 'assetFaceId9',
+     assetId: assetStub.image.id,
+     asset: assetStub.image,
+@@ -164,7 +118,7 @@ export const faceStub = {
+     sourceType: SourceType.EXIF,
+     deletedAt: null,
+   }),
+-  withBirthDate: Object.freeze<AssetFaceEntity>({
++  withBirthDate: Object.freeze({
+     id: 'assetFaceId10',
+     assetId: assetStub.image.id,
+     asset: assetStub.image,
+diff --git a/server/test/fixtures/person.stub.ts b/server/test/fixtures/person.stub.ts
+index 3d5e031216895..3a7220bd326f6 100644
+--- a/server/test/fixtures/person.stub.ts
++++ b/server/test/fixtures/person.stub.ts
+@@ -1,11 +1,15 @@
+-import { PersonEntity } from 'src/entities/person.entity';
++import { AssetType } from 'src/enum';
++import { previewFile } from 'test/fixtures/asset.stub';
+ import { userStub } from 'test/fixtures/user.stub';
+ 
++const updateId = '0d1173e3-4d80-4d76-b41e-57d56de21125';
++
+ export const personStub = {
+-  noName: Object.freeze<PersonEntity>({
++  noName: Object.freeze({
+     id: 'person-1',
+     createdAt: new Date('2021-01-01'),
+     updatedAt: new Date('2021-01-01'),
++    updateId,
+     ownerId: userStub.admin.id,
+     name: '',
+     birthDate: null,
+@@ -15,11 +19,13 @@ export const personStub = {
+     faceAsset: null,
+     isHidden: false,
+     isFavorite: false,
++    color: 'red',
+   }),
+-  hidden: Object.freeze<PersonEntity>({
++  hidden: Object.freeze({
+     id: 'person-1',
+     createdAt: new Date('2021-01-01'),
+     updatedAt: new Date('2021-01-01'),
++    updateId,
+     ownerId: userStub.admin.id,
+     name: '',
+     birthDate: null,
+@@ -29,11 +35,13 @@ export const personStub = {
+     faceAsset: null,
+     isHidden: true,
+     isFavorite: false,
++    color: 'red',
+   }),
+-  withName: Object.freeze<PersonEntity>({
++  withName: Object.freeze({
+     id: 'person-1',
+     createdAt: new Date('2021-01-01'),
+     updatedAt: new Date('2021-01-01'),
++    updateId,
+     ownerId: userStub.admin.id,
+     name: 'Person 1',
+     birthDate: null,
+@@ -43,25 +51,29 @@ export const personStub = {
+     faceAsset: null,
+     isHidden: false,
+     isFavorite: false,
++    color: 'red',
+   }),
+-  withBirthDate: Object.freeze<PersonEntity>({
++  withBirthDate: Object.freeze({
+     id: 'person-1',
+     createdAt: new Date('2021-01-01'),
+     updatedAt: new Date('2021-01-01'),
++    updateId,
+     ownerId: userStub.admin.id,
+     name: 'Person 1',
+-    birthDate: '1976-06-30',
++    birthDate: new Date('1976-06-30'),
+     thumbnailPath: '/path/to/thumbnail.jpg',
+     faces: [],
+     faceAssetId: null,
+     faceAsset: null,
+     isHidden: false,
+     isFavorite: false,
++    color: 'red',
+   }),
+-  noThumbnail: Object.freeze<PersonEntity>({
++  noThumbnail: Object.freeze({
+     id: 'person-1',
+     createdAt: new Date('2021-01-01'),
+     updatedAt: new Date('2021-01-01'),
++    updateId,
+     ownerId: userStub.admin.id,
+     name: '',
+     birthDate: null,
+@@ -71,11 +83,13 @@ export const personStub = {
+     faceAsset: null,
+     isHidden: false,
+     isFavorite: false,
++    color: 'red',
+   }),
+-  newThumbnail: Object.freeze<PersonEntity>({
++  newThumbnail: Object.freeze({
+     id: 'person-1',
+     createdAt: new Date('2021-01-01'),
+     updatedAt: new Date('2021-01-01'),
++    updateId,
+     ownerId: userStub.admin.id,
+     name: '',
+     birthDate: null,
+@@ -85,11 +99,13 @@ export const personStub = {
+     faceAsset: null,
+     isHidden: false,
+     isFavorite: false,
++    color: 'red',
+   }),
+-  primaryPerson: Object.freeze<PersonEntity>({
++  primaryPerson: Object.freeze({
+     id: 'person-1',
+     createdAt: new Date('2021-01-01'),
+     updatedAt: new Date('2021-01-01'),
++    updateId,
+     ownerId: userStub.admin.id,
+     name: 'Person 1',
+     birthDate: null,
+@@ -99,11 +115,13 @@ export const personStub = {
+     faceAsset: null,
+     isHidden: false,
+     isFavorite: false,
++    color: 'red',
+   }),
+-  mergePerson: Object.freeze<PersonEntity>({
++  mergePerson: Object.freeze({
+     id: 'person-2',
+     createdAt: new Date('2021-01-01'),
+     updatedAt: new Date('2021-01-01'),
++    updateId,
+     ownerId: userStub.admin.id,
+     name: 'Person 2',
+     birthDate: null,
+@@ -113,11 +131,13 @@ export const personStub = {
+     faceAsset: null,
+     isHidden: false,
+     isFavorite: false,
++    color: 'red',
+   }),
+-  randomPerson: Object.freeze<PersonEntity>({
++  randomPerson: Object.freeze({
+     id: 'person-3',
+     createdAt: new Date('2021-01-01'),
+     updatedAt: new Date('2021-01-01'),
++    updateId,
+     ownerId: userStub.admin.id,
+     name: '',
+     birthDate: null,
+@@ -127,11 +147,13 @@ export const personStub = {
+     faceAsset: null,
+     isHidden: false,
+     isFavorite: false,
++    color: 'red',
+   }),
+-  isFavorite: Object.freeze<PersonEntity>({
++  isFavorite: Object.freeze({
+     id: 'person-4',
+     createdAt: new Date('2021-01-01'),
+     updatedAt: new Date('2021-01-01'),
++    updateId,
+     ownerId: userStub.admin.id,
+     name: 'Person 1',
+     birthDate: null,
+@@ -141,5 +163,103 @@ export const personStub = {
+     faceAsset: null,
+     isHidden: false,
+     isFavorite: true,
++    color: 'red',
++  }),
++};
++
++export const personThumbnailStub = {
++  noFace: Object.freeze({
++    id: 'person-1',
++    ownerId: userStub.admin.id,
++    faceAssetId: 'asset-id',
++    face: null,
++  }),
++  noPreview: Object.freeze({
++    id: 'person-1',
++    ownerId: userStub.admin.id,
++    faceAssetId: 'asset-id',
++    face: Object.freeze({
++      boundingBoxX1: 5,
++      boundingBoxY1: 5,
++      boundingBoxX2: 505,
++      boundingBoxY2: 505,
++      imageHeight: 2880,
++      imageWidth: 2160,
++      asset: {
++        type: AssetType.IMAGE,
++        originalPath: '/original/path.jpg',
++        exifInfo: {
++          exifImageHeight: 3840,
++          exifImageWidth: 2160,
++        },
++        files: [],
++      },
++    }),
++  }),
++  newThumbnailStart: Object.freeze({
++    id: 'person-1',
++    ownerId: userStub.admin.id,
++    faceAssetId: 'asset-id',
++    face: Object.freeze({
++      boundingBoxX1: 5,
++      boundingBoxY1: 5,
++      boundingBoxX2: 505,
++      boundingBoxY2: 505,
++      imageHeight: 2880,
++      imageWidth: 2160,
++      asset: {
++        type: AssetType.IMAGE,
++        originalPath: '/original/path.jpg',
++        exifInfo: {
++          exifImageHeight: 3840,
++          exifImageWidth: 2160,
++        },
++        files: [{ path: previewFile.path, type: previewFile.type }],
++      },
++    }),
++  }),
++  newThumbnailMiddle: Object.freeze({
++    id: 'person-1',
++    ownerId: userStub.admin.id,
++    faceAssetId: 'asset-id',
++    face: Object.freeze({
++      boundingBoxX1: 100,
++      boundingBoxY1: 100,
++      boundingBoxX2: 200,
++      boundingBoxY2: 200,
++      imageHeight: 500,
++      imageWidth: 400,
++      asset: {
++        type: AssetType.IMAGE,
++        originalPath: '/original/path.jpg',
++        exifInfo: {
++          exifImageHeight: 1000,
++          exifImageWidth: 1000,
++        },
++        files: [{ path: previewFile.path, type: previewFile.type }],
++      },
++    }),
++  }),
++  newThumbnailEnd: Object.freeze({
++    id: 'person-1',
++    ownerId: userStub.admin.id,
++    faceAssetId: 'asset-id',
++    face: Object.freeze({
++      boundingBoxX1: 300,
++      boundingBoxY1: 300,
++      boundingBoxX2: 495,
++      boundingBoxY2: 495,
++      imageHeight: 500,
++      imageWidth: 500,
++      asset: {
++        type: AssetType.IMAGE,
++        originalPath: '/original/path.jpg',
++        exifInfo: {
++          exifImageHeight: 1000,
++          exifImageWidth: 1000,
++        },
++        files: [{ path: previewFile.path, type: previewFile.type }],
++      },
++    }),
+   }),
+ };
+diff --git a/server/test/repositories/person.repository.mock.ts b/server/test/repositories/person.repository.mock.ts
+index 80a6a25c74966..669a377434913 100644
+--- a/server/test/repositories/person.repository.mock.ts
++++ b/server/test/repositories/person.repository.mock.ts
+@@ -14,7 +14,8 @@ export const newPersonRepositoryMock = (): Mocked<RepositoryInterface<PersonRepo
+     getAllWithoutFaces: vitest.fn(),
+     getFaces: vitest.fn(),
+     getFaceById: vitest.fn(),
+-    getFaceByIdWithAssets: vitest.fn(),
++    getFaceForFacialRecognitionJob: vitest.fn(),
++    getPersonForThumbnailGenerationJob: vitest.fn(),
+     reassignFace: vitest.fn(),
+     getById: vitest.fn(),
+     getByName: vitest.fn(),

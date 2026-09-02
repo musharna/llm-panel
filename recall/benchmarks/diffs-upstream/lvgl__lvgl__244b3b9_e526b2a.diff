@@ -1,0 +1,1338 @@
+diff --git a/docs/src/details/auxiliary-modules/observer/observer.rst b/docs/src/details/auxiliary-modules/observer/observer.rst
+index 2289569052e1..86c0a41ebe84 100644
+--- a/docs/src/details/auxiliary-modules/observer/observer.rst
++++ b/docs/src/details/auxiliary-modules/observer/observer.rst
+@@ -361,13 +361,18 @@ integer value:
+ 
+ - flag (or OR-ed combination of flags) from from the ``LV_OBJ_FLAG_...`` enumeration values;
+ - state (or OR-ed combination of states) from the ``LV_STATE_...`` enumeration values;
+-- text value for Label Widgets;
++- text value for
++
++    - Label
++    - Span;
++
+ - integer value for these Widget types:
+ 
+     - Arc
+     - Drop-Down
+     - Roller
+     - Slider
++    - Scale Section Min/Max value
+ 
+ Any number of Observers can be created for a single Widget, each bound to ONE of
+ the above properties.
+@@ -507,6 +512,15 @@ If ``NULL`` is passed for the ``format_string`` argument:
+ **Example:**  "%d |deg|\C"
+ 
+ 
++Spangroup's Span
++~~~~~~~~~~~~~~~~
++
++Very similarly to Label Text binding a Span's text can be bound to a subject as well.
++
++The only difference is that in the bind function both the spangroup and the span needs to be specified:
++
++ :cpp:expr:`lv_spangroup_bind_span_text(spangroup, span1, &subject, format_string)`
++
+ Arc Widgets
+ ~~~~~~~~~~~
+ 
+@@ -559,9 +573,23 @@ It support only integer subjects.
+ 
+ - :cpp:expr:`lv_dropdown_bind_value(dropdown, &subject)`
+ 
++Scale's Section
++~~~~~~~~~~~~~~~
++
++This method of subscribing to an integer Subject affects a Section of a Scale Widget's integer
++minimum or maximum values directly.  Note that this is a one way binding (Subject ==> Widget)
++as the Scale Section's are not interactive.
++(Requires :c:macro:`LV_USE_SCALE` to be configured to ``1``.)
++
++It support only integer subjects.
++
++- :cpp:expr:`lv_scale_bind_section_min_value(scale, section1, &subject)`
++- :cpp:expr:`lv_scale_bind_section_max_value(scale, section1, &subject)`
++
+ 
+ .. _change_subject_on_event:
+ 
++
+ Change Subject on Event
+ -----------------------
+ 
+diff --git a/src/core/lv_obj.c b/src/core/lv_obj.c
+index c53298935eab..8b4edf8e0b6c 100644
+--- a/src/core/lv_obj.c
++++ b/src/core/lv_obj.c
+@@ -73,7 +73,6 @@ static void null_on_delete_cb(lv_event_t * e);
+ static void screen_load_on_trigger_event_cb(lv_event_t * e);
+ static void screen_create_on_trigger_event_cb(lv_event_t * e);
+ static void play_timeline_on_trigger_event_cb(lv_event_t * e);
+-static void free_user_data_on_delete_event_cb(lv_event_t * e);
+ static void delete_on_screen_unloaded_event_cb(lv_event_t * e);
+ 
+ #if LV_USE_OBJ_PROPERTY
+@@ -508,7 +507,7 @@ void lv_obj_add_screen_load_event(lv_obj_t * obj, lv_event_code_t trigger, lv_ob
+     dsc->target.screen = screen;
+ 
+     lv_obj_add_event_cb(obj, screen_load_on_trigger_event_cb, trigger, dsc);
+-    lv_obj_add_event_cb(obj, free_user_data_on_delete_event_cb, LV_EVENT_DELETE, dsc);
++    lv_obj_add_event_cb(obj, lv_event_free_user_data_cb, LV_EVENT_DELETE, dsc);
+ }
+ 
+ void lv_obj_add_screen_create_event(lv_obj_t * obj, lv_event_code_t trigger, lv_screen_create_cb_t screen_create_cb,
+@@ -523,7 +522,7 @@ void lv_obj_add_screen_create_event(lv_obj_t * obj, lv_event_code_t trigger, lv_
+     dsc->target.create_cb = screen_create_cb;
+ 
+     lv_obj_add_event_cb(obj, screen_create_on_trigger_event_cb, trigger, dsc);
+-    lv_obj_add_event_cb(obj, free_user_data_on_delete_event_cb, LV_EVENT_DELETE, dsc);
++    lv_obj_add_event_cb(obj, lv_event_free_user_data_cb, LV_EVENT_DELETE, dsc);
+ }
+ 
+ void lv_obj_add_play_timeline_event(lv_obj_t * obj, lv_event_code_t trigger, lv_anim_timeline_t * at, uint32_t delay,
+@@ -537,7 +536,7 @@ void lv_obj_add_play_timeline_event(lv_obj_t * obj, lv_event_code_t trigger, lv_
+     dsc->reverse = reverse;
+ 
+     lv_obj_add_event_cb(obj, play_timeline_on_trigger_event_cb, trigger, dsc);
+-    lv_obj_add_event_cb(obj, free_user_data_on_delete_event_cb, LV_EVENT_DELETE, dsc);
++    lv_obj_add_event_cb(obj, lv_event_free_user_data_cb, LV_EVENT_DELETE, dsc);
+ }
+ 
+ void lv_obj_set_user_data(lv_obj_t * obj, void * user_data)
+@@ -1156,10 +1155,6 @@ static void play_timeline_on_trigger_event_cb(lv_event_t * e)
+     lv_anim_timeline_start(dsc->at);
+ }
+ 
+-static void free_user_data_on_delete_event_cb(lv_event_t * e)
+-{
+-    lv_free(lv_event_get_user_data(e));
+-}
+ 
+ static void delete_on_screen_unloaded_event_cb(lv_event_t * e)
+ {
+diff --git a/src/core/lv_obj_tree.h b/src/core/lv_obj_tree.h
+index e8695763457d..9850b5ad10d2 100644
+--- a/src/core/lv_obj_tree.h
++++ b/src/core/lv_obj_tree.h
+@@ -40,7 +40,7 @@ typedef lv_obj_tree_walk_res_t (*lv_obj_tree_walk_cb_t)(lv_obj_t *, void *);
+ /**
+  * Delete an object and all of its children.
+  * Also remove the objects from their group and remove all animations (if any).
+- * Send `LV_EVENT_DELETED` to deleted objects.
++ * Send `LV_EVENT_DELETE` to deleted objects.
+  * @param obj       pointer to an object
+  */
+ void lv_obj_delete(lv_obj_t * obj);
+@@ -48,7 +48,7 @@ void lv_obj_delete(lv_obj_t * obj);
+ /**
+  * Delete all children of an object.
+  * Also remove the objects from their group and remove all animations (if any).
+- * Send `LV_EVENT_DELETED` to deleted objects.
++ * Send `LV_EVENT_DELETE` to deleted objects.
+  * @param obj       pointer to an object
+  */
+ void lv_obj_clean(lv_obj_t * obj);
+diff --git a/src/layouts/grid/lv_grid.c b/src/layouts/grid/lv_grid.c
+index 79ffa206242a..7efd28d059ef 100644
+--- a/src/layouts/grid/lv_grid.c
++++ b/src/layouts/grid/lv_grid.c
+@@ -189,12 +189,9 @@ static void grid_update(lv_obj_t * cont, void * user_data)
+     LV_LOG_INFO("update %p container", (void *)cont);
+     LV_UNUSED(user_data);
+ 
+-    //    const int32_t * col_templ = get_col_dsc(cont);
+-    //    const int32_t * row_templ = get_row_dsc(cont);
+-    //    if(col_templ == NULL || row_templ == NULL) return;
+-
+     lv_grid_calc_t c;
+-    calc(cont, &c);
++    lv_result_t res = calc(cont, &c);
++    if(res != LV_RESULT_OK) return;
+ 
+     item_repos_hint_t hint;
+     lv_memzero(&hint, sizeof(hint));
+diff --git a/src/misc/lv_event.c b/src/misc/lv_event.c
+index 44e4c576f4f1..c15e7fb4c7c2 100644
+--- a/src/misc/lv_event.c
++++ b/src/misc/lv_event.c
+@@ -239,6 +239,12 @@ void lv_event_stop_processing(lv_event_t * e)
+     e->stop_processing = 1;
+ }
+ 
++void lv_event_free_user_data_cb(lv_event_t * e)
++{
++    void * p = lv_event_get_user_data(e);
++    lv_free(p);
++}
++
+ uint32_t lv_event_register_id(void)
+ {
+     event_last_id ++;
+diff --git a/src/misc/lv_event.h b/src/misc/lv_event.h
+index 4e046648f654..c8a66f9c9e09 100644
+--- a/src/misc/lv_event.h
++++ b/src/misc/lv_event.h
+@@ -209,6 +209,14 @@ void lv_event_stop_trickling(lv_event_t * e);
+  */
+ void lv_event_stop_processing(lv_event_t * e);
+ 
++/**
++ * Helper function typically used in LV_EVENT_DELETE
++ * to free the event's user_data
++ * @param e     pointer to an event descriptor
++ */
++void lv_event_free_user_data_cb(lv_event_t * e);
++
++
+ /**
+  * Register a new, custom event ID.
+  * It can be used the same way as e.g. `LV_EVENT_CLICKED` to send custom events
+diff --git a/src/misc/lv_text_private.h b/src/misc/lv_text_private.h
+index 1088c85eef20..b553b4b3d39c 100644
+--- a/src/misc/lv_text_private.h
++++ b/src/misc/lv_text_private.h
+@@ -80,7 +80,7 @@ void lv_text_ins(char * txt_buf, uint32_t pos, const char * ins_txt);
+ void lv_text_cut(char * txt, uint32_t pos, uint32_t len);
+ 
+ /**
+- * return a new formatted text. Memory will be allocated to store the text.
++ * Return a new formatted text. Memory will be allocated to store the text.
+  * @param fmt `printf`-like format
+  * @param ap items to print
+ 
+diff --git a/src/others/observer/lv_observer.c b/src/others/observer/lv_observer.c
+index 9f9d8e71b743..15cf46ed0206 100644
+--- a/src/others/observer/lv_observer.c
++++ b/src/others/observer/lv_observer.c
+@@ -55,6 +55,11 @@ typedef struct {
+     const char * value;
+ } subject_set_string_user_data_t;
+ 
++typedef struct {
++    lv_subject_t * subject;
++    void * element; /**< E.g. span of a span group*/
++    const char * fmt;
++} bind_element_string_t;
+ 
+ typedef struct {
+     lv_subject_t * subject;
+@@ -92,6 +97,10 @@ static void lv_subject_notify_if_changed(lv_subject_t * subject);
+     static void label_text_observer_cb(lv_observer_t * observer, lv_subject_t * subject);
+ #endif
+ 
++#if LV_USE_SPAN
++    static void span_text_observer_cb(lv_observer_t * observer, lv_subject_t * subject);
++#endif
++
+ #if LV_USE_ARC
+     static void arc_value_changed_event_cb(lv_event_t * e);
+     static void arc_value_observer_cb(lv_observer_t * observer, lv_subject_t * subject);
+@@ -112,7 +121,11 @@ static void lv_subject_notify_if_changed(lv_subject_t * subject);
+     static void dropdown_value_observer_cb(lv_observer_t * observer, lv_subject_t * subject);
+ #endif
+ 
+-static void free_user_data_event_cb(lv_event_t * e);
++#if LV_USE_SCALE
++    static void scale_section_min_value_observer_cb(lv_observer_t * observer, lv_subject_t * subject);
++    static void scale_section_max_value_observer_cb(lv_observer_t * observer, lv_subject_t * subject);
++#endif
++
+ static void subject_set_string_free_user_data_event_cb(lv_event_t * e);
+ 
+ /**********************
+@@ -565,7 +578,7 @@ void lv_obj_add_subject_increment_event(lv_obj_t * obj, lv_subject_t * subject,
+     user_data->max = max;
+     user_data->subject = subject;
+     lv_obj_add_event_cb(obj, subject_increment_cb, trigger, user_data);
+-    lv_obj_add_event_cb(obj, free_user_data_event_cb, LV_EVENT_DELETE, user_data);
++    lv_obj_add_event_cb(obj, lv_event_free_user_data_cb, LV_EVENT_DELETE, user_data);
+ }
+ 
+ void lv_obj_add_subject_set_int_event(lv_obj_t * obj, lv_subject_t * subject, lv_event_code_t trigger, int32_t value)
+@@ -581,7 +594,7 @@ void lv_obj_add_subject_set_int_event(lv_obj_t * obj, lv_subject_t * subject, lv
+     user_data->value = value;
+ 
+     lv_obj_add_event_cb(obj, subject_set_int_cb, trigger, user_data);
+-    lv_obj_add_event_cb(obj, free_user_data_event_cb, LV_EVENT_DELETE, user_data);
++    lv_obj_add_event_cb(obj, lv_event_free_user_data_cb, LV_EVENT_DELETE, user_data);
+ }
+ 
+ #if LV_USE_FLOAT
+@@ -598,7 +611,7 @@ void lv_obj_add_subject_set_float_event(lv_obj_t * obj, lv_subject_t * subject,
+     user_data->value = value;
+ 
+     lv_obj_add_event_cb(obj, subject_set_float_cb, trigger, user_data);
+-    lv_obj_add_event_cb(obj, free_user_data_event_cb, LV_EVENT_DELETE, user_data);
++    lv_obj_add_event_cb(obj, lv_event_free_user_data_cb, LV_EVENT_DELETE, user_data);
+ }
+ #endif /*LV_USE_FLOAT*/
+ 
+@@ -779,6 +792,54 @@ lv_observer_t * lv_label_bind_text(lv_obj_t * obj, lv_subject_t * subject, const
+ }
+ #endif /*LV_USE_LABEL*/
+ 
++#if LV_USE_SPAN
++lv_observer_t * lv_spangroup_bind_span_text(lv_obj_t * obj, lv_span_t * span, lv_subject_t * subject, const char * fmt)
++{
++    LV_ASSERT_NULL(subject);
++    LV_ASSERT_NULL(obj);
++    LV_ASSERT_NULL(span);
++
++    if(fmt == NULL) {
++        if(subject->type == LV_SUBJECT_TYPE_INT) {
++            fmt = "%d";
++        }
++#if LV_USE_FLOAT
++        else if(subject->type == LV_SUBJECT_TYPE_FLOAT) {
++            fmt = "%0.1f";
++        }
++#endif
++        else if(subject->type != LV_SUBJECT_TYPE_STRING && subject->type != LV_SUBJECT_TYPE_POINTER) {
++            LV_LOG_WARN("Incompatible subject type: %d", subject->type);
++            return NULL;
++        }
++    }
++    else {
++        if(subject->type != LV_SUBJECT_TYPE_STRING && subject->type != LV_SUBJECT_TYPE_POINTER &&
++           subject->type != LV_SUBJECT_TYPE_INT && subject->type != LV_SUBJECT_TYPE_FLOAT) {
++            LV_LOG_WARN("Incompatible subject type: %d", subject->type);
++            return NULL;
++        }
++    }
++
++    bind_element_string_t * user_data = lv_zalloc(sizeof(bind_element_string_t));
++    if(user_data == NULL) {
++        LV_LOG_WARN("Couldn't allocate user_data");
++        LV_ASSERT_MALLOC(user_data);
++        return NULL;
++    }
++
++    user_data->subject = subject;
++    user_data->element = span;
++    user_data->fmt = fmt;
++
++    lv_observer_t * observer = lv_subject_add_observer_obj(subject, span_text_observer_cb, obj, user_data);
++    observer->auto_free_user_data = 1;
++
++    return observer;
++}
++#endif /*LV_USE_SPAN*/
++
++
+ #if LV_USE_ARC
+ lv_observer_t * lv_arc_bind_value(lv_obj_t * obj, lv_subject_t * subject)
+ {
+@@ -851,6 +912,40 @@ lv_observer_t * lv_dropdown_bind_value(lv_obj_t * obj, lv_subject_t * subject)
+ }
+ #endif /*LV_USE_DROPDOWN*/
+ 
++#if LV_USE_SCALE
++
++lv_observer_t * lv_scale_bind_section_min_value(lv_obj_t * obj, lv_scale_section_t * section, lv_subject_t * subject)
++{
++    LV_ASSERT_NULL(subject);
++    LV_ASSERT_NULL(obj);
++
++    if(subject->type != LV_SUBJECT_TYPE_INT) {
++        LV_LOG_WARN("Incompatible subject type: %d", subject->type);
++        return NULL;
++    }
++
++    lv_observer_t * observer = lv_subject_add_observer_obj(subject, scale_section_min_value_observer_cb, obj, section);
++
++    return observer;
++}
++
++lv_observer_t * lv_scale_bind_section_max_value(lv_obj_t * obj, lv_scale_section_t * section, lv_subject_t * subject)
++{
++    LV_ASSERT_NULL(subject);
++    LV_ASSERT_NULL(obj);
++
++    if(subject->type != LV_SUBJECT_TYPE_INT) {
++        LV_LOG_WARN("Incompatible subject type: %d", subject->type);
++        return NULL;
++    }
++
++    lv_observer_t * observer = lv_subject_add_observer_obj(subject, scale_section_max_value_observer_cb, obj, section);
++
++    return observer;
++}
++
++#endif /*LV_USE_SCALE*/
++
+ lv_obj_t * lv_observer_get_target_obj(lv_observer_t * observer)
+ {
+     return (lv_obj_t *)lv_observer_get_target(observer);
+@@ -1090,6 +1185,39 @@ static void label_text_observer_cb(lv_observer_t * observer, lv_subject_t * subj
+ 
+ #endif /*LV_USE_LABEL*/
+ 
++#if LV_USE_SPAN
++
++static void span_text_observer_cb(lv_observer_t * observer, lv_subject_t * subject)
++{
++    bind_element_string_t * user_data = observer->user_data;
++
++    if(user_data->fmt == NULL) {
++        lv_spangroup_set_span_text(observer->target, user_data->element, subject->value.pointer);
++    }
++    else {
++        switch(subject->type) {
++
++            case LV_SUBJECT_TYPE_INT:
++                lv_spangroup_set_span_text_fmt(observer->target, user_data->element, user_data->fmt, subject->value.num);
++                break;
++#if LV_USE_FLOAT
++            case LV_SUBJECT_TYPE_FLOAT:
++                lv_spangroup_set_span_text_fmt(observer->target, user_data->element, user_data->fmt, subject->value.float_v);
++                break;
++#endif
++            case LV_SUBJECT_TYPE_STRING:
++            case LV_SUBJECT_TYPE_POINTER:
++                lv_spangroup_set_span_text_fmt(observer->target, user_data->element, user_data->fmt, subject->value.pointer);
++                break;
++            default:
++                return;
++        }
++    }
++}
++
++#endif /*LV_USE_SPAN*/
++
++
+ #if LV_USE_ARC
+ 
+ static void arc_value_changed_event_cb(lv_event_t * e)
+@@ -1188,11 +1316,22 @@ static void dropdown_value_observer_cb(lv_observer_t * observer, lv_subject_t *
+ 
+ #endif /*LV_USE_DROPDOWN*/
+ 
+-static void free_user_data_event_cb(lv_event_t * e)
++#if LV_USE_SCALE
++
++static void scale_section_min_value_observer_cb(lv_observer_t * observer, lv_subject_t * subject)
++{
++    lv_scale_section_t * section = observer->user_data;
++    lv_scale_set_section_min_value(observer->target, section, subject->value.num);
++}
++
++static void scale_section_max_value_observer_cb(lv_observer_t * observer, lv_subject_t * subject)
+ {
+-    lv_free(lv_event_get_user_data(e));
++    lv_scale_section_t * section = observer->user_data;
++    lv_scale_set_section_max_value(observer->target, section, subject->value.num);
+ }
+ 
++#endif /*LV_USE_SCALE*/
++
+ static void subject_set_string_free_user_data_event_cb(lv_event_t * e)
+ {
+     subject_set_string_user_data_t * user_data = lv_event_get_user_data(e);
+diff --git a/src/others/observer/lv_observer.h b/src/others/observer/lv_observer.h
+index 1ce17c45d461..742a1f8ffc9e 100644
+--- a/src/others/observer/lv_observer.h
++++ b/src/others/observer/lv_observer.h
+@@ -545,6 +545,24 @@ lv_observer_t * lv_obj_bind_checked(lv_obj_t * obj, lv_subject_t * subject);
+ lv_observer_t * lv_label_bind_text(lv_obj_t * obj, lv_subject_t * subject, const char * fmt);
+ #endif
+ 
++#if LV_USE_LABEL
++
++/**
++ * Bind an integer, string, or pointer Subject to a Label.
++ * @param obj       pointer to Spangroup
++ * @param span      pointer to Span
++ * @param subject   pointer to Subject
++ * @param fmt       optional printf-like format string with 1 format specifier (e.g. "%d °C")
++ *                  or NULL to bind to the value directly.
++ * @return          pointer to newly-created Observer
++ * @note            `fmt == NULL` can be used only with string and pointer Subjects.
++ * @note            If Subject is a pointer and `fmt == NULL`, pointer must point
++ *                  to a `\0` terminated string.
++ */
++lv_observer_t * lv_spangroup_bind_span_text(lv_obj_t * obj, lv_span_t * span, lv_subject_t * subject, const char * fmt);
++
++#endif
++
+ #if LV_USE_ARC
+ /**
+  * Bind an integer subject to an Arc's value.
+@@ -585,6 +603,28 @@ lv_observer_t * lv_roller_bind_value(lv_obj_t * obj, lv_subject_t * subject);
+ lv_observer_t * lv_dropdown_bind_value(lv_obj_t * obj, lv_subject_t * subject);
+ #endif
+ 
++#if LV_USE_SCALE
++
++/**
++ * Bind an integer subject to a scales section minimum value
++ * @param obj       pointer to an Scale
++ * @param section   pointer to a Scale section
++ * @param subject   pointer to a Subject
++ * @return          pointer to newly-created Observer
++ */
++lv_observer_t * lv_scale_bind_section_min_value(lv_obj_t * obj, lv_scale_section_t * section, lv_subject_t * subject);
++
++/**
++ * Bind an integer subject to a scales section maximum value
++ * @param obj       pointer to an Scale
++ * @param section   pointer to a Scale section
++ * @param subject   pointer to a Subject
++ * @return          pointer to newly-created Observer
++ */
++lv_observer_t * lv_scale_bind_section_max_value(lv_obj_t * obj, lv_scale_section_t * section, lv_subject_t * subject);
++
++#endif
++
+ /**********************
+  *      MACROS
+  **********************/
+diff --git a/src/others/xml/lv_xml.c b/src/others/xml/lv_xml.c
+index 019893d9c6f2..40773a9ecb9f 100644
+--- a/src/others/xml/lv_xml.c
++++ b/src/others/xml/lv_xml.c
+@@ -37,6 +37,7 @@
+ #include "parsers/lv_xml_textarea_parser.h"
+ #include "parsers/lv_xml_keyboard_parser.h"
+ #include "parsers/lv_xml_arc_parser.h"
++#include "parsers/lv_xml_switch_parser.h"
+ #include "parsers/lv_xml_checkbox_parser.h"
+ #include "parsers/lv_xml_canvas_parser.h"
+ #include "parsers/lv_xml_calendar_parser.h"
+@@ -95,6 +96,7 @@ void lv_xml_init(void)
+     lv_xml_widget_register("lv_tabview", lv_xml_tabview_create, lv_xml_tabview_apply);
+     lv_xml_widget_register("lv_tabview-tab_bar", lv_xml_tabview_tab_bar_create, lv_xml_tabview_tab_bar_apply);
+     lv_xml_widget_register("lv_tabview-tab", lv_xml_tabview_tab_create, lv_xml_tabview_tab_apply);
++    lv_xml_widget_register("lv_tabview-tab_button", lv_xml_tabview_tab_button_create, lv_xml_tabview_tab_button_apply);
+     lv_xml_widget_register("lv_chart", lv_xml_chart_create, lv_xml_chart_apply);
+     lv_xml_widget_register("lv_chart-cursor", lv_xml_chart_cursor_create, lv_xml_chart_cursor_apply);
+     lv_xml_widget_register("lv_chart-series", lv_xml_chart_series_create, lv_xml_chart_series_apply);
+@@ -113,6 +115,7 @@ void lv_xml_init(void)
+     lv_xml_widget_register("lv_textarea", lv_xml_textarea_create, lv_xml_textarea_apply);
+     lv_xml_widget_register("lv_keyboard", lv_xml_keyboard_create, lv_xml_keyboard_apply);
+     lv_xml_widget_register("lv_arc", lv_xml_arc_create, lv_xml_arc_apply);
++    lv_xml_widget_register("lv_switch", lv_xml_switch_create, lv_xml_switch_apply);
+     lv_xml_widget_register("lv_checkbox", lv_xml_checkbox_create, lv_xml_checkbox_apply);
+     lv_xml_widget_register("lv_canvas", lv_xml_canvas_create, lv_xml_canvas_apply);
+     lv_xml_widget_register("lv_calendar", lv_xml_calendar_create, lv_xml_calendar_apply);
+diff --git a/src/others/xml/lv_xml.h b/src/others/xml/lv_xml.h
+index 3f8a72a1d7ff..66218a3657b2 100644
+--- a/src/others/xml/lv_xml.h
++++ b/src/others/xml/lv_xml.h
+@@ -21,6 +21,7 @@ extern "C" {
+ #include "lv_xml_test.h"
+ #include "lv_xml_translation.h"
+ #include "lv_xml_component.h"
++#include "lv_xml_widget.h"
+ 
+ /*********************
+  *      DEFINES
+diff --git a/src/others/xml/lv_xml_style.c b/src/others/xml/lv_xml_style.c
+index 18c620072660..c16d764e6bee 100644
+--- a/src/others/xml/lv_xml_style.c
++++ b/src/others/xml/lv_xml_style.c
+@@ -82,7 +82,8 @@ lv_result_t lv_xml_style_register(lv_xml_component_scope_t * scope, const char *
+ 
+     lv_style_t * style = &xml_style->style;
+ 
+-    for(int i = 0; attrs[i]; i += 2) {
++    int32_t i;
++    for(i = 0; attrs[i]; i += 2) {
+         const char * name = attrs[i];
+         const char * value = attrs[i + 1];
+         if(lv_streq(name, "name")) continue;
+@@ -280,7 +281,40 @@ lv_result_t lv_xml_style_register(lv_xml_component_scope_t * scope, const char *
+         else SET_STYLE_IF(grid_cell_row_pos, lv_xml_atoi(value));
+         else SET_STYLE_IF(grid_cell_row_span, lv_xml_atoi(value));
+         else SET_STYLE_IF(grid_cell_y_align, lv_xml_grid_align_to_enum(value));
++        else if(lv_streq(name, "style_grid_column_dsc_array") ||
++                lv_streq(name, "style_grid_row_dsc_array")) {
+ 
++            uint32_t item_cnt = 0;
++            uint32_t c;
++            for(c = 0; value[c] != '\0'; c++) {
++                if(value[c] == ' ') item_cnt++;
++            }
++
++            int32_t * dsc_array = lv_malloc((item_cnt + 1) * sizeof(int32_t)); /*+1 for LV_GRID_TEMPLATE_LAST*/
++
++            char * value_buf = (char *)value;
++            item_cnt = 0;
++            const char * sub_value = lv_xml_split_str(&value_buf, ' ');
++            while(sub_value) {
++                if(sub_value[0] == 'f' && sub_value[1] == 'r') {
++                    dsc_array[item_cnt] = LV_GRID_FR(lv_xml_atoi(sub_value + 3)); /*+3 to skip "fr("*/
++                }
++                else {
++                    dsc_array[item_cnt] = lv_xml_atoi(sub_value);
++                }
++
++                item_cnt++;
++                sub_value = lv_xml_split_str(&value_buf, ' ');
++            }
++            dsc_array[item_cnt] = LV_GRID_TEMPLATE_LAST;
++
++            if(lv_streq(name, "style_grid_column_dsc_array")) {
++                lv_style_set_grid_column_dsc_array(style, dsc_array);
++            }
++            else {
++                lv_style_set_grid_row_dsc_array(style, dsc_array);
++            }
++        }
+ 
+         else {
+             LV_LOG_WARN("%s style property is not supported", name);
+diff --git a/src/others/xml/parsers/lv_xml_label_parser.c b/src/others/xml/parsers/lv_xml_label_parser.c
+index 2ff1d6421857..1d1f8a6fd979 100644
+--- a/src/others/xml/parsers/lv_xml_label_parser.c
++++ b/src/others/xml/parsers/lv_xml_label_parser.c
+@@ -24,7 +24,6 @@
+  *  STATIC PROTOTYPES
+  **********************/
+ static lv_label_long_mode_t long_mode_text_to_enum_value(const char * txt);
+-static void free_fmt_event_cb(lv_event_t * e);
+ 
+ /**********************
+  *  STATIC VARIABLES
+@@ -71,7 +70,7 @@ void lv_xml_label_apply(lv_xml_parser_state_t * state, const char ** attrs)
+             const char * fmt = lv_xml_get_value_of(attrs, "bind_text-fmt");
+             if(fmt) {
+                 fmt = lv_strdup(fmt);
+-                lv_obj_add_event_cb(item, free_fmt_event_cb, LV_EVENT_DELETE, (void *) fmt);
++                lv_obj_add_event_cb(item, lv_event_free_user_data_cb, LV_EVENT_DELETE, (void *) fmt);
+             }
+             lv_label_bind_text(item, subject, fmt);
+         }
+@@ -94,10 +93,4 @@ static lv_label_long_mode_t long_mode_text_to_enum_value(const char * txt)
+     return 0; /*Return 0 in lack of a better option. */
+ }
+ 
+-static void free_fmt_event_cb(lv_event_t * e)
+-{
+-    void * fmt = lv_event_get_user_data(e);
+-    lv_free(fmt);
+-}
+-
+ #endif /* LV_USE_XML */
+diff --git a/src/others/xml/parsers/lv_xml_obj_parser.c b/src/others/xml/parsers/lv_xml_obj_parser.c
+index 8da671c56662..a1fc975d0813 100644
+--- a/src/others/xml/parsers/lv_xml_obj_parser.c
++++ b/src/others/xml/parsers/lv_xml_obj_parser.c
+@@ -43,7 +43,6 @@ typedef struct {
+  **********************/
+ static lv_obj_flag_t flag_to_enum(const char * txt);
+ static void apply_styles(lv_xml_parser_state_t * state, lv_obj_t * obj, const char * name, const char * value);
+-static void free_user_data_event_cb(lv_event_t * e);
+ static void screen_create_on_trigger_event_cb(lv_event_t * e);
+ static void screen_load_on_trigger_event_cb(lv_event_t * e);
+ static void delete_on_screen_unloaded_event_cb(lv_event_t * e);
+@@ -275,7 +274,7 @@ void lv_obj_xml_event_cb_apply(lv_xml_parser_state_t * state, const char ** attr
+     if(user_data_str) user_data = lv_strdup(user_data_str);
+ 
+     lv_obj_add_event_cb(obj, cb, code, user_data);
+-    if(user_data) lv_obj_add_event_cb(obj, free_user_data_event_cb, LV_EVENT_DELETE, user_data);
++    if(user_data) lv_obj_add_event_cb(obj, lv_event_free_user_data_cb, LV_EVENT_DELETE, user_data);
+ }
+ 
+ void * lv_obj_xml_subject_set_create(lv_xml_parser_state_t * state, const char ** attrs)
+@@ -892,14 +891,46 @@ static void apply_styles(lv_xml_parser_state_t * state, lv_obj_t * obj, const ch
+     else SET_STYLE_IF(grid_cell_row_pos, lv_xml_atoi(value));
+     else SET_STYLE_IF(grid_cell_row_span, lv_xml_atoi(value));
+     else SET_STYLE_IF(grid_cell_y_align, lv_xml_grid_align_to_enum(value));
+-}
++    else if(lv_streq(prop_name, "style_grid_column_dsc_array") ||
++            lv_streq(prop_name, "style_grid_row_dsc_array")) {
+ 
++        uint32_t item_cnt = 0;
++        uint32_t i;
++        for(i = 0; value[i] != '\0'; i++) {
++            if(value[i] == ' ') item_cnt++;
++        }
+ 
+-static void free_user_data_event_cb(lv_event_t * e)
+-{
+-    lv_free(lv_event_get_user_data(e));
++        int32_t * dsc_array = lv_malloc((item_cnt + 1) * sizeof(int32_t)); /*+1 for LV_GRID_TEMPLATE_LAST*/
++
++        char * value_buf = (char *)value;
++        item_cnt = 0;
++        const char * sub_value = lv_xml_split_str(&value_buf, ' ');
++        while(sub_value) {
++            if(sub_value[0] == 'f' && sub_value[1] == 'r') {
++                dsc_array[item_cnt] = LV_GRID_FR(lv_xml_atoi(sub_value + 3)); /*+3 to skip "fr("*/
++            }
++            else {
++                dsc_array[item_cnt] = lv_xml_atoi(sub_value);
++            }
++
++            item_cnt++;
++            sub_value = lv_xml_split_str(&value_buf, ' ');
++        }
++
++        dsc_array[item_cnt] = LV_GRID_TEMPLATE_LAST;
++
++        lv_obj_add_event_cb(obj, lv_event_free_user_data_cb, LV_EVENT_DELETE, dsc_array);
++
++        if(lv_streq(prop_name, "style_grid_column_dsc_array")) {
++            lv_obj_set_style_grid_column_dsc_array(obj, dsc_array, selector);
++        }
++        else {
++            lv_obj_set_style_grid_row_dsc_array(obj, dsc_array, selector);
++        }
++    }
+ }
+ 
++
+ static void screen_create_on_trigger_event_cb(lv_event_t * e)
+ {
+     screen_load_anim_dsc_t * dsc = lv_event_get_user_data(e);
+diff --git a/src/others/xml/parsers/lv_xml_scale_parser.c b/src/others/xml/parsers/lv_xml_scale_parser.c
+index 838a6ddec86f..6286692ea93b 100644
+--- a/src/others/xml/parsers/lv_xml_scale_parser.c
++++ b/src/others/xml/parsers/lv_xml_scale_parser.c
+@@ -68,7 +68,7 @@ void lv_xml_scale_apply(lv_xml_parser_state_t * state, const char ** attrs)
+         else if(lv_streq("min_value", name)) lv_scale_set_min_value(item, lv_xml_atoi(value));
+         else if(lv_streq("max_value", name)) lv_scale_set_max_value(item, lv_xml_atoi(value));
+         else if(lv_streq("angle_range", name)) lv_scale_set_angle_range(item, lv_xml_atoi(value));
+-        else if(lv_streq("rotation", name)) lv_scale_set_rotation(item, lv_xml_to_bool(value));
++        else if(lv_streq("rotation", name)) lv_scale_set_rotation(item, lv_xml_atoi(value));
+     }
+ }
+ 
+@@ -105,6 +105,24 @@ void lv_xml_scale_section_apply(lv_xml_parser_state_t * state, const char ** att
+             lv_xml_style_t * style_dsc = lv_xml_get_style_by_name(&state->scope, value);
+             lv_scale_set_section_style_items(scale, section, &style_dsc->style);
+         }
++        else if(lv_streq("bind_min_value", name)) {
++            lv_subject_t * subject = lv_xml_get_subject(&state->scope, value);
++            if(subject) {
++                lv_scale_bind_section_min_value(scale, section, subject);
++            }
++            else {
++                LV_LOG_WARN("Subject \"%s\" doesn't exist in scale section's bind_min_value", value);
++            }
++        }
++        else if(lv_streq("bind_max_value", name)) {
++            lv_subject_t * subject = lv_xml_get_subject(&state->scope, value);
++            if(subject) {
++                lv_scale_bind_section_max_value(scale, section, subject);
++            }
++            else {
++                LV_LOG_WARN("Subject \"%s\" doesn't exist in scale section's bind_max_value", value);
++            }
++        }
+     }
+ }
+ 
+diff --git a/src/others/xml/parsers/lv_xml_spangroup_parser.c b/src/others/xml/parsers/lv_xml_spangroup_parser.c
+index 7d7fc0ea6e41..c35ad6f6aa40 100644
+--- a/src/others/xml/parsers/lv_xml_spangroup_parser.c
++++ b/src/others/xml/parsers/lv_xml_spangroup_parser.c
+@@ -25,6 +25,7 @@
+  **********************/
+ 
+ static lv_span_overflow_t spangroup_overflow_to_enum(const char * txt);
++static void free_fmt_event_cb(lv_event_t * e);
+ 
+ /**********************
+  *  STATIC VARIABLES
+@@ -87,6 +88,19 @@ void lv_xml_spangroup_span_apply(lv_xml_parser_state_t * state, const char ** at
+             lv_xml_style_t * style_dsc = lv_xml_get_style_by_name(&state->scope, value);
+             lv_spangroup_set_span_style(spangroup, span, &style_dsc->style);
+         }
++        else if(lv_streq("bind_text", name)) {
++            lv_subject_t * subject = lv_xml_get_subject(&state->scope, value);
++            if(subject == NULL) {
++                LV_LOG_WARN("Subject \"%s\" doesn't exist in spangroup span bind_text", value);
++                continue;
++            }
++            const char * fmt = lv_xml_get_value_of(attrs, "bind_text-fmt");
++            if(fmt) {
++                fmt = lv_strdup(fmt);
++                lv_obj_add_event_cb(spangroup, free_fmt_event_cb, LV_EVENT_DELETE, (void *) fmt);
++            }
++            lv_spangroup_bind_span_text(spangroup, span, subject, fmt);
++        }
+     }
+ }
+ 
+@@ -103,4 +117,10 @@ static lv_span_overflow_t spangroup_overflow_to_enum(const char * txt)
+     return 0; /*Return 0 in lack of a better option. */
+ }
+ 
++static void free_fmt_event_cb(lv_event_t * e)
++{
++    void * fmt = lv_event_get_user_data(e);
++    lv_free(fmt);
++}
++
+ #endif /* LV_USE_XML */
+diff --git a/src/others/xml/parsers/lv_xml_switch_parser.c b/src/others/xml/parsers/lv_xml_switch_parser.c
+new file mode 100644
+index 000000000000..5e78f9aa5551
+--- /dev/null
++++ b/src/others/xml/parsers/lv_xml_switch_parser.c
+@@ -0,0 +1,76 @@
++/**
++ * @file lv_xml_switch_parser.c
++ *
++ */
++
++/*********************
++ *      INCLUDES
++ *********************/
++#include "lv_xml_switch_parser.h"
++#if LV_USE_XML
++
++#include "../../../lvgl.h"
++#include "../../../lvgl_private.h"
++
++/*********************
++ *      DEFINES
++ *********************/
++
++/**********************
++ *      TYPEDEFS
++ **********************/
++
++/**********************
++ *  STATIC PROTOTYPES
++ **********************/
++static lv_switch_orientation_t orientation_text_to_enum_value(const char * txt);
++
++/**********************
++ *  STATIC VARIABLES
++ **********************/
++
++/**********************
++ *      MACROS
++ **********************/
++
++/**********************
++ *   GLOBAL FUNCTIONS
++ **********************/
++
++void * lv_xml_switch_create(lv_xml_parser_state_t * state, const char ** attrs)
++{
++    LV_UNUSED(attrs);
++
++    void * item = lv_switch_create(lv_xml_state_get_parent(state));
++    return item;
++}
++
++void lv_xml_switch_apply(lv_xml_parser_state_t * state, const char ** attrs)
++{
++    void * item = lv_xml_state_get_item(state);
++    lv_xml_obj_apply(state, attrs); /*Apply the common properties, e.g. width, height, styles flags etc*/
++
++    for(int i = 0; attrs[i]; i += 2) {
++        const char * name = attrs[i];
++        const char * value = attrs[i + 1];
++
++        if(lv_streq("orientation", name)) lv_switch_set_orientation(item, orientation_text_to_enum_value(value));
++    }
++}
++
++/**********************
++ *   STATIC FUNCTIONS
++ **********************/
++
++static lv_switch_orientation_t orientation_text_to_enum_value(const char * txt)
++{
++    if(lv_streq("auto", txt)) return LV_SWITCH_ORIENTATION_AUTO;
++    if(lv_streq("horizontal", txt)) return LV_SWITCH_ORIENTATION_HORIZONTAL;
++    if(lv_streq("vertical", txt)) return LV_SWITCH_ORIENTATION_VERTICAL;
++
++    LV_LOG_WARN("%s is an unknown value for switch's orientation", txt);
++
++    return 0; /*Return 0 in lack of a better option. */
++}
++
++#endif /* LV_USE_XML */
+diff --git a/src/others/xml/parsers/lv_xml_switch_parser.h b/src/others/xml/parsers/lv_xml_switch_parser.h
+new file mode 100644
+index 000000000000..550a52649e33
+--- /dev/null
++++ b/src/others/xml/parsers/lv_xml_switch_parser.h
+@@ -0,0 +1,40 @@
++/**
++ * @file lv_xml_switch_parser.h
++ *
++ */
++
++#ifndef LV_XML_SWITCH_PARSER_H
++#define LV_XML_SWITCH_PARSER_H
++
++#ifdef __cplusplus
++extern "C" {
++#endif
++
++/*********************
++ *      INCLUDES
++ *********************/
++#include "../lv_xml.h"
++#if LV_USE_XML
++
++/**********************
++ *      TYPEDEFS
++ **********************/
++
++/**********************
++ * GLOBAL PROTOTYPES
++ **********************/
++
++void * lv_xml_switch_create(lv_xml_parser_state_t * state, const char ** attrs);
++void lv_xml_switch_apply(lv_xml_parser_state_t * state, const char ** attrs);
++
++/**********************
++ *      MACROS
++ **********************/
++
++#endif /* LV_USE_XML */
++
++#ifdef __cplusplus
++} /*extern "C"*/
++#endif
++
++#endif /*LV_XML_SWITCH_PARSER_H*/
+diff --git a/src/others/xml/parsers/lv_xml_tabview_parser.c b/src/others/xml/parsers/lv_xml_tabview_parser.c
+index e1e8947b060f..6533ee208257 100644
+--- a/src/others/xml/parsers/lv_xml_tabview_parser.c
++++ b/src/others/xml/parsers/lv_xml_tabview_parser.c
+@@ -87,6 +87,33 @@ void lv_xml_tabview_tab_apply(lv_xml_parser_state_t * state, const char ** attrs
+     lv_xml_obj_apply(state, attrs);
+ }
+ 
++void * lv_xml_tabview_tab_button_create(lv_xml_parser_state_t * state, const char ** attrs)
++{
++    lv_obj_t * tv = lv_xml_state_get_parent(state);
++    int32_t btn_cnt = lv_tabview_get_tab_count(tv);
++    if(btn_cnt == 0) {
++        LV_LOG_WARN("There are no buttons on the tab view. Get tab buttons when the tabs are already created");
++        return NULL;
++    }
++
++    const char * index_str = lv_xml_get_value_of(attrs, "index");
++    int32_t index_int = lv_xml_atoi(index_str);
++    if(LV_ABS(index_int) >= btn_cnt) {
++        LV_LOG_WARN("tabindex is out of range, using the first tab instead");
++        index_int = 0;
++    }
++
++    void * item = lv_tabview_get_tab_button(tv, index_int);
++
++    return item;
++}
++
++void lv_xml_tabview_tab_button_apply(lv_xml_parser_state_t * state, const char ** attrs)
++{
++    /*Apply the common properties, e.g. width, height, styles flags etc*/
++    lv_xml_obj_apply(state, attrs);
++}
++
+ /**********************
+  *   STATIC FUNCTIONS
+  **********************/
+diff --git a/src/others/xml/parsers/lv_xml_tabview_parser.h b/src/others/xml/parsers/lv_xml_tabview_parser.h
+index b96d6ccd92a8..a0860db478cb 100644
+--- a/src/others/xml/parsers/lv_xml_tabview_parser.h
++++ b/src/others/xml/parsers/lv_xml_tabview_parser.h
+@@ -30,6 +30,8 @@ void * lv_xml_tabview_tab_bar_create(lv_xml_parser_state_t * state, const char *
+ void lv_xml_tabview_tab_bar_apply(lv_xml_parser_state_t * state, const char ** attrs);
+ void * lv_xml_tabview_tab_create(lv_xml_parser_state_t * state, const char ** attrs);
+ void lv_xml_tabview_tab_apply(lv_xml_parser_state_t * state, const char ** attrs);
++void * lv_xml_tabview_tab_button_create(lv_xml_parser_state_t * state, const char ** attrs);
++void lv_xml_tabview_tab_button_apply(lv_xml_parser_state_t * state, const char ** attrs);
+ 
+ /**********************
+  *      MACROS
+diff --git a/src/widgets/label/lv_label.h b/src/widgets/label/lv_label.h
+index c7800ec4d1cb..202427b5d421 100644
+--- a/src/widgets/label/lv_label.h
++++ b/src/widgets/label/lv_label.h
+@@ -84,26 +84,28 @@ lv_obj_t * lv_label_create(lv_obj_t * parent);
+  * Set a new text for a label. Memory will be allocated to store the text by the label.
+  * @param obj           pointer to a label object
+  * @param text          '\0' terminated character string. NULL to refresh with the current text.
++ * @note If `LV_USE_ARABIC_PERSIAN_CHARS` is enabled the text will be modified to have the correct Arabic
++ * characters in it.
+  */
+ void lv_label_set_text(lv_obj_t * obj, const char * text);
+ 
+ /**
+  * Set a new formatted text for a label. Memory will be allocated to store the text by the label.
+  * @param obj           pointer to a label object
+- * @param fmt           `printf`-like format
+- *
++ * @param fmt           `printf`-like format string
+  * Example:
+  * @code
+  * lv_label_set_text_fmt(label1, "%d user", user_num);
+  * @endcode
++ * @note It ignores `LV_USE_ARABIC_PERSIAN_CHARS`
+  */
+ void lv_label_set_text_fmt(lv_obj_t * obj, const char * fmt, ...) LV_FORMAT_ATTRIBUTE(2, 3);
+ 
+ /**
+  * Set a new formatted text for a label. Memory will be allocated to store the text by the label.
+  * @param obj           pointer to a label object
+- * @param fmt           `printf`-like format
+- * @param args          variadic argments list
++ * @param fmt           `printf`-like format string
++ * @param args          variadic arguments list
+  *
+  * Example:
+  * @code
+@@ -112,6 +114,7 @@ void lv_label_set_text_fmt(lv_obj_t * obj, const char * fmt, ...) LV_FORMAT_ATTR
+  * lv_label_set_text_vfmt(label1, fmt, args);
+  * va_end(args);
+  * @endcode
++ * @note It ignores `LV_USE_ARABIC_PERSIAN_CHARS`
+  */
+ void lv_label_set_text_vfmt(lv_obj_t * obj, const char * fmt, va_list args);
+ 
+@@ -120,6 +123,7 @@ void lv_label_set_text_vfmt(lv_obj_t * obj, const char * fmt, va_list args);
+  * has to be 'alive' while the label exists.
+  * @param obj           pointer to a label object
+  * @param text          pointer to a text. NULL to refresh with the current text.
++ * @note It ignores `LV_USE_ARABIC_PERSIAN_CHARS`
+  */
+ void lv_label_set_text_static(lv_obj_t * obj, const char * text);
+ 
+diff --git a/src/widgets/span/lv_span.c b/src/widgets/span/lv_span.c
+index 4231c71f11ba..dfb6b187c320 100644
+--- a/src/widgets/span/lv_span.c
++++ b/src/widgets/span/lv_span.c
+@@ -199,6 +199,29 @@ void lv_span_set_text(lv_span_t * span, const char * text)
+ #endif
+ }
+ 
++void lv_span_set_text_fmt(lv_span_t * span, const char * fmt, ...)
++{
++    if(span == NULL || fmt == NULL) {
++        return;
++    }
++
++    va_list args;
++    va_start(args, fmt);
++    char * text = lv_text_set_text_vfmt(fmt, args);
++    LV_ASSERT_MALLOC(text);
++    if(text == NULL) return;
++
++    va_end(args);
++
++    if(span->txt == NULL && span->static_flag) {
++        lv_free(span->txt);
++    }
++
++    span->static_flag = 0;
++    span->txt = text;
++}
++
++
+ void lv_spangroup_set_span_text(lv_obj_t * obj, lv_span_t * span, const char * text)
+ {
+     lv_span_set_text(span, text);
+@@ -234,6 +257,30 @@ void lv_spangroup_set_span_text_static(lv_obj_t * obj, lv_span_t * span, const c
+     lv_spangroup_refresh(obj);
+ }
+ 
++void lv_spangroup_set_span_text_fmt(lv_obj_t * obj, lv_span_t * span, const char * fmt, ...)
++{
++    if(span == NULL || fmt == NULL) {
++        return;
++    }
++
++    va_list args;
++    va_start(args, fmt);
++    char * text = lv_text_set_text_vfmt(fmt, args);
++    LV_ASSERT_MALLOC(text);
++    if(text == NULL) return;
++
++    va_end(args);
++
++    if(span->txt == NULL && span->static_flag) {
++        lv_free(span->txt);
++    }
++
++    span->static_flag = 0;
++    span->txt = text;
++
++    lv_spangroup_refresh(obj);
++}
++
+ void lv_spangroup_set_span_style(lv_obj_t * obj, lv_span_t * span, const lv_style_t * style)
+ {
+     LV_ASSERT_OBJ(obj, MY_CLASS);
+diff --git a/src/widgets/span/lv_span.h b/src/widgets/span/lv_span.h
+index ff6fd310ffb0..38b211da4ba5 100644
+--- a/src/widgets/span/lv_span.h
++++ b/src/widgets/span/lv_span.h
+@@ -91,6 +91,17 @@ void lv_spangroup_delete_span(lv_obj_t * obj, lv_span_t * span);
+  */
+ void lv_span_set_text(lv_span_t * span, const char * text);
+ 
++
++/**
++ * Set a new text for a span using a printf-like formatting string.
++ * Memory will be allocated to store the text by the span.
++ * As the spangroup is not passed a redraw (invalidation) can't be triggered automatically.
++ * Therefore `lv_spangroup_refresh(spangroup)` needs to be called manually,
++ * @param span  pointer to a span.
++ * @param fmt   `printf`-like format string
++ */
++void lv_span_set_text_fmt(lv_span_t * span, const char * fmt, ...);
++
+ /**
+  * Set a static text. It will not be saved by the span so the 'text' variable
+  * has to be 'alive' while the span exist.
+@@ -118,6 +129,15 @@ void lv_spangroup_set_span_text(lv_obj_t * obj, lv_span_t * span, const char * t
+  */
+ void lv_spangroup_set_span_text_static(lv_obj_t * obj, lv_span_t * span, const char * text);
+ 
++/**
++ * Set a new text for a span using a printf-like formatting string.
++ * Memory will be allocated to store the text by the span.
++ * @param obj   pointer to a spangroup widget.
++ * @param span  pointer to a span.
++ * @param fmt   `printf`-like format string
++ */
++void lv_spangroup_set_span_text_fmt(lv_obj_t * obj, lv_span_t * span, const char * fmt, ...);
++
+ /**
+  * Set a static text. It will not be saved by the span so the 'text' variable
+  * has to be 'alive' while the span exist.
+diff --git a/src/widgets/tabview/lv_tabview.c b/src/widgets/tabview/lv_tabview.c
+index 165d43f0736e..94676ebf27e5 100644
+--- a/src/widgets/tabview/lv_tabview.c
++++ b/src/widgets/tabview/lv_tabview.c
+@@ -242,6 +242,13 @@ uint32_t lv_tabview_get_tab_active(lv_obj_t * obj)
+     return tabview->tab_cur;
+ }
+ 
++lv_obj_t * lv_tabview_get_tab_button(lv_obj_t * obj, int32_t idx)
++{
++    LV_ASSERT_OBJ(obj, MY_CLASS);
++
++    return lv_obj_get_child_by_type(lv_tabview_get_tab_bar(obj), idx, &lv_button_class);
++}
++
+ uint32_t lv_tabview_get_tab_count(lv_obj_t * obj)
+ {
+     LV_ASSERT_OBJ(obj, MY_CLASS);
+diff --git a/src/widgets/tabview/lv_tabview.h b/src/widgets/tabview/lv_tabview.h
+index f9bfdcc184a8..911c886a9625 100644
+--- a/src/widgets/tabview/lv_tabview.h
++++ b/src/widgets/tabview/lv_tabview.h
+@@ -88,6 +88,15 @@ uint32_t lv_tabview_get_tab_count(lv_obj_t * obj);
+  */
+ uint32_t lv_tabview_get_tab_active(lv_obj_t * obj);
+ 
++/**
++ * Get a given tab button by index
++ * @param obj       pointer to a tabview widget
++ * @param idx       zero based index of the tab button to get.
++ *                  < 0 means start counting tab button from the back (-1 is the last tab button)
++ * @return          pointer to the tab button, or NULL if the index was out of range
++ */
++lv_obj_t * lv_tabview_get_tab_button(lv_obj_t * obj, int32_t idx);
++
+ /**
+  * Get the widget where the container of each tab is created
+  * @param obj       pointer to a tabview widget
+diff --git a/tests/ref_imgs/xml/lv_switch.png b/tests/ref_imgs/xml/lv_switch.png
+new file mode 100644
+index 000000000000..db270ff85aba
+Binary files /dev/null and b/tests/ref_imgs/xml/lv_switch.png differ
+diff --git a/tests/ref_imgs_vg_lite/xml/lv_switch.png b/tests/ref_imgs_vg_lite/xml/lv_switch.png
+new file mode 100644
+index 000000000000..0f7c8f27a3a4
+Binary files /dev/null and b/tests/ref_imgs_vg_lite/xml/lv_switch.png differ
+diff --git a/tests/src/test_cases/xml/test_xml_switch.c b/tests/src/test_cases/xml/test_xml_switch.c
+new file mode 100644
+index 000000000000..e1bc530032be
+--- /dev/null
++++ b/tests/src/test_cases/xml/test_xml_switch.c
+@@ -0,0 +1,40 @@
++#if LV_BUILD_TEST
++#include "../lvgl.h"
++
++#include "unity/unity.h"
++
++void setUp(void)
++{
++    /* Function run before every test */
++}
++
++void tearDown(void)
++{
++    /* Function run after every test */
++    lv_obj_clean(lv_screen_active());
++}
++
++
++void test_xml_switch_widget(void)
++{
++    lv_obj_t * scr = lv_screen_active();
++
++    lv_obj_set_flex_flow(scr, LV_FLEX_FLOW_COLUMN);
++    lv_obj_set_flex_align(scr, LV_FLEX_ALIGN_SPACE_EVENLY, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
++
++    lv_xml_create(scr, "lv_switch", NULL);
++
++    const char * attrs_1[] = {
++        "width", "100",
++        "height", "40",
++        "checked", "true",
++        NULL, NULL,
++    };
++
++    lv_xml_create(scr, "lv_switch", attrs_1);
++
++
++    TEST_ASSERT_EQUAL_SCREENSHOT("xml/lv_switch.png");
++}
++
++#endif
+diff --git a/xmls/globals.xml b/xmls/globals.xml
+index aa8fcc716b9d..9625f418b57d 100644
+--- a/xmls/globals.xml
++++ b/xmls/globals.xml
+@@ -311,6 +311,9 @@
+ 	    <prop name="flex_track_place" type="enum:lv_flex_align"/>
+ 	    <prop name="flex_grow" type="int"/>
+ 
++
++        <prop name="grid_column_dsc_array" type="grid_dsc[LV_GRID_TEMPLATE_LAST]"/>
++        <prop name="grid_row_dsc_array" type="grid_dsc[LV_GRID_TEMPLATE_LAST]"/>
+ 	    <prop name="grid_column_align" type="enum:lv_grid_align"/>
+ 	    <prop name="grid_row_align" type="enum:lv_grid_align"/>
+ 	    <prop name="grid_cell_column_pos" type="int"/>
+diff --git a/xmls/lv_bar.xml b/xmls/lv_bar.xml
+index 209f68c1183a..147d0bef4d0d 100644
+--- a/xmls/lv_bar.xml
++++ b/xmls/lv_bar.xml
+@@ -11,7 +11,7 @@ Example
+ 			<enum name="range" help="range"/>
+ 		</enumdef>
+ 
+-		<enumdef name="bar_orientation" help="">
++		<enumdef name="lv_bar_orientation" help="">
+ 			<enum name="auto" help=""/>
+ 			<enum name="horizontal" help=""/>
+ 			<enum name="vertical" help=""/>
+diff --git a/xmls/lv_keyboard.xml b/xmls/lv_keyboard.xml
+index d600749dce84..29a693a1ee2a 100644
+--- a/xmls/lv_keyboard.xml
++++ b/xmls/lv_keyboard.xml
+@@ -10,6 +10,7 @@ Example
+ 	        <enum name="text_lower"/>
+ 	        <enum name="text_arabic"/>
+ 	        <enum name="special"/>
++	        <enum name="number"/>
+ 	        <enum name="user_1"/>
+ 	        <enum name="user_2"/>
+ 	        <enum name="user_3"/>
+diff --git a/xmls/lv_obj.xml b/xmls/lv_obj.xml
+index 77dd688cf948..71d3cc1d91d1 100644
+--- a/xmls/lv_obj.xml
++++ b/xmls/lv_obj.xml
+@@ -256,7 +256,7 @@ Example
+         <prop name="style_outline_opa" type="opa"/>
+         <prop name="style_outline_pad" type="int"/>
+ 
+-        <prop name="style_style_shadow_width" type="int"/>
++        <prop name="style_shadow_width" type="int"/>
+         <prop name="style_shadow_color" type="color"/>
+         <prop name="style_shadow_opa" type="opa"/>
+         <prop name="style_shadow_offset_x" type="int"/>
+@@ -296,6 +296,8 @@ Example
+         <prop name="style_flex_track_place" type="enum:lv_flex_align"/>
+         <prop name="style_flex_grow" type="int"/>
+ 
++        <prop name="style_grid_column_dsc_array" type="grid_dsc[LV_GRID_TEMPLATE_LAST]"/>
++        <prop name="style_grid_row_dsc_array" type="grid_dsc[LV_GRID_TEMPLATE_LAST]"/>
+         <prop name="style_grid_column_align" type="enum:lv_grid_align"/>
+         <prop name="style_grid_row_align" type="enum:lv_grid_align"/>
+         <prop name="style_grid_cell_column_pos" type="int"/>
+diff --git a/xmls/lv_scale.xml b/xmls/lv_scale.xml
+index 03d9c9c564af..9a20fcc02247 100644
+--- a/xmls/lv_scale.xml
++++ b/xmls/lv_scale.xml
+@@ -33,6 +33,8 @@
+ 	    	<prop name="style_main" type="style" help=""/>
+ 	    	<prop name="style_indicator" type="style" help=""/>
+ 	    	<prop name="style_items" type="style" help=""/>
++            <prop name="bind_min_value" type="subject" help="Connect a subject to the section's min value"/>
++            <prop name="bind_max_value" type="subject" help="Connect a subject to the section's max value"/>
+ 	    </element>
+ 	</api>
+ </widget>
+diff --git a/xmls/lv_spangroup.xml b/xmls/lv_spangroup.xml
+index 932bd48e1f9b..20f1bff09fa7 100644
+--- a/xmls/lv_spangroup.xml
++++ b/xmls/lv_spangroup.xml
+@@ -26,6 +26,10 @@ Example
+ 		<element name="span" type="lv_span" access="add">
+ 			<prop name="text" type="string" help=""/>
+ 			<prop name="style" type="style" help=""/>
++    	    <prop name="bind_text" help="">
++                <param name="bind_text" type="subject"/>
++                <param name="fmt" type="string" default="NULL"/>
++            </prop>
+ 		</element>
+ 	</api>
+ </widget>
+\ No newline at end of file
+diff --git a/xmls/lv_switch.xml b/xmls/lv_switch.xml
+new file mode 100644
+index 000000000000..9c78bd1566e8
+--- /dev/null
++++ b/xmls/lv_switch.xml
+@@ -0,0 +1,16 @@
++<!--
++Example
++<lv_switch width="100" height="40"/>
++-->
++
++<widget>
++    <api>
++        <enumdef name="lv_switch_orientation" help="">
++            <enum name="auto" help=""/>
++            <enum name="horizontal" help=""/>
++            <enum name="vertical" help=""/>
++        </enumdef>
++
++        <prop name="orientation" type="enum:lv_switch_orientation"/>
++    </api>
++</widget>
+\ No newline at end of file
+diff --git a/xmls/lv_tabview.xml b/xmls/lv_tabview.xml
+index e53cf8288a2e..04407eda3755 100644
+--- a/xmls/lv_tabview.xml
++++ b/xmls/lv_tabview.xml
+@@ -16,5 +16,9 @@ Example
+         <element name="tab" type="lv_obj" access="add">
+             <arg name="text" type="string"/>
+         </element>
++        <element name="tab_button" type="lv_obj" access="get">
++            <arg name="index" type="int"/>
++        </element>
++
+     </api>
+ </widget>
+\ No newline at end of file
+diff --git a/xmls/lv_textarea.xml b/xmls/lv_textarea.xml
+index 82eee8df0cdf..194cd3131eac 100644
+--- a/xmls/lv_textarea.xml
++++ b/xmls/lv_textarea.xml
+@@ -6,7 +6,7 @@ Example
+ <widget>
+ 	<api>
+ 	    <prop name="text" type="string" help=""/>
+-	    <prop name="placeholder" type="string" help=""/>
++	    <prop name="placeholder_text" type="string" help=""/>
+ 	    <prop name="one_line" type="bool" help=""/>
+ 	    <prop name="password_mode" type="bool" help=""/>
+ 	    <prop name="password_show_time" type="int" help=""/>

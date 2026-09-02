@@ -1,0 +1,238 @@
+diff --git a/app/config/templates/site.php b/app/config/templates/site.php
+index a853955a971..725e6fa9187 100644
+--- a/app/config/templates/site.php
++++ b/app/config/templates/site.php
+@@ -7,7 +7,7 @@
+  */
+ 
+ $protocol = System::getEnv('_APP_OPTIONS_FORCE_HTTPS') == 'disabled' ? 'http' : 'https';
+-$hostname = System::getEnv('_APP_DOMAIN');
++$hostname = System::getEnv('_APP_CONSOLE_DOMAIN', System::getEnv('_APP_DOMAIN', ''));
+ 
+ // TODO: Development override
+ if (System::getEnv('_APP_ENV') === 'development') {
+diff --git a/app/controllers/api/console.php b/app/controllers/api/console.php
+index 558dc0e4ef0..d78924028c9 100644
+--- a/app/controllers/api/console.php
++++ b/app/controllers/api/console.php
+@@ -43,8 +43,8 @@
+     ))
+     ->inject('response')
+     ->action(function (Response $response) {
+-        $validator = new Domain(System::getEnv('_APP_DOMAIN'));
+-        $isDomainValid = !empty(System::getEnv('_APP_DOMAIN', '')) && $validator->isKnown() && !$validator->isTest();
++        $validator = new Domain(System::getEnv('_APP_CONSOLE_DOMAIN', System::getEnv('_APP_DOMAIN', '')));
++        $isDomainValid = !empty(System::getEnv('_APP_CONSOLE_DOMAIN', System::getEnv('_APP_DOMAIN', ''))) && $validator->isKnown() && !$validator->isTest();
+ 
+         $validator = new Domain(System::getEnv('_APP_DOMAIN_TARGET_CNAME'));
+         $isCNAMEValid = !empty(System::getEnv('_APP_DOMAIN_TARGET_CNAME', '')) && $validator->isKnown() && !$validator->isTest();
+diff --git a/app/controllers/general.php b/app/controllers/general.php
+index 5beac9e1e8f..632c7351338 100644
+--- a/app/controllers/general.php
++++ b/app/controllers/general.php
+@@ -76,7 +76,7 @@ function router(App $utopia, Database $dbForPlatform, callable $getProjectDB, Sw
+     }
+ 
+     $errorView = __DIR__ . '/../views/general/error.phtml';
+-    $url = (System::getEnv('_APP_OPTIONS_FORCE_HTTPS') == 'disabled' ? 'http' : 'https') . '://' . System::getEnv('_APP_DOMAIN', '');
++    $url = (System::getEnv('_APP_OPTIONS_FORCE_HTTPS') == 'disabled' ? 'http' : 'https') . '://' . System::getEnv('_APP_CONSOLE_DOMAIN', System::getEnv('_APP_DOMAIN', ''));
+ 
+     if ($rule->isEmpty()) {
+         $appDomainFunctionsFallback = System::getEnv('_APP_DOMAIN_FUNCTIONS_FALLBACK', '');
+@@ -262,7 +262,7 @@ function router(App $utopia, Database $dbForPlatform, callable $getProjectDB, Sw
+             }
+ 
+             if (!$authorized) {
+-                $url = (System::getEnv('_APP_OPTIONS_FORCE_HTTPS') == 'disabled' ? 'http' : 'https') . "://" . System::getEnv('_APP_DOMAIN');
++                $url = (System::getEnv('_APP_OPTIONS_FORCE_HTTPS') == 'disabled' ? 'http' : 'https') . "://" . System::getEnv('_APP_CONSOLE_DOMAIN', System::getEnv('_APP_DOMAIN', ''));
+                 $response
+                     ->addHeader('Cache-Control', 'no-store, no-cache, must-revalidate, max-age=0')
+                     ->addHeader('Pragma', 'no-cache')
+@@ -448,7 +448,7 @@ function router(App $utopia, Database $dbForPlatform, callable $getProjectDB, Sw
+         }
+ 
+         $protocol = System::getEnv('_APP_OPTIONS_FORCE_HTTPS') == 'disabled' ? 'http' : 'https';
+-        $hostname = System::getEnv('_APP_DOMAIN');
++        $hostname = System::getEnv('_APP_CONSOLE_DOMAIN', System::getEnv('_APP_DOMAIN', ''));
+         $endpoint = $protocol . '://' . $hostname . "/v1";
+ 
+         // Appwrite vars
+@@ -809,7 +809,7 @@ function router(App $utopia, Database $dbForPlatform, callable $getProjectDB, Sw
+         * Appwrite Router
+         */
+         $host = $request->getHostname() ?? '';
+-        $mainDomain = System::getEnv('_APP_DOMAIN', '');
++        $mainDomain = System::getEnv('_APP_CONSOLE_DOMAIN', System::getEnv('_APP_DOMAIN', ''));
+         // Only run Router when external domain
+         if ($host !== $mainDomain || !empty($previewHostname)) {
+             if (router($utopia, $dbForPlatform, $getProjectDB, $swooleRequest, $request, $response, $queueForEvents, $queueForStatsUsage, $queueForFunctions, $executor, $geodb, $isResourceBlocked, $previewHostname, $apiKey)) {
+@@ -858,7 +858,7 @@ function router(App $utopia, Database $dbForPlatform, callable $getProjectDB, Sw
+             } else {
+                 Authorization::disable();
+ 
+-                $envDomain = System::getEnv('_APP_DOMAIN', '');
++                $envDomain = System::getEnv('_APP_CONSOLE_DOMAIN', System::getEnv('_APP_DOMAIN', ''));
+                 $mainDomain = null;
+                 if (!empty($envDomain) && $envDomain !== 'localhost') {
+                     $mainDomain = $envDomain;
+diff --git a/app/views/general/error.phtml b/app/views/general/error.phtml
+index a427f1d5e88..de859a9c862 100644
+--- a/app/views/general/error.phtml
++++ b/app/views/general/error.phtml
+@@ -15,7 +15,7 @@ $labelClass = '';
+ $buttons = [];
+ 
+ $protocol = System::getEnv('_APP_OPTIONS_FORCE_HTTPS') == 'disabled' ? 'http' : 'https';
+-$hostname = System::getEnv('_APP_DOMAIN');
++$hostname = System::getEnv('_APP_CONSOLE_DOMAIN', System::getEnv('_APP_DOMAIN', ''));
+ // TODO: remove this later
+ if (System::getEnv('_APP_ENV') === 'development') {
+     $hostname = 'localhost';
+diff --git a/src/Appwrite/Platform/Modules/Functions/Http/Executions/Create.php b/src/Appwrite/Platform/Modules/Functions/Http/Executions/Create.php
+index fd1b2076a83..78388261362 100644
+--- a/src/Appwrite/Platform/Modules/Functions/Http/Executions/Create.php
++++ b/src/Appwrite/Platform/Modules/Functions/Http/Executions/Create.php
+@@ -351,7 +351,7 @@ public function action(
+         }
+ 
+         $protocol = System::getEnv('_APP_OPTIONS_FORCE_HTTPS') == 'disabled' ? 'http' : 'https';
+-        $hostname = System::getEnv('_APP_DOMAIN');
++        $hostname = System::getEnv('_APP_CONSOLE_DOMAIN', System::getEnv('_APP_DOMAIN', ''));
+         $endpoint = $protocol . '://' . $hostname . "/v1";
+ 
+         // Appwrite vars
+diff --git a/src/Appwrite/Platform/Modules/Functions/Workers/Builds.php b/src/Appwrite/Platform/Modules/Functions/Workers/Builds.php
+index 399a4d5c446..263d67f0000 100644
+--- a/src/Appwrite/Platform/Modules/Functions/Workers/Builds.php
++++ b/src/Appwrite/Platform/Modules/Functions/Workers/Builds.php
+@@ -594,7 +594,7 @@ protected function buildDeployment(
+             ]);
+ 
+             $protocol = System::getEnv('_APP_OPTIONS_FORCE_HTTPS') == 'disabled' ? 'http' : 'https';
+-            $hostname = System::getEnv('_APP_DOMAIN');
++            $hostname = System::getEnv('_APP_CONSOLE_DOMAIN', System::getEnv('_APP_DOMAIN', ''));
+             $endpoint = $protocol . '://' . $hostname . "/v1";
+ 
+             // Appwrite vars
+@@ -1441,7 +1441,7 @@ protected function runGitAction(
+             $name = "{$resourceName} ({$projectName})";
+ 
+             $protocol = System::getEnv('_APP_OPTIONS_FORCE_HTTPS') == 'disabled' ? 'http' : 'https';
+-            $hostname = System::getEnv('_APP_DOMAIN');
++            $hostname = System::getEnv('_APP_CONSOLE_DOMAIN', System::getEnv('_APP_DOMAIN', ''));
+ 
+             $projectId = $project->getId();
+             $resourceId = $resource->getId();
+diff --git a/src/Appwrite/Platform/Modules/Proxy/Http/Rules/API/Create.php b/src/Appwrite/Platform/Modules/Proxy/Http/Rules/API/Create.php
+index e4d0d2899f1..a4d4980384a 100644
+--- a/src/Appwrite/Platform/Modules/Proxy/Http/Rules/API/Create.php
++++ b/src/Appwrite/Platform/Modules/Proxy/Http/Rules/API/Create.php
+@@ -76,7 +76,7 @@ public function action(string $domain, Response $response, Document $project, Ce
+             APP_HOSTNAME_INTERNAL
+         ];
+ 
+-        $mainDomain = System::getEnv('_APP_DOMAIN', '');
++        $mainDomain = System::getEnv('_APP_CONSOLE_DOMAIN', System::getEnv('_APP_DOMAIN', ''));
+         $deniedDomains[] = $mainDomain;
+ 
+         $sitesDomain = System::getEnv('_APP_DOMAIN_SITES', '');
+diff --git a/src/Appwrite/Platform/Modules/Proxy/Http/Rules/Function/Create.php b/src/Appwrite/Platform/Modules/Proxy/Http/Rules/Function/Create.php
+index 6c5a87a68d8..66465a0a971 100644
+--- a/src/Appwrite/Platform/Modules/Proxy/Http/Rules/Function/Create.php
++++ b/src/Appwrite/Platform/Modules/Proxy/Http/Rules/Function/Create.php
+@@ -81,7 +81,7 @@ public function action(string $domain, string $functionId, string $branch, Respo
+             APP_HOSTNAME_INTERNAL
+         ];
+ 
+-        $mainDomain = System::getEnv('_APP_DOMAIN', '');
++        $mainDomain = System::getEnv('_APP_CONSOLE_DOMAIN', System::getEnv('_APP_DOMAIN', ''));
+         $deniedDomains[] = $mainDomain;
+ 
+         $sitesDomain = System::getEnv('_APP_DOMAIN_SITES', '');
+diff --git a/src/Appwrite/Platform/Modules/Proxy/Http/Rules/Redirect/Create.php b/src/Appwrite/Platform/Modules/Proxy/Http/Rules/Redirect/Create.php
+index 3396a9c6fdd..66a186993c2 100644
+--- a/src/Appwrite/Platform/Modules/Proxy/Http/Rules/Redirect/Create.php
++++ b/src/Appwrite/Platform/Modules/Proxy/Http/Rules/Redirect/Create.php
+@@ -84,7 +84,7 @@ public function action(string $domain, string $url, int $statusCode, string $res
+             APP_HOSTNAME_INTERNAL
+         ];
+ 
+-        $mainDomain = System::getEnv('_APP_DOMAIN', '');
++        $mainDomain = System::getEnv('_APP_CONSOLE_DOMAIN', System::getEnv('_APP_DOMAIN', ''));
+         $deniedDomains[] = $mainDomain;
+ 
+         $sitesDomain = System::getEnv('_APP_DOMAIN_SITES', '');
+diff --git a/src/Appwrite/Platform/Modules/Proxy/Http/Rules/Site/Create.php b/src/Appwrite/Platform/Modules/Proxy/Http/Rules/Site/Create.php
+index 894c954a327..b466b1774ba 100644
+--- a/src/Appwrite/Platform/Modules/Proxy/Http/Rules/Site/Create.php
++++ b/src/Appwrite/Platform/Modules/Proxy/Http/Rules/Site/Create.php
+@@ -81,7 +81,7 @@ public function action(string $domain, string $siteId, string $branch, Response
+             APP_HOSTNAME_INTERNAL
+         ];
+ 
+-        $mainDomain = System::getEnv('_APP_DOMAIN', '');
++        $mainDomain = System::getEnv('_APP_CONSOLE_DOMAIN', System::getEnv('_APP_DOMAIN', ''));
+         $deniedDomains[] = $mainDomain;
+ 
+         $sitesDomain = System::getEnv('_APP_DOMAIN_SITES', '');
+diff --git a/src/Appwrite/Platform/Workers/Functions.php b/src/Appwrite/Platform/Workers/Functions.php
+index c8c68a58ba8..cf815198fae 100644
+--- a/src/Appwrite/Platform/Workers/Functions.php
++++ b/src/Appwrite/Platform/Workers/Functions.php
+@@ -484,7 +484,7 @@ private function execute(
+         }
+ 
+         $protocol = System::getEnv('_APP_OPTIONS_FORCE_HTTPS') == 'disabled' ? 'http' : 'https';
+-        $hostname = System::getEnv('_APP_DOMAIN');
++        $hostname = System::getEnv('_APP_CONSOLE_DOMAIN', System::getEnv('_APP_DOMAIN', ''));
+         $endpoint = $protocol . '://' . $hostname . "/v1";
+ 
+         // Appwrite vars
+diff --git a/src/Appwrite/Vcs/Comment.php b/src/Appwrite/Vcs/Comment.php
+index 5f528e660fb..5b303efe441 100644
+--- a/src/Appwrite/Vcs/Comment.php
++++ b/src/Appwrite/Vcs/Comment.php
+@@ -87,7 +87,7 @@ public function generateComment(): string
+         $i = 0;
+         foreach ($projects as $projectId => $project) {
+             $protocol = System::getEnv('_APP_OPTIONS_FORCE_HTTPS') == 'disabled' ? 'http' : 'https';
+-            $hostname = System::getEnv('_APP_CONSOLE_DOMAIN', System::getEnv('_APP_DOMAIN'));
++            $hostname = System::getEnv('_APP_CONSOLE_DOMAIN', System::getEnv('_APP_DOMAIN', ''));
+ 
+             $text .= "## {$project['name']}\n\n";
+             $text .= "Project ID: `{$projectId}`\n\n";
+@@ -201,7 +201,7 @@ public function generateComment(): string
+     public function generatImage(string $pathLight, string $pathDark, string $alt, int $width): string
+     {
+         $protocol = System::getEnv('_APP_OPTIONS_FORCE_HTTPS') == 'disabled' ? 'http' : 'https';
+-        $hostname = System::getEnv('_APP_CONSOLE_DOMAIN', System::getEnv('_APP_DOMAIN'));
++        $hostname = System::getEnv('_APP_CONSOLE_DOMAIN', System::getEnv('_APP_DOMAIN', ''));
+ 
+         $imageLight = $protocol . '://' . $hostname . $pathLight;
+         $imageDark = $protocol . '://' . $hostname . $pathDark;
+diff --git a/src/Executor/Executor.php b/src/Executor/Executor.php
+index 5b204c19109..955f3851fa7 100644
+--- a/src/Executor/Executor.php
++++ b/src/Executor/Executor.php
+@@ -200,7 +200,7 @@ public function createExecution(
+         int $requestTimeout = null
+     ) {
+         if (empty($headers['host'])) {
+-            $headers['host'] = System::getEnv('_APP_DOMAIN', '');
++            $headers['host'] = System::getEnv('_APP_CONSOLE_DOMAIN', System::getEnv('_APP_DOMAIN', ''));
+         }
+ 
+         $runtimeId = "$projectId-$deploymentId";
+diff --git a/tests/e2e/Services/Projects/ProjectsCustomServerTest.php b/tests/e2e/Services/Projects/ProjectsCustomServerTest.php
+index a01073f3a39..9146d0636f8 100644
+--- a/tests/e2e/Services/Projects/ProjectsCustomServerTest.php
++++ b/tests/e2e/Services/Projects/ProjectsCustomServerTest.php
+@@ -83,7 +83,7 @@ public function testCreateProjectRule()
+ 
+         $this->assertEquals(400, $response['headers']['status-code']);
+ 
+-        $mainDomain = System::getEnv('_APP_DOMAIN', '');
++        $mainDomain = System::getEnv('_APP_CONSOLE_DOMAIN', System::getEnv('_APP_DOMAIN', ''));
+         $sitesDomain = System::getEnv('_APP_DOMAIN_SITES', '');
+         $functionsDomain = System::getEnv('_APP_DOMAIN_FUNCTIONS', '');
+ 

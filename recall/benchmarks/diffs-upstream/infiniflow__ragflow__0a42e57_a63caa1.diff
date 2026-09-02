@@ -1,0 +1,54 @@
+diff --git a/graphrag/entity_resolution.py b/graphrag/entity_resolution.py
+index 67d351a73b0..5d75027eae2 100644
+--- a/graphrag/entity_resolution.py
++++ b/graphrag/entity_resolution.py
+@@ -111,7 +111,7 @@ async def __call__(self, graph: nx.Graph,
+         connect_graph.add_edges_from(resolution_result)
+         async with trio.open_nursery() as nursery:
+             for sub_connect_graph in nx.connected_components(connect_graph):
+-                merging_nodes = list(sub_connect_graph.nodes)
++                merging_nodes = list(sub_connect_graph)
+                 nursery.start_soon(lambda: self._merge_graph_nodes(graph, merging_nodes, change))
+ 
+         # Update pagerank
+diff --git a/graphrag/general/extractor.py b/graphrag/general/extractor.py
+index 4b906903c08..b9d688d8b44 100644
+--- a/graphrag/general/extractor.py
++++ b/graphrag/general/extractor.py
+@@ -201,8 +201,8 @@ async def _merge_graph_nodes(self, graph: nx.Graph, nodes: list[str], change: Gr
+             # Merge two nodes, keep "entity_name", "entity_type", "page_rank" unchanged.
+             node1_attrs = graph.nodes[node1]
+             node0_attrs["description"] += f"{GRAPH_FIELD_SEP}{node1_attrs['description']}"
+-            for attr in ["keywords", "source_id"]:
+-                node0_attrs[attr] = sorted(set(node0_attrs[attr].extend(node1_attrs[attr])))
++            node0_attrs["source_id"].extend(node1_attrs["source_id"])
++            node0_attrs["source_id"] = sorted(set(node0_attrs["source_id"]))
+             for neighbor in graph.neighbors(node1):
+                 change.removed_edges.add(get_from_to(node1, neighbor))
+                 if neighbor not in nodes_set:
+@@ -213,8 +213,10 @@ async def _merge_graph_nodes(self, graph: nx.Graph, nodes: list[str], change: Gr
+                         edge0_attrs = graph.get_edge_data(nodes[0], neighbor)
+                         edge0_attrs["weight"] += edge1_attrs["weight"]
+                         edge0_attrs["description"] += f"{GRAPH_FIELD_SEP}{edge1_attrs['description']}"
+-                        edge0_attrs["keywords"] = list(set(edge0_attrs["keywords"].extend(edge1_attrs["keywords"])))
+-                        edge0_attrs["source_id"] = list(set(edge0_attrs["source_id"].extend(edge1_attrs["source_id"])))
++                        edge0_attrs["keywords"].extend(edge1_attrs["keywords"])
++                        edge0_attrs["keywords"] = list(set(edge0_attrs["keywords"]))
++                        edge0_attrs["source_id"].extend(edge1_attrs["source_id"])
++                        edge0_attrs["source_id"] = list(set(edge0_attrs["source_id"]))
+                         edge0_attrs["description"] = await self._handle_entity_relation_summary(f"({nodes[0]}, {neighbor})", edge0_attrs["description"])
+                         graph.add_edge(nodes[0], neighbor, **edge0_attrs)
+                     else:
+diff --git a/graphrag/utils.py b/graphrag/utils.py
+index d370d0a25a2..74abe643e2d 100644
+--- a/graphrag/utils.py
++++ b/graphrag/utils.py
+@@ -439,7 +439,7 @@ async def set_graph(tenant_id: str, kb_id: str, embd_mdl, graph: nx.Graph, chang
+     if change.removed_edges:
+         async with trio.open_nursery() as nursery:
+             for from_node, to_node in change.removed_edges:
+-                nursery.start_soon(lambda: settings.docStoreConn.delete({"knowledge_graph_kwd": ["relation"], "from_entity_kwd": from_node, "to_entity_kwd": to_node}, search.index_name(tenant_id), kb_id))
++                 await trio.to_thread.run_sync(lambda: settings.docStoreConn.delete({"knowledge_graph_kwd": ["relation"], "from_entity_kwd": from_node, "to_entity_kwd": to_node}, search.index_name(tenant_id), kb_id))
+     now = trio.current_time()
+     if callback:
+         callback(msg=f"set_graph removed {len(change.removed_nodes)} nodes and {len(change.removed_edges)} edges from index in {now - start:.2f}s.")

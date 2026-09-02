@@ -1,0 +1,225 @@
+diff --git a/src/Processors/Executors/ExecutorTasks.cpp b/src/Processors/Executors/ExecutorTasks.cpp
+index abc450777c73..c9c87eaea3ce 100644
+--- a/src/Processors/Executors/ExecutorTasks.cpp
++++ b/src/Processors/Executors/ExecutorTasks.cpp
+@@ -40,6 +40,7 @@ void ExecutorTasks::tryWakeUpAnyOtherThreadWithTasks(ExecutionThreadContext & se
+         else
+             thread_to_wake = threads_queue.popAny();
+ 
++        idle_threads--;
+         if (thread_to_wake >= use_threads)
+             throw Exception(ErrorCodes::LOGICAL_ERROR, "Non-empty queue without allocated thread");
+ 
+@@ -110,6 +111,7 @@ void ExecutorTasks::tryGetTask(ExecutionThreadContext & context)
+ 
+         /// Enqueue thread into stack of waiting threads.
+         threads_queue.push(context.thread_number);
++        idle_threads++;
+     }
+ 
+     context.wait(finished);
+@@ -158,6 +160,7 @@ void ExecutorTasks::init(size_t num_threads_, size_t use_threads_, bool profile_
+ {
+     num_threads = num_threads_;
+     use_threads = use_threads_;
++    idle_threads = 0;
+     threads_queue.init(num_threads);
+     task_queue.init(num_threads);
+ 
+@@ -228,6 +231,7 @@ void ExecutorTasks::processAsyncTasks()
+             if (threads_queue.has(task.thread_num))
+             {
+                 threads_queue.pop(task.thread_num);
++                idle_threads--;
+                 executor_contexts[task.thread_num]->wakeUp();
+             }
+         }
+diff --git a/src/Processors/Executors/ExecutorTasks.h b/src/Processors/Executors/ExecutorTasks.h
+index e551ec19161b..5751237c8506 100644
+--- a/src/Processors/Executors/ExecutorTasks.h
++++ b/src/Processors/Executors/ExecutorTasks.h
+@@ -38,6 +38,9 @@ class ExecutorTasks
+     /// Started thread count (allocated by `ConcurrencyControl`). Can increase during execution up to `num_threads`.
+     size_t use_threads = 0;
+ 
++    /// Number of idle threads, changed with threads_queue.size().
++    std::atomic_size_t idle_threads = 0;
++
+     /// This is the total number of waited async tasks which are not executed yet.
+     /// sum(executor_contexts[i].async_tasks.size())
+     size_t num_waiting_async_tasks = 0;
+@@ -45,6 +48,8 @@ class ExecutorTasks
+     /// A set of currently waiting threads.
+     ThreadsQueue threads_queue;
+ 
++    const static size_t TOO_MANY_IDLE_THRESHOLD = 4;
++
+ public:
+     using Stack = std::stack<UInt64>;
+     /// This queue can grow a lot and lead to OOM. That is why we use non-default
+@@ -67,6 +72,8 @@ class ExecutorTasks
+ 
+     void processAsyncTasks();
+ 
++    bool shouldSpawn() const { return idle_threads <= TOO_MANY_IDLE_THRESHOLD; }
++
+     ExecutionThreadContext & getThreadContext(size_t thread_num) { return *executor_contexts[thread_num]; }
+ };
+ 
+diff --git a/src/Processors/Executors/PipelineExecutor.cpp b/src/Processors/Executors/PipelineExecutor.cpp
+index 55f09b9da39d..03924c153e11 100644
+--- a/src/Processors/Executors/PipelineExecutor.cpp
++++ b/src/Processors/Executors/PipelineExecutor.cpp
+@@ -364,13 +364,12 @@ void PipelineExecutor::initializeExecution(size_t num_threads, bool concurrency_
+         /// To avoid counting them in ConcurrencyControl, we create dummy slot allocation.
+         cpu_slots = grantSlots(num_threads);
+     }
+-    size_t use_threads = cpu_slots->grantedCount();
+ 
+     Queue queue;
+     Queue async_queue;
+     graph->initializeExecution(queue, async_queue);
+ 
+-    tasks.init(num_threads, use_threads, profile_processors, trace_processors, read_progress_callback.get());
++    tasks.init(num_threads, 1, profile_processors, trace_processors, read_progress_callback.get());
+     tasks.fill(queue, async_queue);
+ 
+     if (num_threads > 1)
+@@ -379,7 +378,15 @@ void PipelineExecutor::initializeExecution(size_t num_threads, bool concurrency_
+ 
+ void PipelineExecutor::spawnThreads()
+ {
+-    while (auto slot = cpu_slots->tryAcquire())
++    std::unique_lock lock(spawn_lock, std::try_to_lock);
++    if (!lock.owns_lock())
++    {
++        /// Someone is already spawning threads, skip.
++        return;
++    }
++
++    AcquiredSlotPtr slot;
++    while (tasks.shouldSpawn() && (slot = cpu_slots->tryAcquire()))
+     {
+         size_t thread_num = threads.fetch_add(1);
+ 
+diff --git a/src/Processors/Executors/PipelineExecutor.h b/src/Processors/Executors/PipelineExecutor.h
+index 79d0a29d4e1d..f9a9ba63f677 100644
+--- a/src/Processors/Executors/PipelineExecutor.h
++++ b/src/Processors/Executors/PipelineExecutor.h
+@@ -85,6 +85,7 @@ class PipelineExecutor
+     AcquiredSlotPtr single_thread_cpu_slot; // cpu slot for single-thread mode to work using executeStep()
+     std::unique_ptr<ThreadPool> pool;
+     std::atomic_size_t threads = 0;
++    std::mutex spawn_lock;
+ 
+     /// Flag that checks that initializeExecution was called.
+     bool is_execution_initialized = false;
+diff --git a/tests/integration/test_concurrent_threads_soft_limit/test.py b/tests/integration/test_concurrent_threads_soft_limit/test.py
+index 5fdd0fb80c9d..b298667f984b 100644
+--- a/tests/integration/test_concurrent_threads_soft_limit/test.py
++++ b/tests/integration/test_concurrent_threads_soft_limit/test.py
+@@ -70,7 +70,7 @@ def test_concurrent_threads_soft_limit_default(started_cluster):
+         node1,
+         "test_concurrent_threads_soft_limit_1",
+         "ConcurrencyControlSlotsAcquired",
+-        lambda x: x == 100,
++        lambda x: x >= 1 and x <= 100,
+     )
+     assert_profile_event(
+         node1,
+@@ -78,12 +78,11 @@ def test_concurrent_threads_soft_limit_default(started_cluster):
+         "ConcurrencyControlQueriesDelayed",
+         lambda x: x == 0,
+     )
+-    assert (
+-        node1.query(
+-            "select length(thread_ids) from system.query_log where current_database = currentDatabase() and type = 'QueryFinish' and query_id = 'test_concurrent_threads_soft_limit_1' order by query_start_time_microseconds desc limit 1"
+-        )
+-        == "102\n"
+-    )
++    s_count = node1.query(
++        "select length(thread_ids) from system.query_log where current_database = currentDatabase() and type = 'QueryFinish' and query_id = 'test_concurrent_threads_soft_limit_1' order by query_start_time_microseconds desc limit 1"
++    ).strip()
++    count = int(s_count) if s_count else 0
++    assert count >= 3 and count <= 102
+ 
+ 
+ def test_use_concurrency_control_default(started_cluster):
+@@ -136,13 +135,13 @@ def test_concurrent_threads_soft_limit_defined_50(started_cluster):
+         node2,
+         "test_concurrent_threads_soft_limit_2",
+         "ConcurrencyControlSlotsDelayed",
+-        lambda x: x == 50,
++        lambda x: x >= 50,
+     )
+     assert_profile_event(
+         node2,
+         "test_concurrent_threads_soft_limit_2",
+         "ConcurrencyControlSlotsAcquired",
+-        lambda x: x == 50,
++        lambda x: x >= 1 and x <= 50,
+     )
+     assert_profile_event(
+         node2,
+@@ -150,12 +149,11 @@ def test_concurrent_threads_soft_limit_defined_50(started_cluster):
+         "ConcurrencyControlQueriesDelayed",
+         lambda x: x == 1,
+     )
+-    assert (
+-        node2.query(
+-            "select length(thread_ids) from system.query_log where current_database = currentDatabase() and type = 'QueryFinish' and query_id = 'test_concurrent_threads_soft_limit_2' order by query_start_time_microseconds desc limit 1"
+-        )
+-        == "52\n"
+-    )
++    s_count = node2.query(
++        "select length(thread_ids) from system.query_log where current_database = currentDatabase() and type = 'QueryFinish' and query_id = 'test_concurrent_threads_soft_limit_2' order by query_start_time_microseconds desc limit 1"
++    ).strip()
++    count = int(s_count) if s_count else 0
++    assert count >= 3 and count <= 52
+ 
+ 
+ def test_use_concurrency_control_soft_limit_defined_50(started_cluster):
+diff --git a/tests/queries/0_stateless/01415_overlimiting_threads_for_repica_bug.sql b/tests/queries/0_stateless/01415_overlimiting_threads_for_repica_bug.sql
+index 16faeb23ec14..5ca2e9a392d1 100644
+--- a/tests/queries/0_stateless/01415_overlimiting_threads_for_repica_bug.sql
++++ b/tests/queries/0_stateless/01415_overlimiting_threads_for_repica_bug.sql
+@@ -8,4 +8,4 @@ set prefer_localhost_replica = 1;
+ select sum(number) from remote('127.0.0.{1|2}', numbers_mt(1000000)) group by number % 2 order by number % 2;
+ 
+ system flush logs;
+-select length(thread_ids) >= 16 from system.query_log where current_database = currentDatabase() and event_date >= today() - 1 and lower(query) like '%select sum(number) from remote(_127.0.0.{1|2}_, numbers_mt(1000000)) group by number %' and type = 'QueryFinish' order by query_start_time desc limit 1;
++select length(thread_ids) >= 1 from system.query_log where current_database = currentDatabase() and event_date >= today() - 1 and lower(query) like '%select sum(number) from remote(_127.0.0.{1|2}_, numbers_mt(1000000)) group by number %' and type = 'QueryFinish' order by query_start_time desc limit 1;
+diff --git a/tests/queries/0_stateless/02015_global_in_threads.sh b/tests/queries/0_stateless/02015_global_in_threads.sh
+index 174be1af1ca0..9fd29244b752 100755
+--- a/tests/queries/0_stateless/02015_global_in_threads.sh
++++ b/tests/queries/0_stateless/02015_global_in_threads.sh
+@@ -8,4 +8,4 @@ CURDIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
+ 
+ ${CLICKHOUSE_CLIENT} --log_queries=1 --max_threads=32 --use_concurrency_control=0 --query_id "2015_${CLICKHOUSE_DATABASE}_query" -q "select count() from remote('127.0.0.{2,3}', numbers(10)) where number global in (select number % 5 from numbers_mt(1000000))"
+ ${CLICKHOUSE_CLIENT} -q "system flush logs"
+-${CLICKHOUSE_CLIENT} -q "select length(thread_ids) >= 32 from system.query_log where event_date >= yesterday() and query_id = '2015_${CLICKHOUSE_DATABASE}_query' and type = 'QueryFinish' and current_database = currentDatabase()"
++${CLICKHOUSE_CLIENT} -q "select length(thread_ids) >= 1 from system.query_log where event_date >= yesterday() and query_id = '2015_${CLICKHOUSE_DATABASE}_query' and type = 'QueryFinish' and current_database = currentDatabase()"
+diff --git a/tests/queries/0_stateless/02845_threads_count_in_distributed_queries.sql.j2 b/tests/queries/0_stateless/02845_threads_count_in_distributed_queries.sql.j2
+index 0b9cf4969407..0fe61491e0da 100644
+--- a/tests/queries/0_stateless/02845_threads_count_in_distributed_queries.sql.j2
++++ b/tests/queries/0_stateless/02845_threads_count_in_distributed_queries.sql.j2
+@@ -102,7 +102,7 @@ WITH
+         toUnixTimestamp64Micro(event_time_microseconds)
+     ) as peak_threads
+ SELECT
+-    if(peak_threads >= 77, 'ok', 'too few threads: ' || toString(peak_threads) ) AS result
++    if(peak_threads >= 1, 'ok', 'too few threads: ' || toString(peak_threads) ) AS result
+ FROM system.query_thread_log
+ WHERE
+     event_time > now() - 60
+@@ -216,8 +216,8 @@ WITH
+         toUnixTimestamp64Micro(event_time_microseconds)
+     ) as peak_threads
+ SELECT
+-    if(peak_threads >= 95, 'ok', 'too few threads: ' || toString(peak_threads) ) AS result
+-     -- we have 95 parts
++    if(peak_threads >= 1, 'ok', 'too few threads: ' || toString(peak_threads) ) AS result
++     -- we have 95 parts, but avoid spawning too much idles threads
+ FROM system.query_thread_log
+ WHERE
+     event_time > now() - 60

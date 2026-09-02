@@ -1,0 +1,469 @@
+diff --git a/cmake/Modules/ValkeySetup.cmake b/cmake/Modules/ValkeySetup.cmake
+index b062859b88d..26897df78bc 100644
+--- a/cmake/Modules/ValkeySetup.cmake
++++ b/cmake/Modules/ValkeySetup.cmake
+@@ -89,6 +89,11 @@ macro (valkey_build_and_install_bin target sources ld_flags libs link_name)
+         target_link_libraries(${target} OpenSSL::SSL valkey::valkey_tls)
+     endif ()
+ 
++    if (USE_RDMA)
++        # Add required libraries needed for RDMA
++        target_link_libraries(${target} valkey::valkey_rdma valkey::valkey)
++    endif ()
++
+     if (IS_FREEBSD)
+         target_link_libraries(${target} execinfo)
+     endif ()
+@@ -117,6 +122,11 @@ macro (valkey_build_and_install_module target sources ld_flags libs)
+         target_link_libraries(${target} OpenSSL::SSL valkey::valkey_tls)
+     endif ()
+ 
++    if (USE_RDMA)
++        # Add required libraries needed for RDMA
++        target_link_libraries(${target} valkey::valkey_rdma valkey::valkey)
++    endif ()
++
+     if (IS_FREEBSD)
+         target_link_libraries(${target} execinfo)
+     endif ()
+diff --git a/deps/CMakeLists.txt b/deps/CMakeLists.txt
+index 99a618db0ab..b40d5db9e3a 100644
+--- a/deps/CMakeLists.txt
++++ b/deps/CMakeLists.txt
+@@ -16,6 +16,12 @@ if (USE_TLS) # Module or no module
+         ON
+         CACHE BOOL "Should we test SSL connections")
+ endif ()
++if (USE_RDMA) # Module or no module
++    message(STATUS "Building valkey_rdma")
++    set(ENABLE_RDMA
++        ON
++        CACHE BOOL "Should we test RDMA connections")
++endif ()
+ # Let libvalkey use sds and dict provided by valkey.
+ set(DICT_INCLUDE_DIR ${CMAKE_SOURCE_DIR}/src)
+ set(SDS_INCLUDE_DIR ${CMAKE_SOURCE_DIR}/src)
+@@ -29,3 +35,4 @@ add_subdirectory(hdr_histogram)
+ unset(BUILD_SHARED_LIBS CACHE)
+ unset(DISABLE_TESTS CACHE)
+ unset(ENABLE_TLS CACHE)
++unset(ENABLE_RDMA CACHE)
+diff --git a/deps/Makefile b/deps/Makefile
+index a77324b975b..7815fe1ec25 100644
+--- a/deps/Makefile
++++ b/deps/Makefile
+@@ -52,6 +52,10 @@ ifneq (,$(filter $(BUILD_TLS),yes module))
+     LIBVALKEY_MAKE_FLAGS += USE_TLS=1
+ endif
+ 
++ifneq (,$(filter $(BUILD_RDMA),yes module))
++    LIBVALKEY_MAKE_FLAGS += USE_RDMA=1
++endif
++
+ libvalkey: .make-prerequisites
+ 	@printf '%b %b\n' $(MAKECOLOR)MAKE$(ENDCOLOR) $(BINCOLOR)$@$(ENDCOLOR)
+ 	cd libvalkey && $(MAKE) static $(LIBVALKEY_MAKE_FLAGS)
+diff --git a/src/Makefile b/src/Makefile
+index e296bf65624..5e4d3ee88db 100644
+--- a/src/Makefile
++++ b/src/Makefile
+@@ -341,6 +341,7 @@ endif
+ ifeq ($(BUILD_RDMA),yes)
+ 	FINAL_CFLAGS+=-DUSE_RDMA=$(BUILD_YES) -DBUILD_RDMA_MODULE=$(BUILD_NO)
+ 	FINAL_LIBS += $(RDMA_LIBS)
++	FINAL_LIBS += ../deps/libvalkey/lib/libvalkey_rdma.a $(RDMA_LIBS)
+ endif
+ 
+ RDMA_MODULE=
+@@ -348,6 +349,7 @@ RDMA_MODULE_NAME:=valkey-rdma$(PROG_SUFFIX).so
+ RDMA_MODULE_CFLAGS:=$(FINAL_CFLAGS)
+ ifeq ($(BUILD_RDMA),module)
+ 	FINAL_CFLAGS+=-DUSE_RDMA=$(BUILD_MODULE)
++	RDMA_CLIENT_LIBS = ../deps/libvalkey/lib/libvalkey_rdma.a $(RDMA_LIBS)
+ 	RDMA_MODULE=$(RDMA_MODULE_NAME)
+ 	RDMA_MODULE_CFLAGS+=-DUSE_RDMA=$(BUILD_MODULE) -DBUILD_RDMA_MODULE=$(BUILD_MODULE) $(RDMA_LIBS)
+ endif
+@@ -514,7 +516,7 @@ $(ENGINE_CHECK_AOF_NAME): $(SERVER_NAME)
+ 
+ # valkey-tls.so
+ $(TLS_MODULE_NAME): $(SERVER_NAME)
+-	$(QUIET_CC)$(CC) -o $@ tls.c -shared -fPIC $(TLS_MODULE_CFLAGS) $(TLS_CLIENT_LIBS)
++	$(QUIET_CC)$(CC) -o $@ tls.c -shared -fPIC $(TLS_MODULE_CFLAGS) $(TLS_CLIENT_LIBS) $(RDMA_CLIENT_LIBS)
+ 
+ # valkey-rdma.so
+ $(RDMA_MODULE_NAME): $(SERVER_NAME)
+@@ -522,11 +524,11 @@ $(RDMA_MODULE_NAME): $(SERVER_NAME)
+ 
+ # valkey-cli
+ $(ENGINE_CLI_NAME): $(ENGINE_CLI_OBJ)
+-	$(SERVER_LD) -o $@ $^ ../deps/libvalkey/lib/libvalkey.a ../deps/linenoise/linenoise.o ../deps/fpconv/libfpconv.a $(FINAL_LIBS) $(TLS_CLIENT_LIBS)
++	$(SERVER_LD) -o $@ $^ ../deps/libvalkey/lib/libvalkey.a ../deps/linenoise/linenoise.o ../deps/fpconv/libfpconv.a $(FINAL_LIBS) $(TLS_CLIENT_LIBS) $(RDMA_CLIENT_LIBS)
+ 
+ # valkey-benchmark
+ $(ENGINE_BENCHMARK_NAME): $(ENGINE_BENCHMARK_OBJ)
+-	$(SERVER_LD) -o $@ $^ ../deps/libvalkey/lib/libvalkey.a ../deps/hdr_histogram/libhdrhistogram.a ../deps/fpconv/libfpconv.a $(FINAL_LIBS) $(TLS_CLIENT_LIBS)
++	$(SERVER_LD) -o $@ $^ ../deps/libvalkey/lib/libvalkey.a ../deps/hdr_histogram/libhdrhistogram.a ../deps/fpconv/libfpconv.a $(FINAL_LIBS) $(TLS_CLIENT_LIBS) $(RDMA_CLIENT_LIBS)
+ 
+ DEP = $(ENGINE_SERVER_OBJ:%.o=%.d) $(ENGINE_CLI_OBJ:%.o=%.d) $(ENGINE_BENCHMARK_OBJ:%.o=%.d)
+ -include $(DEP)
+diff --git a/src/cli_common.c b/src/cli_common.c
+index 64ee156f987..81704d29ec5 100644
+--- a/src/cli_common.c
++++ b/src/cli_common.c
+@@ -46,6 +46,9 @@
+ #include <openssl/err.h>
+ #include <valkey/tls.h>
+ #endif
++#ifdef USE_RDMA
++#include <valkey/rdma.h>
++#endif
+ 
+ #define UNUSED(V) ((void)V)
+ 
+@@ -427,9 +430,15 @@ sds cliVersion(void) {
+ }
+ 
+ /* This is a wrapper to call valkeyConnect or valkeyConnectWithTimeout. */
+-valkeyContext *valkeyConnectWrapper(const char *ip, int port, const struct timeval tv, int nonblock) {
++valkeyContext *valkeyConnectWrapper(const char *ip, int port, const struct timeval tv, int nonblock, int rdma) {
+     valkeyOptions options = {0};
+-    VALKEY_OPTIONS_SET_TCP(&options, ip, port);
++    if (rdma) {
++#ifdef USE_RDMA
++        VALKEY_OPTIONS_SET_RDMA(&options, ip, port);
++#endif
++    } else {
++        VALKEY_OPTIONS_SET_TCP(&options, ip, port);
++    }
+ 
+     if (tv.tv_sec || tv.tv_usec) {
+         options.connect_timeout = &tv;
+diff --git a/src/cli_common.h b/src/cli_common.h
+index d4c416d3600..4455bb09f9c 100644
+--- a/src/cli_common.h
++++ b/src/cli_common.h
+@@ -53,7 +53,7 @@ sds escapeJsonString(sds s, const char *p, size_t len);
+ 
+ sds cliVersion(void);
+ 
+-valkeyContext *valkeyConnectWrapper(const char *ip, int port, const struct timeval tv, int nonblock);
++valkeyContext *valkeyConnectWrapper(const char *ip, int port, const struct timeval tv, int nonblock, int rdma);
+ valkeyContext *valkeyConnectUnixWrapper(const char *path, const struct timeval tv, int nonblock);
+ 
+ #endif /* __CLICOMMON_H */
+diff --git a/src/valkey-benchmark.c b/src/valkey-benchmark.c
+index 3c7b7afb98d..4e7d1c18fff 100644
+--- a/src/valkey-benchmark.c
++++ b/src/valkey-benchmark.c
+@@ -51,6 +51,9 @@
+ #include <openssl/err.h>
+ #include <valkey/tls.h>
+ #endif
++#ifdef USE_RDMA
++#include <valkey/rdma.h>
++#endif
+ #include "adlist.h"
+ #include "dict.h"
+ #include "zmalloc.h"
+@@ -88,6 +91,7 @@ static struct config {
+     cliConnInfo conn_info;
+     const char *hostsocket;
+     int tls;
++    int rdma;
+     struct cliSSLconfig sslconfig;
+     int numclients;
+     _Atomic int liveclients;
+@@ -194,8 +198,8 @@ static void freeBenchmarkThread(benchmarkThread *thread);
+ static void freeBenchmarkThreads(void);
+ static void *execBenchmarkThread(void *ptr);
+ static clusterNode *createClusterNode(char *ip, int port);
+-static serverConfig *getServerConfig(const char *ip, int port, const char *hostsocket);
+-static valkeyContext *getValkeyContext(const char *ip, int port, const char *hostsocket);
++static serverConfig *getServerConfig(const char *ip, int port, const char *hostsocket, int rdma);
++static valkeyContext *getValkeyContext(const char *ip, int port, const char *hostsocket, int rdma);
+ static void freeServerConfig(serverConfig *cfg);
+ static int fetchClusterSlotsConfiguration(client c);
+ static void updateClusterSlotsConfiguration(void);
+@@ -241,12 +245,12 @@ static dictType dtype = {
+     NULL               /* allow to expand */
+ };
+ 
+-static valkeyContext *getValkeyContext(const char *ip, int port, const char *hostsocket) {
++static valkeyContext *getValkeyContext(const char *ip, int port, const char *hostsocket, int rdma) {
+     valkeyContext *ctx = NULL;
+     valkeyReply *reply = NULL;
+     struct timeval tv = {0};
+     if (hostsocket == NULL)
+-        ctx = valkeyConnectWrapper(ip, port, tv, 0);
++        ctx = valkeyConnectWrapper(ip, port, tv, 0, rdma);
+     else
+         ctx = valkeyConnectUnixWrapper(hostsocket, tv, 0);
+     if (ctx == NULL || ctx->err) {
+@@ -295,12 +299,12 @@ static valkeyContext *getValkeyContext(const char *ip, int port, const char *hos
+ }
+ 
+ 
+-static serverConfig *getServerConfig(const char *ip, int port, const char *hostsocket) {
++static serverConfig *getServerConfig(const char *ip, int port, const char *hostsocket, int rdma) {
+     serverConfig *cfg = zcalloc(sizeof(*cfg));
+     if (!cfg) return NULL;
+     valkeyContext *c = NULL;
+     valkeyReply *reply = NULL, *sub_reply = NULL;
+-    c = getValkeyContext(ip, port, hostsocket);
++    c = getValkeyContext(ip, port, hostsocket, rdma);
+     if (c == NULL) {
+         freeServerConfig(cfg);
+         exit(1);
+@@ -388,7 +392,11 @@ static void resetClient(client c) {
+     aeEventLoop *el = CLIENT_GET_EVENTLOOP(c);
+     aeDeleteFileEvent(el, c->context->fd, AE_WRITABLE);
+     aeDeleteFileEvent(el, c->context->fd, AE_READABLE);
+-    aeCreateFileEvent(el, c->context->fd, AE_WRITABLE, writeHandler, c);
++    if (config.rdma) {
++        writeHandler(el, c->context->fd, c, 0); /* RDMA context always writable, but it can't be invoked by AE_WRITABLE */
++    } else {
++        aeCreateFileEvent(el, c->context->fd, AE_WRITABLE, writeHandler, c);
++    }
+     c->written = 0;
+     c->pending = config.pipeline;
+ }
+@@ -643,12 +651,14 @@ static client createClient(char *cmd, size_t len, client from, int thread_id) {
+ 
+     const char *ip = NULL;
+     int port = 0;
++    int rdma = 0;
+     struct timeval tv = {0};
+     c->cluster_node = NULL;
+     if (config.hostsocket == NULL || is_cluster_client) {
+         if (!is_cluster_client) {
+             ip = config.conn_info.hostip;
+             port = config.conn_info.hostport;
++            rdma = config.rdma;
+         } else {
+             int node_idx = 0;
+             if (config.num_threads < config.cluster_node_count)
+@@ -661,7 +671,7 @@ static client createClient(char *cmd, size_t len, client from, int thread_id) {
+             port = node->port;
+             c->cluster_node = node;
+         }
+-        c->context = valkeyConnectWrapper(ip, port, tv, 1);
++        c->context = valkeyConnectWrapper(ip, port, tv, 1, rdma);
+     } else {
+         c->context = valkeyConnectUnixWrapper(config.hostsocket, tv, 1);
+     }
+@@ -819,9 +829,13 @@ static client createClient(char *cmd, size_t len, client from, int thread_id) {
+         benchmarkThread *thread = config.threads[thread_id];
+         el = thread->el;
+     }
+-    if (config.idlemode == 0)
+-        aeCreateFileEvent(el, c->context->fd, AE_WRITABLE, writeHandler, c);
+-    else
++    if (config.idlemode == 0) {
++        if (config.rdma) {
++            writeHandler(el, c->context->fd, c, 0);
++        } else {
++            aeCreateFileEvent(el, c->context->fd, AE_WRITABLE, writeHandler, c);
++        }
++    } else
+         /* In idle mode, clients still need to register readHandler for catching errors */
+         aeCreateFileEvent(el, c->context->fd, AE_READABLE, readHandler, c);
+ 
+@@ -1087,7 +1101,7 @@ static int fetchClusterConfiguration(void) {
+     dict *nodes = NULL;
+     const char *errmsg = "Failed to fetch cluster configuration";
+     size_t i, j;
+-    ctx = getValkeyContext(config.conn_info.hostip, config.conn_info.hostport, config.hostsocket);
++    ctx = getValkeyContext(config.conn_info.hostip, config.conn_info.hostport, config.hostsocket, 0);
+     if (ctx == NULL) {
+         exit(1);
+     }
+@@ -1200,7 +1214,7 @@ static int fetchClusterSlotsConfiguration(client c) {
+         assert(node->port);
+         /* Use first node as entry point to connect to. */
+         if (ctx == NULL) {
+-            ctx = getValkeyContext(node->ip, node->port, NULL);
++            ctx = getValkeyContext(node->ip, node->port, NULL, 0);
+             if (!ctx) {
+                 success = 0;
+                 goto cleanup;
+@@ -1306,6 +1320,7 @@ int parseOptions(int argc, char **argv) {
+     int lastarg;
+     int exit_status = 1;
+     char *tls_usage;
++    char *rdma_usage;
+ 
+     for (i = 1; i < argc; i++) {
+         lastarg = (i == (argc - 1));
+@@ -1472,6 +1487,14 @@ int parseOptions(int argc, char **argv) {
+             if (lastarg) goto invalid;
+             config.sslconfig.ciphersuites = strdup(argv[++i]);
+ #endif
++#endif
++#ifdef USE_RDMA
++        } else if (!strcmp(argv[i], "--rdma")) {
++            if (valkeyInitiateRdma() != VALKEY_OK) {
++                fprintf(stderr, "Failed to initialize RDMA support from libvalkey\n");
++                exit(1);
++            }
++            config.rdma = 1;
+ #endif
+         } else {
+             /* Assume the user meant to provide an option when the arg starts
+@@ -1511,8 +1534,15 @@ int parseOptions(int argc, char **argv) {
+ #endif
+         "";
+ 
++    rdma_usage =
++#ifdef USE_RDMA
++        " --rdma             Establish a RDMA connection.\n"
++#endif
++        "";
++
++
+     printf(
+-        "%s%s%s", /* Split to avoid strings longer than 4095 (-Woverlength-strings). */
++        "%s%s%s%s", /* Split to avoid strings longer than 4095 (-Woverlength-strings). */
+         "Usage: valkey-benchmark [OPTIONS] [COMMAND ARGS...]\n\n"
+         "Options:\n"
+         " -h <hostname>      Server hostname (default 127.0.0.1)\n"
+@@ -1577,6 +1607,7 @@ int parseOptions(int argc, char **argv) {
+         "                    Sets the number of keys passed to FCALL command when running\n"
+         "                    the 'fcall' test. (default 1)\n",
+         tls_usage,
++        rdma_usage,
+         " --help             Output this help and exit.\n"
+         " --version          Output version and exit.\n\n"
+         "Examples:\n\n"
+@@ -1798,7 +1829,7 @@ int main(int argc, char **argv) {
+             printf("Node %d(%s): ", i, node_type);
+             if (node->name) printf("%s ", node->name);
+             printf("%s:%d\n", node->ip, node->port);
+-            node->redis_config = getServerConfig(node->ip, node->port, NULL);
++            node->redis_config = getServerConfig(node->ip, node->port, NULL, 0);
+             if (node->redis_config == NULL) {
+                 fprintf(stderr, "WARNING: Could not fetch node CONFIG %s:%d\n", node->ip, node->port);
+             }
+@@ -1808,7 +1839,7 @@ int main(int argc, char **argv) {
+          * by the user. */
+         if (config.num_threads == 0) config.num_threads = config.cluster_node_count;
+     } else {
+-        config.redis_config = getServerConfig(config.conn_info.hostip, config.conn_info.hostport, config.hostsocket);
++        config.redis_config = getServerConfig(config.conn_info.hostip, config.conn_info.hostport, config.hostsocket, config.rdma);
+         if (config.redis_config == NULL) {
+             fprintf(stderr, "WARNING: Could not fetch server CONFIG\n");
+         }
+@@ -2045,7 +2076,7 @@ int main(int argc, char **argv) {
+         if (test_is_selected("fcall")) {
+             char *script = generateFunctionScript(1, config.num_keys_in_fcall > 0);
+ 
+-            valkeyContext *ctx = getValkeyContext(config.conn_info.hostip, config.conn_info.hostport, NULL);
++            valkeyContext *ctx = getValkeyContext(config.conn_info.hostip, config.conn_info.hostport, NULL, 0);
+             if (ctx == NULL) {
+                 exit(1);
+             }
+diff --git a/src/valkey-cli.c b/src/valkey-cli.c
+index 8617fb67a97..825e3361140 100644
+--- a/src/valkey-cli.c
++++ b/src/valkey-cli.c
+@@ -56,6 +56,9 @@
+ #include <openssl/err.h>
+ #include <valkey/tls.h>
+ #endif
++#ifdef USE_RDMA
++#include <valkey/rdma.h>
++#endif
+ #include "sds.h"
+ #include "dict.h"
+ #include "adlist.h"
+@@ -216,6 +219,7 @@ static struct config {
+     struct timeval connect_timeout;
+     char *hostsocket;
+     int tls;
++    int rdma;
+     cliSSLconfig sslconfig;
+     long repeat;
+     long interval;
+@@ -1638,7 +1642,7 @@ static int cliConnect(int flags) {
+ 
+         /* Do not use hostsocket when we got redirected in cluster mode */
+         if (config.hostsocket == NULL || (config.cluster_mode && config.cluster_reissue_command)) {
+-            context = valkeyConnectWrapper(config.conn_info.hostip, config.conn_info.hostport, config.connect_timeout, 0);
++            context = valkeyConnectWrapper(config.conn_info.hostip, config.conn_info.hostport, config.connect_timeout, 0, config.rdma);
+         } else {
+             context = valkeyConnectUnixWrapper(config.hostsocket, config.connect_timeout, 0);
+         }
+@@ -2528,7 +2532,7 @@ static valkeyReply *reconnectingValkeyCommand(valkeyContext *c, const char *fmt,
+             fflush(stdout);
+ 
+             valkeyFree(c);
+-            c = valkeyConnectWrapper(config.conn_info.hostip, config.conn_info.hostport, config.connect_timeout, 0);
++            c = valkeyConnectWrapper(config.conn_info.hostip, config.conn_info.hostport, config.connect_timeout, 0, config.rdma);
+             if (!c->err && config.tls) {
+                 const char *err = NULL;
+                 if (cliSecureConnection(c, config.sslconfig, &err) == VALKEY_ERR && err) {
+@@ -2822,6 +2826,14 @@ static int parseOptions(int argc, char **argv) {
+         } else if (!strcmp(argv[i], "--tls-ciphersuites") && !lastarg) {
+             config.sslconfig.ciphersuites = argv[++i];
+ #endif
++#endif
++#ifdef USE_RDMA
++        } else if (!strcmp(argv[i], "--rdma")) {
++            if (valkeyInitiateRdma() != VALKEY_OK) {
++                fprintf(stderr, "Failed to initialize RDMA support from libvalkey\n");
++                exit(1);
++            }
++            config.rdma = 1;
+ #endif
+         } else if (!strcmp(argv[i], "-v") || !strcmp(argv[i], "--version")) {
+             sds version = cliVersion();
+@@ -2944,9 +2956,15 @@ static void usage(int err) {
+         "                     See the ciphers(1ssl) manpage for more information about the syntax of this string,\n"
+         "                     and specifically for TLSv1.3 ciphersuites.\n"
+ #endif
++#endif
++        "";
++    const char *rdma_usage =
++#ifdef USE_RDMA
++        "  --rdma             Establish a RDMA connection.\n"
+ #endif
+         "";
+ 
++
+     fprintf(target,
+             "valkey-cli %s\n"
+             "\n"
+@@ -2986,6 +3004,7 @@ static void usage(int err) {
+             "  -4                 Prefer IPv4 over IPv6 on DNS lookup.\n"
+             "  -6                 Prefer IPv6 over IPv4 on DNS lookup.\n"
+             "%s"
++            "%s"
+             "  --raw              Use raw formatting for replies (default when STDOUT is\n"
+             "                     not a tty).\n"
+             "  --no-raw           Force formatted output even when STDOUT is not a tty.\n"
+@@ -2996,7 +3015,7 @@ static void usage(int err) {
+             "  --show-pushes <yn> Whether to print RESP3 PUSH messages.  Enabled by default when\n"
+             "                     STDOUT is a tty but can be overridden with --show-pushes no.\n"
+             "  --stat             Print rolling stats about server: mem, clients, ...\n",
+-            version, tls_usage);
++            version, tls_usage, rdma_usage);
+ 
+     fprintf(target,
+             "  --latency          Enter a special mode continuously sampling latency.\n"
+@@ -3970,7 +3989,7 @@ static int clusterManagerExecTransaction(clusterManagerNode *node, clusterManage
+ 
+ static int clusterManagerNodeConnect(clusterManagerNode *node) {
+     if (node->context) valkeyFree(node->context);
+-    node->context = valkeyConnectWrapper(node->ip, node->port, config.connect_timeout, 0);
++    node->context = valkeyConnectWrapper(node->ip, node->port, config.connect_timeout, 0, config.rdma);
+     if (!node->context->err && config.tls) {
+         const char *err = NULL;
+         if (cliSecureConnection(node->context, config.sslconfig, &err) == VALKEY_ERR && err) {
+@@ -7712,7 +7731,7 @@ static int clusterManagerCommandImport(int argc, char **argv) {
+     char *reply_err = NULL;
+     valkeyReply *src_reply = NULL;
+     // Connect to the source node.
+-    valkeyContext *src_ctx = valkeyConnectWrapper(src_ip, src_port, config.connect_timeout, 0);
++    valkeyContext *src_ctx = valkeyConnectWrapper(src_ip, src_port, config.connect_timeout, 0, config.rdma);
+     if (src_ctx->err) {
+         success = 0;
+         fprintf(stderr, "Could not connect to Valkey at %s:%d: %s.\n", src_ip, src_port, src_ctx->errstr);

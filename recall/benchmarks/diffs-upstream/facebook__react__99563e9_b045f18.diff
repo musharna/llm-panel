@@ -1,0 +1,331 @@
+diff --git a/packages/react-devtools-shared/src/backend/fiber/renderer.js b/packages/react-devtools-shared/src/backend/fiber/renderer.js
+index ef8bac0099a2..3ad1b7ba4598 100644
+--- a/packages/react-devtools-shared/src/backend/fiber/renderer.js
++++ b/packages/react-devtools-shared/src/backend/fiber/renderer.js
+@@ -146,6 +146,7 @@ import type {
+ import type {Source} from 'react-devtools-shared/src/shared/types';
+ import {getSourceLocationByFiber} from './DevToolsFiberComponentStack';
+ import {formatOwnerStack} from '../shared/DevToolsOwnerStack';
++import {ActivityComponent} from 'react-reconciler/src/ReactWorkTags';
+ 
+ // Kinds
+ const FIBER_INSTANCE = 0;
+@@ -385,6 +386,7 @@ export function getInternalReactConstants(version: string): {
+       YieldComponent: -1, // Removed
+       Throw: 29,
+       ViewTransitionComponent: 30, // Experimental
++      ActivityComponent: 31,
+     };
+   } else if (gte(version, '17.0.0-alpha')) {
+     ReactTypeOfWork = {
+@@ -421,6 +423,7 @@ export function getInternalReactConstants(version: string): {
+       YieldComponent: -1, // Removed
+       Throw: -1, // Doesn't exist yet
+       ViewTransitionComponent: -1, // Doesn't exist yet
++      ActivityComponent: -1, // Doesn't exist yet
+     };
+   } else if (gte(version, '16.6.0-beta.0')) {
+     ReactTypeOfWork = {
+@@ -457,6 +460,7 @@ export function getInternalReactConstants(version: string): {
+       YieldComponent: -1, // Removed
+       Throw: -1, // Doesn't exist yet
+       ViewTransitionComponent: -1, // Doesn't exist yet
++      ActivityComponent: -1, // Doesn't exist yet
+     };
+   } else if (gte(version, '16.4.3-alpha')) {
+     ReactTypeOfWork = {
+@@ -493,6 +497,7 @@ export function getInternalReactConstants(version: string): {
+       YieldComponent: -1, // Removed
+       Throw: -1, // Doesn't exist yet
+       ViewTransitionComponent: -1, // Doesn't exist yet
++      ActivityComponent: -1, // Doesn't exist yet
+     };
+   } else {
+     ReactTypeOfWork = {
+@@ -529,6 +534,7 @@ export function getInternalReactConstants(version: string): {
+       YieldComponent: 9,
+       Throw: -1, // Doesn't exist yet
+       ViewTransitionComponent: -1, // Doesn't exist yet
++      ActivityComponent: -1, // Doesn't exist yet
+     };
+   }
+   // **********************************************************
+@@ -622,6 +628,8 @@ export function getInternalReactConstants(version: string): {
+     }
+ 
+     switch (tag) {
++      case ActivityComponent:
++        return 'Activity';
+       case CacheComponent:
+         return 'Cache';
+       case ClassComponent:
+@@ -1480,6 +1488,7 @@ export function attach(
+         return true;
+       case HostPortal:
+       case HostText:
++      case ActivityComponent:
+       case LegacyHiddenComponent:
+       case OffscreenComponent:
+       case Throw:
+diff --git a/packages/react-devtools-shared/src/backend/types.js b/packages/react-devtools-shared/src/backend/types.js
+index 7b0d801026ac..56fb9a8ec315 100644
+--- a/packages/react-devtools-shared/src/backend/types.js
++++ b/packages/react-devtools-shared/src/backend/types.js
+@@ -77,6 +77,7 @@ export type WorkTagMap = {
+   YieldComponent: WorkTag,
+   Throw: WorkTag,
+   ViewTransitionComponent: WorkTag,
++  ActivityComponent: WorkTag,
+ };
+ 
+ export type HostInstance = Object;
+diff --git a/packages/react-reconciler/src/ReactFiber.js b/packages/react-reconciler/src/ReactFiber.js
+index 1ebe08b76963..c96380939cfa 100644
+--- a/packages/react-reconciler/src/ReactFiber.js
++++ b/packages/react-reconciler/src/ReactFiber.js
+@@ -72,6 +72,7 @@ import {
+   TracingMarkerComponent,
+   Throw,
+   ViewTransitionComponent,
++  ActivityComponent,
+ } from './ReactWorkTags';
+ import {OffscreenVisible} from './ReactFiberActivityComponent';
+ import {getComponentNameFromOwner} from 'react-reconciler/src/getComponentNameFromFiber';
+@@ -108,6 +109,7 @@ import {
+   REACT_TRACING_MARKER_TYPE,
+   REACT_ELEMENT_TYPE,
+   REACT_VIEW_TRANSITION_TYPE,
++  REACT_ACTIVITY_TYPE,
+ } from 'shared/ReactSymbols';
+ import {TransitionTracingMarker} from './ReactFiberTracingMarkerComponent';
+ import {
+@@ -595,6 +597,8 @@ export function createFiberFromTypeAndProps(
+     }
+   } else {
+     getTag: switch (type) {
++      case REACT_ACTIVITY_TYPE:
++        return createFiberFromActivity(pendingProps, mode, lanes, key);
+       case REACT_FRAGMENT_TYPE:
+         return createFiberFromFragment(pendingProps.children, mode, lanes, key);
+       case REACT_STRICT_MODE_TYPE:
+@@ -874,6 +878,17 @@ export function createFiberFromOffscreen(
+   fiber.stateNode = primaryChildInstance;
+   return fiber;
+ }
++export function createFiberFromActivity(
++  pendingProps: OffscreenProps,
++  mode: TypeOfMode,
++  lanes: Lanes,
++  key: null | string,
++): Fiber {
++  const fiber = createFiber(ActivityComponent, pendingProps, key, mode);
++  fiber.elementType = REACT_ACTIVITY_TYPE;
++  fiber.lanes = lanes;
++  return fiber;
++}
+ 
+ export function createFiberFromViewTransition(
+   pendingProps: ViewTransitionProps,
+diff --git a/packages/react-reconciler/src/ReactFiberBeginWork.js b/packages/react-reconciler/src/ReactFiberBeginWork.js
+index 6f4acf97cf45..bea69b2063de 100644
+--- a/packages/react-reconciler/src/ReactFiberBeginWork.js
++++ b/packages/react-reconciler/src/ReactFiberBeginWork.js
+@@ -77,6 +77,7 @@ import {
+   TracingMarkerComponent,
+   Throw,
+   ViewTransitionComponent,
++  ActivityComponent,
+ } from './ReactWorkTags';
+ import {
+   NoFlags,
+@@ -867,6 +868,46 @@ function deferHiddenOffscreenComponent(
+ // fork the function.
+ const updateLegacyHiddenComponent = updateOffscreenComponent;
+ 
++function updateActivityComponent(
++  current: null | Fiber,
++  workInProgress: Fiber,
++  renderLanes: Lanes,
++) {
++  const nextProps = workInProgress.pendingProps;
++  const nextChildren = nextProps.children;
++  const nextMode = nextProps.mode;
++  const mode = workInProgress.mode;
++  const offscreenChildProps: OffscreenProps = {
++    mode: nextMode,
++    children: nextChildren,
++  };
++
++  if (current === null) {
++    const primaryChildFragment = mountWorkInProgressOffscreenFiber(
++      offscreenChildProps,
++      mode,
++      renderLanes,
++    );
++    primaryChildFragment.ref = workInProgress.ref;
++    workInProgress.child = primaryChildFragment;
++    primaryChildFragment.return = workInProgress;
++
++    return primaryChildFragment;
++  } else {
++    const currentChild: Fiber = (current.child: any);
++
++    const primaryChildFragment = updateWorkInProgressOffscreenFiber(
++      currentChild,
++      offscreenChildProps,
++    );
++
++    primaryChildFragment.ref = workInProgress.ref;
++    workInProgress.child = primaryChildFragment;
++    primaryChildFragment.return = workInProgress;
++    return primaryChildFragment;
++  }
++}
++
+ function updateCacheComponent(
+   current: Fiber | null,
+   workInProgress: Fiber,
+@@ -4024,6 +4065,9 @@ function beginWork(
+       }
+       break;
+     }
++    case ActivityComponent: {
++      return updateActivityComponent(current, workInProgress, renderLanes);
++    }
+     case OffscreenComponent: {
+       return updateOffscreenComponent(current, workInProgress, renderLanes);
+     }
+diff --git a/packages/react-reconciler/src/ReactFiberCompleteWork.js b/packages/react-reconciler/src/ReactFiberCompleteWork.js
+index 89012e78cf65..dc8e9a1bffa0 100644
+--- a/packages/react-reconciler/src/ReactFiberCompleteWork.js
++++ b/packages/react-reconciler/src/ReactFiberCompleteWork.js
+@@ -76,6 +76,7 @@ import {
+   TracingMarkerComponent,
+   Throw,
+   ViewTransitionComponent,
++  ActivityComponent,
+ } from './ReactWorkTags';
+ import {NoMode, ConcurrentMode, ProfileMode} from './ReactTypeOfMode';
+ import {
+@@ -959,6 +960,7 @@ function completeWork(
+       }
+       // Fallthrough
+     }
++    case ActivityComponent:
+     case LazyComponent:
+     case SimpleMemoComponent:
+     case FunctionComponent:
+diff --git a/packages/react-reconciler/src/ReactWorkTags.js b/packages/react-reconciler/src/ReactWorkTags.js
+index 5de62ebeb756..4b01934be778 100644
+--- a/packages/react-reconciler/src/ReactWorkTags.js
++++ b/packages/react-reconciler/src/ReactWorkTags.js
+@@ -38,7 +38,8 @@ export type WorkTag =
+   | 27
+   | 28
+   | 29
+-  | 30;
++  | 30
++  | 31;
+ 
+ export const FunctionComponent = 0;
+ export const ClassComponent = 1;
+@@ -69,3 +70,4 @@ export const HostSingleton = 27;
+ export const IncompleteFunctionComponent = 28;
+ export const Throw = 29;
+ export const ViewTransitionComponent = 30;
++export const ActivityComponent = 31;
+diff --git a/packages/react-reconciler/src/getComponentNameFromFiber.js b/packages/react-reconciler/src/getComponentNameFromFiber.js
+index 04ad072c2583..670475cdec5a 100644
+--- a/packages/react-reconciler/src/getComponentNameFromFiber.js
++++ b/packages/react-reconciler/src/getComponentNameFromFiber.js
+@@ -47,6 +47,7 @@ import {
+   TracingMarkerComponent,
+   Throw,
+   ViewTransitionComponent,
++  ActivityComponent,
+ } from 'react-reconciler/src/ReactWorkTags';
+ import getComponentNameFromType from 'shared/getComponentNameFromType';
+ import {REACT_STRICT_MODE_TYPE} from 'shared/ReactSymbols';
+@@ -85,6 +86,8 @@ export function getComponentNameFromOwner(
+ export default function getComponentNameFromFiber(fiber: Fiber): string | null {
+   const {tag, type} = fiber;
+   switch (tag) {
++    case ActivityComponent:
++      return 'Activity';
+     case CacheComponent:
+       return 'Cache';
+     case ContextConsumer:
+diff --git a/packages/react-server/src/ReactFizzServer.js b/packages/react-server/src/ReactFizzServer.js
+index 041ef31e2bd3..cc4173486404 100644
+--- a/packages/react-server/src/ReactFizzServer.js
++++ b/packages/react-server/src/ReactFizzServer.js
+@@ -154,6 +154,7 @@ import {
+   REACT_OFFSCREEN_TYPE,
+   REACT_POSTPONE_TYPE,
+   REACT_VIEW_TRANSITION_TYPE,
++  REACT_ACTIVITY_TYPE,
+ } from 'shared/ReactSymbols';
+ import ReactSharedInternals from 'shared/ReactSharedInternals';
+ import {
+@@ -2261,6 +2262,7 @@ function renderElement(
+       task.keyPath = prevKeyPath;
+       return;
+     }
++    case REACT_ACTIVITY_TYPE:
+     case REACT_OFFSCREEN_TYPE: {
+       renderOffscreen(request, task, keyPath, props);
+       return;
+diff --git a/packages/react/src/ReactClient.js b/packages/react/src/ReactClient.js
+index 33175a9a77f3..b48a3cdb1a74 100644
+--- a/packages/react/src/ReactClient.js
++++ b/packages/react/src/ReactClient.js
+@@ -15,7 +15,7 @@ import {
+   REACT_SUSPENSE_TYPE,
+   REACT_SUSPENSE_LIST_TYPE,
+   REACT_LEGACY_HIDDEN_TYPE,
+-  REACT_OFFSCREEN_TYPE,
++  REACT_ACTIVITY_TYPE,
+   REACT_SCOPE_TYPE,
+   REACT_TRACING_MARKER_TYPE,
+   REACT_VIEW_TRANSITION_TYPE,
+@@ -116,7 +116,7 @@ export {
+   useDeferredValue,
+   REACT_SUSPENSE_LIST_TYPE as unstable_SuspenseList,
+   REACT_LEGACY_HIDDEN_TYPE as unstable_LegacyHidden,
+-  REACT_OFFSCREEN_TYPE as unstable_Activity,
++  REACT_ACTIVITY_TYPE as unstable_Activity,
+   getCacheForType as unstable_getCacheForType,
+   useCacheRefresh as unstable_useCacheRefresh,
+   use,
+diff --git a/packages/shared/ReactSymbols.js b/packages/shared/ReactSymbols.js
+index fc5893585900..1fd00cd76d8c 100644
+--- a/packages/shared/ReactSymbols.js
++++ b/packages/shared/ReactSymbols.js
+@@ -34,6 +34,7 @@ export const REACT_MEMO_TYPE: symbol = Symbol.for('react.memo');
+ export const REACT_LAZY_TYPE: symbol = Symbol.for('react.lazy');
+ export const REACT_SCOPE_TYPE: symbol = Symbol.for('react.scope');
+ export const REACT_OFFSCREEN_TYPE: symbol = Symbol.for('react.offscreen');
++export const REACT_ACTIVITY_TYPE: symbol = Symbol.for('react.activity');
+ export const REACT_LEGACY_HIDDEN_TYPE: symbol = Symbol.for(
+   'react.legacy_hidden',
+ );
+diff --git a/packages/shared/isValidElementType.js b/packages/shared/isValidElementType.js
+index cea90aebb14f..df977acd4ecd 100644
+--- a/packages/shared/isValidElementType.js
++++ b/packages/shared/isValidElementType.js
+@@ -24,6 +24,7 @@ import {
+   REACT_OFFSCREEN_TYPE,
+   REACT_TRACING_MARKER_TYPE,
+   REACT_VIEW_TRANSITION_TYPE,
++  REACT_ACTIVITY_TYPE,
+ } from 'shared/ReactSymbols';
+ import {
+   enableScopeAPI,
+@@ -50,6 +51,7 @@ export default function isValidElementType(type: mixed): boolean {
+     type === REACT_SUSPENSE_TYPE ||
+     type === REACT_SUSPENSE_LIST_TYPE ||
+     (enableLegacyHidden && type === REACT_LEGACY_HIDDEN_TYPE) ||
++    type === REACT_ACTIVITY_TYPE ||
+     type === REACT_OFFSCREEN_TYPE ||
+     (enableScopeAPI && type === REACT_SCOPE_TYPE) ||
+     (enableTransitionTracing && type === REACT_TRACING_MARKER_TYPE) ||
