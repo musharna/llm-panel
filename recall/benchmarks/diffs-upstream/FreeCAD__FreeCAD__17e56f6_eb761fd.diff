@@ -1,0 +1,1015 @@
+diff --git a/src/Mod/Import/App/ExportOCAF2.cpp b/src/Mod/Import/App/ExportOCAF2.cpp
+index 4649c6a6760f..853ce9012ade 100644
+--- a/src/Mod/Import/App/ExportOCAF2.cpp
++++ b/src/Mod/Import/App/ExportOCAF2.cpp
+@@ -381,7 +381,11 @@ TDF_Label ExportOCAF2::exportObject(App::DocumentObject* parentObj,
+                                     const char* name)
+ {
+     App::DocumentObject* obj;
+-    auto shape = Part::Feature::getTopoShape(parentObj, sub, false, nullptr, &obj, false, !sub);
++    auto shape = Part::Feature::getTopoShape(parentObj,
++                                             sub,
++                                             nullptr,
++                                             &obj,
++                                             Part::Feature::Transform * (!sub));
+     if (!obj || shape.isNull()) {
+         if (obj) {
+             FC_WARN(obj->getFullName() << " has null shape");
+diff --git a/src/Mod/Measure/App/Measurement.cpp b/src/Mod/Measure/App/Measurement.cpp
+index 661edd7ea0c4..83abeeed599f 100644
+--- a/src/Mod/Measure/App/Measurement.cpp
++++ b/src/Mod/Measure/App/Measurement.cpp
+@@ -125,7 +125,14 @@ MeasureType Measurement::findType()
+     for (; obj != objects.end(); ++obj, ++subEl) {
+         TopoDS_Shape refSubShape;
+         try {
+-            refSubShape = Part::Feature::getShape(*obj, (*subEl).c_str(), true);
++            refSubShape =
++                Part::Feature::getShape(*obj,
++                                        (*subEl).c_str(),
++                                        nullptr,
++                                        nullptr,
++                                        Part::Feature::NeedSubElement | Part::Feature::ResolveLink
++                                            | Part::Feature::Transform);
++
+             if (refSubShape.IsNull()) {
+                 return MeasureType::Invalid;
+             }
+@@ -751,7 +758,14 @@ bool Measurement::planesAreParallel() const
+     for (size_t i = 0; i < objects.size(); ++i) {
+         TopoDS_Shape refSubShape;
+         try {
+-            refSubShape = Part::Feature::getShape(objects[i], subElements[i].c_str(), true);
++            refSubShape =
++                Part::Feature::getShape(objects[i],
++                                        subElements[i].c_str(),
++                                        nullptr,
++                                        nullptr,
++                                        Part::Feature::NeedSubElement | Part::Feature::ResolveLink
++                                            | Part::Feature::Transform);
++
+             if (refSubShape.IsNull()) {
+                 return false;
+             }
+diff --git a/src/Mod/Part/App/AppPartPy.cpp b/src/Mod/Part/App/AppPartPy.cpp
+index 665c797c26ec..e43985ae0d27 100644
+--- a/src/Mod/Part/App/AppPartPy.cpp
++++ b/src/Mod/Part/App/AppPartPy.cpp
+@@ -2288,9 +2288,14 @@ class Module : public Py::ExtensionModule<Module>
+         Base::Matrix4D mat;
+         if(pyMat)
+             mat = *static_cast<Base::MatrixPy*>(pyMat)->getMatrixPtr();
+-        auto shape = Feature::getTopoShape(obj,subname,Base::asBoolean(needSubElement),
+-                &mat,&subObj,retType==2,Base::asBoolean(transform),
+-                Base::asBoolean(noElementMap));
++
++        bool resolveLink = (retType == 2);
++        auto shape = Feature::getTopoShape(obj, subname, &mat, &subObj, 
++                                (Feature::ResolveLink * resolveLink) | 
++                                (Feature::NeedSubElement * Base::asBoolean(needSubElement) | 
++                                (Feature::Transform * Base::asBoolean(transform)) | 
++                                (Feature::NoElementMap * Base::asBoolean(noElementMap))));
++
+         if (Base::asBoolean(refine)) {
+             shape = TopoShape(0, shape.Hasher).makeElementRefine(shape);
+         }
+diff --git a/src/Mod/Part/App/Attacher.cpp b/src/Mod/Part/App/Attacher.cpp
+index 31492009e5df..8a6482492170 100644
+--- a/src/Mod/Part/App/Attacher.cpp
++++ b/src/Mod/Part/App/Attacher.cpp
+@@ -881,7 +881,13 @@ TopoShape AttachEngine::extractSubShape(App::DocumentObject* obj, const std::str
+     try {
+         // getTopoShape support fully qualified subnames and should return shape with correct
+         // global placement.
+-        shape = Feature::getTopoShape(obj, subname.c_str(), true);
++        shape = Feature::getTopoShape(obj,
++                                      subname.c_str(),
++                                      nullptr,
++                                      nullptr,
++                                      Feature::NeedSubElement 
++                                        | Feature::ResolveLink
++                                        | Feature::Transform);
+ 
+         for (;;) {
+             if (shape.isNull()) {
+diff --git a/src/Mod/Part/App/FeatureExtrusion.cpp b/src/Mod/Part/App/FeatureExtrusion.cpp
+index 53fb59e28ea3..cf4a86977398 100644
+--- a/src/Mod/Part/App/FeatureExtrusion.cpp
++++ b/src/Mod/Part/App/FeatureExtrusion.cpp
+@@ -170,7 +170,11 @@ bool Extrusion::fetchAxisLink(const App::PropertyLinkSub& axisLink, Base::Vector
+ 
+     TopoDS_Shape axEdge;
+     if (!axisLink.getSubValues().empty() && axisLink.getSubValues()[0].length() > 0) {
+-        axEdge = Feature::getTopoShape(linked, axisLink.getSubValues()[0].c_str(), true /*need element*/).getShape();
++        axEdge = Feature::getTopoShape(linked,
++                                       axisLink.getSubValues()[0].c_str(),
++                                       nullptr,
++                                       nullptr,
++                                       NeedSubElement | ResolveLink | Transform).getShape();
+     }
+     else {
+         axEdge = Feature::getShape(linked);
+@@ -263,7 +267,7 @@ Base::Vector3d Extrusion::calculateShapeNormal(const App::PropertyLink& shapeLin
+ {
+     App::DocumentObject* docobj = nullptr;
+     Base::Matrix4D mat;
+-    TopoDS_Shape sh = Feature::getShape(shapeLink.getValue(), nullptr, false, &mat, &docobj);
++    TopoDS_Shape sh = Feature::getShape(shapeLink.getValue(), nullptr, &mat, &docobj);
+ 
+     if (!docobj)
+         throw Base::ValueError("calculateShapeNormal: link is empty");
+diff --git a/src/Mod/Part/App/FeatureMirroring.cpp b/src/Mod/Part/App/FeatureMirroring.cpp
+index 94ce2bdca623..82486f013bee 100644
+--- a/src/Mod/Part/App/FeatureMirroring.cpp
++++ b/src/Mod/Part/App/FeatureMirroring.cpp
+@@ -170,7 +170,13 @@ App::DocumentObjectExecReturn *Mirroring::execute()
+             bool isEdge = false; //will be true if user selected edge subobject or if object only has 1 edge
+             TopoDS_Shape shape;
+             if (!subStrings.empty() && subStrings[0].length() > 0){
+-                shape = Feature::getTopoShape(linked, subStrings[0].c_str(), true).getShape();
++
++                shape = Feature::getTopoShape(linked,
++                                              subStrings[0].c_str(),
++                                              nullptr,
++                                              nullptr,
++                                              NeedSubElement | ResolveLink | Transform).getShape();
++                            
+                 if (strstr(subStrings[0].c_str(), "Face")){
+                     isFace = true; //was face subobject, e.g. Face3
+                 } else {
+diff --git a/src/Mod/Part/App/FeatureProjectOnSurface.cpp b/src/Mod/Part/App/FeatureProjectOnSurface.cpp
+index 99c182f8930c..45d92c713ab7 100644
+--- a/src/Mod/Part/App/FeatureProjectOnSurface.cpp
++++ b/src/Mod/Part/App/FeatureProjectOnSurface.cpp
+@@ -108,7 +108,11 @@ TopoDS_Face ProjectOnSurface::getSupportFace() const
+         throw Base::ValueError("Expect exactly one support face");
+     }
+ 
+-    auto topoSupport = Feature::getTopoShape(support, subStrings[0].c_str(), true);
++    auto topoSupport = Feature::getTopoShape(support,
++                                             subStrings[0].c_str(),
++                                             nullptr,
++                                             nullptr,
++                                             NeedSubElement | ResolveLink | Transform);
+     return TopoDS::Face(topoSupport.getShape());
+ }
+ 
+@@ -122,7 +126,11 @@ std::vector<TopoDS_Shape> ProjectOnSurface::getProjectionShapes() const
+     }
+ 
+     for (std::size_t index = 0; index < objects.size(); index++) {
+-        auto topoSupport = Feature::getTopoShape(objects[index], subvalues[index].c_str(), true);
++        auto topoSupport = Feature::getTopoShape(objects[index],
++                                                 subvalues[index].c_str(),
++                                                 nullptr,
++                                                 nullptr,
++                                                 NeedSubElement | ResolveLink | Transform);
+         shapes.push_back(topoSupport.getShape());
+     }
+ 
+diff --git a/src/Mod/Part/App/FeatureRevolution.cpp b/src/Mod/Part/App/FeatureRevolution.cpp
+index 1bc993ce0112..f9c36e121016 100644
+--- a/src/Mod/Part/App/FeatureRevolution.cpp
++++ b/src/Mod/Part/App/FeatureRevolution.cpp
+@@ -91,7 +91,11 @@ bool Revolution::fetchAxisLink(const App::PropertyLinkSub &axisLink,
+ 
+     TopoDS_Shape axEdge;
+     if (!axisLink.getSubValues().empty()  &&  axisLink.getSubValues()[0].length() > 0){
+-        axEdge = Feature::getTopoShape(linked, axisLink.getSubValues()[0].c_str(), true /*need element*/).getShape();
++        axEdge = Feature::getTopoShape(linked,
++                                       axisLink.getSubValues()[0].c_str(),
++                                       nullptr,
++                                       nullptr,
++                                       NeedSubElement | ResolveLink | Transform).getShape();
+     } else {
+         axEdge = Feature::getShape(linked);
+     }
+diff --git a/src/Mod/Part/App/MeasureClient.cpp b/src/Mod/Part/App/MeasureClient.cpp
+index 35230ee242c2..79bbf9167c42 100644
+--- a/src/Mod/Part/App/MeasureClient.cpp
++++ b/src/Mod/Part/App/MeasureClient.cpp
+@@ -98,7 +98,8 @@ TopoDS_Shape getLocatedShape(const App::SubObjectT& subject, Base::Matrix4D* mat
+         return {};
+     }
+ 
+-    Part::TopoShape shape = Part::Feature::getTopoShape(obj, subject.getElementName(), false, mat, nullptr, true);
++    Part::TopoShape shape = Part::Feature::getTopoShape(obj, subject.getElementName(), mat, nullptr);
++
+     if (shape.isNull()) {
+         Base::Console().log("Part::MeasureClient::getLocatedShape: Did not retrieve shape for %s, %s\n", obj->getNameInDocument(), subject.getElementName());
+         return {};
+@@ -121,7 +122,14 @@ TopoDS_Shape getLocatedShape(const App::SubObjectT& subject, Base::Matrix4D* mat
+ 
+ App::MeasureElementType PartMeasureTypeCb(App::DocumentObject* ob, const char* subName)
+ {
+-    TopoDS_Shape shape = Part::Feature::getShape(ob, subName, true);
++    TopoDS_Shape shape = Part::Feature::getShape(ob,
++                                                 subName,
++                                                 nullptr,
++                                                 nullptr,
++                                                 Feature::NeedSubElement 
++                                                    | Feature::ResolveLink
++                                                    | Feature::Transform);
++
+     if (shape.IsNull()) {
+         // failure here on loading document with existing measurement.
+         Base::Console().message("Part::PartMeasureTypeCb did not retrieve shape for %s, %s\n", ob->getNameInDocument(), subName);
+@@ -176,8 +184,14 @@ bool getShapeFromStrings(TopoDS_Shape &shapeOut, const App::SubObjectT& subject,
+     if (!obj) {
+         return {};
+      }
+-    shapeOut = Part::Feature::getShape(obj, subject.getElementName(), true, mat);
+-    return !shapeOut.IsNull();
++     shapeOut = Part::Feature::getShape(obj,
++                                        subject.getElementName(),
++                                        mat,
++                                        nullptr,
++                                        Feature::NeedSubElement 
++                                            | Feature::ResolveLink
++                                            | Feature::Transform);
++     return !shapeOut.IsNull();
+ }
+ 
+ 
+diff --git a/src/Mod/Part/App/PartFeature.cpp b/src/Mod/Part/App/PartFeature.cpp
+index 35150b3d029f..d33cd5bcb72f 100644
+--- a/src/Mod/Part/App/PartFeature.cpp
++++ b/src/Mod/Part/App/PartFeature.cpp
+@@ -544,7 +544,7 @@ static std::vector<std::pair<long, Data::MappedName>> getElementSource(App::Docu
+             doc = nullptr;
+         }
+         else {
+-            shape = Part::Feature::getTopoShape(obj, 0, false, 0, &owner);
++            shape = Part::Feature::getTopoShape(obj, nullptr, nullptr, &owner);
+         }
+         if (type && shape.elementType(original) != type) {
+             break;
+@@ -667,16 +667,9 @@ QVector<Data::MappedElement> Feature::getElementFromSource(App::DocumentObject*
+     if (!obj || !src) {
+         return res;
+     }
+-
+-    auto shape = getTopoShape(obj,
+-                              subname,
+-                              false,
+-                              nullptr,
+-                              nullptr,
+-                              true,
+-                              /*transform = */ false);
++    auto shape = getTopoShape(obj, subname, nullptr, nullptr, ResolveLink);
+     App::DocumentObject* owner = nullptr;
+-    auto srcShape = getTopoShape(src, srcSub, false, nullptr, &owner);
++    auto srcShape = getTopoShape(src, srcSub, nullptr, &owner);
+     int tagChanges;
+     Data::MappedElement element;
+     Data::IndexedName checkingSubname;
+@@ -792,7 +785,7 @@ QVector<Data::MappedElement> Feature::getRelatedElements(App::DocumentObject* ob
+                                                          bool withCache)
+ {
+     auto owner = obj;
+-    auto shape = getTopoShape(obj, nullptr, false, 0, &owner);
++    auto shape = getTopoShape(obj, nullptr, nullptr, &owner);
+     QVector<Data::MappedElement> ret;
+     Data::MappedElement mapped = shape.getElementName(name);
+     if (!mapped.name) {
+@@ -860,10 +853,9 @@ QVector<Data::MappedElement> Feature::getRelatedElements(App::DocumentObject* ob
+ }
+ 
+ TopoDS_Shape Feature::getShape(const App::DocumentObject *obj, const char *subname,
+-        bool needSubElement, Base::Matrix4D *pmat, App::DocumentObject **powner,
+-        bool resolveLink, bool transform)
++        Base::Matrix4D *pmat, App::DocumentObject **powner, int options)
+ {
+-    return getTopoShape(obj,subname,needSubElement,pmat,powner,resolveLink,transform,true).getShape();
++    return getTopoShape(obj,subname, pmat,powner, options | NoElementMap).getShape();
+ }
+ 
+ App::Material Feature::getMaterialAppearance() const
+@@ -886,7 +878,8 @@ void Feature::clearShapeCache() {
+ //    _ShapeCache.cache.clear();
+ }
+ 
+-static TopoShape _getTopoShape(const App::DocumentObject* obj,
++/*
++(const App::DocumentObject* obj,
+                                const char* subname,
+                                bool needSubElement,
+                                Base::Matrix4D* pmat,
+@@ -895,6 +888,14 @@ static TopoShape _getTopoShape(const App::DocumentObject* obj,
+                                bool noElementMap,
+                                const std::set<std::string> hiddens,
+                                const App::DocumentObject* lastLink)
++*/
++static TopoShape _getTopoShape(const App::DocumentObject* obj,
++                               const char* subname,
++                               Base::Matrix4D* pmat,
++                               App::DocumentObject** powner,
++                               const std::set<std::string> hiddens,
++                               const App::DocumentObject* lastLink, 
++                               int options)
+ 
+ {
+     TopoShape shape;
+@@ -911,7 +912,7 @@ static TopoShape _getTopoShape(const App::DocumentObject* obj,
+ 
+     std::string _subname;
+     auto subelement = Data::findElementName(subname);
+-    if (!needSubElement && subname) {
++    if (!(options & Feature::NeedSubElement) && subname) {
+         // strip out element name if not needed
+         if (subelement && *subelement) {
+             _subname = std::string(subname, subelement);
+@@ -924,7 +925,7 @@ static TopoShape _getTopoShape(const App::DocumentObject* obj,
+     };
+ 
+     if (canCache(obj) && PropertyShapeCache::getShape(obj, shape, subname)) {
+-        if (noElementMap) {
++        if (options & Feature::NoElementMap) {
+             shape.resetElementMap();
+             shape.Tag = 0;
+             if ( shape.Hasher ) {
+@@ -948,7 +949,7 @@ static TopoShape _getTopoShape(const App::DocumentObject* obj,
+         hasher = owner->getDocument()->getStringHasher();
+         linked = owner->getLinkedObject(true, &linkMat, false);
+         if (pmat) {
+-            if (resolveLink && obj != owner) {
++            if (options & Feature::ResolveLink && obj != owner) {
+                 *pmat = mat * linkMat;
+             }
+             else {
+@@ -959,7 +960,7 @@ static TopoShape _getTopoShape(const App::DocumentObject* obj,
+             linked = owner;
+         }
+         if (powner) {
+-            *powner = resolveLink ? linked : owner;
++            *powner = (options & Feature::ResolveLink) ? linked : owner;
+         }
+ 
+         if (!shape.isNull()) {
+@@ -976,7 +977,7 @@ static TopoShape _getTopoShape(const App::DocumentObject* obj,
+                         PropertyShapeCache::setShape(obj, shape, subname);
+                     }
+                 }
+-                if (noElementMap) {
++                if (options & Feature::NoElementMap) {
+                     shape.resetElementMap();
+                     shape.Tag = 0;
+                     if ( shape.Hasher ) {
+@@ -1064,7 +1065,7 @@ static TopoShape _getTopoShape(const App::DocumentObject* obj,
+     }
+ 
+     // nothing can be done if there is sub-element references
+-    if (needSubElement && subelement && *subelement) {
++    if (options & Feature::NeedSubElement && subelement && *subelement) {
+         return shape;
+     }
+ 
+@@ -1081,7 +1082,7 @@ static TopoShape _getTopoShape(const App::DocumentObject* obj,
+             }
+         }
+         if (!shape.isNull()) {
+-            if (noElementMap) {
++            if (options & Feature::NoElementMap) {
+                 shape.resetElementMap();
+                 shape.Tag = 0;
+                 if ( shape.Hasher) {
+@@ -1099,7 +1100,7 @@ static TopoShape _getTopoShape(const App::DocumentObject* obj,
+         && (!link || (!link->_ChildCache.getSize() && link->getSubElements().size() <= 1))) {
+         // if there is a linked object, and there is no child cache (which is used
+         // for special handling of plain group), obtain shape from the linked object
+-        shape = Feature::getTopoShape(linked, nullptr, false, nullptr, nullptr, false, false);
++        shape = Feature::getTopoShape(linked, nullptr, nullptr, nullptr, 0);
+         if (shape.isNull()) {
+             return shape;
+         }
+@@ -1125,7 +1126,7 @@ static TopoShape _getTopoShape(const App::DocumentObject* obj,
+             linked = link->getTrueLinkedObject(false, &baseMat);
+             if (linked && linked != owner) {
+                 baseShape =
+-                    Feature::getTopoShape(linked, nullptr, false, nullptr, nullptr, false, false);
++                    Feature::getTopoShape(linked, nullptr, nullptr, nullptr, 0);
+                 if (!link->getShowElementValue()) {
+                     baseShape.reTagElementMap(owner->getID(),
+                                               owner->getDocument()->getStringHasher());
+@@ -1182,13 +1183,12 @@ static TopoShape _getTopoShape(const App::DocumentObject* obj,
+             if (doGetShape) {
+                 shape = _getTopoShape(owner,
+                                       sub.c_str(),
+-                                      true,
+-                                      0,
++                                      nullptr,
+                                       &subObj,
+-                                      false,
+-                                      false,
+                                       nextHiddens,
+-                                      nextLink);
++                                      nextLink, 
++                                      Feature::NeedSubElement);
++
+                 if (shape.isNull()) {
+                     continue;
+                 }
+@@ -1233,7 +1233,7 @@ static TopoShape _getTopoShape(const App::DocumentObject* obj,
+             PropertyShapeCache::setShape(obj, shape, subname);
+         }
+     }
+-    if (noElementMap) {
++    if (options & Feature::NoElementMap) {
+         shape.resetElementMap();
+         shape.Tag = 0;
+         if ( shape.Hasher ) {
+@@ -1243,17 +1243,15 @@ static TopoShape _getTopoShape(const App::DocumentObject* obj,
+     return shape;
+ }
+ 
+-TopoShape Feature::getTopoShape(const App::DocumentObject* obj,
+-                                const char* subname,
+-                                bool needSubElement,
+-                                Base::Matrix4D* pmat,
+-                                App::DocumentObject** powner,
+-                                bool resolveLink,
+-                                bool transform,
+-                                bool noElementMap)
++
++TopoShape Feature::getTopoShape(const App::DocumentObject* obj, 
++                                const char* subname, 
++                                Base::Matrix4D* pmat, 
++                                App::DocumentObject** powner, 
++                                int options)
+ {
+     if (!obj || !obj->getNameInDocument()) {
+-        return TopoShape();
++        return {};
+     }
+ 
+     const App::DocumentObject* lastLink = 0;
+@@ -1268,7 +1266,7 @@ TopoShape Feature::getTopoShape(const App::DocumentObject* obj,
+     // transformation for easy shape caching, i.e.  with `transform` set
+     // to false. So we manually apply the top level transform if asked.
+ 
+-    if (needSubElement && (!pmat || *pmat == Base::Matrix4D())
++    if (options & NeedSubElement && (!pmat || *pmat == Base::Matrix4D())
+         && obj->isDerivedFrom<Part::Feature>()
+         && !obj->hasExtension(App::LinkBaseExtension::getExtensionClassTypeId())) {
+         // Some OCC shape making is very sensitive to shape transformation. So
+@@ -1276,10 +1274,10 @@ TopoShape Feature::getTopoShape(const App::DocumentObject* obj,
+         // processing here.
+         if (subname && *subname && Data::findElementName(subname) == subname) {
+             TopoShape ts = static_cast<const Part::Feature*>(obj)->Shape.getShape();
+-            if (!transform) {
++            if (!(options & Transform)) {
+                 ts.setShape(ts.getShape().Located(TopLoc_Location()), false);
+             }
+-            if (noElementMap) {
++            if (options & NoElementMap) {
+                 ts = ts.getSubShape(subname, true);
+             }
+             else {
+@@ -1289,7 +1287,7 @@ TopoShape Feature::getTopoShape(const App::DocumentObject* obj,
+                 if (powner) {
+                     *powner = const_cast<App::DocumentObject*>(obj);
+                 }
+-                if (pmat && transform) {
++                if (pmat && options & Transform) {
+                     *pmat = static_cast<const Part::Feature*>(obj)->Placement.getValue().toMatrix();
+                 }
+                 return ts;
+@@ -1300,50 +1298,48 @@ TopoShape Feature::getTopoShape(const App::DocumentObject* obj,
+     Base::Matrix4D mat;
+     auto shape = _getTopoShape(obj,
+                                subname,
+-                               needSubElement,
+                                &mat,
+                                powner,
+-                               resolveLink,
+-                               noElementMap,
+                                hiddens,
+-                               lastLink);
+-    if (needSubElement && shape.shapeType(true) == TopAbs_COMPOUND) {
+-        if (shape.countSubShapes(TopAbs_SOLID) == 1)
+-            shape = shape.getSubTopoShape(TopAbs_SOLID, 1);
+-        else if (shape.countSubShapes(TopAbs_COMPSOLID) == 1)
+-            shape = shape.getSubTopoShape(TopAbs_COMPSOLID, 1);
+-        else if (shape.countSubShapes(TopAbs_FACE) == 1)
+-            shape = shape.getSubTopoShape(TopAbs_FACE, 1);
+-        else if (shape.countSubShapes(TopAbs_SHELL) == 1)
+-            shape = shape.getSubTopoShape(TopAbs_SHELL, 1);
+-        else if (shape.countSubShapes(TopAbs_EDGE) == 1)
+-            shape = shape.getSubTopoShape(TopAbs_EDGE, 1);
+-        else if (shape.countSubShapes(TopAbs_WIRE) == 1)
+-            shape = shape.getSubTopoShape(TopAbs_WIRE, 1);
+-        else if (shape.countSubShapes(TopAbs_VERTEX) == 1)
+-            shape = shape.getSubTopoShape(TopAbs_VERTEX, 1);
++                               lastLink, 
++                               options);
++    if (options & NeedSubElement && !(options & DontSimplifyCompound) && shape.shapeType(true) == TopAbs_COMPOUND) {
++        shape = simplifyCompound(shape);
+     }
++
+     Base::Matrix4D topMat;
+-    if (pmat || transform) {
+-        // Obtain top level transformation
+-        if (pmat) {
+-            topMat = *pmat;
+-        }
+-        if (transform) {
+-            obj->getSubObject(nullptr, nullptr, &topMat);
+-        }
++    if (pmat) {
++        topMat = *pmat;
++    }
++    if (options & Transform) {
++        obj->getSubObject(nullptr, nullptr, &topMat);
++    }
++    if ((pmat || options & Transform) && !shape.isNull()) {
++        shape.transformShape(topMat, false, true);
++    }
++    if (pmat) {
++        *pmat = topMat * mat;
++    }
+ 
+-        // Apply the top level transformation
+-        if (!shape.isNull()) {
+-            shape.transformShape(topMat, false, true);
+-        }
++    return shape;
++}
++TopoShape Feature::simplifyCompound(TopoShape compoundShape)
++{
++    std::array<TopAbs_ShapeEnum, 7> simplificationPriority = {  
++                                            TopAbs_SOLID,
++                                            TopAbs_COMPSOLID,
++                                            TopAbs_FACE,
++                                            TopAbs_SHELL,
++                                            TopAbs_SHELL,
++                                            TopAbs_WIRE,
++                                            TopAbs_VERTEX};
+ 
+-        if (pmat) {
+-            *pmat = topMat * mat;
++    for (TopAbs_ShapeEnum simplification : simplificationPriority) {
++        if (compoundShape.countSubShapes(simplification) == 1) {
++            return compoundShape.getSubTopoShape(simplification, 1);
+         }
+     }
+-
+-    return shape;
++    return compoundShape;
+ }
+ 
+ App::DocumentObject *Feature::getShapeOwner(const App::DocumentObject *obj, const char *subname)
+@@ -1698,7 +1694,7 @@ bool Feature::isElementMappingDisabled(App::PropertyContainer* container)
+ 
+ bool Feature::getCameraAlignmentDirection(Base::Vector3d& directionZ, Base::Vector3d &directionX, const char* subname) const
+ {
+-    const auto topoShape = getTopoShape(this, subname, true);
++    const auto topoShape = getTopoShape(this, subname, nullptr, nullptr, NeedSubElement | ResolveLink | Transform);
+ 
+     if (topoShape.isNull()) {
+         return false;
+diff --git a/src/Mod/Part/App/PartFeature.h b/src/Mod/Part/App/PartFeature.h
+index 2496c4032aa7..03df31ee9f07 100644
+--- a/src/Mod/Part/App/PartFeature.h
++++ b/src/Mod/Part/App/PartFeature.h
+@@ -52,6 +52,16 @@ class PartExport Feature : public App::GeoFeature
+ {
+     PROPERTY_HEADER_WITH_OVERRIDE(Part::Feature);
+ 
++public:
++    enum GetShapeOptions
++    {
++        NeedSubElement = 1,
++        ResolveLink = 2,
++        Transform = 4,
++        NoElementMap = 8,
++        DontSimplifyCompound = 16
++    };
++
+ public:
+     /// Constructor
+     Feature();
+@@ -130,15 +140,16 @@ class PartExport Feature : public App::GeoFeature
+      * @param transform: if true, apply obj's transformation. Set to false
+      * if pmat already include obj's transformation matrix.
+      */
+-    static TopoDS_Shape getShape(const App::DocumentObject *obj,
+-            const char *subname=nullptr, bool needSubElement=false, Base::Matrix4D *pmat=nullptr,
+-            App::DocumentObject **owner=nullptr, bool resolveLink=true, bool transform=true);
++     static TopoDS_Shape getShape(const App::DocumentObject *obj,
++            const char *subname=nullptr, Base::Matrix4D *pmat=nullptr,
++            App::DocumentObject **owner=nullptr, int options = ResolveLink | Transform);
+ 
+-    static TopoShape getTopoShape(const App::DocumentObject *obj,
+-            const char *subname=nullptr, bool needSubElement=false, Base::Matrix4D *pmat=nullptr,
+-            App::DocumentObject **owner=nullptr, bool resolveLink=true, bool transform=true,
+-            bool noElementMap=false);
++    static TopoShape getTopoShape(const App::DocumentObject* obj, 
++                                    const char* subname=nullptr, Base::Matrix4D* pmat=nullptr, 
++                                    App::DocumentObject**owner=nullptr, 
++                                    int options = ResolveLink | Transform);
+ 
++    static TopoShape simplifyCompound(TopoShape compoundShape);
+     static void clearShapeCache();
+ 
+     static App::DocumentObject *getShapeOwner(const App::DocumentObject *obj, const char *subname=nullptr);
+diff --git a/src/Mod/Part/App/PartFeatures.cpp b/src/Mod/Part/App/PartFeatures.cpp
+index f9e5643fcb01..9a78a469e42d 100644
+--- a/src/Mod/Part/App/PartFeatures.cpp
++++ b/src/Mod/Part/App/PartFeatures.cpp
+@@ -140,7 +140,11 @@ App::DocumentObjectExecReturn* RuledSurface::execute()
+                 return new App::DocumentObjectExecReturn("Not exactly one sub-shape linked.");
+             }
+             else {
+-                shapes.push_back(getTopoShape(link->getValue(), subs.front().c_str(), true));
++                shapes.push_back(getTopoShape(link->getValue(),
++                                              subs.front().c_str(),
++                                              nullptr,
++                                              nullptr,
++                                              NeedSubElement | ResolveLink | Transform));
+             }
+             if (shapes.back().isNull()) {
+                 return new App::DocumentObjectExecReturn("Invalid link.");
+diff --git a/src/Mod/Part/Gui/Command.cpp b/src/Mod/Part/Gui/Command.cpp
+index b86d5343ee18..ad98122178f6 100644
+--- a/src/Mod/Part/Gui/Command.cpp
++++ b/src/Mod/Part/Gui/Command.cpp
+@@ -279,8 +279,7 @@ bool hasShapesInSelection()
+     bool hasShapes = false;
+     std::vector<App::DocumentObject*> docobjs = Gui::Selection().getObjectsOfType(App::DocumentObject::getClassTypeId());
+     for (auto it : docobjs) {
+-        // Only check for the existence of a shape but don't perform a transformation
+-        if (!Part::Feature::getTopoShape(it, nullptr, false, nullptr, nullptr, true, false, false).isNull()) {
++        if (!Part::Feature::getTopoShape(it, nullptr, nullptr, nullptr, Part::Feature::ResolveLink).isNull()) {
+             hasShapes = true;
+             break;
+         }
+@@ -1972,11 +1971,24 @@ void CmdPartRuledSurface::activated(int iMsg)
+             }
+             if (ok && subnames1.size() <= 2) {
+                 if (!subnames1.empty()) {
+-                    curve1 = Part::Feature::getTopoShape(docobj1, subnames1[0].c_str(), true /*need element*/).getShape();
++                    curve2 = Part::Feature::getTopoShape(docobj1,
++                                                         subnames1[0].c_str(),
++                                                         nullptr,
++                                                         nullptr,
++                                                         Part::Feature::NeedSubElement
++                                                             | Part::Feature::ResolveLink
++                                                             | Part::Feature::Transform).getShape();                                 
++
+                     link1 = subnames1[0];
+                 }
+                 if (subnames1.size() == 2) {
+-                    curve2 = Part::Feature::getTopoShape(docobj1, subnames1[1].c_str(), true /*need element*/).getShape();
++                    curve2 = Part::Feature::getTopoShape(docobj1,
++                                                         subnames1[1].c_str(),
++                                                         nullptr,
++                                                         nullptr,
++                                                         Part::Feature::NeedSubElement
++                                                             | Part::Feature::ResolveLink
++                                                             | Part::Feature::Transform).getShape();                                 
+                     link2 = subnames1[1];
+                 }
+                 if (subnames1.empty()) {
+@@ -1996,7 +2008,14 @@ void CmdPartRuledSurface::activated(int iMsg)
+                 ok = false;
+             }
+             if (ok && subnames2.size() == 1) {
+-                curve2 = Part::Feature::getTopoShape(docobj2, subnames2[0].c_str(), true /*need element*/).getShape();
++                curve2 = Part::Feature::getTopoShape(docobj2,
++                                                     subnames2[0].c_str(),
++                                                     nullptr,
++                                                     nullptr,
++                                                     Part::Feature::NeedSubElement
++                                                         | Part::Feature::ResolveLink
++                                                         | Part::Feature::Transform).getShape();                             
++
+                 link2 = subnames2[0];
+             } else {
+                 if (subnames2.empty()) {
+diff --git a/src/Mod/Part/Gui/DlgExtrusion.cpp b/src/Mod/Part/Gui/DlgExtrusion.cpp
+index c7f0bbb62184..cfa9a2deac28 100644
+--- a/src/Mod/Part/Gui/DlgExtrusion.cpp
++++ b/src/Mod/Part/Gui/DlgExtrusion.cpp
+@@ -82,7 +82,14 @@ class DlgExtrusion::EdgeSelection : public Gui::SelectionFilterGate
+             return false;
+         }
+         try {
+-            TopoDS_Shape sub = Part::Feature::getTopoShape(pObj, sSubName, true /*need element*/).getShape();
++            TopoDS_Shape sub = Part::Feature::getTopoShape(pObj,
++                                                           sSubName,
++                                                           nullptr,
++                                                           nullptr,
++                                                           Part::Feature::NeedSubElement
++                                                               | Part::Feature::ResolveLink
++                                                               | Part::Feature::Transform).getShape();                                   
++
+             if (!sub.IsNull() && sub.ShapeType() == TopAbs_EDGE) {
+                 const TopoDS_Edge& edge = TopoDS::Edge(sub);
+                 BRepAdaptor_Curve adapt(edge);
+diff --git a/src/Mod/Part/Gui/Mirroring.cpp b/src/Mod/Part/Gui/Mirroring.cpp
+index 86880d86923d..be62870a7ba4 100644
+--- a/src/Mod/Part/Gui/Mirroring.cpp
++++ b/src/Mod/Part/Gui/Mirroring.cpp
+@@ -100,7 +100,14 @@ class MirrorPlaneSelection : public Gui::SelectionFilterGate
+             bool isEdge = false; //will be true if user selected edge subobject or if object only has 1 edge
+             TopoDS_Shape shape;
+             if (subString.length() > 0){
+-                shape = Part::Feature::getTopoShape(pObj, subString.c_str(), true).getShape();
++                shape = Part::Feature::getTopoShape(pObj,
++                                                    sSubName,
++                                                    nullptr,
++                                                    nullptr,
++                                                    Part::Feature::NeedSubElement
++                                                        | Part::Feature::ResolveLink
++                                                        | Part::Feature::Transform).getShape();                            
++
+                 if (strstr(subString.c_str(), "Face")){
+                     isFace = true; //was face subobject, e.g. Face3
+                 } else {
+diff --git a/src/Mod/Part/Gui/TaskCheckGeometry.cpp b/src/Mod/Part/Gui/TaskCheckGeometry.cpp
+index 5ce8629a82db..6aa59c3d60e3 100644
+--- a/src/Mod/Part/Gui/TaskCheckGeometry.cpp
++++ b/src/Mod/Part/Gui/TaskCheckGeometry.cpp
+@@ -443,7 +443,13 @@ void TaskCheckGeometryResults::goCheck()
+             baseStream << " (" << label.c_str() << ")";
+         }
+ 
+-        TopoDS_Shape shape = Part::Feature::getShape(sel.pObject,sel.SubName,true);
++        TopoDS_Shape shape = Part::Feature::getShape(
++            sel.pObject,
++            sel.SubName,
++            nullptr,
++            nullptr,
++            Part::Feature::NeedSubElement | Part::Feature::ResolveLink | Part::Feature::Transform);
++            
+         if (shape.IsNull()) {
+             ResultEntry *entry = new ResultEntry();
+             entry->parent = theRoot;
+diff --git a/src/Mod/Part/Gui/TaskSweep.cpp b/src/Mod/Part/Gui/TaskSweep.cpp
+index 8371d3bb4908..82dd23dd78f0 100644
+--- a/src/Mod/Part/Gui/TaskSweep.cpp
++++ b/src/Mod/Part/Gui/TaskSweep.cpp
+@@ -298,7 +298,13 @@ bool SweepWidget::accept()
+         topoShape = Part::Feature::getTopoShape(docobj);
+         if (!topoShape.isNull()) {
+             for (std::vector<std::string>::const_iterator it = subnames.begin(); it != subnames.end(); ++it) {
+-                subShapes.push_back(Part::Feature::getTopoShape(docobj, subnames[0].c_str(), true /*need element*/));
++                subShapes.push_back(Part::Feature::getTopoShape(docobj,
++                                                                subnames[0].c_str(),
++                                                                nullptr,
++                                                                nullptr,
++                                                                Part::Feature::NeedSubElement
++                                                                    | Part::Feature::ResolveLink
++                                                                    | Part::Feature::Transform));
+             }
+             for (const auto & it : subShapes) {
+                 TopoDS_Shape dsShape = it.getShape();
+diff --git a/src/Mod/PartDesign/App/FeatureExtrude.cpp b/src/Mod/PartDesign/App/FeatureExtrude.cpp
+index 83dafdc2b934..202abcbb8386 100644
+--- a/src/Mod/PartDesign/App/FeatureExtrude.cpp
++++ b/src/Mod/PartDesign/App/FeatureExtrude.cpp
+@@ -514,7 +514,14 @@ App::DocumentObjectExecReturn* FeatureExtrude::buildExtrusion(ExtrudeOptions opt
+                 if (sub.empty() && subs.size() > 1) {
+                     continue;
+                 }
+-                TopoShape shape = Part::Feature::getTopoShape(obj, sub.c_str(), true);
++                TopoShape shape = Part::Feature::getTopoShape(obj,
++                                                              sub.c_str(),
++                                                              nullptr,
++                                                              nullptr,
++                                                              Part::Feature::NeedSubElement
++                                                                  | Part::Feature::ResolveLink
++                                                                  | Part::Feature::Transform);
++
+                 if (shape.isNull()) {
+                     FC_ERR(getFullName()
+                            << ": failed to get profile shape " << obj->getFullName() << "." << sub);
+diff --git a/src/Mod/PartDesign/App/FeatureHole.cpp b/src/Mod/PartDesign/App/FeatureHole.cpp
+index 50dc45d5ea25..87e5a0119bfd 100644
+--- a/src/Mod/PartDesign/App/FeatureHole.cpp
++++ b/src/Mod/PartDesign/App/FeatureHole.cpp
+@@ -1828,7 +1828,9 @@ static gp_Pnt toPnt(gp_Vec dir)
+ 
+ App::DocumentObjectExecReturn* Hole::execute()
+ {
+-    TopoShape profileshape = getProfileShape();
++    TopoShape profileshape =
++        getProfileShape(Part::Feature::NeedSubElement | Part::Feature::ResolveLink
++                        | Part::Feature::Transform | Part::Feature::DontSimplifyCompound);
+ 
+     // Find the base shape
+     TopoShape base;
+diff --git a/src/Mod/PartDesign/App/FeatureLoft.cpp b/src/Mod/PartDesign/App/FeatureLoft.cpp
+index 440e8c2ff318..f26b35cf5809 100644
+--- a/src/Mod/PartDesign/App/FeatureLoft.cpp
++++ b/src/Mod/PartDesign/App/FeatureLoft.cpp
+@@ -83,7 +83,13 @@ Loft::getSectionShape(const char *name,
+                           << name << " " << App::SubObjectT(obj, "").getSubObjectFullName(obj->getDocument()->getName()));
+     } else {
+         for (const auto &sub : subs) {
+-            shapes.push_back(Part::Feature::getTopoShape(obj, sub.c_str(), /*needSubElement*/true));
++            shapes.push_back(Part::Feature::getTopoShape(obj,
++                                                         sub.c_str(),
++                                                         nullptr,
++                                                         nullptr,
++                                                         Part::Feature::NeedSubElement
++                                                             | Part::Feature::ResolveLink
++                                                             | Part::Feature::Transform));
+             if (shapes.back().isNull())
+                 FC_THROWM(Part::NullShapeException, "Failed to get shape of " << name << " "
+                                                                               << App::SubObjectT(obj, sub.c_str()).getSubObjectFullName(obj->getDocument()->getName()));
+diff --git a/src/Mod/PartDesign/App/FeatureSketchBased.cpp b/src/Mod/PartDesign/App/FeatureSketchBased.cpp
+index 96b8681074ea..b7e65062a8b6 100644
+--- a/src/Mod/PartDesign/App/FeatureSketchBased.cpp
++++ b/src/Mod/PartDesign/App/FeatureSketchBased.cpp
+@@ -189,8 +189,15 @@ TopoShape ProfileBased::getTopoShapeVerifiedFace(bool silent,
+             else {
+                 std::vector<TopoShape> shapes;
+                 for (auto& sub : subs) {
+-                    auto subshape =
+-                        Part::Feature::getTopoShape(obj, sub.c_str(), /*needSubElement*/ true);
++                    auto subshape = Part::Feature::getTopoShape(obj,
++                                                                sub.c_str(),
++                                                                nullptr,
++                                                                nullptr,
++                                                                Part::Feature::NeedSubElement
++                                                                    | Part::Feature::ResolveLink
++                                                                    | Part::Feature::Transform);
++
++
+                     if (subshape.isNull()) {
+                         FC_THROWM(Base::CADKernelError,
+                                   "Sub shape not found: " << obj->getFullName() << "." << sub);
+@@ -207,7 +214,13 @@ TopoShape ProfileBased::getTopoShapeVerifiedFace(bool silent,
+                     sub = subs[0];
+                 }
+             }
+-            shape = Part::Feature::getTopoShape(obj, sub.c_str(), !sub.empty());
++            shape = Part::Feature::getTopoShape(obj,
++                                                sub.c_str(),
++                                                nullptr,
++                                                nullptr,
++                                                (Part::Feature::NeedSubElement * (!sub.empty()))
++                                                    | Part::Feature::ResolveLink
++                                                    | Part::Feature::Transform);
+         }
+         if (shape.isNull()) {
+             if (silent) {
+@@ -404,7 +417,7 @@ TopoDS_Shape ProfileBased::getVerifiedFace(bool silent) const {
+     return TopoDS_Face();
+ }
+ 
+-TopoShape ProfileBased::getProfileShape() const
++TopoShape ProfileBased::getProfileShape(int subShapeOptions) const
+ {
+     TopoShape shape;
+     const auto& subs = Profile.getSubValues();
+@@ -415,8 +428,11 @@ TopoShape ProfileBased::getProfileShape() const
+     else {
+         std::vector<TopoShape> shapes;
+         for (auto& sub : subs) {
+-            shapes.push_back(
+-                Part::Feature::getTopoShape(profile, sub.c_str(), /* needSubElement */ true));
++            shapes.push_back(Part::Feature::getTopoShape(profile,
++                                                         sub.c_str(),
++                                                         nullptr,
++                                                         nullptr,
++                                                         subShapeOptions));
+         }
+         shape = TopoShape(shape.Tag).makeElementCompound(shapes);
+     }
+@@ -568,8 +584,10 @@ TopoShape ProfileBased::getTopoShapeSupportFace() const
+         App::DocumentObject* ref = Support.getValue();
+         shape = Part::Feature::getTopoShape(
+             ref,
+-            Support.getSubValues().size() ? Support.getSubValues()[0].c_str() : "",
+-            true);
++            Support.getSubValues().empty() ? "" : Support.getSubValues()[0].c_str(),
++            nullptr,
++            nullptr,
++            Part::Feature::NeedSubElement | Part::Feature::ResolveLink | Part::Feature::Transform);
+     }
+     if (!shape.isNull()) {
+         if (shape.shapeType(true) != TopAbs_FACE) {
+@@ -663,7 +681,13 @@ void ProfileBased::getUpToFaceFromLinkSub(TopoShape& upToFace, const App::Proper
+     }
+ 
+     const auto& subs = refFace.getSubValues();
+-    upToFace = Part::Feature::getTopoShape(ref, subs.size() ? subs[0].c_str() : nullptr, true);
++    upToFace = Part::Feature::getTopoShape(
++        ref,
++        subs.empty() ? nullptr : subs[0].c_str(),
++        nullptr,
++        nullptr,
++        Part::Feature::NeedSubElement | Part::Feature::ResolveLink | Part::Feature::Transform);
++
+     if (!upToFace.hasSubShape(TopAbs_FACE)) {
+         throw Base::ValueError("SketchBased: Up to face: Failed to extract face");
+     }
+@@ -687,7 +711,15 @@ int ProfileBased::getUpToShapeFromLinkSubList(TopoShape& upToShape, const App::P
+ 
+             auto subStrings = subSet.second;
+             if (subStrings.empty() || subStrings[0].empty()) {
+-                TopoShape baseShape = Part::Feature::getTopoShape(ref, nullptr, true);
++                TopoShape baseShape = Part::Feature::getTopoShape(ref,
++                                                                  nullptr,
++                                                                  nullptr,
++                                                                  nullptr,
++                                                                  Part::Feature::NeedSubElement
++                                                                      | Part::Feature::ResolveLink
++                                                                      | Part::Feature::Transform);
++
++
+                 for (auto face : baseShape.getSubTopoShapes(TopAbs_FACE)){
+                     faceList.push_back(face);
+                     ret ++;
+@@ -695,7 +727,13 @@ int ProfileBased::getUpToShapeFromLinkSubList(TopoShape& upToShape, const App::P
+             }
+             else {
+                 for (auto &subString : subStrings){
+-                    auto shape = Part::Feature::getTopoShape(ref, subString.c_str(), true);
++                    auto shape = Part::Feature::getShape(
++                                    ref, 
++                                    subString.c_str(), 
++                                    nullptr, 
++                                    nullptr, 
++                                    Part::Feature::NeedSubElement | Part::Feature::ResolveLink | Part::Feature::Transform);
++
+                     TopoShape face = shape;
+                     face = face.makeElementFace();
+                     if (face.isNull()) {
+diff --git a/src/Mod/PartDesign/App/FeatureSketchBased.h b/src/Mod/PartDesign/App/FeatureSketchBased.h
+index 08be8a10ef2c..7fdad48951f2 100644
+--- a/src/Mod/PartDesign/App/FeatureSketchBased.h
++++ b/src/Mod/PartDesign/App/FeatureSketchBased.h
+@@ -131,7 +131,10 @@ class PartDesignExport ProfileBased : public PartDesign::FeatureAddSub
+ 
+     virtual Base::Vector3d getProfileNormal() const;
+ 
+-    TopoShape getProfileShape() const;
++    // Use Part::Feature::GetShapeOptions enum to pass flags
++    TopoShape getProfileShape(int subShapeOptions = Part::Feature::NeedSubElement 
++                                                    | Part::Feature::ResolveLink 
++                                                    | Part::Feature::Transform) const;
+ 
+     /// retrieves the number of axes in the linked sketch (defined as construction lines)
+     int getSketchAxisCount() const;
+diff --git a/src/Mod/PartDesign/App/ShapeBinder.cpp b/src/Mod/PartDesign/App/ShapeBinder.cpp
+index 399d4a0ead6f..38f2abf8045e 100644
+--- a/src/Mod/PartDesign/App/ShapeBinder.cpp
++++ b/src/Mod/PartDesign/App/ShapeBinder.cpp
+@@ -670,7 +670,13 @@ void SubShapeBinder::update(SubShapeBinder::UpdateOption options) {
+         for (const auto& sub : subs) {
+             ++subidx;
+             try {
+-                auto shape = Part::Feature::getTopoShape(obj, sub.c_str(), true);
++                auto shape = Part::Feature::getTopoShape(obj,
++                                                         sub.c_str(),
++                                                         nullptr,
++                                                         nullptr,
++                                                         Part::Feature::NeedSubElement
++                                                             | Part::Feature::ResolveLink
++                                                             | Part::Feature::Transform);
+                 if (!shape.isNull()) {
+                     shapes.push_back(shape);
+                     shapeOwners.emplace_back(sidx, subidx);
+diff --git a/src/Mod/Surface/App/Blending/FeatureBlendCurve.cpp b/src/Mod/Surface/App/Blending/FeatureBlendCurve.cpp
+index 41d115f035fd..15504c2c1f17 100644
+--- a/src/Mod/Surface/App/Blending/FeatureBlendCurve.cpp
++++ b/src/Mod/Surface/App/Blending/FeatureBlendCurve.cpp
+@@ -136,9 +136,12 @@ BlendPoint FeatureBlendCurve::GetBlendPoint(App::PropertyLinkSub& link,
+ 
+     TopoDS_Shape axEdge;
+     if (link.getSubValues().size() > 0 && link.getSubValues()[0].length() > 0) {
+-        axEdge =
+-            Feature::getTopoShape(linked, link.getSubValues()[0].c_str(), true /*need element*/)
+-                .getShape();
++        axEdge = Part::Feature::getShape(linked,
++                                         link.getSubValues()[0].c_str(),
++                                         nullptr,
++                                         nullptr,
++                                         Part::Feature::NeedSubElement | Part::Feature::ResolveLink
++                                             | Part::Feature::Transform);
+     }
+     else {
+         axEdge = Feature::getShape(linked);
+diff --git a/src/Mod/TechDraw/Gui/DrawGuiUtil.cpp b/src/Mod/TechDraw/Gui/DrawGuiUtil.cpp
+index 7d9b4dc759f3..94702b6d060b 100644
+--- a/src/Mod/TechDraw/Gui/DrawGuiUtil.cpp
++++ b/src/Mod/TechDraw/Gui/DrawGuiUtil.cpp
+@@ -645,7 +645,14 @@ std::pair<Base::Vector3d, Base::Vector3d> DrawGuiUtil::getProjDirFromFace(App::D
+     projDir = d3Dirs.first;
+     rotVec = d3Dirs.second;
+ 
+-    auto ts = Part::Feature::getShape(obj, faceName.c_str(), true);
++    auto ts = Part::Feature::getShape(obj,
++                                      faceName.c_str(),
++                                      nullptr,
++                                      nullptr,
++                                      Part::Feature::NeedSubElement 
++                                          | Part::Feature::ResolveLink
++                                          | Part::Feature::Transform);
++                                          
+     if (ts.IsNull() || ts.ShapeType() != TopAbs_FACE) {
+         Base::Console().warning("getProjDirFromFace(%s) is not a Face\n", faceName.c_str());
+         return dirs;

@@ -1,0 +1,1250 @@
+diff --git a/server/src/internalClusterTest/java/org/elasticsearch/discovery/single/SingleNodeDiscoveryIT.java b/server/src/internalClusterTest/java/org/elasticsearch/discovery/single/SingleNodeDiscoveryIT.java
+index 10f13f6ab152f..c7780b7b0d2dd 100644
+--- a/server/src/internalClusterTest/java/org/elasticsearch/discovery/single/SingleNodeDiscoveryIT.java
++++ b/server/src/internalClusterTest/java/org/elasticsearch/discovery/single/SingleNodeDiscoveryIT.java
+@@ -87,7 +87,8 @@ public Path nodeConfigPath(int nodeOrdinal) {
+             0,
+             "other",
+             Arrays.asList(getTestTransportPlugin(), MockHttpTransport.TestPlugin.class),
+-            Function.identity()
++            Function.identity(),
++            TEST_ENTITLEMENTS::newNodeGrant
+         );
+         try {
+             other.beforeTest(random());
+@@ -137,7 +138,8 @@ public Path nodeConfigPath(int nodeOrdinal) {
+             0,
+             "other",
+             Arrays.asList(getTestTransportPlugin(), MockHttpTransport.TestPlugin.class),
+-            Function.identity()
++            Function.identity(),
++            TEST_ENTITLEMENTS::newNodeGrant
+         );
+         try (var mockLog = MockLog.capture(JoinHelper.class)) {
+             mockLog.addExpectation(
+diff --git a/server/src/internalClusterTest/java/org/elasticsearch/snapshots/MultiClusterRepoAccessIT.java b/server/src/internalClusterTest/java/org/elasticsearch/snapshots/MultiClusterRepoAccessIT.java
+index c1549c1f3d384..1ee449d8af894 100644
+--- a/server/src/internalClusterTest/java/org/elasticsearch/snapshots/MultiClusterRepoAccessIT.java
++++ b/server/src/internalClusterTest/java/org/elasticsearch/snapshots/MultiClusterRepoAccessIT.java
+@@ -77,7 +77,8 @@ public Path nodeConfigPath(int nodeOrdinal) {
+                 InternalSettingsPlugin.class,
+                 getTestTransportPlugin()
+             ),
+-            Function.identity()
++            Function.identity(),
++            TEST_ENTITLEMENTS::newNodeGrant
+         );
+         secondCluster.beforeTest(random());
+     }
+diff --git a/server/src/test/java/org/elasticsearch/bootstrap/EntitlementMetaTests.java b/server/src/test/java/org/elasticsearch/bootstrap/EntitlementMetaTests.java
+index 04e59e5476f3b..230e105feca18 100644
+--- a/server/src/test/java/org/elasticsearch/bootstrap/EntitlementMetaTests.java
++++ b/server/src/test/java/org/elasticsearch/bootstrap/EntitlementMetaTests.java
+@@ -10,9 +10,8 @@
+ package org.elasticsearch.bootstrap;
+ 
+ import org.elasticsearch.core.SuppressForbidden;
+-import org.elasticsearch.entitlement.bootstrap.TestEntitlementBootstrap;
++import org.elasticsearch.entitlement.bootstrap.TestEntitlementsRule;
+ import org.elasticsearch.test.ESTestCase;
+-import org.elasticsearch.test.ESTestCase.WithEntitlementsOnTestCode;
+ 
+ import java.io.IOException;
+ import java.nio.file.Path;
+@@ -42,7 +41,7 @@
+  */
+ public class EntitlementMetaTests extends ESTestCase {
+     public void testSelfTestPasses() {
+-        assumeTrue("Not yet working in serverless", TestEntitlementBootstrap.isEnabledForTest());
++        assumeTrue("Not yet working in serverless", TestEntitlementsRule.isEnabledForTest());
+         Elasticsearch.entitlementSelfTest();
+     }
+ 
+diff --git a/server/src/test/java/org/elasticsearch/bootstrap/WithEntitlementsOnTestCodeMetaTests.java b/server/src/test/java/org/elasticsearch/bootstrap/WithEntitlementsOnTestCodeMetaTests.java
+index c126490922e48..14e3803fa6bad 100644
+--- a/server/src/test/java/org/elasticsearch/bootstrap/WithEntitlementsOnTestCodeMetaTests.java
++++ b/server/src/test/java/org/elasticsearch/bootstrap/WithEntitlementsOnTestCodeMetaTests.java
+@@ -10,7 +10,7 @@
+ package org.elasticsearch.bootstrap;
+ 
+ import org.elasticsearch.core.SuppressForbidden;
+-import org.elasticsearch.entitlement.bootstrap.TestEntitlementBootstrap;
++import org.elasticsearch.entitlement.bootstrap.TestEntitlementsRule;
+ import org.elasticsearch.entitlement.runtime.api.NotEntitledException;
+ import org.elasticsearch.test.ESTestCase;
+ import org.elasticsearch.test.ESTestCase.WithEntitlementsOnTestCode;
+@@ -30,13 +30,13 @@ public class WithEntitlementsOnTestCodeMetaTests extends ESTestCase {
+      * is called from server code. The self-test should pass as usual.
+      */
+     public void testSelfTestPasses() {
+-        assumeTrue("Not yet working in serverless", TestEntitlementBootstrap.isEnabledForTest());
++        assumeTrue("Not yet working in serverless", TestEntitlementsRule.isEnabledForTest());
+         Elasticsearch.entitlementSelfTest();
+     }
+ 
+     @SuppressForbidden(reason = "Testing that a forbidden API is disallowed")
+     public void testForbiddenActionDenied() {
+-        assumeTrue("Not yet working in serverless", TestEntitlementBootstrap.isEnabledForTest());
++        assumeTrue("Not yet working in serverless", TestEntitlementsRule.isEnabledForTest());
+         assertThrows(NotEntitledException.class, () -> Path.of(".").toRealPath());
+     }
+ }
+diff --git a/server/src/test/java/org/elasticsearch/indices/IndicesServiceCloseTests.java b/server/src/test/java/org/elasticsearch/indices/IndicesServiceCloseTests.java
+index a48ba63882734..78df6c9e88c65 100644
+--- a/server/src/test/java/org/elasticsearch/indices/IndicesServiceCloseTests.java
++++ b/server/src/test/java/org/elasticsearch/indices/IndicesServiceCloseTests.java
+@@ -77,7 +77,8 @@ private Node startNode() throws NodeValidationException {
+         Node node = new MockNode(
+             settings,
+             Arrays.asList(getTestTransportPlugin(), MockHttpTransport.TestPlugin.class, InternalSettingsPlugin.class),
+-            true
++            true,
++            () -> {}
+         );
+         node.start();
+         return node;
+diff --git a/test/framework/src/main/java/org/elasticsearch/bootstrap/BootstrapForTesting.java b/test/framework/src/main/java/org/elasticsearch/bootstrap/BootstrapForTesting.java
+index bf53f14bc9e46..69dbb7061c948 100644
+--- a/test/framework/src/main/java/org/elasticsearch/bootstrap/BootstrapForTesting.java
++++ b/test/framework/src/main/java/org/elasticsearch/bootstrap/BootstrapForTesting.java
+@@ -15,7 +15,7 @@
+ import org.elasticsearch.common.settings.Settings;
+ import org.elasticsearch.core.Booleans;
+ import org.elasticsearch.core.PathUtils;
+-import org.elasticsearch.entitlement.bootstrap.TestEntitlementBootstrap;
++import org.elasticsearch.entitlement.bootstrap.TestEntitlementsRule;
+ import org.elasticsearch.jdk.JarHell;
+ 
+ import java.io.IOException;
+@@ -75,7 +75,7 @@ public class BootstrapForTesting {
+ 
+         // Fire up entitlements
+         try {
+-            TestEntitlementBootstrap.bootstrap(javaTmpDir);
++            TestEntitlementsRule.initialize(javaTmpDir);
+         } catch (IOException e) {
+             throw new IllegalStateException(e.getClass().getSimpleName() + " while initializing entitlements for tests", e);
+         }
+diff --git a/test/framework/src/main/java/org/elasticsearch/entitlement/bootstrap/TestEntitlementBootstrap.java b/test/framework/src/main/java/org/elasticsearch/entitlement/bootstrap/TestEntitlementBootstrap.java
+deleted file mode 100644
+index d9c10d0d251e5..0000000000000
+--- a/test/framework/src/main/java/org/elasticsearch/entitlement/bootstrap/TestEntitlementBootstrap.java
++++ /dev/null
+@@ -1,305 +0,0 @@
+-/*
+- * Copyright Elasticsearch B.V. and/or licensed to Elasticsearch B.V. under one
+- * or more contributor license agreements. Licensed under the "Elastic License
+- * 2.0", the "GNU Affero General Public License v3.0 only", and the "Server Side
+- * Public License v 1"; you may not use this file except in compliance with, at
+- * your election, the "Elastic License 2.0", the "GNU Affero General Public
+- * License v3.0 only", or the "Server Side Public License, v 1".
+- */
+-
+-package org.elasticsearch.entitlement.bootstrap;
+-
+-import org.apache.lucene.tests.mockfile.FilterPath;
+-import org.elasticsearch.bootstrap.TestBuildInfo;
+-import org.elasticsearch.bootstrap.TestBuildInfoParser;
+-import org.elasticsearch.bootstrap.TestScopeResolver;
+-import org.elasticsearch.common.Strings;
+-import org.elasticsearch.common.settings.Settings;
+-import org.elasticsearch.core.Booleans;
+-import org.elasticsearch.core.Nullable;
+-import org.elasticsearch.core.PathUtils;
+-import org.elasticsearch.core.SuppressForbidden;
+-import org.elasticsearch.entitlement.initialization.EntitlementInitialization;
+-import org.elasticsearch.entitlement.runtime.policy.PathLookup;
+-import org.elasticsearch.entitlement.runtime.policy.PathLookup.BaseDir;
+-import org.elasticsearch.entitlement.runtime.policy.Policy;
+-import org.elasticsearch.entitlement.runtime.policy.PolicyParser;
+-import org.elasticsearch.entitlement.runtime.policy.TestPathLookup;
+-import org.elasticsearch.entitlement.runtime.policy.TestPolicyManager;
+-import org.elasticsearch.logging.LogManager;
+-import org.elasticsearch.logging.Logger;
+-import org.elasticsearch.plugins.PluginDescriptor;
+-
+-import java.io.IOException;
+-import java.io.InputStream;
+-import java.net.URI;
+-import java.net.URL;
+-import java.nio.file.Path;
+-import java.nio.file.Paths;
+-import java.util.ArrayList;
+-import java.util.Arrays;
+-import java.util.Collection;
+-import java.util.Collections;
+-import java.util.HashMap;
+-import java.util.HashSet;
+-import java.util.List;
+-import java.util.Map;
+-import java.util.Set;
+-import java.util.TreeSet;
+-import java.util.concurrent.ConcurrentHashMap;
+-import java.util.function.BiFunction;
+-import java.util.function.Consumer;
+-
+-import static java.util.stream.Collectors.toCollection;
+-import static java.util.stream.Collectors.toSet;
+-import static org.elasticsearch.entitlement.runtime.policy.PathLookup.BaseDir.TEMP;
+-import static org.elasticsearch.env.Environment.PATH_DATA_SETTING;
+-import static org.elasticsearch.env.Environment.PATH_HOME_SETTING;
+-import static org.elasticsearch.env.Environment.PATH_REPO_SETTING;
+-import static org.elasticsearch.env.Environment.PATH_SHARED_DATA_SETTING;
+-
+-public class TestEntitlementBootstrap {
+-
+-    private static final Logger logger = LogManager.getLogger(TestEntitlementBootstrap.class);
+-
+-    private static Map<BaseDir, Collection<Path>> baseDirPaths = new ConcurrentHashMap<>();
+-    private static TestPolicyManager policyManager;
+-
+-    /**
+-     * Activates entitlement checking in tests.
+-     */
+-    public static void bootstrap(@Nullable Path tempDir) throws IOException {
+-        if (isEnabledForTest() == false) {
+-            return;
+-        }
+-        var previousTempDir = baseDirPaths.put(TEMP, zeroOrOne(tempDir));
+-        assert previousTempDir == null : "Test entitlement bootstrap called multiple times";
+-        TestPathLookup pathLookup = new TestPathLookup(baseDirPaths);
+-        policyManager = createPolicyManager(pathLookup);
+-        EntitlementInitialization.initializeArgs = new EntitlementInitialization.InitializeArgs(pathLookup, Set.of(), policyManager);
+-        logger.debug("Loading entitlement agent");
+-        EntitlementBootstrap.loadAgent(EntitlementBootstrap.findAgentJar(), EntitlementInitialization.class.getName());
+-    }
+-
+-    public static void registerNodeBaseDirs(Settings settings, Path configPath) {
+-        if (policyManager == null) {
+-            return;
+-        }
+-
+-        Path homeDir = homeDir(settings);
+-        Path configDir = configDir(configPath, homeDir);
+-        Collection<Path> dataDirs = dataDirs(settings, homeDir);
+-        Collection<Path> sharedDataDir = sharedDataDir(settings);
+-        Collection<Path> repoDirs = repoDirs(settings);
+-        logger.debug(
+-            "Registering node dirs: config [{}], dataDirs [{}], sharedDataDir [{}], repoDirs [{}]",
+-            configDir,
+-            dataDirs,
+-            sharedDataDir,
+-            repoDirs
+-        );
+-        baseDirPaths.compute(BaseDir.CONFIG, baseDirModifier(paths -> paths.add(configDir)));
+-        baseDirPaths.compute(BaseDir.DATA, baseDirModifier(paths -> paths.addAll(dataDirs)));
+-        baseDirPaths.compute(BaseDir.SHARED_DATA, baseDirModifier(paths -> paths.addAll(sharedDataDir)));
+-        baseDirPaths.compute(BaseDir.SHARED_REPO, baseDirModifier(paths -> paths.addAll(repoDirs)));
+-        policyManager.clearModuleEntitlementsCache();
+-    }
+-
+-    public static void unregisterNodeBaseDirs(Settings settings, Path configPath) {
+-        if (policyManager == null) {
+-            return;
+-        }
+-
+-        Path homeDir = homeDir(settings);
+-        Path configDir = configDir(configPath, homeDir);
+-        Collection<Path> dataDirs = dataDirs(settings, homeDir);
+-        Collection<Path> sharedDataDir = sharedDataDir(settings);
+-        Collection<Path> repoDirs = repoDirs(settings);
+-        logger.debug(
+-            "Unregistering node dirs: config [{}], dataDirs [{}], sharedDataDir [{}], repoDirs [{}]",
+-            configDir,
+-            dataDirs,
+-            sharedDataDir,
+-            repoDirs
+-        );
+-        baseDirPaths.compute(BaseDir.CONFIG, baseDirModifier(paths -> paths.remove(configDir)));
+-        baseDirPaths.compute(BaseDir.DATA, baseDirModifier(paths -> paths.removeAll(dataDirs)));
+-        baseDirPaths.compute(BaseDir.SHARED_DATA, baseDirModifier(paths -> paths.removeAll(sharedDataDir)));
+-        baseDirPaths.compute(BaseDir.SHARED_REPO, baseDirModifier(paths -> paths.removeAll(repoDirs)));
+-        policyManager.clearModuleEntitlementsCache();
+-    }
+-
+-    private static Path homeDir(Settings settings) {
+-        return absolutePath(PATH_HOME_SETTING.get(settings));
+-    }
+-
+-    private static Path configDir(Path configDir, Path homeDir) {
+-        return configDir != null ? unwrapFilterPath(configDir) : homeDir.resolve("config");
+-    }
+-
+-    private static Collection<Path> dataDirs(Settings settings, Path homeDir) {
+-        List<String> dataDirs = PATH_DATA_SETTING.get(settings);
+-        return dataDirs.isEmpty()
+-            ? List.of(homeDir.resolve("data"))
+-            : dataDirs.stream().map(TestEntitlementBootstrap::absolutePath).toList();
+-    }
+-
+-    private static Collection<Path> sharedDataDir(Settings settings) {
+-        String sharedDataDir = PATH_SHARED_DATA_SETTING.get(settings);
+-        return Strings.hasText(sharedDataDir) ? List.of(absolutePath(sharedDataDir)) : List.of();
+-    }
+-
+-    private static Collection<Path> repoDirs(Settings settings) {
+-        return PATH_REPO_SETTING.get(settings).stream().map(TestEntitlementBootstrap::absolutePath).toList();
+-    }
+-
+-    private static BiFunction<BaseDir, Collection<Path>, Collection<Path>> baseDirModifier(Consumer<Collection<Path>> consumer) {
+-        // always return a new unmodifiable copy
+-        return (BaseDir baseDir, Collection<Path> paths) -> {
+-            paths = paths == null ? new HashSet<>() : new HashSet<>(paths);
+-            consumer.accept(paths);
+-            return Collections.unmodifiableCollection(paths);
+-        };
+-    }
+-
+-    private static Path unwrapFilterPath(Path path) {
+-        while (path instanceof FilterPath fPath) {
+-            path = fPath.getDelegate();
+-        }
+-        return path;
+-    }
+-
+-    @SuppressForbidden(reason = "must be resolved using the default file system, rather then the mocked test file system")
+-    private static Path absolutePath(String path) {
+-        return Paths.get(path).toAbsolutePath().normalize();
+-    }
+-
+-    private static <T> List<T> zeroOrOne(T item) {
+-        if (item == null) {
+-            return List.of();
+-        } else {
+-            return List.of(item);
+-        }
+-    }
+-
+-    public static boolean isEnabledForTest() {
+-        return Booleans.parseBoolean(System.getProperty("es.entitlement.enableForTests", "false"));
+-    }
+-
+-    public static void setActive(boolean newValue) {
+-        policyManager.setActive(newValue);
+-    }
+-
+-    public static void setTriviallyAllowingTestCode(boolean newValue) {
+-        policyManager.setTriviallyAllowingTestCode(newValue);
+-    }
+-
+-    public static void setEntitledTestPackages(String[] entitledTestPackages) {
+-        policyManager.setEntitledTestPackages(entitledTestPackages);
+-    }
+-
+-    public static void resetAfterTest() {
+-        // reset all base dirs except TEMP, which is initialized just once statically
+-        baseDirPaths.keySet().retainAll(List.of(TEMP));
+-        if (policyManager != null) {
+-            policyManager.resetAfterTest();
+-        }
+-    }
+-
+-    private static TestPolicyManager createPolicyManager(PathLookup pathLookup) throws IOException {
+-        var pluginsTestBuildInfo = TestBuildInfoParser.parseAllPluginTestBuildInfo();
+-        var serverTestBuildInfo = TestBuildInfoParser.parseServerTestBuildInfo();
+-        List<String> pluginNames = pluginsTestBuildInfo.stream().map(TestBuildInfo::component).toList();
+-
+-        var pluginDescriptors = parsePluginsDescriptors(pluginNames);
+-        Set<String> modularPlugins = pluginDescriptors.stream()
+-            .filter(PluginDescriptor::isModular)
+-            .map(PluginDescriptor::getName)
+-            .collect(toSet());
+-        var scopeResolver = TestScopeResolver.createScopeResolver(serverTestBuildInfo, pluginsTestBuildInfo, modularPlugins);
+-        var pluginsData = pluginDescriptors.stream()
+-            .map(descriptor -> new TestPluginData(descriptor.getName(), descriptor.isModular(), false))
+-            .toList();
+-        Map<String, Policy> pluginPolicies = parsePluginsPolicies(pluginsData);
+-
+-        String separator = System.getProperty("path.separator");
+-
+-        // In productions, plugins would have access to their respective bundle directories,
+-        // and so they'd be able to read from their jars. In testing, we approximate this
+-        // by considering the entire classpath to be "source paths" of all plugins. This
+-        // also has the effect of granting read access to everything on the test-only classpath,
+-        // which is fine, because any entitlement errors there could only be false positives.
+-        String classPathProperty = System.getProperty("java.class.path");
+-
+-        Set<Path> classPathEntries;
+-        if (classPathProperty == null) {
+-            classPathEntries = Set.of();
+-        } else {
+-            classPathEntries = Arrays.stream(classPathProperty.split(separator)).map(PathUtils::get).collect(toCollection(TreeSet::new));
+-        }
+-        FilesEntitlementsValidation.validate(pluginPolicies, pathLookup);
+-
+-        String testOnlyPathString = System.getenv("es.entitlement.testOnlyPath");
+-        Set<URI> testOnlyClassPath;
+-        if (testOnlyPathString == null) {
+-            testOnlyClassPath = Set.of();
+-        } else {
+-            testOnlyClassPath = Arrays.stream(testOnlyPathString.split(separator))
+-                .map(PathUtils::get)
+-                .map(Path::toUri)
+-                .collect(toCollection(TreeSet::new));
+-        }
+-
+-        return new TestPolicyManager(
+-            HardcodedEntitlements.serverPolicy(null, null),
+-            HardcodedEntitlements.agentEntitlements(),
+-            pluginPolicies,
+-            scopeResolver,
+-            pathLookup,
+-            classPathEntries,
+-            testOnlyClassPath
+-        );
+-    }
+-
+-    private static Map<String, Policy> parsePluginsPolicies(List<TestPluginData> pluginsData) {
+-        Map<String, Policy> policies = new HashMap<>();
+-        for (var pluginData : pluginsData) {
+-            String pluginName = pluginData.pluginName();
+-            var resourceName = Strings.format("META-INF/es-plugins/%s/entitlement-policy.yaml", pluginName);
+-
+-            var resource = EntitlementInitialization.class.getClassLoader().getResource(resourceName);
+-            if (resource != null) {
+-                try (var inputStream = getStream(resource)) {
+-                    policies.put(pluginName, new PolicyParser(inputStream, pluginName, pluginData.isExternalPlugin()).parsePolicy());
+-                } catch (IOException e) {
+-                    throw new IllegalArgumentException(Strings.format("Cannot read policy for plugin [%s]", pluginName), e);
+-                }
+-            }
+-        }
+-        return policies;
+-    }
+-
+-    private static List<PluginDescriptor> parsePluginsDescriptors(List<String> pluginNames) {
+-        List<PluginDescriptor> descriptors = new ArrayList<>();
+-        for (var pluginName : pluginNames) {
+-            var resourceName = Strings.format("META-INF/es-plugins/%s/plugin-descriptor.properties", pluginName);
+-            var resource = EntitlementInitialization.class.getClassLoader().getResource(resourceName);
+-            if (resource != null) {
+-                try (var inputStream = getStream(resource)) {
+-                    descriptors.add(PluginDescriptor.readInternalDescriptorFromStream(inputStream));
+-                } catch (IOException e) {
+-                    throw new IllegalArgumentException(Strings.format("Cannot read descriptor for plugin [%s]", pluginName), e);
+-                }
+-            }
+-        }
+-        return descriptors;
+-    }
+-
+-    @SuppressForbidden(reason = "URLs from class loader")
+-    private static InputStream getStream(URL resource) throws IOException {
+-        return resource.openStream();
+-    }
+-
+-    private record TestPluginData(String pluginName, boolean isModular, boolean isExternalPlugin) {}
+-
+-}
+diff --git a/test/framework/src/main/java/org/elasticsearch/entitlement/bootstrap/TestEntitlementsRule.java b/test/framework/src/main/java/org/elasticsearch/entitlement/bootstrap/TestEntitlementsRule.java
+new file mode 100644
+index 0000000000000..910f30f06bcc0
+--- /dev/null
++++ b/test/framework/src/main/java/org/elasticsearch/entitlement/bootstrap/TestEntitlementsRule.java
+@@ -0,0 +1,358 @@
++/*
++ * Copyright Elasticsearch B.V. and/or licensed to Elasticsearch B.V. under one
++ * or more contributor license agreements. Licensed under the "Elastic License
++ * 2.0", the "GNU Affero General Public License v3.0 only", and the "Server Side
++ * Public License v 1"; you may not use this file except in compliance with, at
++ * your election, the "Elastic License 2.0", the "GNU Affero General Public
++ * License v3.0 only", or the "Server Side Public License, v 1".
++ */
++
++package org.elasticsearch.entitlement.bootstrap;
++
++import org.apache.lucene.tests.mockfile.FilterPath;
++import org.elasticsearch.bootstrap.TestBuildInfo;
++import org.elasticsearch.bootstrap.TestBuildInfoParser;
++import org.elasticsearch.bootstrap.TestScopeResolver;
++import org.elasticsearch.common.Strings;
++import org.elasticsearch.common.settings.Settings;
++import org.elasticsearch.core.Booleans;
++import org.elasticsearch.core.PathUtils;
++import org.elasticsearch.core.SuppressForbidden;
++import org.elasticsearch.entitlement.initialization.EntitlementInitialization;
++import org.elasticsearch.entitlement.runtime.policy.PathLookup;
++import org.elasticsearch.entitlement.runtime.policy.PathLookup.BaseDir;
++import org.elasticsearch.entitlement.runtime.policy.Policy;
++import org.elasticsearch.entitlement.runtime.policy.PolicyManager;
++import org.elasticsearch.entitlement.runtime.policy.PolicyParser;
++import org.elasticsearch.entitlement.runtime.policy.TestPathLookup;
++import org.elasticsearch.entitlement.runtime.policy.TestPolicyManager;
++import org.elasticsearch.logging.LogManager;
++import org.elasticsearch.logging.Logger;
++import org.elasticsearch.plugins.PluginDescriptor;
++import org.elasticsearch.test.ESTestCase;
++import org.junit.rules.TestRule;
++import org.junit.runner.Description;
++import org.junit.runners.model.Statement;
++
++import java.io.Closeable;
++import java.io.IOException;
++import java.io.InputStream;
++import java.net.URI;
++import java.net.URL;
++import java.nio.file.Path;
++import java.nio.file.Paths;
++import java.util.ArrayList;
++import java.util.Arrays;
++import java.util.Collection;
++import java.util.Collections;
++import java.util.HashMap;
++import java.util.List;
++import java.util.Map;
++import java.util.Set;
++import java.util.TreeSet;
++import java.util.concurrent.ConcurrentHashMap;
++import java.util.concurrent.atomic.AtomicBoolean;
++import java.util.function.BiConsumer;
++import java.util.function.BiFunction;
++import java.util.function.Consumer;
++
++import static java.util.stream.Collectors.toCollection;
++import static java.util.stream.Collectors.toSet;
++import static org.elasticsearch.entitlement.runtime.policy.PathLookup.BaseDir.TEMP;
++import static org.elasticsearch.env.Environment.PATH_DATA_SETTING;
++import static org.elasticsearch.env.Environment.PATH_HOME_SETTING;
++import static org.elasticsearch.env.Environment.PATH_REPO_SETTING;
++import static org.elasticsearch.env.Environment.PATH_SHARED_DATA_SETTING;
++
++public class TestEntitlementsRule implements TestRule {
++    private static final Logger logger = LogManager.getLogger(TestEntitlementsRule.class);
++
++    private static final Map<BaseDir, Collection<Path>> BASE_DIR_PATHS = new ConcurrentHashMap<>();
++    private static final TestPolicyManager POLICY_MANAGER;
++    private static final AtomicBoolean active = new AtomicBoolean(false);
++
++    static {
++        PathLookup pathLookup = new TestPathLookup(BASE_DIR_PATHS);
++        try {
++            if (isEnabledForTest()) {
++                POLICY_MANAGER = createPolicyManager(pathLookup);
++                loadAgent(POLICY_MANAGER, pathLookup);
++            } else {
++                POLICY_MANAGER = null;
++            }
++        } catch (IOException e) {
++            throw new AssertionError(e);
++        }
++    }
++
++    public static void initialize(Path tempDir) throws IOException {
++        if (POLICY_MANAGER != null) {
++            var previousTempDir = BASE_DIR_PATHS.put(TEMP, List.of(tempDir));
++            assert previousTempDir == null : "Test entitlement bootstrap called multiple times";
++        }
++    }
++
++    @Override
++    public Statement apply(Statement base, Description description) {
++        assert description.isSuite() : "must be used as ClassRule";
++
++        // class / suite level
++        boolean withoutEntitlements = description.getAnnotation(ESTestCase.WithoutEntitlements.class) != null;
++        boolean withEntitlementsOnTestCode = description.getAnnotation(ESTestCase.WithEntitlementsOnTestCode.class) != null;
++        var entitledPackages = description.getAnnotation(ESTestCase.EntitledTestPackages.class);
++
++        if (POLICY_MANAGER != null) {
++            return new Statement() {
++                @Override
++                public void evaluate() throws Throwable {
++                    if (active.compareAndSet(false, true)) {
++                        try {
++                            POLICY_MANAGER.setActive(false == withoutEntitlements);
++                            POLICY_MANAGER.setTriviallyAllowingTestCode(false == withEntitlementsOnTestCode);
++                            if (entitledPackages != null) {
++                                assert entitledPackages.value().length > 0 : "No test packages specified in @EntitledTestPackages";
++                                POLICY_MANAGER.setEntitledTestPackages(entitledPackages.value());
++                            } else {
++                                POLICY_MANAGER.setEntitledTestPackages();
++                            }
++                            BASE_DIR_PATHS.keySet().retainAll(List.of(TEMP));
++                            POLICY_MANAGER.clearModuleEntitlementsCache();
++                            // evaluate the suite
++                            base.evaluate();
++                        } finally {
++                            POLICY_MANAGER.setActive(false);
++                            POLICY_MANAGER.setTriviallyAllowingTestCode(true);
++                            POLICY_MANAGER.setEntitledTestPackages();
++                            BASE_DIR_PATHS.keySet().retainAll(List.of(TEMP));
++                            POLICY_MANAGER.clearModuleEntitlementsCache();
++                            active.set(false);
++                        }
++                    } else {
++                        throw new AssertionError("TestPolicyManager doesn't support test isolation, test suits cannot be run in parallel");
++                    }
++                }
++            };
++        } else if (withEntitlementsOnTestCode) {
++            throw new AssertionError(
++                "Cannot use @WithEntitlementsOnTestCode on tests that are not configured to use entitlements for testing"
++            );
++        } else {
++            return base;
++        }
++    }
++
++    /**
++     * Creates a entitlement grant for node specific paths.
++     */
++    public Closeable newNodeGrant(Settings settings, Path configPath) {
++        if (POLICY_MANAGER == null) {
++            return () -> {}; // noop if not running with entitlements
++        }
++
++        var unwrappedConfigPath = configPath;
++        while (unwrappedConfigPath instanceof FilterPath fPath) {
++            unwrappedConfigPath = fPath.getDelegate();
++        }
++        NodeGrant nodeGrant = new NodeGrant(settings, unwrappedConfigPath, this::revokeGrant);
++        addGrant(nodeGrant);
++        return nodeGrant;
++    }
++
++    /**
++     * Revoke all open node grants.
++     */
++    public void revokeNodeGrants() {
++        BASE_DIR_PATHS.keySet().retainAll(List.of(TEMP));
++        POLICY_MANAGER.clearModuleEntitlementsCache();
++    }
++
++    private record NodeGrant(Settings settings, Path configPath, Consumer<NodeGrant> onClose) implements Closeable {
++        private Path homeDir() {
++            return absolutePath(PATH_HOME_SETTING.get(settings));
++        }
++
++        private Path configDir() {
++            return configPath != null ? configPath : homeDir().resolve("config");
++        }
++
++        private Path[] dataDirs() {
++            List<String> dataDirs = PATH_DATA_SETTING.get(settings);
++            return dataDirs.isEmpty()
++                ? new Path[] { homeDir().resolve("data") }
++                : dataDirs.stream().map(NodeGrant::absolutePath).toArray(Path[]::new);
++        }
++
++        private Path[] sharedDataDir() {
++            String sharedDataDir = PATH_SHARED_DATA_SETTING.get(settings);
++            return Strings.hasText(sharedDataDir) ? new Path[] { absolutePath(sharedDataDir) } : new Path[0];
++        }
++
++        private Path[] repoDirs() {
++            return PATH_REPO_SETTING.get(settings).stream().map(NodeGrant::absolutePath).toArray(Path[]::new);
++        }
++
++        @SuppressForbidden(reason = "must be resolved using the default file system, rather then the mocked test file system")
++        private static Path absolutePath(String path) {
++            return Paths.get(path).toAbsolutePath().normalize();
++        }
++
++        @Override
++        public void close() {
++            // wipePendingDataDirectories in tests requires entitlement delegation to work as this uses server's FileSystemUtils.
++            // until ES-10920 is solved, node grants cannot be removed until the test suite completes unless explicitly removing all node
++            // grants using revokeNodeGrants where feasible.
++            // onClose.accept(this);
++        }
++
++        @Override
++        public String toString() {
++            return Strings.format(
++                "NodeGrant[configDir=%s, dataDirs=%s, sharedDataDir=%s, repoDirs=%s]",
++                configDir(),
++                dataDirs(),
++                sharedDataDir(),
++                repoDirs()
++            );
++        }
++    }
++
++    private void addGrant(NodeGrant nodeGrant) {
++        logger.debug("Adding node grant: {}", nodeGrant);
++        BASE_DIR_PATHS.compute(BaseDir.CONFIG, baseDirModifier(Collection::add, nodeGrant.configDir()));
++        BASE_DIR_PATHS.compute(BaseDir.DATA, baseDirModifier(Collection::add, nodeGrant.dataDirs()));
++        BASE_DIR_PATHS.compute(BaseDir.SHARED_DATA, baseDirModifier(Collection::add, nodeGrant.sharedDataDir()));
++        BASE_DIR_PATHS.compute(BaseDir.SHARED_REPO, baseDirModifier(Collection::add, nodeGrant.repoDirs()));
++        POLICY_MANAGER.clearModuleEntitlementsCache();
++    }
++
++    private void revokeGrant(NodeGrant nodeGrant) {
++        logger.debug("Revoking node grant: {}", nodeGrant);
++        BASE_DIR_PATHS.compute(BaseDir.CONFIG, baseDirModifier(Collection::remove, nodeGrant.configDir()));
++        BASE_DIR_PATHS.compute(BaseDir.DATA, baseDirModifier(Collection::remove, nodeGrant.dataDirs()));
++        BASE_DIR_PATHS.compute(BaseDir.SHARED_DATA, baseDirModifier(Collection::remove, nodeGrant.sharedDataDir()));
++        BASE_DIR_PATHS.compute(BaseDir.SHARED_REPO, baseDirModifier(Collection::remove, nodeGrant.repoDirs()));
++        POLICY_MANAGER.clearModuleEntitlementsCache();
++    }
++
++    // This must allow for duplicate paths between nodes, the config dir for instance is shared across all nodes.
++    private static BiFunction<BaseDir, Collection<Path>, Collection<Path>> baseDirModifier(
++        BiConsumer<Collection<Path>, Path> operation,
++        Path... updates
++    ) {
++        // always return a new unmodifiable copy
++        return (BaseDir baseDir, Collection<Path> paths) -> {
++            paths = paths == null ? new ArrayList<>() : new ArrayList<>(paths);
++            for (Path update : updates) {
++                operation.accept(paths, update);
++            }
++            return Collections.unmodifiableCollection(paths);
++        };
++    }
++
++    public static boolean isEnabledForTest() {
++        return Booleans.parseBoolean(System.getProperty("es.entitlement.enableForTests", "false"));
++    }
++
++    private static TestPolicyManager createPolicyManager(PathLookup pathLookup) throws IOException {
++        var pluginsTestBuildInfo = TestBuildInfoParser.parseAllPluginTestBuildInfo();
++        var serverTestBuildInfo = TestBuildInfoParser.parseServerTestBuildInfo();
++        List<String> pluginNames = pluginsTestBuildInfo.stream().map(TestBuildInfo::component).toList();
++
++        var pluginDescriptors = parsePluginsDescriptors(pluginNames);
++        Set<String> modularPlugins = pluginDescriptors.stream()
++            .filter(PluginDescriptor::isModular)
++            .map(PluginDescriptor::getName)
++            .collect(toSet());
++        var scopeResolver = TestScopeResolver.createScopeResolver(serverTestBuildInfo, pluginsTestBuildInfo, modularPlugins);
++        var pluginsData = pluginDescriptors.stream()
++            .map(descriptor -> new TestPluginData(descriptor.getName(), descriptor.isModular(), false))
++            .toList();
++        Map<String, Policy> pluginPolicies = parsePluginsPolicies(pluginsData);
++
++        String separator = System.getProperty("path.separator");
++
++        // In productions, plugins would have access to their respective bundle directories,
++        // and so they'd be able to read from their jars. In testing, we approximate this
++        // by considering the entire classpath to be "source paths" of all plugins. This
++        // also has the effect of granting read access to everything on the test-only classpath,
++        // which is fine, because any entitlement errors there could only be false positives.
++        String classPathProperty = System.getProperty("java.class.path");
++
++        Set<Path> classPathEntries;
++        if (classPathProperty == null) {
++            classPathEntries = Set.of();
++        } else {
++            classPathEntries = Arrays.stream(classPathProperty.split(separator)).map(PathUtils::get).collect(toCollection(TreeSet::new));
++        }
++        FilesEntitlementsValidation.validate(pluginPolicies, pathLookup);
++
++        String testOnlyPathString = System.getenv("es.entitlement.testOnlyPath");
++        Set<URI> testOnlyClassPath;
++        if (testOnlyPathString == null) {
++            testOnlyClassPath = Set.of();
++        } else {
++            testOnlyClassPath = Arrays.stream(testOnlyPathString.split(separator))
++                .map(PathUtils::get)
++                .map(Path::toUri)
++                .collect(toCollection(TreeSet::new));
++        }
++
++        return new TestPolicyManager(
++            HardcodedEntitlements.serverPolicy(null, null),
++            HardcodedEntitlements.agentEntitlements(),
++            pluginPolicies,
++            scopeResolver,
++            pathLookup,
++            classPathEntries,
++            testOnlyClassPath
++        );
++    }
++
++    private static void loadAgent(PolicyManager policyManager, PathLookup pathLookup) {
++        logger.debug("Loading entitlement agent");
++        EntitlementInitialization.initializeArgs = new EntitlementInitialization.InitializeArgs(pathLookup, Set.of(), policyManager);
++        EntitlementBootstrap.loadAgent(EntitlementBootstrap.findAgentJar(), EntitlementInitialization.class.getName());
++    }
++
++    private static Map<String, Policy> parsePluginsPolicies(List<TestPluginData> pluginsData) {
++        Map<String, Policy> policies = new HashMap<>();
++        for (var pluginData : pluginsData) {
++            String pluginName = pluginData.pluginName();
++            var resourceName = Strings.format("META-INF/es-plugins/%s/entitlement-policy.yaml", pluginName);
++
++            var resource = EntitlementInitialization.class.getClassLoader().getResource(resourceName);
++            if (resource != null) {
++                try (var inputStream = getStream(resource)) {
++                    policies.put(pluginName, new PolicyParser(inputStream, pluginName, pluginData.isExternalPlugin()).parsePolicy());
++                } catch (IOException e) {
++                    throw new IllegalArgumentException(Strings.format("Cannot read policy for plugin [%s]", pluginName), e);
++                }
++            }
++        }
++        return policies;
++    }
++
++    private static List<PluginDescriptor> parsePluginsDescriptors(List<String> pluginNames) {
++        List<PluginDescriptor> descriptors = new ArrayList<>();
++        for (var pluginName : pluginNames) {
++            var resourceName = Strings.format("META-INF/es-plugins/%s/plugin-descriptor.properties", pluginName);
++            var resource = EntitlementInitialization.class.getClassLoader().getResource(resourceName);
++            if (resource != null) {
++                try (var inputStream = getStream(resource)) {
++                    descriptors.add(PluginDescriptor.readInternalDescriptorFromStream(inputStream));
++                } catch (IOException e) {
++                    throw new IllegalArgumentException(Strings.format("Cannot read descriptor for plugin [%s]", pluginName), e);
++                }
++            }
++        }
++        return descriptors;
++    }
++
++    @SuppressForbidden(reason = "URLs from class loader")
++    private static InputStream getStream(URL resource) throws IOException {
++        return resource.openStream();
++    }
++
++    private record TestPluginData(String pluginName, boolean isModular, boolean isExternalPlugin) {}
++
++}
+diff --git a/test/framework/src/main/java/org/elasticsearch/entitlement/runtime/policy/TestPolicyManager.java b/test/framework/src/main/java/org/elasticsearch/entitlement/runtime/policy/TestPolicyManager.java
+index bd1e6a468de31..a05e1b6ecd61a 100644
+--- a/test/framework/src/main/java/org/elasticsearch/entitlement/runtime/policy/TestPolicyManager.java
++++ b/test/framework/src/main/java/org/elasticsearch/entitlement/runtime/policy/TestPolicyManager.java
+@@ -29,8 +29,8 @@
+ 
+ public class TestPolicyManager extends PolicyManager {
+ 
+-    boolean isActive;
+-    boolean isTriviallyAllowingTestCode;
++    boolean isActive = false;
++    boolean isTriviallyAllowingTestCode = true;
+     String[] entitledTestPackages = TEST_FRAMEWORK_PACKAGE_PREFIXES;
+ 
+     /**
+@@ -53,7 +53,6 @@ public TestPolicyManager(
+         super(serverPolicy, apmAgentEntitlements, pluginPolicies, scopeResolver, name -> classpath, pathLookup);
+         this.classpath = classpath;
+         this.testOnlyClasspath = testOnlyClasspath;
+-        resetAfterTest();
+     }
+ 
+     public void setActive(boolean newValue) {
+@@ -65,24 +64,20 @@ public void setTriviallyAllowingTestCode(boolean newValue) {
+     }
+ 
+     public void setEntitledTestPackages(String... entitledTestPackages) {
++        if (entitledTestPackages == null || entitledTestPackages.length == 0) {
++            this.entitledTestPackages = TEST_FRAMEWORK_PACKAGE_PREFIXES; // already validated and sorted
++            return;
++        }
++
+         assertNoRedundantPrefixes(TEST_FRAMEWORK_PACKAGE_PREFIXES, entitledTestPackages, false);
+         if (entitledTestPackages.length > 1) {
+             assertNoRedundantPrefixes(entitledTestPackages, entitledTestPackages, true);
+         }
+-        String[] packages = ArrayUtils.concat(this.entitledTestPackages, entitledTestPackages);
++        String[] packages = ArrayUtils.concat(TEST_FRAMEWORK_PACKAGE_PREFIXES, entitledTestPackages);
+         Arrays.sort(packages);
+         this.entitledTestPackages = packages;
+     }
+ 
+-    /**
+-     * Called between tests so each test is not affected by prior tests
+-     */
+-    public final void resetAfterTest() {
+-        clearModuleEntitlementsCache();
+-        isActive = false;
+-        isTriviallyAllowingTestCode = true;
+-    }
+-
+     /**
+      * Clear cached module entitlements.
+      * This is required after updating entries in {@link TestPathLookup}.
+diff --git a/test/framework/src/main/java/org/elasticsearch/node/MockNode.java b/test/framework/src/main/java/org/elasticsearch/node/MockNode.java
+index be21a1c8ab694..d1e7438a92722 100644
+--- a/test/framework/src/main/java/org/elasticsearch/node/MockNode.java
++++ b/test/framework/src/main/java/org/elasticsearch/node/MockNode.java
+@@ -24,7 +24,7 @@
+ import org.elasticsearch.common.util.MockBigArrays;
+ import org.elasticsearch.common.util.MockPageCacheRecycler;
+ import org.elasticsearch.common.util.PageCacheRecycler;
+-import org.elasticsearch.entitlement.bootstrap.TestEntitlementBootstrap;
++import org.elasticsearch.core.IOUtils;
+ import org.elasticsearch.env.Environment;
+ import org.elasticsearch.http.HttpServerTransport;
+ import org.elasticsearch.indices.ExecutorSelector;
+@@ -54,6 +54,7 @@
+ import org.elasticsearch.transport.TransportService;
+ import org.elasticsearch.transport.TransportSettings;
+ 
++import java.io.Closeable;
+ import java.nio.file.Path;
+ import java.util.Collection;
+ import java.util.Collections;
+@@ -237,32 +238,37 @@ protected HttpServerTransport newHttpTransport(PluginsService pluginsService, Ne
+     }
+ 
+     private final Collection<Class<? extends Plugin>> classpathPlugins;
++    // handle for node paths specific entitlement grants
++    private final Closeable entitlementGrant;
+ 
+     public MockNode(final Settings settings, final Collection<Class<? extends Plugin>> classpathPlugins) {
+-        this(settings, classpathPlugins, true);
++        this(settings, classpathPlugins, true, () -> {});
+     }
+ 
+     public MockNode(
+         final Settings settings,
+         final Collection<Class<? extends Plugin>> classpathPlugins,
+-        final boolean forbidPrivateIndexSettings
++        final boolean forbidPrivateIndexSettings,
++        final Closeable entitlementGrant
+     ) {
+-        this(settings, classpathPlugins, null, forbidPrivateIndexSettings);
++        this(settings, classpathPlugins, null, forbidPrivateIndexSettings, entitlementGrant);
+     }
+ 
+     public MockNode(
+         final Settings settings,
+         final Collection<Class<? extends Plugin>> classpathPlugins,
+         final Path configPath,
+-        final boolean forbidPrivateIndexSettings
++        final boolean forbidPrivateIndexSettings,
++        final Closeable entitlementGrant
+     ) {
+-        this(prepareEnvironment(settings, configPath), classpathPlugins, forbidPrivateIndexSettings);
++        this(prepareEnvironment(settings, configPath), classpathPlugins, forbidPrivateIndexSettings, entitlementGrant);
+     }
+ 
+     private MockNode(
+         final Environment environment,
+         final Collection<Class<? extends Plugin>> classpathPlugins,
+-        final boolean forbidPrivateIndexSettings
++        final boolean forbidPrivateIndexSettings,
++        final Closeable entitlementGrant
+     ) {
+         super(NodeConstruction.prepareConstruction(environment, null, new MockServiceProvider() {
+ 
+@@ -273,10 +279,10 @@ PluginsService newPluginService(Environment environment, PluginsLoader pluginsLo
+         }, forbidPrivateIndexSettings));
+ 
+         this.classpathPlugins = classpathPlugins;
++        this.entitlementGrant = entitlementGrant;
+     }
+ 
+     private static Environment prepareEnvironment(final Settings settings, final Path configPath) {
+-        TestEntitlementBootstrap.registerNodeBaseDirs(settings, configPath);
+         return InternalSettingsPreparer.prepareEnvironment(
+             Settings.builder().put(TransportSettings.PORT.getKey(), ESTestCase.getPortRange()).put(settings).build(),
+             Collections.emptyMap(),
+@@ -290,8 +296,7 @@ public synchronized boolean awaitClose(long timeout, TimeUnit timeUnit) throws I
+         try {
+             return super.awaitClose(timeout, timeUnit);
+         } finally {
+-            // wipePendingDataDirectories requires entitlement delegation to work due to this using FileSystemUtils ES-10920
+-            // TestEntitlementBootstrap.unregisterNodeBaseDirs(settings(), getEnvironment().configDir());
++            IOUtils.closeWhileHandlingException(entitlementGrant);
+         }
+     }
+ 
+diff --git a/test/framework/src/main/java/org/elasticsearch/test/AbstractMultiClustersTestCase.java b/test/framework/src/main/java/org/elasticsearch/test/AbstractMultiClustersTestCase.java
+index b4f91f68b8bb7..2b6abb67b4353 100644
+--- a/test/framework/src/main/java/org/elasticsearch/test/AbstractMultiClustersTestCase.java
++++ b/test/framework/src/main/java/org/elasticsearch/test/AbstractMultiClustersTestCase.java
+@@ -127,7 +127,8 @@ public final void startClusters() throws Exception {
+                 0,
+                 clusterName + "-",
+                 mockPlugins,
+-                Function.identity()
++                Function.identity(),
++                TEST_ENTITLEMENTS::newNodeGrant
+             );
+             try {
+                 cluster.beforeTest(random());
+diff --git a/test/framework/src/main/java/org/elasticsearch/test/ESIntegTestCase.java b/test/framework/src/main/java/org/elasticsearch/test/ESIntegTestCase.java
+index 89099bb7e32ff..52f99ef8fdd1f 100644
+--- a/test/framework/src/main/java/org/elasticsearch/test/ESIntegTestCase.java
++++ b/test/framework/src/main/java/org/elasticsearch/test/ESIntegTestCase.java
+@@ -549,6 +549,7 @@ private TestCluster buildAndPutCluster(Scope currentClusterScope, long seed) thr
+                 // close the previous one and create a new one
+                 if (testCluster != null) {
+                     IOUtils.closeWhileHandlingException(testCluster::close);
++                    TEST_ENTITLEMENTS.revokeNodeGrants();
+                 }
+                 testCluster = buildTestCluster(currentClusterScope, seed);
+             }
+@@ -2336,7 +2337,8 @@ protected TestCluster buildTestCluster(Scope scope, long seed) throws IOExceptio
+             getClientWrapper(),
+             forbidPrivateIndexSettings(),
+             forceSingleDataPath(),
+-            autoManageVotingExclusions()
++            autoManageVotingExclusions(),
++            TEST_ENTITLEMENTS::newNodeGrant
+         );
+     }
+ 
+diff --git a/test/framework/src/main/java/org/elasticsearch/test/ESSingleNodeTestCase.java b/test/framework/src/main/java/org/elasticsearch/test/ESSingleNodeTestCase.java
+index 7ebc5765bda63..66af9e9c56e61 100644
+--- a/test/framework/src/main/java/org/elasticsearch/test/ESSingleNodeTestCase.java
++++ b/test/framework/src/main/java/org/elasticsearch/test/ESSingleNodeTestCase.java
+@@ -288,7 +288,7 @@ private Node newNode() {
+             plugins.add(ConcurrentSearchTestPlugin.class);
+         }
+         plugins.add(MockScriptService.TestPlugin.class);
+-        Node node = new MockNode(settings, plugins, forbidPrivateIndexSettings());
++        Node node = new MockNode(settings, plugins, forbidPrivateIndexSettings(), TEST_ENTITLEMENTS.newNodeGrant(settings, null));
+         try {
+             node.start();
+         } catch (NodeValidationException e) {
+diff --git a/test/framework/src/main/java/org/elasticsearch/test/ESTestCase.java b/test/framework/src/main/java/org/elasticsearch/test/ESTestCase.java
+index de74b47e888d6..43243e431db48 100644
+--- a/test/framework/src/main/java/org/elasticsearch/test/ESTestCase.java
++++ b/test/framework/src/main/java/org/elasticsearch/test/ESTestCase.java
+@@ -111,7 +111,7 @@
+ import org.elasticsearch.core.SuppressForbidden;
+ import org.elasticsearch.core.TimeValue;
+ import org.elasticsearch.core.Tuple;
+-import org.elasticsearch.entitlement.bootstrap.TestEntitlementBootstrap;
++import org.elasticsearch.entitlement.bootstrap.TestEntitlementsRule;
+ import org.elasticsearch.env.Environment;
+ import org.elasticsearch.env.NodeEnvironment;
+ import org.elasticsearch.env.TestEnvironment;
+@@ -159,6 +159,7 @@
+ import org.junit.AfterClass;
+ import org.junit.Before;
+ import org.junit.BeforeClass;
++import org.junit.ClassRule;
+ import org.junit.Rule;
+ import org.junit.internal.AssumptionViolatedException;
+ import org.junit.rules.RuleChain;
+@@ -524,30 +525,8 @@ protected void afterIfSuccessful() throws Exception {}
+         String[] value();
+     }
+ 
+-    @BeforeClass
+-    public static void setupEntitlementsForClass() {
+-        boolean withoutEntitlements = getTestClass().isAnnotationPresent(WithoutEntitlements.class);
+-        boolean withEntitlementsOnTestCode = getTestClass().isAnnotationPresent(WithEntitlementsOnTestCode.class);
+-        EntitledTestPackages entitledPackages = getTestClass().getAnnotation(EntitledTestPackages.class);
+-
+-        if (TestEntitlementBootstrap.isEnabledForTest()) {
+-            TestEntitlementBootstrap.setActive(false == withoutEntitlements);
+-            TestEntitlementBootstrap.setTriviallyAllowingTestCode(false == withEntitlementsOnTestCode);
+-            if (entitledPackages != null) {
+-                assert entitledPackages.value().length > 0 : "No test packages specified in @EntitledTestPackages";
+-                TestEntitlementBootstrap.setEntitledTestPackages(entitledPackages.value());
+-            }
+-        } else if (withEntitlementsOnTestCode) {
+-            throw new AssertionError(
+-                "Cannot use @WithEntitlementsOnTestCode on tests that are not configured to use entitlements for testing"
+-            );
+-        }
+-    }
+-
+-    @AfterClass
+-    public static void resetEntitlements() {
+-        TestEntitlementBootstrap.resetAfterTest();
+-    }
++    @ClassRule
++    public static final TestEntitlementsRule TEST_ENTITLEMENTS = new TestEntitlementsRule();
+ 
+     // setup mock filesystems for this test run. we change PathUtils
+     // so that all accesses are plumbed thru any mock wrappers
+diff --git a/test/framework/src/main/java/org/elasticsearch/test/InternalTestCluster.java b/test/framework/src/main/java/org/elasticsearch/test/InternalTestCluster.java
+index cb45797f9b822..0ab12b697801c 100644
+--- a/test/framework/src/main/java/org/elasticsearch/test/InternalTestCluster.java
++++ b/test/framework/src/main/java/org/elasticsearch/test/InternalTestCluster.java
+@@ -178,6 +178,9 @@
+  * </p>
+  */
+ public final class InternalTestCluster extends TestCluster {
++    public interface NodeGrantProvider {
++        Closeable create(Settings settings, Path configPath);
++    }
+ 
+     private static final Logger logger = LogManager.getLogger(InternalTestCluster.class);
+ 
+@@ -278,6 +281,8 @@ public String toString() {
+     // index of node to bootstrap as master, or BOOTSTRAP_MASTER_NODE_INDEX_AUTO or BOOTSTRAP_MASTER_NODE_INDEX_DONE
+     private int bootstrapMasterNodeIndex = BOOTSTRAP_MASTER_NODE_INDEX_AUTO;
+ 
++    private final NodeGrantProvider nodeGrantProvider;
++
+     public InternalTestCluster(
+         final long clusterSeed,
+         final Path baseDir,
+@@ -290,7 +295,8 @@ public InternalTestCluster(
+         final int numClientNodes,
+         final String nodePrefix,
+         final Collection<Class<? extends Plugin>> mockPlugins,
+-        final Function<Client, Client> clientWrapper
++        final Function<Client, Client> clientWrapper,
++        NodeGrantProvider nodeGrantProvider
+     ) {
+         this(
+             clusterSeed,
+@@ -307,7 +313,8 @@ public InternalTestCluster(
+             clientWrapper,
+             true,
+             false,
+-            true
++            true,
++            nodeGrantProvider
+         );
+     }
+ 
+@@ -326,7 +333,8 @@ public InternalTestCluster(
+         final Function<Client, Client> clientWrapper,
+         final boolean forbidPrivateIndexSettings,
+         final boolean forceSingleDataPath,
+-        final boolean autoManageVotingExclusions
++        final boolean autoManageVotingExclusions,
++        final NodeGrantProvider nodeGrantProvider
+     ) {
+         super(clusterSeed);
+         this.autoManageMasterNodes = autoManageMasterNodes;
+@@ -335,6 +343,7 @@ public InternalTestCluster(
+         this.baseDir = baseDir;
+         this.clusterName = clusterName;
+         this.autoManageVotingExclusions = autoManageVotingExclusions;
++        this.nodeGrantProvider = nodeGrantProvider;
+         if (minNumDataNodes < 0 || maxNumDataNodes < 0) {
+             throw new IllegalArgumentException("minimum and maximum number of data nodes must be >= 0");
+         }
+@@ -783,7 +792,14 @@ private synchronized NodeAndClient buildNode(int nodeId, Settings settings, bool
+             // we clone this here since in the case of a node restart we might need it again
+             secureSettings = ((MockSecureSettings) secureSettings).clone();
+         }
+-        MockNode node = new MockNode(settings, plugins, nodeConfigurationSource.nodeConfigPath(nodeId), forbidPrivateIndexSettings);
++        Path configPath = nodeConfigurationSource.nodeConfigPath(nodeId);
++        MockNode node = new MockNode(
++            settings,
++            plugins,
++            configPath,
++            forbidPrivateIndexSettings,
++            nodeGrantProvider.create(settings, configPath)
++        );
+         node.injector().getInstance(TransportService.class).addLifecycleListener(new LifecycleListener() {
+             @Override
+             public void afterStart() {
+@@ -1058,7 +1074,7 @@ private void recreateNode(final Settings newSettings, final Runnable onTransport
+                 .put(NodeEnvironment.NODE_ID_SEED_SETTING.getKey(), newIdSeed)
+                 .build();
+             Collection<Class<? extends Plugin>> plugins = node.getClasspathPlugins();
+-            node = new MockNode(finalSettings, plugins, forbidPrivateIndexSettings);
++            node = new MockNode(finalSettings, plugins, forbidPrivateIndexSettings, nodeGrantProvider.create(finalSettings, null));
+             node.injector().getInstance(TransportService.class).addLifecycleListener(new LifecycleListener() {
+                 @Override
+                 public void afterStart() {
+diff --git a/test/framework/src/test/java/org/elasticsearch/entitlement/runtime/policy/TestPolicyManagerTests.java b/test/framework/src/test/java/org/elasticsearch/entitlement/runtime/policy/TestPolicyManagerTests.java
+index c0f1aaa227cdb..b3e9aa2f97bcd 100644
+--- a/test/framework/src/test/java/org/elasticsearch/entitlement/runtime/policy/TestPolicyManagerTests.java
++++ b/test/framework/src/test/java/org/elasticsearch/entitlement/runtime/policy/TestPolicyManagerTests.java
+@@ -41,13 +41,13 @@ public void setupPolicyManager() {
+         policyManager.setActive(true);
+     }
+ 
+-    public void testResetAfterTest() {
++    public void testClearModuleEntitlementsCache() {
+         assertTrue(policyManager.classEntitlementsMap.isEmpty());
+         assertEquals("example-plugin1", policyManager.getEntitlements(getClass()).componentName());
+         assertEquals("example-plugin1", policyManager.getEntitlements(getClass()).componentName());
+         assertFalse(policyManager.classEntitlementsMap.isEmpty());
+ 
+-        policyManager.resetAfterTest();
++        policyManager.clearModuleEntitlementsCache();
+ 
+         assertTrue(policyManager.classEntitlementsMap.isEmpty());
+         assertEquals("example-plugin2", policyManager.getEntitlements(getClass()).componentName());
+diff --git a/test/framework/src/test/java/org/elasticsearch/test/test/InternalTestClusterTests.java b/test/framework/src/test/java/org/elasticsearch/test/test/InternalTestClusterTests.java
+index f5c358b3b3301..23282572607c0 100644
+--- a/test/framework/src/test/java/org/elasticsearch/test/test/InternalTestClusterTests.java
++++ b/test/framework/src/test/java/org/elasticsearch/test/test/InternalTestClusterTests.java
+@@ -85,7 +85,8 @@ public void testInitializiationIsConsistent() {
+             numClientNodes,
+             nodePrefix,
+             Collections.emptyList(),
+-            Function.identity()
++            Function.identity(),
++            TEST_ENTITLEMENTS::newNodeGrant
+         );
+         InternalTestCluster cluster1 = new InternalTestCluster(
+             clusterSeed,
+@@ -99,7 +100,8 @@ public void testInitializiationIsConsistent() {
+             numClientNodes,
+             nodePrefix,
+             Collections.emptyList(),
+-            Function.identity()
++            Function.identity(),
++            TEST_ENTITLEMENTS::newNodeGrant
+         );
+         assertClusters(cluster0, cluster1, true);
+     }
+@@ -198,7 +200,8 @@ public Path nodeConfigPath(int nodeOrdinal) {
+             numClientNodes,
+             nodePrefix,
+             mockPlugins(),
+-            Function.identity()
++            Function.identity(),
++            TEST_ENTITLEMENTS::newNodeGrant
+         );
+         cluster0.setBootstrapMasterNodeIndex(bootstrapMasterNodeIndex);
+ 
+@@ -214,7 +217,8 @@ public Path nodeConfigPath(int nodeOrdinal) {
+             numClientNodes,
+             nodePrefix,
+             mockPlugins(),
+-            Function.identity()
++            Function.identity(),
++            TEST_ENTITLEMENTS::newNodeGrant
+         );
+         cluster1.setBootstrapMasterNodeIndex(bootstrapMasterNodeIndex);
+ 
+@@ -280,7 +284,8 @@ public Path nodeConfigPath(int nodeOrdinal) {
+             numClientNodes,
+             nodePrefix,
+             mockPlugins(),
+-            Function.identity()
++            Function.identity(),
++            TEST_ENTITLEMENTS::newNodeGrant
+         );
+         try {
+             cluster.beforeTest(random());
+@@ -375,7 +380,8 @@ public Path nodeConfigPath(int nodeOrdinal) {
+             0,
+             "",
+             mockPlugins(),
+-            Function.identity()
++            Function.identity(),
++            TEST_ENTITLEMENTS::newNodeGrant
+         );
+         cluster.beforeTest(random());
+         List<DiscoveryNodeRole> roles = new ArrayList<>();
+@@ -467,7 +473,8 @@ public Path nodeConfigPath(int nodeOrdinal) {
+             0,
+             nodePrefix,
+             plugins,
+-            Function.identity()
++            Function.identity(),
++            TEST_ENTITLEMENTS::newNodeGrant
+         );
+         try {
+             cluster.beforeTest(random());
+diff --git a/x-pack/plugin/ccr/src/test/java/org/elasticsearch/xpack/CcrIntegTestCase.java b/x-pack/plugin/ccr/src/test/java/org/elasticsearch/xpack/CcrIntegTestCase.java
+index b037e7204a906..2b8f4ce91a518 100644
+--- a/x-pack/plugin/ccr/src/test/java/org/elasticsearch/xpack/CcrIntegTestCase.java
++++ b/x-pack/plugin/ccr/src/test/java/org/elasticsearch/xpack/CcrIntegTestCase.java
+@@ -183,7 +183,8 @@ public final void startClusters() throws Exception {
+             0,
+             "leader",
+             mockPlugins,
+-            Function.identity()
++            Function.identity(),
++            TEST_ENTITLEMENTS::newNodeGrant
+         );
+         leaderCluster.beforeTest(random());
+         leaderCluster.ensureAtLeastNumDataNodes(numberOfNodesPerCluster());
+@@ -205,7 +206,8 @@ public final void startClusters() throws Exception {
+             0,
+             "follower",
+             mockPlugins,
+-            Function.identity()
++            Function.identity(),
++            TEST_ENTITLEMENTS::newNodeGrant
+         );
+         clusterGroup = new ClusterGroup(leaderCluster, followerCluster);
+ 

@@ -1,0 +1,746 @@
+diff --git a/packages/cli/src/services/BuiltinCommandLoader.test.ts b/packages/cli/src/services/BuiltinCommandLoader.test.ts
+index 0e64b1ac056..60f94640767 100644
+--- a/packages/cli/src/services/BuiltinCommandLoader.test.ts
++++ b/packages/cli/src/services/BuiltinCommandLoader.test.ts
+@@ -19,6 +19,9 @@ vi.mock('../ui/commands/ideCommand.js', () => ({ ideCommand: vi.fn() }));
+ vi.mock('../ui/commands/restoreCommand.js', () => ({
+   restoreCommand: vi.fn(),
+ }));
++vi.mock('../ui/commands/promptCommands.js', () => ({
++  createPromptCommands: vi.fn(),
++}));
+ 
+ import { describe, it, expect, vi, beforeEach, type Mock } from 'vitest';
+ import { BuiltinCommandLoader } from './BuiltinCommandLoader.js';
+@@ -27,6 +30,7 @@ import { CommandKind } from '../ui/commands/types.js';
+ 
+ import { ideCommand } from '../ui/commands/ideCommand.js';
+ import { restoreCommand } from '../ui/commands/restoreCommand.js';
++import { createPromptCommands } from '../ui/commands/promptCommands.js';
+ 
+ vi.mock('../ui/commands/authCommand.js', () => ({ authCommand: {} }));
+ vi.mock('../ui/commands/bugCommand.js', () => ({ bugCommand: {} }));
+@@ -40,19 +44,26 @@ vi.mock('../ui/commands/extensionsCommand.js', () => ({
+   extensionsCommand: {},
+ }));
+ vi.mock('../ui/commands/helpCommand.js', () => ({ helpCommand: {} }));
+-vi.mock('../ui/commands/mcpCommand.js', () => ({ mcpCommand: {} }));
+ vi.mock('../ui/commands/memoryCommand.js', () => ({ memoryCommand: {} }));
+ vi.mock('../ui/commands/privacyCommand.js', () => ({ privacyCommand: {} }));
+ vi.mock('../ui/commands/quitCommand.js', () => ({ quitCommand: {} }));
+ vi.mock('../ui/commands/statsCommand.js', () => ({ statsCommand: {} }));
+ vi.mock('../ui/commands/themeCommand.js', () => ({ themeCommand: {} }));
+ vi.mock('../ui/commands/toolsCommand.js', () => ({ toolsCommand: {} }));
++vi.mock('../ui/commands/mcpCommand.js', () => ({
++  mcpCommand: {
++    name: 'mcp',
++    description: 'MCP command',
++    kind: 'BUILT_IN',
++  },
++}));
+ 
+ describe('BuiltinCommandLoader', () => {
+   let mockConfig: Config;
+ 
+   const ideCommandMock = ideCommand as Mock;
+   const restoreCommandMock = restoreCommand as Mock;
++  const createPromptCommandsMock = createPromptCommands as Mock;
+ 
+   beforeEach(() => {
+     vi.clearAllMocks();
+@@ -68,6 +79,13 @@ describe('BuiltinCommandLoader', () => {
+       description: 'Restore command',
+       kind: CommandKind.BUILT_IN,
+     });
++    createPromptCommandsMock.mockReturnValue([
++      {
++        name: 'prompt',
++        description: 'prompt command',
++        kind: CommandKind.BUILT_IN,
++      },
++    ]);
+   });
+ 
+   it('should correctly pass the config object to command factory functions', async () => {
+@@ -78,6 +96,8 @@ describe('BuiltinCommandLoader', () => {
+     expect(ideCommandMock).toHaveBeenCalledWith(mockConfig);
+     expect(restoreCommandMock).toHaveBeenCalledTimes(1);
+     expect(restoreCommandMock).toHaveBeenCalledWith(mockConfig);
++    expect(createPromptCommandsMock).toHaveBeenCalledTimes(1);
++    expect(createPromptCommandsMock).toHaveBeenCalledWith(mockConfig);
+   });
+ 
+   it('should filter out null command definitions returned by factories', async () => {
+@@ -102,6 +122,8 @@ describe('BuiltinCommandLoader', () => {
+     expect(ideCommandMock).toHaveBeenCalledWith(null);
+     expect(restoreCommandMock).toHaveBeenCalledTimes(1);
+     expect(restoreCommandMock).toHaveBeenCalledWith(null);
++    expect(createPromptCommandsMock).toHaveBeenCalledTimes(1);
++    expect(createPromptCommandsMock).toHaveBeenCalledWith(null);
+   });
+ 
+   it('should return a list of all loaded commands', async () => {
+@@ -114,5 +136,8 @@ describe('BuiltinCommandLoader', () => {
+ 
+     const ideCmd = commands.find((c) => c.name === 'ide');
+     expect(ideCmd).toBeDefined();
++
++    const mcpCmd = commands.find((c) => c.name === 'mcp');
++    expect(mcpCmd).toBeDefined();
+   });
+ });
+diff --git a/packages/cli/src/services/BuiltinCommandLoader.ts b/packages/cli/src/services/BuiltinCommandLoader.ts
+index 259c6013e8c..ede35d06e53 100644
+--- a/packages/cli/src/services/BuiltinCommandLoader.ts
++++ b/packages/cli/src/services/BuiltinCommandLoader.ts
+@@ -28,6 +28,7 @@ import { restoreCommand } from '../ui/commands/restoreCommand.js';
+ import { statsCommand } from '../ui/commands/statsCommand.js';
+ import { themeCommand } from '../ui/commands/themeCommand.js';
+ import { toolsCommand } from '../ui/commands/toolsCommand.js';
++import { createPromptCommands } from '../ui/commands/promptCommands.js';
+ 
+ /**
+  * Loads the core, hard-coded slash commands that are an integral part
+@@ -58,14 +59,15 @@ export class BuiltinCommandLoader implements ICommandLoader {
+       extensionsCommand,
+       helpCommand,
+       ideCommand(this.config),
+-      mcpCommand,
+       memoryCommand,
+       privacyCommand,
++      mcpCommand,
+       quitCommand,
+       restoreCommand(this.config),
+       statsCommand,
+       themeCommand,
+       toolsCommand,
++      ...createPromptCommands(this.config),
+     ];
+ 
+     return allDefinitions.filter((cmd): cmd is SlashCommand => cmd !== null);
+diff --git a/packages/cli/src/ui/commands/mcpCommand.test.ts b/packages/cli/src/ui/commands/mcpCommand.test.ts
+index 2b8753a0a7f..f27b51155ea 100644
+--- a/packages/cli/src/ui/commands/mcpCommand.test.ts
++++ b/packages/cli/src/ui/commands/mcpCommand.test.ts
+@@ -13,6 +13,7 @@ import {
+   getMCPServerStatus,
+   getMCPDiscoveryState,
+   DiscoveredMCPTool,
++  getMCPServerPrompts,
+ } from '@google/gemini-cli-core';
+ import open from 'open';
+ import { MessageActionReturn } from './types.js';
+@@ -30,6 +31,7 @@ vi.mock('@google/gemini-cli-core', async (importOriginal) => {
+     ...actual,
+     getMCPServerStatus: vi.fn(),
+     getMCPDiscoveryState: vi.fn(),
++    getMCPServerPrompts: vi.fn(),
+     MCPOAuthProvider: {
+       authenticate: vi.fn(),
+     },
+@@ -84,6 +86,7 @@ describe('mcpCommand', () => {
+     vi.mocked(getMCPDiscoveryState).mockReturnValue(
+       MCPDiscoveryState.COMPLETED,
+     );
++    vi.mocked(getMCPServerPrompts).mockReturnValue([]);
+ 
+     // Create mock config with all necessary methods
+     mockConfig = {
+@@ -223,7 +226,7 @@ describe('mcpCommand', () => {
+ 
+         // Server 2 - Connected
+         expect(message).toContain(
+-          '🟢 \u001b[1mserver2\u001b[0m - Ready (1 tools)',
++          '🟢 \u001b[1mserver2\u001b[0m - Ready (1 tool)',
+         );
+         expect(message).toContain('server2_tool1');
+ 
+@@ -365,13 +368,13 @@ describe('mcpCommand', () => {
+       if (isMessageAction(result)) {
+         const message = result.content;
+         expect(message).toContain(
+-          '🟢 \u001b[1mserver1\u001b[0m - Ready (1 tools)',
++          '🟢 \u001b[1mserver1\u001b[0m - Ready (1 tool)',
+         );
+         expect(message).toContain('\u001b[36mserver1_tool1\u001b[0m');
+         expect(message).toContain(
+           '🔴 \u001b[1mserver2\u001b[0m - Disconnected (0 tools cached)',
+         );
+-        expect(message).toContain('No tools available');
++        expect(message).toContain('No tools or prompts available');
+       }
+     });
+ 
+@@ -421,10 +424,10 @@ describe('mcpCommand', () => {
+ 
+         // Check server statuses
+         expect(message).toContain(
+-          '🟢 \u001b[1mserver1\u001b[0m - Ready (1 tools)',
++          '🟢 \u001b[1mserver1\u001b[0m - Ready (1 tool)',
+         );
+         expect(message).toContain(
+-          '🔄 \u001b[1mserver2\u001b[0m - Starting... (first startup may take longer) (tools will appear when ready)',
++          '🔄 \u001b[1mserver2\u001b[0m - Starting... (first startup may take longer) (tools and prompts will appear when ready)',
+         );
+       }
+     });
+diff --git a/packages/cli/src/ui/commands/mcpCommand.ts b/packages/cli/src/ui/commands/mcpCommand.ts
+index 5467b99440e..60f24a7ebf9 100644
+--- a/packages/cli/src/ui/commands/mcpCommand.ts
++++ b/packages/cli/src/ui/commands/mcpCommand.ts
+@@ -12,8 +12,10 @@ import {
+   MessageActionReturn,
+ } from './types.js';
+ import {
++  DiscoveredMCPPrompt,
+   DiscoveredMCPTool,
+   getMCPDiscoveryState,
++  getMCPServerPrompts,
+   getMCPServerStatus,
+   MCPDiscoveryState,
+   MCPServerStatus,
+@@ -101,6 +103,7 @@ const getMcpStatus = async (
+       (tool) =>
+         tool instanceof DiscoveredMCPTool && tool.serverName === serverName,
+     ) as DiscoveredMCPTool[];
++    const serverPrompts = getMCPServerPrompts(serverName) || [];
+ 
+     const status = getMCPServerStatus(serverName);
+ 
+@@ -160,9 +163,26 @@ const getMcpStatus = async (
+ 
+     // Add tool count with conditional messaging
+     if (status === MCPServerStatus.CONNECTED) {
+-      message += ` (${serverTools.length} tools)`;
++      const parts = [];
++      if (serverTools.length > 0) {
++        parts.push(
++          `${serverTools.length} ${serverTools.length === 1 ? 'tool' : 'tools'}`,
++        );
++      }
++      if (serverPrompts.length > 0) {
++        parts.push(
++          `${serverPrompts.length} ${
++            serverPrompts.length === 1 ? 'prompt' : 'prompts'
++          }`,
++        );
++      }
++      if (parts.length > 0) {
++        message += ` (${parts.join(', ')})`;
++      } else {
++        message += ` (0 tools)`;
++      }
+     } else if (status === MCPServerStatus.CONNECTING) {
+-      message += ` (tools will appear when ready)`;
++      message += ` (tools and prompts will appear when ready)`;
+     } else {
+       message += ` (${serverTools.length} tools cached)`;
+     }
+@@ -186,6 +206,7 @@ const getMcpStatus = async (
+     message += RESET_COLOR;
+ 
+     if (serverTools.length > 0) {
++      message += `  ${COLOR_CYAN}Tools:${RESET_COLOR}\n`;
+       serverTools.forEach((tool) => {
+         if (showDescriptions && tool.description) {
+           // Format tool name in cyan using simple ANSI cyan color
+@@ -222,12 +243,41 @@ const getMcpStatus = async (
+           }
+         }
+       });
+-    } else {
++    }
++    if (serverPrompts.length > 0) {
++      if (serverTools.length > 0) {
++        message += '\n';
++      }
++      message += `  ${COLOR_CYAN}Prompts:${RESET_COLOR}\n`;
++      serverPrompts.forEach((prompt: DiscoveredMCPPrompt) => {
++        if (showDescriptions && prompt.description) {
++          message += `  - ${COLOR_CYAN}${prompt.name}${RESET_COLOR}`;
++          const descLines = prompt.description.trim().split('\n');
++          if (descLines) {
++            message += ':\n';
++            for (const descLine of descLines) {
++              message += `      ${COLOR_GREEN}${descLine}${RESET_COLOR}\n`;
++            }
++          } else {
++            message += '\n';
++          }
++        } else {
++          message += `  - ${COLOR_CYAN}${prompt.name}${RESET_COLOR}\n`;
++        }
++      });
++    }
++
++    if (serverTools.length === 0 && serverPrompts.length === 0) {
++      message += '  No tools or prompts available\n';
++    } else if (serverTools.length === 0) {
+       message += '  No tools available';
+       if (status === MCPServerStatus.DISCONNECTED && needsAuthHint) {
+         message += ` ${COLOR_GREY}(type: "/mcp auth ${serverName}" to authenticate this server)${RESET_COLOR}`;
+       }
+       message += '\n';
++    } else if (status === MCPServerStatus.DISCONNECTED && needsAuthHint) {
++      // This case is for when serverTools.length > 0
++      message += `  ${COLOR_GREY}(type: "/mcp auth ${serverName}" to authenticate this server)${RESET_COLOR}\n`;
+     }
+     message += '\n';
+   }
+diff --git a/packages/cli/src/ui/commands/promptCommands.ts b/packages/cli/src/ui/commands/promptCommands.ts
+new file mode 100644
+index 00000000000..568d5970466
+--- /dev/null
++++ b/packages/cli/src/ui/commands/promptCommands.ts
+@@ -0,0 +1,183 @@
++/**
++ * @license
++ * Copyright 2025 Google LLC
++ * SPDX-License-Identifier: Apache-2.0
++ */
++
++import {
++  SlashCommand,
++  SlashCommandActionReturn,
++  CommandContext,
++  CommandKind,
++} from './types.js';
++import {
++  Config,
++  getMCPServerPrompts,
++  getErrorMessage,
++  invokeMcpPrompt,
++  connectToMcpServer,
++} from '@google/gemini-cli-core';
++
++export function createPromptCommands(config: Config | null): SlashCommand[] {
++  const promptCommands: SlashCommand[] = [];
++  if (config) {
++    const mcpServers = config.getMcpServers() || {};
++    for (const serverName in mcpServers) {
++      const prompts = getMCPServerPrompts(serverName) || [];
++      for (const prompt of prompts) {
++        const commandName = `${prompt.name}`;
++        const newPromptCommand: SlashCommand = {
++          name: commandName,
++          description: prompt.description || `Invoke prompt ${prompt.name}`,
++          kind: CommandKind.BUILT_IN,
++          subCommands: [
++            {
++              name: 'help',
++              description: 'Show help for this prompt',
++              kind: CommandKind.BUILT_IN,
++              action: async (): Promise<SlashCommandActionReturn> => {
++                if (!prompt.arguments || prompt.arguments.length === 0) {
++                  return {
++                    type: 'message',
++                    messageType: 'info',
++                    content: `Prompt "${prompt.name}" has no arguments.`,
++                  };
++                }
++
++                let helpMessage = `Arguments for "${prompt.name}":\n\n`;
++                for (const arg of prompt.arguments) {
++                  helpMessage += `  --${arg.name}\n`;
++                  if (arg.description) {
++                    helpMessage += `    ${arg.description}\n`;
++                  }
++                  helpMessage += `    (required: ${arg.required ? 'yes' : 'no'})\n\n`;
++                }
++                return {
++                  type: 'message',
++                  messageType: 'info',
++                  content: helpMessage,
++                };
++              },
++            },
++          ],
++          action: async (
++            context: CommandContext,
++            args: string,
++          ): Promise<SlashCommandActionReturn> => {
++            const { config } = context.services;
++            if (!config) {
++              return {
++                type: 'message',
++                messageType: 'error',
++                content: 'Config not loaded.',
++              };
++            }
++
++            const promptArgs = args.trim();
++
++            const argValues: { [key: string]: string } = {};
++            // arg parsing: --key="value" or --key=value
++            const argRegex = /--([^=]+)=(?:"((?:\\.|[^"\\])*)"|([^ ]*))/g;
++            let match;
++            while ((match = argRegex.exec(promptArgs)) !== null) {
++              const key = match[1];
++              const value = match[2] ?? match[3]; // Quoted or unquoted value
++              argValues[key] = value;
++            }
++
++            const promptInputs: Record<string, unknown> = {};
++            if (prompt.arguments) {
++              for (const arg of prompt.arguments) {
++                const value = argValues[arg.name];
++                if (value) {
++                  promptInputs[arg.name] = value;
++                } else if (arg.required) {
++                  return {
++                    type: 'message',
++                    messageType: 'error',
++                    content: `Missing required argument: --${arg.name}`,
++                  };
++                }
++              }
++            }
++
++            const mcpServer = config.getMcpServers()?.[serverName];
++            if (!mcpServer) {
++              return {
++                type: 'message',
++                messageType: 'error',
++                content: `MCP server not found: ${serverName}`,
++              };
++            }
++
++            let mcpClient;
++            try {
++              mcpClient = await connectToMcpServer(
++                serverName,
++                mcpServer,
++                false,
++              );
++              const result = await invokeMcpPrompt(
++                serverName,
++                mcpClient,
++                prompt.name,
++                promptInputs,
++              );
++
++              if (result.error) {
++                return {
++                  type: 'message',
++                  messageType: 'error',
++                  content: `Error invoking prompt: ${result.error}`,
++                };
++              }
++
++              if (!result.messages?.[0]?.content?.text) {
++                return {
++                  type: 'message',
++                  messageType: 'error',
++                  content:
++                    'Received an empty or invalid prompt response from the server.',
++                };
++              }
++
++              return {
++                type: 'submit_prompt',
++                content: JSON.stringify(result.messages[0].content.text),
++              };
++            } catch (error) {
++              return {
++                type: 'message',
++                messageType: 'error',
++                content: `Error: ${getErrorMessage(error)}`,
++              };
++            } finally {
++              mcpClient?.close();
++            }
++          },
++          completion: async (_: CommandContext, partialArg: string) => {
++            if (!prompt || !prompt.arguments) {
++              return [];
++            }
++
++            const suggestions: string[] = [];
++            const usedArgNames = new Set(
++              (partialArg.match(/--([^=]+)/g) || []).map((s) => s.substring(2)),
++            );
++
++            for (const arg of prompt.arguments) {
++              if (!usedArgNames.has(arg.name)) {
++                suggestions.push(`${partialArg}--${arg.name}=""`);
++              }
++            }
++
++            return suggestions;
++          },
++        };
++        promptCommands.push(newPromptCommand);
++      }
++    }
++  }
++
++  return promptCommands;
++}
+diff --git a/packages/core/src/tools/mcp-client.test.ts b/packages/core/src/tools/mcp-client.test.ts
+index 428c9d2d2bd..323a4e2fc7a 100644
+--- a/packages/core/src/tools/mcp-client.test.ts
++++ b/packages/core/src/tools/mcp-client.test.ts
+@@ -11,6 +11,7 @@ import {
+   createTransport,
+   isEnabled,
+   discoverTools,
++  discoverPrompts,
+ } from './mcp-client.js';
+ import { SSEClientTransport } from '@modelcontextprotocol/sdk/client/sse.js';
+ import * as SdkClientStdioLib from '@modelcontextprotocol/sdk/client/stdio.js';
+@@ -50,6 +51,73 @@ describe('mcp-client', () => {
+     });
+   });
+ 
++  describe('discoverPrompts', () => {
++    it('should discover and log prompts', async () => {
++      const mockRequest = vi.fn().mockResolvedValue({
++        prompts: [
++          { name: 'prompt1', description: 'desc1' },
++          { name: 'prompt2' },
++        ],
++      });
++      const mockedClient = {
++        request: mockRequest,
++      } as unknown as ClientLib.Client;
++
++      await discoverPrompts('test-server', mockedClient);
++
++      expect(mockRequest).toHaveBeenCalledWith(
++        { method: 'prompts/list', params: {} },
++        expect.anything(),
++      );
++    });
++
++    it('should do nothing if no prompts are discovered', async () => {
++      const mockRequest = vi.fn().mockResolvedValue({
++        prompts: [],
++      });
++      const mockedClient = {
++        request: mockRequest,
++      } as unknown as ClientLib.Client;
++
++      const consoleLogSpy = vi
++        .spyOn(console, 'debug')
++        .mockImplementation(() => {
++          // no-op
++        });
++
++      await discoverPrompts('test-server', mockedClient);
++
++      expect(mockRequest).toHaveBeenCalledOnce();
++      expect(consoleLogSpy).not.toHaveBeenCalled();
++
++      consoleLogSpy.mockRestore();
++    });
++
++    it('should log an error if discovery fails', async () => {
++      const testError = new Error('test error');
++      testError.message = 'test error';
++      const mockRequest = vi.fn().mockRejectedValue(testError);
++      const mockedClient = {
++        request: mockRequest,
++      } as unknown as ClientLib.Client;
++
++      const consoleErrorSpy = vi
++        .spyOn(console, 'error')
++        .mockImplementation(() => {
++          // no-op
++        });
++
++      await discoverPrompts('test-server', mockedClient);
++
++      expect(mockRequest).toHaveBeenCalledOnce();
++      expect(consoleErrorSpy).toHaveBeenCalledWith(
++        `Error discovering prompts from test-server: ${testError.message}`,
++      );
++
++      consoleErrorSpy.mockRestore();
++    });
++  });
++
+   describe('appendMcpServerCommand', () => {
+     it('should do nothing if no MCP servers or command are configured', () => {
+       const out = populateMcpServerCommand({}, undefined);
+diff --git a/packages/core/src/tools/mcp-client.ts b/packages/core/src/tools/mcp-client.ts
+index 3c4821006a3..611e1d21127 100644
+--- a/packages/core/src/tools/mcp-client.ts
++++ b/packages/core/src/tools/mcp-client.ts
+@@ -15,10 +15,17 @@ import {
+   StreamableHTTPClientTransport,
+   StreamableHTTPClientTransportOptions,
+ } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
++import {
++  Prompt,
++  ListPromptsResultSchema,
++  GetPromptResult,
++  GetPromptResultSchema,
++} from '@modelcontextprotocol/sdk/types.js';
+ import { parse } from 'shell-quote';
+ import { AuthProviderType, MCPServerConfig } from '../config/config.js';
+ import { GoogleCredentialProvider } from '../mcp/google-auth-provider.js';
+ import { DiscoveredMCPTool } from './mcp-tool.js';
++
+ import { FunctionDeclaration, mcpToTool } from '@google/genai';
+ import { ToolRegistry } from './tool-registry.js';
+ import { MCPOAuthProvider } from '../mcp/oauth-provider.js';
+@@ -33,6 +40,8 @@ import { getErrorMessage } from '../utils/errors.js';
+ 
+ export const MCP_DEFAULT_TIMEOUT_MSEC = 10 * 60 * 1000; // default to 10 minutes
+ 
++export type DiscoveredMCPPrompt = Prompt;
++
+ /**
+  * Enum representing the connection status of an MCP server
+  */
+@@ -62,6 +71,11 @@ export enum MCPDiscoveryState {
+  */
+ const mcpServerStatusesInternal: Map<string, MCPServerStatus> = new Map();
+ 
++/**
++ * Map to track discovered prompts for each MCP server
++ */
++const mcpServerPromptsInternal: Map<string, DiscoveredMCPPrompt[]> = new Map();
++
+ /**
+  * Track the overall MCP discovery state
+  */
+@@ -125,6 +139,15 @@ export function getMCPServerStatus(serverName: string): MCPServerStatus {
+   );
+ }
+ 
++/**
++ * Get the discovered prompts for an MCP server
++ */
++export function getMCPServerPrompts(
++  serverName: string,
++): DiscoveredMCPPrompt[] | undefined {
++  return mcpServerPromptsInternal.get(serverName);
++}
++
+ /**
+  * Get all MCP server statuses
+  */
+@@ -383,6 +406,7 @@ export async function connectAndDiscover(
+       mcpClient.onerror = (error) => {
+         console.error(`MCP ERROR (${mcpServerName}):`, error.toString());
+         updateMCPServerStatus(mcpServerName, MCPServerStatus.DISCONNECTED);
++        mcpServerPromptsInternal.delete(mcpServerName);
+         if (mcpServerName === IDE_SERVER_NAME) {
+           ideContext.clearOpenFilesContext();
+         }
+@@ -397,6 +421,8 @@ export async function connectAndDiscover(
+         );
+       }
+ 
++      await discoverPrompts(mcpServerName, mcpClient);
++
+       const tools = await discoverTools(
+         mcpServerName,
+         mcpServerConfig,
+@@ -411,7 +437,9 @@ export async function connectAndDiscover(
+     }
+   } catch (error) {
+     console.error(
+-      `Error connecting to MCP server '${mcpServerName}': ${getErrorMessage(error)}`,
++      `Error connecting to MCP server '${mcpServerName}': ${getErrorMessage(
++        error,
++      )}`,
+     );
+     updateMCPServerStatus(mcpServerName, MCPServerStatus.DISCONNECTED);
+   }
+@@ -459,15 +487,91 @@ export async function discoverTools(
+         ),
+       );
+     }
+-    if (discoveredTools.length === 0) {
+-      throw Error('No enabled tools found');
+-    }
+     return discoveredTools;
+   } catch (error) {
+     throw new Error(`Error discovering tools: ${error}`);
+   }
+ }
+ 
++/**
++ * Discovers and logs prompts from a connected MCP client.
++ * It retrieves prompt declarations from the client and logs their names.
++ *
++ * @param mcpServerName The name of the MCP server.
++ * @param mcpClient The active MCP client instance.
++ */
++export async function discoverPrompts(
++  mcpServerName: string,
++  mcpClient: Client,
++): Promise<void> {
++  try {
++    const response = await mcpClient.request(
++      { method: 'prompts/list', params: {} },
++      ListPromptsResultSchema,
++    );
++
++    const prompts = response.prompts;
++    mcpServerPromptsInternal.set(mcpServerName, prompts);
++  } catch (error) {
++    mcpServerPromptsInternal.delete(mcpServerName);
++    // It's okay if this fails, not all servers will have prompts.
++    // Don't log an error if the method is not found, which is a common case.
++    if (
++      error instanceof Error &&
++      !error.message?.includes('Method not found')
++    ) {
++      console.error(
++        `Error discovering prompts from ${mcpServerName}: ${getErrorMessage(
++          error,
++        )}`,
++      );
++    }
++  }
++}
++
++/**
++ * Invokes a prompt on a connected MCP client.
++ *
++ * @param mcpServerName The name of the MCP server.
++ * @param mcpClient The active MCP client instance.
++ * @param promptName The name of the prompt to invoke.
++ * @param promptParams The parameters to pass to the prompt.
++ * @returns A promise that resolves to the result of the prompt invocation.
++ */
++export async function invokeMcpPrompt(
++  mcpServerName: string,
++  mcpClient: Client,
++  promptName: string,
++  promptParams: Record<string, unknown>,
++): Promise<GetPromptResult> {
++  try {
++    const response = await mcpClient.request(
++      {
++        method: 'prompts/get',
++        params: {
++          name: promptName,
++          arguments: promptParams,
++        },
++      },
++      GetPromptResultSchema,
++    );
++
++    return response;
++  } catch (error) {
++    if (
++      error instanceof Error &&
++      !error.message?.includes('Method not found')
++    ) {
++      console.error(
++        `Error invoking prompt '${promptName}' from ${mcpServerName} ${promptParams}: ${getErrorMessage(
++          error,
++        )}`,
++      );
++    }
++    throw error;
++  }
++}
++
+ /**
+  * Creates and connects an MCP client to a server based on the provided configuration.
+  * It determines the appropriate transport (Stdio, SSE, or Streamable HTTP) and

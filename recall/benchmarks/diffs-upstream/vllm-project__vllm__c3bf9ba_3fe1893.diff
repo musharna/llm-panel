@@ -1,0 +1,52 @@
+diff --git a/vllm/model_executor/models/qwen2_vl.py b/vllm/model_executor/models/qwen2_vl.py
+index 49b709069cd2..8e534f78da19 100644
+--- a/vllm/model_executor/models/qwen2_vl.py
++++ b/vllm/model_executor/models/qwen2_vl.py
+@@ -819,6 +819,9 @@ def get_image_processor(
+     def get_supported_mm_limits(self) -> Mapping[str, Optional[int]]:
+         return {"image": None, "video": None}
+ 
++    def get_max_tokens_per_item(self) -> Mapping[str, int]:
++        return {"image": 16384, "video": 98304}
++
+     def _get_vision_info(
+         self,
+         *,
+diff --git a/vllm/multimodal/processing.py b/vllm/multimodal/processing.py
+index 5cfca57bffee..2521e088c7f3 100644
+--- a/vllm/multimodal/processing.py
++++ b/vllm/multimodal/processing.py
+@@ -1100,6 +1100,18 @@ def get_allowed_mm_limits(self) -> Mapping[str, int]:
+ 
+         return allowed_limits
+ 
++    def get_max_tokens_per_item(self) -> Optional[Mapping[str, int]]:
++        """Return the maximum number of tokens for each modality.
++        By default, returns `None`. When `None` is returned, vLLM will generate
++        dummy inputs (images/videos) at maximum possible sizes and process them
++        to determine the maximum token count per modality.
++        This approach works but can be very slow for certain models (e.g.,
++        Qwen2.5-VL), leading to very long startup time. For better performance,
++        each model can override this method to return pre-computed maximum token
++        counts, avoiding the need for dummy input generation and processing.
++        """
++        return None
++
+ 
+ _I = TypeVar("_I", bound=BaseProcessingInfo)
+ 
+diff --git a/vllm/multimodal/profiling.py b/vllm/multimodal/profiling.py
+index 1faecb7bd24a..6de768feccad 100644
+--- a/vllm/multimodal/profiling.py
++++ b/vllm/multimodal/profiling.py
+@@ -253,6 +253,9 @@ def get_mm_max_tokens(
+         seq_len: int,
+         mm_counts: Optional[Mapping[str, int]] = None,
+     ) -> Mapping[str, int]:
+-        mm_inputs = self._get_dummy_mm_inputs(seq_len, mm_counts)
++        max_tokens_per_item = self.processing_info.get_max_tokens_per_item()
++        if max_tokens_per_item is not None:
++            return max_tokens_per_item
+ 
++        mm_inputs = self._get_dummy_mm_inputs(seq_len, mm_counts)
+         return self._get_mm_num_tokens(mm_inputs)

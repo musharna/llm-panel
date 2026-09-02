@@ -1,0 +1,150 @@
+diff --git a/api_server/routes/internal/internal_routes.py b/api_server/routes/internal/internal_routes.py
+index aaefa9335f5..8f74529ba56 100644
+--- a/api_server/routes/internal/internal_routes.py
++++ b/api_server/routes/internal/internal_routes.py
+@@ -40,7 +40,7 @@ async def get_logs(request):
+             return web.json_response("".join([(l["t"] + " - " + l["m"]) for l in app.logger.get_logs()]))
+ 
+         @self.routes.get('/logs/raw')
+-        async def get_logs(request):
++        async def get_raw_logs(request):
+             self.terminal_service.update_size()
+             return web.json_response({
+                 "entries": list(app.logger.get_logs()),
+diff --git a/comfy/controlnet.py b/comfy/controlnet.py
+index 666014eff25..7f5988377d7 100644
+--- a/comfy/controlnet.py
++++ b/comfy/controlnet.py
+@@ -821,7 +821,7 @@ def load_t2i_adapter(t2i_data, model_options={}): #TODO: model_options
+         for i in range(4):
+             for j in range(2):
+                 prefix_replace["adapter.body.{}.resnets.{}.".format(i, j)] = "body.{}.".format(i * 2 + j)
+-            prefix_replace["adapter.body.{}.".format(i, j)] = "body.{}.".format(i * 2)
++            prefix_replace["adapter.body.{}.".format(i, )] = "body.{}.".format(i * 2)
+         prefix_replace["adapter."] = ""
+         t2i_data = comfy.utils.state_dict_prefix_replace(t2i_data, prefix_replace)
+     keys = t2i_data.keys()
+diff --git a/comfy/ldm/modules/sub_quadratic_attention.py b/comfy/ldm/modules/sub_quadratic_attention.py
+index 6d2de0fe3a1..7c5f1d9f9c4 100644
+--- a/comfy/ldm/modules/sub_quadratic_attention.py
++++ b/comfy/ldm/modules/sub_quadratic_attention.py
+@@ -22,7 +22,6 @@
+ 	from typing import Optional, NamedTuple, List
+ 	from typing_extensions import Protocol
+ 
+-from torch import Tensor
+ from typing import List
+ 
+ from comfy import model_management
+diff --git a/comfy/patcher_extension.py b/comfy/patcher_extension.py
+index 5144691857b..8367977a0d2 100644
+--- a/comfy/patcher_extension.py
++++ b/comfy/patcher_extension.py
+@@ -113,7 +113,7 @@ def execute(self, *args, **kwargs):
+     def _create_next_executor(self) -> 'WrapperExecutor':
+         new_idx = self.idx + 1
+         if new_idx > len(self.wrappers):
+-            raise Exception(f"Wrapper idx exceeded available wrappers; something went very wrong.")
++            raise Exception("Wrapper idx exceeded available wrappers; something went very wrong.")
+         if self.class_obj is None:
+             return WrapperExecutor.new_executor(self.original, self.wrappers, new_idx)
+         return WrapperExecutor.new_class_executor(self.original, self.class_obj, self.wrappers, new_idx)
+diff --git a/comfy_extras/nodes_clip_sdxl.py b/comfy_extras/nodes_clip_sdxl.py
+index 70764b230f6..14269caf352 100644
+--- a/comfy_extras/nodes_clip_sdxl.py
++++ b/comfy_extras/nodes_clip_sdxl.py
+@@ -22,14 +22,15 @@ class CLIPTextEncodeSDXL:
+     @classmethod
+     def INPUT_TYPES(s):
+         return {"required": {
++            "clip": ("CLIP", ),
+             "width": ("INT", {"default": 1024.0, "min": 0, "max": MAX_RESOLUTION}),
+             "height": ("INT", {"default": 1024.0, "min": 0, "max": MAX_RESOLUTION}),
+             "crop_w": ("INT", {"default": 0, "min": 0, "max": MAX_RESOLUTION}),
+             "crop_h": ("INT", {"default": 0, "min": 0, "max": MAX_RESOLUTION}),
+             "target_width": ("INT", {"default": 1024.0, "min": 0, "max": MAX_RESOLUTION}),
+             "target_height": ("INT", {"default": 1024.0, "min": 0, "max": MAX_RESOLUTION}),
+-            "text_g": ("STRING", {"multiline": True, "dynamicPrompts": True}), "clip": ("CLIP", ),
+-            "text_l": ("STRING", {"multiline": True, "dynamicPrompts": True}), "clip": ("CLIP", ),
++            "text_g": ("STRING", {"multiline": True, "dynamicPrompts": True}),
++            "text_l": ("STRING", {"multiline": True, "dynamicPrompts": True}),
+             }}
+     RETURN_TYPES = ("CONDITIONING",)
+     FUNCTION = "encode"
+diff --git a/execution.py b/execution.py
+index 8fff8983956..b5746362192 100644
+--- a/execution.py
++++ b/execution.py
+@@ -760,7 +760,7 @@ def validate_prompt(prompt):
+         if 'class_type' not in prompt[x]:
+             error = {
+                 "type": "invalid_prompt",
+-                "message": f"Cannot execute because a node is missing the class_type property.",
++                "message": "Cannot execute because a node is missing the class_type property.",
+                 "details": f"Node ID '#{x}'",
+                 "extra_info": {}
+             }
+diff --git a/notebooks/comfyui_colab.ipynb b/notebooks/comfyui_colab.ipynb
+index c43bdd7ac4a..5560b5ff9c3 100644
+--- a/notebooks/comfyui_colab.ipynb
++++ b/notebooks/comfyui_colab.ipynb
+@@ -237,11 +237,7 @@
+    "source": [
+     "!npm install -g localtunnel\n",
+     "\n",
+-    "import subprocess\n",
+     "import threading\n",
+-    "import time\n",
+-    "import socket\n",
+-    "import urllib.request\n",
+     "\n",
+     "def iframe_thread(port):\n",
+     "  while True:\n",
+@@ -288,8 +284,6 @@
+    "outputs": [],
+    "source": [
+     "import threading\n",
+-    "import time\n",
+-    "import socket\n",
+     "def iframe_thread(port):\n",
+     "  while True:\n",
+     "      time.sleep(0.5)\n",
+diff --git a/ruff.toml b/ruff.toml
+index 41d3dc5b552..a83d450b12a 100644
+--- a/ruff.toml
++++ b/ruff.toml
+@@ -4,8 +4,7 @@ lint.ignore = ["ALL"]
+ # Enable specific rules
+ lint.select = [
+     "S307",  # suspicious-eval-usage
+-    "F401",  # unused-import
+-    "F841",  # unused-local-variable
+-    # TODO: Enable F821 after all errors has been fixed. Remaining errors: 7.
+-    # "F821",  # undefined-name
++    # The "F" series in Ruff stands for "Pyflakes" rules, which catch various Python syntax errors and undefined names.
++    # See all rules here: https://docs.astral.sh/ruff/rules/#pyflakes-f
++    "F",
+ ]
+\ No newline at end of file
+diff --git a/server.py b/server.py
+index 728360bcd72..a8f0d76720c 100644
+--- a/server.py
++++ b/server.py
+@@ -584,7 +584,7 @@ async def get_history(request):
+             return web.json_response(self.prompt_queue.get_history(max_items=max_items))
+ 
+         @routes.get("/history/{prompt_id}")
+-        async def get_history(request):
++        async def get_history_prompt_id(request):
+             prompt_id = request.match_info.get("prompt_id", None)
+             return web.json_response(self.prompt_queue.get_history(prompt_id=prompt_id))
+ 
+@@ -831,7 +831,7 @@ def trigger_on_prompt(self, json_data):
+             try:
+                 json_data = handler(json_data)
+             except Exception:
+-                logging.warning(f"[ERROR] An error occurred during the on_prompt_handler processing")
++                logging.warning("[ERROR] An error occurred during the on_prompt_handler processing")
+                 logging.warning(traceback.format_exc())
+ 
+         return json_data

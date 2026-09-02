@@ -1,0 +1,78 @@
+diff --git a/src/joystick/SDL_joystick.c b/src/joystick/SDL_joystick.c
+index df6988909a35b..ac21c9eec77c1 100644
+--- a/src/joystick/SDL_joystick.c
++++ b/src/joystick/SDL_joystick.c
+@@ -3177,7 +3177,9 @@ bool SDL_IsJoystickHoriSteamController(Uint16 vendor_id, Uint16 product_id)
+ 
+ bool SDL_IsJoystick8BitDoController(Uint16 vendor_id, Uint16 product_id)
+ {
+-    return vendor_id == USB_VENDOR_8BITDO && (product_id == USB_PRODUCT_8BITDO_ULTIMATE2_WIRELESS);
++    return vendor_id == USB_VENDOR_8BITDO &&
++           (product_id == USB_PRODUCT_8BITDO_ULTIMATE2_WIRELESS || product_id == USB_PRODUCT_8BITDO_SN30_Pro || product_id == USB_PRODUCT_8BITDO_SN30_Pro_BT ||
++            product_id == USB_PRODUCT_8BITDO_SF30_Pro ||product_id == USB_PRODUCT_8BITDO_Pro_2 || product_id == USB_PRODUCT_8BITDO_Pro_2_BT);
+ }
+ 
+ bool SDL_IsJoystickSteamDeck(Uint16 vendor_id, Uint16 product_id)
+diff --git a/src/joystick/hidapi/SDL_hidapi_8bitdo.c b/src/joystick/hidapi/SDL_hidapi_8bitdo.c
+index ca60118006137..9c9a782364454 100644
+--- a/src/joystick/hidapi/SDL_hidapi_8bitdo.c
++++ b/src/joystick/hidapi/SDL_hidapi_8bitdo.c
+@@ -112,6 +112,13 @@ static bool HIDAPI_Driver8BitDo_IsEnabled(void)
+     return SDL_GetHintBoolean(SDL_HINT_JOYSTICK_HIDAPI_8BITDO, SDL_GetHintBoolean(SDL_HINT_JOYSTICK_HIDAPI, SDL_HIDAPI_DEFAULT));
+ }
+ 
++static int ReadFeatureReport(SDL_hid_device *dev, Uint8 report_id, Uint8 *report, size_t length)
++{
++    SDL_memset(report, 0, length);
++    report[0] = report_id;
++    return SDL_hid_get_feature_report(dev, report, length);
++}
++
+ static bool HIDAPI_Driver8BitDo_IsSupportedDevice(SDL_HIDAPI_Device *device, const char *name, SDL_GamepadType type, Uint16 vendor_id, Uint16 product_id, Uint16 version, int interface_number, int interface_class, int interface_subclass, int interface_protocol)
+ {
+     return SDL_IsJoystick8BitDoController(vendor_id, product_id);
+@@ -135,6 +142,19 @@ static bool HIDAPI_Driver8BitDo_InitDevice(SDL_HIDAPI_Device *device)
+             ctx->rumble_supported = true;
+             ctx->powerstate_supported = true;
+         }
++    } else if (device->product_id == USB_PRODUCT_8BITDO_SN30_Pro || device->product_id == USB_PRODUCT_8BITDO_SN30_Pro_BT ||
++               device->product_id == USB_PRODUCT_8BITDO_SF30_Pro  || device->product_id == USB_PRODUCT_8BITDO_Pro_2 ||
++                device->product_id == USB_PRODUCT_8BITDO_Pro_2_BT) {
++        Uint8 data[USB_PACKET_LENGTH];
++        int size = ReadFeatureReport(device->dev, 0x06, data, sizeof(data));
++        if (size > 0) {
++            ctx->sensors_supported = true;
++            ctx->rumble_supported = true;
++            ctx->powerstate_supported = true;
++        } else {
++            SDL_LogDebug(SDL_LOG_CATEGORY_INPUT,
++                         "HIDAPI_Driver8BitDo_InitDevice(): Couldn't read feature report 0x06");
++        }
+     }
+ 
+     return HIDAPI_JoystickConnected(device, NULL);
+@@ -236,7 +256,7 @@ static void HIDAPI_Driver8BitDo_HandleStatePacket(SDL_Joystick *joystick, SDL_Dr
+ {
+     Sint16 axis;
+     Uint64 timestamp = SDL_GetTicksNS();
+-    if (data[0] != 0x03 && data[0] != 0x01) {
++    if (data[0] != 0x03 && data[0] != 0x01 && data[0] != 0x04) {
+         // We don't know how to handle this report
+         return;
+     }
+diff --git a/src/joystick/usb_ids.h b/src/joystick/usb_ids.h
+index 6692cd412d2d9..d80db08cda681 100644
+--- a/src/joystick/usb_ids.h
++++ b/src/joystick/usb_ids.h
+@@ -60,6 +60,11 @@
+ #define USB_VENDOR_ZEROPLUS     0x0c12
+ 
+ #define USB_PRODUCT_8BITDO_ULTIMATE2_WIRELESS             0x6012
++#define USB_PRODUCT_8BITDO_SN30_Pro                       0x6001    //B + START
++#define USB_PRODUCT_8BITDO_SN30_Pro_BT                    0x6101    //B + START
++#define USB_PRODUCT_8BITDO_SF30_Pro                       0x6000    //B + START
++#define USB_PRODUCT_8BITDO_Pro_2                          0x6003    //mode switch to D 
++#define USB_PRODUCT_8BITDO_Pro_2_BT                       0x6006    //mode switch to D 
+ #define USB_PRODUCT_AMAZON_LUNA_CONTROLLER                0x0419
+ #define USB_PRODUCT_ASTRO_C40_XBOX360                     0x0024
+ #define USB_PRODUCT_BACKBONE_ONE_IOS                      0x0103

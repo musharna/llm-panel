@@ -58,13 +58,14 @@ was measured, and what was withdrawn.
 | `diffs/`, `diffs-upstream/` | the PR diffs the panels were shown — see the note below on what is committed             |
 | `checkouts/`                | shallow clones for the checkout arm — gitignored; `aacr-upstream checkout` rebuilds them |
 
-What is committed under `diffs-upstream/`: the diffs of the 2026-08-25 samples
-(`upstream/pos-seed42-n20.jsonl`, `neg-seed42-n10.jsonl`), fetched once from GitHub's
-compare API and kept as the exact bytes the panels saw. Of the 35-PR replication sample
-(`upstream/pos-human-n35.jsonl`, 2026-08-28), only the two PRs it shares with the seed-42
-sample have a committed diff; the other 33 live in the local cache, which
-`aacr-upstream run` refills from the same API. The committed result and score JSONs do
-not need them — `aacr-score` works from those alone.
+What is committed under `diffs-upstream/`: 58 diffs for the 63 sampled PRs
+(`upstream/pos-seed42-n20.jsonl`, `neg-seed42-n10.jsonl`, `pos-human-n35.jsonl`),
+fetched once from GitHub's compare API and kept as the exact bytes the panels saw. The
+five without one: the n8n and timescaledb PRs, whose diffs are never committed (see
+[PROVENANCE.md](PROVENANCE.md)) and which `aacr-upstream run` refetches into the local
+cache, and three seed-42 PRs (astral-sh/uv, comfyanonymous/ComfyUI, keycloak/keycloak)
+whose compare fetch never succeeded. The committed result and score JSONs do not need
+any diff — `aacr-score` works from those alone.
 
 Data licensing: the PR diffs and review-comment text are third-party material under
 their upstream terms — see [PROVENANCE.md](PROVENANCE.md).

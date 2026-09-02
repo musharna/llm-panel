@@ -1,0 +1,92 @@
+diff --git a/api/apps/api_app.py b/api/apps/api_app.py
+index 1de94bef662..9fc7c756d0a 100644
+--- a/api/apps/api_app.py
++++ b/api/apps/api_app.py
+@@ -615,7 +615,7 @@ def document_rm():
+     tenant_id = objs[0].tenant_id
+     req = request.json
+     try:
+-        doc_ids = [DocumentService.get_doc_id_by_doc_name(doc_name) for doc_name in req.get("doc_names", [])]
++        doc_ids = DocumentService.get_doc_ids_by_doc_names(req.get("doc_names", []))
+         for doc_id in req.get("doc_ids", []):
+             if doc_id not in doc_ids:
+                 doc_ids.append(doc_id)
+@@ -633,11 +633,16 @@ def document_rm():
+     FileService.init_knowledgebase_docs(pf_id, tenant_id)
+ 
+     errors = ""
++    docs = DocumentService.get_by_ids(doc_ids)
++    doc_dic = {}
++    for doc in docs:
++        doc_dic[doc.id] = doc
++
+     for doc_id in doc_ids:
+         try:
+-            e, doc = DocumentService.get_by_id(doc_id)
+-            if not e:
++            if doc_id not in doc_dic:
+                 return get_data_error_result(message="Document not found!")
++            doc = doc_dic[doc_id]
+             tenant_id = DocumentService.get_tenant_id(doc_id)
+             if not tenant_id:
+                 return get_data_error_result(message="Tenant not found!")
+diff --git a/api/db/services/common_service.py b/api/db/services/common_service.py
+index 3af19ce4b52..05eb3d5738c 100644
+--- a/api/db/services/common_service.py
++++ b/api/db/services/common_service.py
+@@ -263,6 +263,16 @@ def delete_by_id(cls, pid):
+         # Returns:
+         #     Number of records deleted
+         return cls.model.delete().where(cls.model.id == pid).execute()
++    
++    @classmethod
++    @DB.connection_context()
++    def delete_by_ids(cls, pids):
++        # Delete multiple records by their IDs
++        # Args:
++        #     pids: List of record IDs
++        # Returns:
++        #     Number of records deleted
++        return cls.model.delete().where(cls.model.id.in_(pids)).execute()
+ 
+     @classmethod
+     @DB.connection_context()
+diff --git a/api/db/services/document_service.py b/api/db/services/document_service.py
+index 292f8c5bf7b..2a84956e7f4 100644
+--- a/api/db/services/document_service.py
++++ b/api/db/services/document_service.py
+@@ -327,6 +327,17 @@ def get_doc_id_by_doc_name(cls, doc_name):
+         if not doc_id:
+             return
+         return doc_id[0]["id"]
++    
++    @classmethod
++    @DB.connection_context()
++    def get_doc_ids_by_doc_names(cls, doc_names):
++        fields = [cls.model.id]
++        doc_ids = cls.model.select(*fields) \
++            .where(cls.model.name.in_(doc_names))
++        doc_ids = doc_ids.dicts()
++        if not doc_ids:
++            return
++        return [doc["id"] for doc in doc_ids]
+ 
+     @classmethod
+     @DB.connection_context()
+diff --git a/api/db/services/user_canvas_version.py b/api/db/services/user_canvas_version.py
+index 414a1a8e102..d4a1b07f9f4 100644
+--- a/api/db/services/user_canvas_version.py
++++ b/api/db/services/user_canvas_version.py
+@@ -31,8 +31,11 @@ def delete_all_versions(cls, user_canvas_id):
+         try:
+             user_canvas_version = cls.model.select().where(cls.model.user_canvas_id == user_canvas_id).order_by(cls.model.create_time.desc())
+             if user_canvas_version.count() > 20:
++                delete_ids = []
+                 for i in range(20, user_canvas_version.count()):
+-                    cls.delete(user_canvas_version[i].id)
++                    delete_ids.append(user_canvas_version[i].id)
++                
++                UserCanvasVersionService.delete_by_ids(delete_ids)
+             return True
+         except DoesNotExist:
+             return None

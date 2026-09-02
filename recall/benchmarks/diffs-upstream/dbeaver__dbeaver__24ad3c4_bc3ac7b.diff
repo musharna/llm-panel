@@ -1,0 +1,99 @@
+diff --git a/plugins/org.jkiss.dbeaver.model.rcp/src/org/jkiss/dbeaver/model/navigator/DBNResource.java b/plugins/org.jkiss.dbeaver.model.rcp/src/org/jkiss/dbeaver/model/navigator/DBNResource.java
+index 79d55c05d43a..eaee70a1cfe0 100644
+--- a/plugins/org.jkiss.dbeaver.model.rcp/src/org/jkiss/dbeaver/model/navigator/DBNResource.java
++++ b/plugins/org.jkiss.dbeaver.model.rcp/src/org/jkiss/dbeaver/model/navigator/DBNResource.java
+@@ -1,6 +1,6 @@
+ /*
+  * DBeaver - Universal Database Manager
+- * Copyright (C) 2010-2024 DBeaver Corp and others
++ * Copyright (C) 2010-2025 DBeaver Corp and others
+  *
+  * Licensed under the Apache License, Version 2.0 (the "License");
+  * you may not use this file except in compliance with the License.
+@@ -35,7 +35,7 @@
+ 
+ import java.io.IOException;
+ import java.io.InputStream;
+-import java.nio.file.Path;
++import java.nio.file.*;
+ import java.text.DecimalFormat;
+ import java.text.NumberFormat;
+ import java.text.SimpleDateFormat;
+@@ -420,6 +420,13 @@ public <T> T getAdapter(Class<T> adapter) {
+             if (adapter == Path.class) {
+                 IPath location = resource.getLocation();
+                 return location == null ? null : adapter.cast(location.toPath());
++            } else if (adapter == InputStream.class && resource instanceof IFile file) {
++                try {
++                    return adapter.cast(file.getContents());
++                } catch (CoreException e) {
++                    log.error("Error get file content");
++                    throw new RuntimeException(e);
++                }
+             }
+         }
+         return super.getAdapter(adapter);
+diff --git a/plugins/org.jkiss.dbeaver.model/src/org/jkiss/dbeaver/model/navigator/fs/DBNPathBase.java b/plugins/org.jkiss.dbeaver.model/src/org/jkiss/dbeaver/model/navigator/fs/DBNPathBase.java
+index 2d9c75936f01..5510fbd44e68 100644
+--- a/plugins/org.jkiss.dbeaver.model/src/org/jkiss/dbeaver/model/navigator/fs/DBNPathBase.java
++++ b/plugins/org.jkiss.dbeaver.model/src/org/jkiss/dbeaver/model/navigator/fs/DBNPathBase.java
+@@ -35,10 +35,8 @@
+ import org.jkiss.utils.ByteNumberFormat;
+ 
+ import java.io.IOException;
+-import java.nio.file.CopyOption;
+-import java.nio.file.Files;
+-import java.nio.file.Path;
+-import java.nio.file.StandardCopyOption;
++import java.io.InputStream;
++import java.nio.file.*;
+ import java.nio.file.attribute.FileTime;
+ import java.util.*;
+ import java.util.stream.Collectors;
+@@ -289,7 +287,20 @@ public void dropNodes(DBRProgressMonitor monitor, Collection<DBNNode> nodes) thr
+                     break;
+                 }
+                 Path resource = node.getAdapter(Path.class);
+-                if (resource == null || !Files.exists(resource)) {
++                if (resource == null) {
++                    monitor.subTask("Copy file");
++                    try {
++                        InputStream adapter = node.getAdapter(InputStream.class);
++                        if (adapter != null) {
++                            String fileName = node.getNodeDisplayName();
++                            copyInputStream(adapter, folder, fileName);
++                        }
++                    } finally {
++                        monitor.worked(1);
++                    }
++                    continue;
++                }
++                if (Files.notExists(resource)) {
+                     log.debug("Resource " + resource + " doesn't not exists");
+                     continue;
+                 }
+@@ -301,7 +312,7 @@ public void dropNodes(DBRProgressMonitor monitor, Collection<DBNNode> nodes) thr
+                     // Already in this container
+                     continue;
+                 }
+-               boolean doCopy = !isTheSameFileSystem(node);
++                boolean doCopy = !isTheSameFileSystem(node);
+                 boolean doDelete = false;
+                 monitor.subTask((doCopy ? "Copy" : "Move") + " file " + resource);
+                 try {
+@@ -349,6 +360,15 @@ public void dropNodes(DBRProgressMonitor monitor, Collection<DBNNode> nodes) thr
+         }
+     }
+ 
++    private void copyInputStream(InputStream inputStream, Path folder, String str) throws IOException {
++        Path targetFile = folder.resolve(str);
++        CopyOption[] options = new CopyOption[0];
++        if (Files.exists(targetFile)) {
++            options = new CopyOption[] {StandardCopyOption.REPLACE_EXISTING};
++        }
++        Files.copy(inputStream, targetFile, options);
++    }
++
+     protected boolean isTheSameFileSystem(DBNNode node) {
+         return false;
+     }

@@ -7,8 +7,9 @@
   matplotlib script it replaces is gone. Same numbers, same canvas, both colour schemes.
 - `recall/benchmarks/README.md` no longer lists `checkouts/` as browsable (it is
   gitignored and rebuilt by `aacr-upstream checkout`) and says which `diffs-upstream/`
-  diffs are committed: the seed-42 samples' 27; the replication sample's 33 are a local
-  cache the results do not depend on.
+  diffs are committed. The 35-PR replication sample's 31 committable diffs are now in
+  (58 of 63 sampled PRs; n8n and timescaledb stay out per PROVENANCE, three seed-42
+  fetches never succeeded).
 
 ## 0.1.3 — 2026-09-01
 

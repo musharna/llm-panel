@@ -1,0 +1,1467 @@
+diff --git a/cmd/wsh/cmd/wshcmd-connserver.go b/cmd/wsh/cmd/wshcmd-connserver.go
+index 844735d7da..98948ca1f4 100644
+--- a/cmd/wsh/cmd/wshcmd-connserver.go
++++ b/cmd/wsh/cmd/wshcmd-connserver.go
+@@ -11,6 +11,7 @@ import (
+ 	"net"
+ 	"os"
+ 	"path/filepath"
++	"strings"
+ 	"sync/atomic"
+ 	"syscall"
+ 	"time"
+@@ -124,14 +125,10 @@ func runListener(listener net.Listener, router *wshutil.WshRouter) {
+ 	}
+ }
+ 
+-func setupConnServerRpcClientWithRouter(router *wshutil.WshRouter) (*wshutil.WshRpc, error) {
+-	jwtToken := os.Getenv(wshutil.WaveJwtTokenVarName)
+-	if jwtToken == "" {
+-		return nil, fmt.Errorf("no jwt token found for connserver")
+-	}
++func setupConnServerRpcClientWithRouter(router *wshutil.WshRouter, jwtToken string) (*wshutil.WshRpc, error) {
+ 	rpcCtx, err := wshutil.ExtractUnverifiedRpcContext(jwtToken)
+ 	if err != nil {
+-		return nil, fmt.Errorf("error extracting rpc context from %s: %v", wshutil.WaveJwtTokenVarName, err)
++		return nil, fmt.Errorf("error extracting rpc context from JWT token: %v", err)
+ 	}
+ 	authRtn, err := router.HandleProxyAuth(jwtToken)
+ 	if err != nil {
+@@ -146,7 +143,7 @@ func setupConnServerRpcClientWithRouter(router *wshutil.WshRouter) (*wshutil.Wsh
+ 	return connServerClient, nil
+ }
+ 
+-func serverRunRouter() error {
++func serverRunRouter(jwtToken string) error {
+ 	router := wshutil.NewWshRouter()
+ 	termProxy := wshutil.MakeRpcProxy()
+ 	rawCh := make(chan []byte, wshutil.DefaultOutputChSize)
+@@ -179,7 +176,7 @@ func serverRunRouter() error {
+ 	if err != nil {
+ 		return fmt.Errorf("cannot create unix listener: %v", err)
+ 	}
+-	client, err := setupConnServerRpcClientWithRouter(router)
++	client, err := setupConnServerRpcClientWithRouter(router, jwtToken)
+ 	if err != nil {
+ 		return fmt.Errorf("error setting up connserver rpc client: %v", err)
+ 	}
+@@ -207,8 +204,8 @@ func checkForUpdate() error {
+ 	return nil
+ }
+ 
+-func serverRunSingle() error {
+-	err := setupRpcClient(&wshremote.ServerImpl{LogWriter: os.Stdout})
++func serverRunSingle(jwtToken string) error {
++	err := setupRpcClient(&wshremote.ServerImpl{LogWriter: os.Stdout}, jwtToken)
+ 	if err != nil {
+ 		return err
+ 	}
+@@ -222,8 +219,8 @@ func serverRunSingle() error {
+ 	select {} // run forever
+ }
+ 
+-func serverRunNormal() error {
+-	err := setupRpcClient(&wshremote.ServerImpl{LogWriter: os.Stdout})
++func serverRunNormal(jwtToken string) error {
++	err := setupRpcClient(&wshremote.ServerImpl{LogWriter: os.Stdout}, jwtToken)
+ 	if err != nil {
+ 		return err
+ 	}
+@@ -232,12 +229,40 @@ func serverRunNormal() error {
+ 	select {} // run forever
+ }
+ 
++func askForJwtToken() (string, error) {
++	// if it already exists in the environment, great, use it
++	jwtToken := os.Getenv(wavebase.WaveJwtTokenVarName)
++	if jwtToken != "" {
++		fmt.Printf("HAVE-JWT\n")
++		return jwtToken, nil
++	}
++
++	// otherwise, ask for it
++	fmt.Printf("%s\n", wavebase.NeedJwtConst)
++
++	// read a single line from stdin
++	var line string
++	_, err := fmt.Fscanln(os.Stdin, &line)
++	if err != nil {
++		return "", fmt.Errorf("failed to read JWT token from stdin: %w", err)
++	}
++	return strings.TrimSpace(line), nil
++}
++
+ func serverRun(cmd *cobra.Command, args []string) error {
++	installErr := wshutil.InstallRcFiles()
++	if installErr != nil {
++		log.Printf("error installing rc files: %v", installErr)
++	}
++	jwtToken, err := askForJwtToken()
++	if err != nil {
++		return err
++	}
+ 	if singleServerRouter {
+-		return serverRunSingle()
++		return serverRunSingle(jwtToken)
+ 	} else if connServerRouter {
+-		return serverRunRouter()
++		return serverRunRouter(jwtToken)
+ 	} else {
+-		return serverRunNormal()
++		return serverRunNormal(jwtToken)
+ 	}
+ }
+diff --git a/cmd/wsh/cmd/wshcmd-root.go b/cmd/wsh/cmd/wshcmd-root.go
+index c10e17685d..ed309bc5cb 100644
+--- a/cmd/wsh/cmd/wshcmd-root.go
++++ b/cmd/wsh/cmd/wshcmd-root.go
+@@ -6,10 +6,12 @@ package cmd
+ import (
+ 	"fmt"
+ 	"io"
++	"log"
+ 	"os"
+ 	"runtime/debug"
+ 
+ 	"github.com/spf13/cobra"
++	"github.com/wavetermdev/waveterm/pkg/util/shellutil"
+ 	"github.com/wavetermdev/waveterm/pkg/waveobj"
+ 	"github.com/wavetermdev/waveterm/pkg/wshrpc"
+ 	"github.com/wavetermdev/waveterm/pkg/wshrpc/wshclient"
+@@ -81,7 +83,14 @@ func OutputHelpMessage(cmd *cobra.Command) {
+ }
+ 
+ func preRunSetupRpcClient(cmd *cobra.Command, args []string) error {
+-	err := setupRpcClient(nil)
++	jwtToken := os.Getenv(wshutil.WaveJwtTokenVarName)
++	if jwtToken == "" {
++		wshutil.SetTermRawModeAndInstallShutdownHandlers(true)
++		UsingTermWshMode = true
++		RpcClient, WrappedStdin = wshutil.SetupTerminalRpcClient(nil)
++		return nil
++	}
++	err := setupRpcClient(nil, jwtToken)
+ 	if err != nil {
+ 		return err
+ 	}
+@@ -127,15 +136,29 @@ func resolveBlockArg() (*waveobj.ORef, error) {
+ 	return fullORef, nil
+ }
+ 
+-// returns the wrapped stdin and a new rpc client (that wraps the stdin input and stdout output)
+-func setupRpcClient(serverImpl wshutil.ServerImpl) error {
+-	jwtToken := os.Getenv(wshutil.WaveJwtTokenVarName)
+-	if jwtToken == "" {
+-		wshutil.SetTermRawModeAndInstallShutdownHandlers(true)
+-		UsingTermWshMode = true
+-		RpcClient, WrappedStdin = wshutil.SetupTerminalRpcClient(serverImpl)
+-		return nil
++func setupRpcClientWithToken(swapTokenStr string) (wshrpc.CommandAuthenticateRtnData, error) {
++	var rtn wshrpc.CommandAuthenticateRtnData
++	token, err := shellutil.UnpackSwapToken(swapTokenStr)
++	if err != nil {
++		return rtn, fmt.Errorf("error unpacking token: %w", err)
++	}
++	if token.SockName == "" {
++		return rtn, fmt.Errorf("no sockname in token")
++	}
++	if token.RpcContext == nil {
++		return rtn, fmt.Errorf("no rpccontext in token")
+ 	}
++	RpcContext = *token.RpcContext
++	RpcClient, err = wshutil.SetupDomainSocketRpcClient(token.SockName, nil)
++	if err != nil {
++		return rtn, fmt.Errorf("error setting up domain socket rpc client: %w", err)
++	}
++	log.Printf("# sending authenticate token command, token: %s\n", token.Token)
++	return wshclient.AuthenticateTokenCommand(RpcClient, wshrpc.CommandAuthenticateTokenData{Token: token.Token}, nil)
++}
++
++// returns the wrapped stdin and a new rpc client (that wraps the stdin input and stdout output)
++func setupRpcClient(serverImpl wshutil.ServerImpl, jwtToken string) error {
+ 	rpcCtx, err := wshutil.ExtractUnverifiedRpcContext(jwtToken)
+ 	if err != nil {
+ 		return fmt.Errorf("error extracting rpc context from %s: %v", wshutil.WaveJwtTokenVarName, err)
+diff --git a/cmd/wsh/cmd/wshcmd-token.go b/cmd/wsh/cmd/wshcmd-token.go
+new file mode 100644
+index 0000000000..47b2381c80
+--- /dev/null
++++ b/cmd/wsh/cmd/wshcmd-token.go
+@@ -0,0 +1,48 @@
++// Copyright 2025, Command Line Inc.
++// SPDX-License-Identifier: Apache-2.0
++
++package cmd
++
++import (
++	"fmt"
++
++	"github.com/spf13/cobra"
++	"github.com/wavetermdev/waveterm/pkg/util/shellutil"
++)
++
++var tokenCmd = &cobra.Command{
++	Use:    "token [token] [shell-type]",
++	Short:  "exchange token for shell initialization script",
++	RunE:   tokenCmdRun,
++	Hidden: true,
++}
++
++func init() {
++	rootCmd.AddCommand(tokenCmd)
++}
++
++func tokenCmdRun(cmd *cobra.Command, args []string) (rtnErr error) {
++	defer func() {
++		sendActivity("token", rtnErr == nil)
++	}()
++	if len(args) != 2 {
++		OutputHelpMessage(cmd)
++		return fmt.Errorf("wsh token requires exactly 2 arguments, got %d", len(args))
++	}
++	tokenStr, shellType := args[0], args[1]
++	if tokenStr == "" || shellType == "" {
++		OutputHelpMessage(cmd)
++		return fmt.Errorf("wsh token requires non-empty arguments")
++	}
++	rtnData, err := setupRpcClientWithToken(tokenStr)
++	if err != nil {
++		return fmt.Errorf("error setting up rpc client: %w", err)
++	}
++	envScriptText, err := shellutil.EncodeEnvVarsForShell(shellType, rtnData.Env)
++	if err != nil {
++		return fmt.Errorf("error encoding env vars: %w", err)
++	}
++	WriteStdout("%s\n", envScriptText)
++	WriteStdout("%s\n", rtnData.InitScriptText)
++	return nil
++}
+diff --git a/frontend/app/store/wshclientapi.ts b/frontend/app/store/wshclientapi.ts
+index d12b21dfbf..6e61fc8382 100644
+--- a/frontend/app/store/wshclientapi.ts
++++ b/frontend/app/store/wshclientapi.ts
+@@ -22,6 +22,11 @@ class RpcApiType {
+         return client.wshRpcCall("authenticate", data, opts);
+     }
+ 
++    // command "authenticatetoken" [call]
++    AuthenticateTokenCommand(client: WshClient, data: CommandAuthenticateTokenData, opts?: RpcOpts): Promise<CommandAuthenticateRtnData> {
++        return client.wshRpcCall("authenticatetoken", data, opts);
++    }
++
+     // command "blockinfo" [call]
+     BlockInfoCommand(client: WshClient, data: string, opts?: RpcOpts): Promise<BlockInfoData> {
+         return client.wshRpcCall("blockinfo", data, opts);
+diff --git a/frontend/types/gotypes.d.ts b/frontend/types/gotypes.d.ts
+index 876e63bd5e..84963d2b57 100644
+--- a/frontend/types/gotypes.d.ts
++++ b/frontend/types/gotypes.d.ts
+@@ -109,6 +109,13 @@ declare global {
+     type CommandAuthenticateRtnData = {
+         routeid: string;
+         authtoken?: string;
++        env?: {[key: string]: string};
++        initscripttext?: string;
++    };
++
++    // wshrpc.CommandAuthenticateTokenData
++    type CommandAuthenticateTokenData = {
++        token: string;
+     };
+ 
+     // wshrpc.CommandBlockInputData
+diff --git a/pkg/blockcontroller/blockcontroller.go b/pkg/blockcontroller/blockcontroller.go
+index 08a75a47af..0b7252b3e5 100644
+--- a/pkg/blockcontroller/blockcontroller.go
++++ b/pkg/blockcontroller/blockcontroller.go
+@@ -16,6 +16,7 @@ import (
+ 	"sync/atomic"
+ 	"time"
+ 
++	"github.com/google/uuid"
+ 	"github.com/wavetermdev/waveterm/pkg/blocklogger"
+ 	"github.com/wavetermdev/waveterm/pkg/filestore"
+ 	"github.com/wavetermdev/waveterm/pkg/panichandler"
+@@ -23,6 +24,7 @@ import (
+ 	"github.com/wavetermdev/waveterm/pkg/remote/conncontroller"
+ 	"github.com/wavetermdev/waveterm/pkg/shellexec"
+ 	"github.com/wavetermdev/waveterm/pkg/util/envutil"
++	"github.com/wavetermdev/waveterm/pkg/util/shellutil"
+ 	"github.com/wavetermdev/waveterm/pkg/util/utilfn"
+ 	"github.com/wavetermdev/waveterm/pkg/wavebase"
+ 	"github.com/wavetermdev/waveterm/pkg/waveobj"
+@@ -273,15 +275,48 @@ func createCmdStrAndOpts(blockId string, blockMeta waveobj.MetaMapType) (string,
+ 	return cmdStr, &cmdOpts, nil
+ }
+ 
+-func (bc *BlockController) DoRunShellCommand(rc *RunShellOpts, blockMeta waveobj.MetaMapType) error {
+-	shellProc, err := bc.setupAndStartShellProcess(rc, blockMeta)
++func (bc *BlockController) DoRunShellCommand(logCtx context.Context, rc *RunShellOpts, blockMeta waveobj.MetaMapType) error {
++	shellProc, err := bc.setupAndStartShellProcess(logCtx, rc, blockMeta)
+ 	if err != nil {
+ 		return err
+ 	}
+ 	return bc.manageRunningShellProcess(shellProc, rc, blockMeta)
+ }
+ 
+-func (bc *BlockController) setupAndStartShellProcess(rc *RunShellOpts, blockMeta waveobj.MetaMapType) (*shellexec.ShellProc, error) {
++func (bc *BlockController) makeSwapToken(ctx context.Context) *shellutil.TokenSwapEntry {
++	token := &shellutil.TokenSwapEntry{
++		Token: uuid.New().String(),
++		Env:   make(map[string]string),
++		Exp:   time.Now().Add(5 * time.Minute),
++	}
++	token.Env["TERM_PROGRAM"] = "waveterm"
++	token.Env["WAVETERM_BLOCKID"] = bc.BlockId
++	token.Env["WAVETERM_VERSION"] = wavebase.WaveVersion
++	token.Env["WAVETERM"] = "1"
++	tabId, err := wstore.DBFindTabForBlockId(ctx, bc.BlockId)
++	if err != nil {
++		log.Printf("error finding tab for block: %v\n", err)
++	} else {
++		token.Env["WAVETERM_TABID"] = tabId
++	}
++	if tabId != "" {
++		wsId, err := wstore.DBFindWorkspaceForTabId(ctx, tabId)
++		if err != nil {
++			log.Printf("error finding workspace for tab: %v\n", err)
++		} else {
++			token.Env["WAVETERM_WORKSPACEID"] = wsId
++		}
++	}
++	clientData, err := wstore.DBGetSingleton[*waveobj.Client](ctx)
++	if err != nil {
++		log.Printf("error getting client data: %v\n", err)
++	} else {
++		token.Env["WAVETERM_CLIENTID"] = clientData.OID
++	}
++	return token
++}
++
++func (bc *BlockController) setupAndStartShellProcess(logCtx context.Context, rc *RunShellOpts, blockMeta waveobj.MetaMapType) (*shellexec.ShellProc, error) {
+ 	// create a circular blockfile for the output
+ 	ctx, cancelFn := context.WithTimeout(context.Background(), 2*time.Second)
+ 	defer cancelFn()
+@@ -325,6 +360,9 @@ func (bc *BlockController) setupAndStartShellProcess(rc *RunShellOpts, blockMeta
+ 		return nil, fmt.Errorf("unknown controller type %q", bc.ControllerType)
+ 	}
+ 	var shellProc *shellexec.ShellProc
++	swapToken := bc.makeSwapToken(ctx)
++	cmdOpts.SwapToken = swapToken
++	blocklogger.Infof(logCtx, "[conndebug] created swaptoken: %s\n", swapToken.Token)
+ 	if strings.HasPrefix(remoteName, "wsl://") {
+ 		wslName := strings.TrimPrefix(remoteName, "wsl://")
+ 		credentialCtx, cancelFunc := context.WithTimeout(context.Background(), 60*time.Second)
+@@ -342,6 +380,7 @@ func (bc *BlockController) setupAndStartShellProcess(rc *RunShellOpts, blockMeta
+ 			if err != nil {
+ 				return nil, fmt.Errorf("error making jwt token: %w", err)
+ 			}
++			swapToken.Env[wshutil.WaveJwtTokenVarName] = jwtStr
+ 			cmdOpts.Env[wshutil.WaveJwtTokenVarName] = jwtStr
+ 		}
+ 		shellProc, err = shellexec.StartWslShellProc(ctx, rc.TermSize, cmdStr, cmdOpts, wslConn)
+@@ -362,10 +401,15 @@ func (bc *BlockController) setupAndStartShellProcess(rc *RunShellOpts, blockMeta
+ 			return nil, fmt.Errorf("not connected, cannot start shellproc")
+ 		}
+ 		if !blockMeta.GetBool(waveobj.MetaKey_CmdNoWsh, false) {
+-			jwtStr, err := wshutil.MakeClientJWTToken(wshrpc.RpcContext{TabId: bc.TabId, BlockId: bc.BlockId, Conn: conn.Opts.String()}, conn.GetDomainSocketName())
++			sockName := conn.GetDomainSocketName()
++			rpcContext := wshrpc.RpcContext{TabId: bc.TabId, BlockId: bc.BlockId, Conn: conn.Opts.String()}
++			jwtStr, err := wshutil.MakeClientJWTToken(rpcContext, sockName)
+ 			if err != nil {
+ 				return nil, fmt.Errorf("error making jwt token: %w", err)
+ 			}
++			swapToken.SockName = sockName
++			swapToken.RpcContext = &rpcContext
++			swapToken.Env[wshutil.WaveJwtTokenVarName] = jwtStr
+ 			cmdOpts.Env[wshutil.WaveJwtTokenVarName] = jwtStr
+ 		}
+ 		if !conn.WshEnabled.Load() {
+@@ -374,7 +418,7 @@ func (bc *BlockController) setupAndStartShellProcess(rc *RunShellOpts, blockMeta
+ 				return nil, err
+ 			}
+ 		} else {
+-			shellProc, err = shellexec.StartRemoteShellProc(ctx, rc.TermSize, cmdStr, cmdOpts, conn)
++			shellProc, err = shellexec.StartRemoteShellProc(ctx, logCtx, rc.TermSize, cmdStr, cmdOpts, conn)
+ 			if err != nil {
+ 				conn.SetWshError(err)
+ 				conn.WshEnabled.Store(false)
+@@ -389,10 +433,15 @@ func (bc *BlockController) setupAndStartShellProcess(rc *RunShellOpts, blockMeta
+ 	} else {
+ 		// local terminal
+ 		if !blockMeta.GetBool(waveobj.MetaKey_CmdNoWsh, false) {
+-			jwtStr, err := wshutil.MakeClientJWTToken(wshrpc.RpcContext{TabId: bc.TabId, BlockId: bc.BlockId}, wavebase.GetDomainSocketName())
++			sockName := wavebase.GetDomainSocketName()
++			rpcContext := wshrpc.RpcContext{TabId: bc.TabId, BlockId: bc.BlockId}
++			jwtStr, err := wshutil.MakeClientJWTToken(rpcContext, sockName)
+ 			if err != nil {
+ 				return nil, fmt.Errorf("error making jwt token: %w", err)
+ 			}
++			swapToken.SockName = sockName
++			swapToken.RpcContext = &rpcContext
++			swapToken.Env[wshutil.WaveJwtTokenVarName] = jwtStr
+ 			cmdOpts.Env[wshutil.WaveJwtTokenVarName] = jwtStr
+ 		}
+ 		settings := wconfig.GetWatcher().GetFullConfig().Settings
+@@ -408,7 +457,7 @@ func (bc *BlockController) setupAndStartShellProcess(rc *RunShellOpts, blockMeta
+ 		if len(blockMeta.GetStringList(waveobj.MetaKey_TermLocalShellOpts)) > 0 {
+ 			cmdOpts.ShellOpts = append([]string{}, blockMeta.GetStringList(waveobj.MetaKey_TermLocalShellOpts)...)
+ 		}
+-		shellProc, err = shellexec.StartLocalShellProc(rc.TermSize, cmdStr, cmdOpts)
++		shellProc, err = shellexec.StartLocalShellProc(logCtx, rc.TermSize, cmdStr, cmdOpts)
+ 		if err != nil {
+ 			return nil, err
+ 		}
+@@ -614,7 +663,7 @@ func (bc *BlockController) UnlockRunLock() {
+ 	log.Printf("block %q run() unlock\n", bc.BlockId)
+ }
+ 
+-func (bc *BlockController) run(bdata *waveobj.Block, blockMeta map[string]any, rtOpts *waveobj.RuntimeOpts, force bool) {
++func (bc *BlockController) run(logCtx context.Context, bdata *waveobj.Block, blockMeta map[string]any, rtOpts *waveobj.RuntimeOpts, force bool) {
+ 	runningShellCommand := false
+ 	ok := bc.LockRunLock()
+ 	if !ok {
+@@ -666,9 +715,9 @@ func (bc *BlockController) run(bdata *waveobj.Block, blockMeta map[string]any, r
+ 			} else {
+ 				termSize = getTermSize(bdata)
+ 			}
+-			err := bc.DoRunShellCommand(&RunShellOpts{TermSize: termSize}, bdata.Meta)
++			err := bc.DoRunShellCommand(logCtx, &RunShellOpts{TermSize: termSize}, bdata.Meta)
+ 			if err != nil {
+-				log.Printf("error running shell: %v\n", err)
++				debugLog(logCtx, "error running shell: %v\n", err)
+ 			}
+ 		}()
+ 	}
+@@ -814,6 +863,11 @@ func ResyncController(ctx context.Context, tabId string, blockId string, rtOpts
+ 	return nil
+ }
+ 
++func debugLog(ctx context.Context, fmtStr string, args ...interface{}) {
++	blocklogger.Infof(ctx, "[conndebug] "+fmtStr, args...)
++	log.Printf(fmtStr, args...)
++}
++
+ func startBlockController(ctx context.Context, tabId string, blockId string, rtOpts *waveobj.RuntimeOpts, force bool) error {
+ 	blockData, err := wstore.DBMustGet[*waveobj.Block](ctx, blockId)
+ 	if err != nil {
+@@ -834,9 +888,9 @@ func startBlockController(ctx context.Context, tabId string, blockId string, rtO
+ 	}
+ 	bc := getOrCreateBlockController(tabId, blockId, controllerName)
+ 	bcStatus := bc.GetRuntimeStatus()
+-	log.Printf("start blockcontroller %s %q (%q) (curstatus %s) (force %v)\n", blockId, controllerName, connName, bcStatus.ShellProcStatus, force)
++	debugLog(ctx, "start blockcontroller %s %q (%q) (curstatus %s) (force %v)\n", blockId, controllerName, connName, bcStatus.ShellProcStatus, force)
+ 	if bcStatus.ShellProcStatus == Status_Init || bcStatus.ShellProcStatus == Status_Done {
+-		go bc.run(blockData, blockData.Meta, rtOpts, force)
++		go bc.run(ctx, blockData, blockData.Meta, rtOpts, force)
+ 	}
+ 	return nil
+ }
+diff --git a/pkg/remote/conncontroller/conncontroller.go b/pkg/remote/conncontroller/conncontroller.go
+index a7e9ac03a4..bc6fbda339 100644
+--- a/pkg/remote/conncontroller/conncontroller.go
++++ b/pkg/remote/conncontroller/conncontroller.go
+@@ -73,8 +73,7 @@ type SSHConn struct {
+ var ConnServerCmdTemplate = strings.TrimSpace(
+ 	strings.Join([]string{
+ 		"%s version 2> /dev/null || (echo -n \"not-installed \"; uname -sm);",
+-		"read jwt_token;",
+-		"WAVETERM_JWT=\"$jwt_token\" %s connserver",
++		"exec %s connserver",
+ 	}, "\n"))
+ 
+ func GetAllConnStatus() []wshrpc.ConnStatus {
+@@ -123,6 +122,10 @@ func (conn *SSHConn) Infof(ctx context.Context, format string, args ...any) {
+ 	blocklogger.Infof(ctx, "[conndebug] "+format, args...)
+ }
+ 
++func (conn *SSHConn) Debugf(ctx context.Context, format string, args ...any) {
++	blocklogger.Debugf(ctx, "[conndebug] "+format, args...)
++}
++
+ func (conn *SSHConn) FireConnChangeEvent() {
+ 	status := conn.DeriveConnStatus()
+ 	event := wps.WaveEvent{
+@@ -230,7 +233,7 @@ func (conn *SSHConn) OpenDomainSocketListener(ctx context.Context) error {
+ // expects the output of `wsh version` which looks like `wsh v0.10.4` or "not-installed [os] [arch]"
+ // returns (up-to-date, semver, osArchStr, error)
+ // if not up to date, or error, version might be ""
+-func IsWshVersionUpToDate(wshVersionLine string) (bool, string, string, error) {
++func IsWshVersionUpToDate(logCtx context.Context, wshVersionLine string) (bool, string, string, error) {
+ 	wshVersionLine = strings.TrimSpace(wshVersionLine)
+ 	if strings.HasPrefix(wshVersionLine, "not-installed") {
+ 		return false, "not-installed", strings.TrimSpace(strings.TrimPrefix(wshVersionLine, "not-installed")), nil
+@@ -266,7 +269,7 @@ func (conn *SSHConn) GetConfigShellPath() string {
+ // returns (needsInstall, clientVersion, osArchStr, error)
+ // if wsh is not installed, the clientVersion will be "not-installed", and it will also return an osArchStr
+ // if clientVersion is set, then no osArchStr will be returned
+-func (conn *SSHConn) StartConnServer(ctx context.Context) (bool, string, string, error) {
++func (conn *SSHConn) StartConnServer(ctx context.Context, afterUpdate bool) (bool, string, string, error) {
+ 	conn.Infof(ctx, "running StartConnServer...\n")
+ 	allowed := WithLockRtn(conn, func() bool {
+ 		return conn.Status == Status_Connecting
+@@ -312,22 +315,35 @@ func (conn *SSHConn) StartConnServer(ctx context.Context) (bool, string, string,
+ 		return false, "", "", fmt.Errorf("error reading wsh version: %w", err)
+ 	}
+ 	conn.Infof(ctx, "got connserver version: %s\n", strings.TrimSpace(versionLine))
+-	isUpToDate, clientVersion, osArchStr, err := IsWshVersionUpToDate(versionLine)
++	isUpToDate, clientVersion, osArchStr, err := IsWshVersionUpToDate(ctx, versionLine)
+ 	if err != nil {
+ 		sshSession.Close()
+ 		return false, "", "", fmt.Errorf("error checking wsh version: %w", err)
+ 	}
++	if isUpToDate && !afterUpdate && os.Getenv(wavebase.WaveWshForceUpdateVarName) != "" {
++		isUpToDate = false
++		conn.Infof(ctx, "%s set, forcing wsh update\n", wavebase.WaveWshForceUpdateVarName)
++	}
+ 	conn.Infof(ctx, "connserver up-to-date: %v\n", isUpToDate)
+ 	if !isUpToDate {
++
+ 		sshSession.Close()
+ 		return true, clientVersion, osArchStr, nil
+ 	}
+-	// write the jwt
+-	conn.Infof(ctx, "writing jwt token to connserver\n")
+-	_, err = fmt.Fprintf(stdinPipe, "%s\n", jwtToken)
++	jwtLine, err := wshutil.ReadLineWithTimeout(linesChan, 3*time.Second)
+ 	if err != nil {
+ 		sshSession.Close()
+-		return false, clientVersion, "", fmt.Errorf("failed to write JWT token: %w", err)
++		return false, clientVersion, "", fmt.Errorf("error reading jwt status line: %w", err)
++	}
++	conn.Infof(ctx, "got jwt status line: %s\n", jwtLine)
++	if strings.TrimSpace(jwtLine) == wavebase.NeedJwtConst {
++		// write the jwt
++		conn.Infof(ctx, "writing jwt token to connserver\n")
++		_, err = fmt.Fprintf(stdinPipe, "%s\n", jwtToken)
++		if err != nil {
++			sshSession.Close()
++			return false, clientVersion, "", fmt.Errorf("failed to write JWT token: %w", err)
++		}
+ 	}
+ 	conn.WithLock(func() {
+ 		conn.ConnController = sshSession
+@@ -665,7 +681,7 @@ func (conn *SSHConn) tryEnableWsh(ctx context.Context, clientDisplayName string)
+ 		err = fmt.Errorf("error opening domain socket listener: %w", err)
+ 		return WshCheckResult{NoWshReason: "error opening domain socket", WshError: err}
+ 	}
+-	needsInstall, clientVersion, osArchStr, err := conn.StartConnServer(ctx)
++	needsInstall, clientVersion, osArchStr, err := conn.StartConnServer(ctx, false)
+ 	if err != nil {
+ 		conn.Infof(ctx, "ERROR starting conn server: %v\n", err)
+ 		err = fmt.Errorf("error starting conn server: %w", err)
+@@ -679,7 +695,7 @@ func (conn *SSHConn) tryEnableWsh(ctx context.Context, clientDisplayName string)
+ 			err = fmt.Errorf("error installing wsh: %w", err)
+ 			return WshCheckResult{NoWshReason: "error installing wsh/connserver", WshError: err}
+ 		}
+-		needsInstall, clientVersion, _, err = conn.StartConnServer(ctx)
++		needsInstall, clientVersion, _, err = conn.StartConnServer(ctx, true)
+ 		if err != nil {
+ 			conn.Infof(ctx, "ERROR starting conn server (after install): %v\n", err)
+ 			err = fmt.Errorf("error starting conn server (after install): %w", err)
+diff --git a/pkg/remote/conncontroller/tokenswap.go b/pkg/remote/conncontroller/tokenswap.go
+deleted file mode 100644
+index 14498316ac..0000000000
+--- a/pkg/remote/conncontroller/tokenswap.go
++++ /dev/null
+@@ -1,73 +0,0 @@
+-// Copyright 2025, Command Line Inc.
+-// SPDX-License-Identifier: Apache-2.0
+-
+-package conncontroller
+-
+-import (
+-	"fmt"
+-
+-	"github.com/wavetermdev/waveterm/pkg/util/shellutil"
+-)
+-
+-type TokenSwapEntry struct {
+-	Token      string
+-	Env        map[string]string
+-	ScriptText string
+-}
+-
+-func encodeEnvVarsForBash(env map[string]string) (string, error) {
+-	var encoded string
+-	for k, v := range env {
+-		// validate key
+-		if !shellutil.IsValidEnvVarName(k) {
+-			return "", fmt.Errorf("invalid env var name: %q", k)
+-		}
+-		encoded += fmt.Sprintf("export %s=%s\n", k, shellutil.HardQuote(v))
+-	}
+-	return encoded, nil
+-}
+-
+-func encodeEnvVarsForFish(env map[string]string) (string, error) {
+-	var encoded string
+-	for k, v := range env {
+-		// validate key
+-		if !shellutil.IsValidEnvVarName(k) {
+-			return "", fmt.Errorf("invalid env var name: %q", k)
+-		}
+-		encoded += fmt.Sprintf("set -x %s %s\n", k, shellutil.HardQuoteFish(v))
+-	}
+-	return encoded, nil
+-}
+-
+-func encodeEnvVarsForPowerShell(env map[string]string) (string, error) {
+-	var encoded string
+-	for k, v := range env {
+-		// validate key
+-		if !shellutil.IsValidEnvVarName(k) {
+-			return "", fmt.Errorf("invalid env var name: %q", k)
+-		}
+-		encoded += fmt.Sprintf("$env:%s = %s\n", k, shellutil.HardQuotePowerShell(v))
+-	}
+-	return encoded, nil
+-}
+-
+-func EncodeEnvVarsForShell(shellType string, env map[string]string) (string, error) {
+-	switch shellType {
+-	case shellutil.ShellType_bash, shellutil.ShellType_zsh:
+-		return encodeEnvVarsForBash(env)
+-	case shellutil.ShellType_fish:
+-		return encodeEnvVarsForFish(env)
+-	case shellutil.ShellType_pwsh:
+-		return encodeEnvVarsForPowerShell(env)
+-	default:
+-		return "", fmt.Errorf("unknown or unsupported shell type for env var encoding: %s", shellType)
+-	}
+-}
+-
+-func (t *TokenSwapEntry) EncodeForShell(shellType string) (string, error) {
+-	encodedEnv, err := EncodeEnvVarsForShell(shellType, t.Env)
+-	if err != nil {
+-		return "", err
+-	}
+-	return encodedEnv + "\n" + t.ScriptText, nil
+-}
+diff --git a/pkg/shellexec/shellexec.go b/pkg/shellexec/shellexec.go
+index 66f23b065f..b8013dbb8f 100644
+--- a/pkg/shellexec/shellexec.go
++++ b/pkg/shellexec/shellexec.go
+@@ -19,6 +19,7 @@ import (
+ 	"time"
+ 
+ 	"github.com/creack/pty"
++	"github.com/wavetermdev/waveterm/pkg/blocklogger"
+ 	"github.com/wavetermdev/waveterm/pkg/panichandler"
+ 	"github.com/wavetermdev/waveterm/pkg/remote"
+ 	"github.com/wavetermdev/waveterm/pkg/remote/conncontroller"
+@@ -35,12 +36,13 @@ import (
+ const DefaultGracefulKillWait = 400 * time.Millisecond
+ 
+ type CommandOptsType struct {
+-	Interactive bool              `json:"interactive,omitempty"`
+-	Login       bool              `json:"login,omitempty"`
+-	Cwd         string            `json:"cwd,omitempty"`
+-	Env         map[string]string `json:"env,omitempty"`
+-	ShellPath   string            `json:"shellPath,omitempty"`
+-	ShellOpts   []string          `json:"shellOpts,omitempty"`
++	Interactive bool                      `json:"interactive,omitempty"`
++	Login       bool                      `json:"login,omitempty"`
++	Cwd         string                    `json:"cwd,omitempty"`
++	Env         map[string]string         `json:"env,omitempty"`
++	ShellPath   string                    `json:"shellPath,omitempty"`
++	ShellOpts   []string                  `json:"shellOpts,omitempty"`
++	SwapToken   *shellutil.TokenSwapEntry `json:"swapToken,omitempty"`
+ }
+ 
+ type ShellProc struct {
+@@ -286,7 +288,7 @@ func StartRemoteShellProcNoWsh(ctx context.Context, termSize waveobj.TermSize, c
+ 	return &ShellProc{Cmd: sessionWrap, ConnName: conn.GetName(), CloseOnce: &sync.Once{}, DoneCh: make(chan any)}, nil
+ }
+ 
+-func StartRemoteShellProc(ctx context.Context, termSize waveobj.TermSize, cmdStr string, cmdOpts CommandOptsType, conn *conncontroller.SSHConn) (*ShellProc, error) {
++func StartRemoteShellProc(ctx context.Context, logCtx context.Context, termSize waveobj.TermSize, cmdStr string, cmdOpts CommandOptsType, conn *conncontroller.SSHConn) (*ShellProc, error) {
+ 	client := conn.GetClient()
+ 	connRoute := wshutil.MakeConnectionRouteId(conn.GetName())
+ 	rpcClient := wshclient.GetBareRpcClient()
+@@ -297,34 +299,29 @@ func StartRemoteShellProc(ctx context.Context, termSize waveobj.TermSize, cmdStr
+ 	log.Printf("client info collected: %+#v", remoteInfo)
+ 	var shellPath string
+ 	if cmdOpts.ShellPath != "" {
+-		conn.Infof(ctx, "using shell path from command opts: %s\n", cmdOpts.ShellPath)
++		conn.Infof(logCtx, "using shell path from command opts: %s\n", cmdOpts.ShellPath)
+ 		shellPath = cmdOpts.ShellPath
+ 	}
+ 	configShellPath := conn.GetConfigShellPath()
+ 	if shellPath == "" && configShellPath != "" {
+-		conn.Infof(ctx, "using shell path from config (conn:shellpath): %s\n", configShellPath)
++		conn.Infof(logCtx, "using shell path from config (conn:shellpath): %s\n", configShellPath)
+ 		shellPath = configShellPath
+ 	}
+ 	if shellPath == "" && remoteInfo.Shell != "" {
+-		conn.Infof(ctx, "using shell path detected on remote machine: %s\n", remoteInfo.Shell)
++		conn.Infof(logCtx, "using shell path detected on remote machine: %s\n", remoteInfo.Shell)
+ 		shellPath = remoteInfo.Shell
+ 	}
+ 	if shellPath == "" {
+-		conn.Infof(ctx, "no shell path detected, using default (/bin/bash)\n")
++		conn.Infof(logCtx, "no shell path detected, using default (/bin/bash)\n")
+ 		shellPath = "/bin/bash"
+ 	}
+ 	var shellOpts []string
+ 	var cmdCombined string
+ 	log.Printf("detected shell %q for conn %q\n", shellPath, conn.GetName())
+-
+-	err = wshclient.RemoteInstallRcFilesCommand(rpcClient, &wshrpc.RpcOpts{Route: connRoute, Timeout: 2000})
+-	if err != nil {
+-		log.Printf("error installing rc files: %v", err)
+-		return nil, err
+-	}
+ 	shellOpts = append(shellOpts, cmdOpts.ShellOpts...)
+ 	shellType := shellutil.GetShellTypeFromShellPath(shellPath)
+-	conn.Infof(ctx, "detected shell type: %s\n", shellType)
++	conn.Infof(logCtx, "detected shell type: %s\n", shellType)
++	conn.Infof(logCtx, "swaptoken: %s\n", cmdOpts.SwapToken.Token)
+ 
+ 	if cmdStr == "" {
+ 		/* transform command in order to inject environment vars */
+@@ -362,8 +359,8 @@ func StartRemoteShellProc(ctx context.Context, termSize waveobj.TermSize, cmdStr
+ 		shellOpts = append(shellOpts, "-c", cmdStr)
+ 		cmdCombined = fmt.Sprintf("%s %s", shellPath, strings.Join(shellOpts, " "))
+ 	}
+-	conn.Infof(ctx, "starting shell, using command: %s\n", cmdCombined)
+-	conn.Infof(ctx, "SSH-NEWSESSION (StartRemoteShellProc)\n")
++	conn.Infof(logCtx, "starting shell, using command: %s\n", cmdCombined)
++	conn.Infof(logCtx, "SSH-NEWSESSION (StartRemoteShellProc)\n")
+ 	session, err := client.NewSession()
+ 	if err != nil {
+ 		return nil, err
+@@ -400,15 +397,17 @@ func StartRemoteShellProc(ctx context.Context, termSize waveobj.TermSize, cmdStr
+ 
+ 	if shellType == shellutil.ShellType_zsh {
+ 		zshDir := fmt.Sprintf("~/.waveterm/%s", shellutil.ZshIntegrationDir)
+-		conn.Infof(ctx, "setting ZDOTDIR to %s\n", zshDir)
++		conn.Infof(logCtx, "setting ZDOTDIR to %s\n", zshDir)
+ 		cmdCombined = fmt.Sprintf(`ZDOTDIR=%s %s`, zshDir, cmdCombined)
+ 	}
+-
+-	jwtToken, ok := cmdOpts.Env[wshutil.WaveJwtTokenVarName]
+-	if !ok {
+-		return nil, fmt.Errorf("no jwt token provided to connection")
++	packedToken, err := cmdOpts.SwapToken.PackForClient()
++	if err != nil {
++		conn.Infof(logCtx, "error packing swap token: %v", err)
++	} else {
++		conn.Debugf(logCtx, "packed swaptoken %s\n", packedToken)
++		cmdCombined = fmt.Sprintf(`%s=%s %s`, wavebase.WaveSwapTokenVarName, packedToken, cmdCombined)
+ 	}
+-	cmdCombined = fmt.Sprintf(`%s=%s %s`, wshutil.WaveJwtTokenVarName, jwtToken, cmdCombined)
++	shellutil.AddTokenSwapEntry(cmdOpts.SwapToken)
+ 	session.RequestPty("xterm-256color", termSize.Rows, termSize.Cols, nil)
+ 	sessionWrap := MakeSessionWrap(session, cmdCombined, pipePty)
+ 	err = sessionWrap.Start()
+@@ -437,7 +436,7 @@ func isFishShell(shellPath string) bool {
+ 	return strings.Contains(shellBase, "fish")
+ }
+ 
+-func StartLocalShellProc(termSize waveobj.TermSize, cmdStr string, cmdOpts CommandOptsType) (*ShellProc, error) {
++func StartLocalShellProc(logCtx context.Context, termSize waveobj.TermSize, cmdStr string, cmdOpts CommandOptsType) (*ShellProc, error) {
+ 	shellutil.InitCustomShellStartupFiles()
+ 	var ecmd *exec.Cmd
+ 	var shellOpts []string
+@@ -469,6 +468,7 @@ func StartLocalShellProc(termSize waveobj.TermSize, cmdStr string, cmdOpts Comma
+ 				shellOpts = append(shellOpts, "-i")
+ 			}
+ 		}
++		blocklogger.Debugf(logCtx, "[conndebug] shell:%s shellOpts:%v\n", shellPath, shellOpts)
+ 		ecmd = exec.Command(shellPath, shellOpts...)
+ 		ecmd.Env = os.Environ()
+ 		if shellType == shellutil.ShellType_zsh {
+@@ -480,6 +480,14 @@ func StartLocalShellProc(termSize waveobj.TermSize, cmdStr string, cmdOpts Comma
+ 		ecmd.Env = os.Environ()
+ 	}
+ 
++	packedToken, err := cmdOpts.SwapToken.PackForClient()
++	if err != nil {
++		blocklogger.Infof(logCtx, "error packing swap token: %v", err)
++	} else {
++		blocklogger.Debugf(logCtx, "packed swaptoken %s\n", packedToken)
++		shellutil.UpdateCmdEnv(ecmd, map[string]string{wavebase.WaveSwapTokenVarName: packedToken})
++	}
++
+ 	/*
+ 	  For Snap installations, we need to correct the XDG environment variables as Snap
+ 	  overrides them to point to snap directories. We will get the correct values, if
+@@ -521,6 +529,7 @@ func StartLocalShellProc(termSize waveobj.TermSize, cmdStr string, cmdOpts Comma
+ 	if termSize.Rows <= 0 || termSize.Cols <= 0 {
+ 		return nil, fmt.Errorf("invalid term size: %v", termSize)
+ 	}
++	shellutil.AddTokenSwapEntry(cmdOpts.SwapToken)
+ 	cmdPty, err := pty.StartWithSize(ecmd, &pty.Winsize{Rows: uint16(termSize.Rows), Cols: uint16(termSize.Cols)})
+ 	if err != nil {
+ 		return nil, err
+diff --git a/pkg/util/ds/syncmap.go b/pkg/util/ds/syncmap.go
+index 298e4a1d75..daf3969b09 100644
+--- a/pkg/util/ds/syncmap.go
++++ b/pkg/util/ds/syncmap.go
+@@ -10,7 +10,7 @@ type SyncMap[T any] struct {
+ 	m    map[string]T
+ }
+ 
+-func NewSyncMap[T any]() *SyncMap[T] {
++func MakeSyncMap[T any]() *SyncMap[T] {
+ 	return &SyncMap[T]{
+ 		lock: &sync.Mutex{},
+ 		m:    make(map[string]T),
+diff --git a/pkg/util/ds/syncmap_test.go b/pkg/util/ds/syncmap_test.go
+index 4511b0483a..8ab906ac5d 100644
+--- a/pkg/util/ds/syncmap_test.go
++++ b/pkg/util/ds/syncmap_test.go
+@@ -5,7 +5,7 @@ import (
+ )
+ 
+ func TestSyncMap_Set(t *testing.T) {
+-	sm := NewSyncMap[int]()
++	sm := MakeSyncMap[int]()
+ 	sm.Set("key1", 1)
+ 	if sm.Get("key1") != 1 {
+ 		t.Errorf("expected 1, got %d", sm.Get("key1"))
+@@ -13,7 +13,7 @@ func TestSyncMap_Set(t *testing.T) {
+ }
+ 
+ func TestSyncMap_Get(t *testing.T) {
+-	sm := NewSyncMap[int]()
++	sm := MakeSyncMap[int]()
+ 	sm.Set("key1", 1)
+ 	if sm.Get("key1") != 1 {
+ 		t.Errorf("expected 1, got %d", sm.Get("key1"))
+@@ -24,7 +24,7 @@ func TestSyncMap_Get(t *testing.T) {
+ }
+ 
+ func TestSyncMap_GetEx(t *testing.T) {
+-	sm := NewSyncMap[int]()
++	sm := MakeSyncMap[int]()
+ 	sm.Set("key1", 1)
+ 	value, ok := sm.GetEx("key1")
+ 	if !ok || value != 1 {
+@@ -37,7 +37,7 @@ func TestSyncMap_GetEx(t *testing.T) {
+ }
+ 
+ func TestSyncMap_Delete(t *testing.T) {
+-	sm := NewSyncMap[int]()
++	sm := MakeSyncMap[int]()
+ 	sm.Set("key1", 1)
+ 	sm.Delete("key1")
+ 	if sm.Get("key1") != 0 {
+diff --git a/pkg/util/shellutil/shellquote.go b/pkg/util/shellutil/shellquote.go
+index fa7b66d2c6..7f3c78b1dc 100644
+--- a/pkg/util/shellutil/shellquote.go
++++ b/pkg/util/shellutil/shellquote.go
+@@ -15,9 +15,6 @@ func IsValidEnvVarName(name string) bool {
+ 	return envVarNamePattern.MatchString(name)
+ }
+ 
+-// TODO: fish quoting is slightly different
+-// specifically \` will cause an inconsistency between fish and bash/zsh :/
+-// might need a specific fish quoting function, and an explicit fish shell detection
+ func HardQuote(s string) string {
+ 	if s == "" {
+ 		return "\"\""
+@@ -45,6 +42,7 @@ func HardQuote(s string) string {
+ 	return string(buf)
+ }
+ 
++// does not encode newlines or backticks
+ func HardQuoteFish(s string) string {
+ 	if s == "" {
+ 		return "\"\""
+@@ -59,7 +57,7 @@ func HardQuoteFish(s string) string {
+ 
+ 	for i := 0; i < len(s); i++ {
+ 		switch s[i] {
+-		case '"', '\\', '$': // Escape only these characters
++		case '"', '\\', '$':
+ 			buf = append(buf, '\\', s[i])
+ 		default:
+ 			buf = append(buf, s[i])
+diff --git a/pkg/util/shellutil/shellutil.go b/pkg/util/shellutil/shellutil.go
+index b9c6e2e4e6..3e529506f8 100644
+--- a/pkg/util/shellutil/shellutil.go
++++ b/pkg/util/shellutil/shellutil.go
+@@ -54,13 +54,22 @@ const (
+ `
+ 
+ 	ZshStartup_Zshrc = `
++# add wsh to path, source dynamic script from wsh token
++WAVETERM_WSHBINDIR={{.WSHBINDIR}}
++export PATH="$WAVETERM_WSHBINDIR:$PATH"
++source <(wsh token "$WAVETERM_SWAPTOKEN" zsh 2>/dev/null)
++unset WAVETERM_SWAPTOKEN
++
+ # Source the original zshrc only if ZDOTDIR has not been changed
+ if [ "$ZDOTDIR" = "$WAVETERM_ZDOTDIR" ]; then
+   [ -f ~/.zshrc ] && source ~/.zshrc
+ fi
+ 
+-# Custom additions
+-export PATH={{.WSHBINDIR}}:$PATH
++if [[ ":$PATH:" != *":$WAVETERM_WSHBINDIR:"* ]]; then
++  export PATH="$WAVETERM_WSHBINDIR:$PATH"
++fi
++unset WAVETERM_WSHBINDIR
++
+ if [[ -n ${_comps+x} ]]; then
+   source <(wsh completion zsh)
+ fi
+@@ -92,11 +101,21 @@ fi
+ `
+ 
+ 	BashStartup_Bashrc = `
++
+ # Source /etc/profile if it exists
+ if [ -f /etc/profile ]; then
+     . /etc/profile
+ fi
+ 
++WAVETERM_WSHBINDIR={{.WSHBINDIR}}
++
++# after /etc/profile which is likely to clobber the path
++export PATH="$WAVETERM_WSHBINDIR:$PATH"
++
++# Source the dynamic script from wsh token
++eval "$(wsh token "$WAVETERM_SWAPTOKEN" bash 2> /dev/null)"
++unset WAVETERM_SWAPTOKEN
++
+ # Source the first of ~/.bash_profile, ~/.bash_login, or ~/.profile that exists
+ if [ -f ~/.bash_profile ]; then
+     . ~/.bash_profile
+@@ -106,7 +125,10 @@ elif [ -f ~/.profile ]; then
+     . ~/.profile
+ fi
+ 
+-export PATH={{.WSHBINDIR}}:$PATH
++if [[ ":$PATH:" != *":$WAVETERM_WSHBINDIR:"* ]]; then
++    export PATH="$WAVETERM_WSHBINDIR:$PATH"
++fi
++unset WAVETERM_WSHBINDIR
+ if type _init_completion &>/dev/null; then
+   source <(wsh completion bash)
+ fi
+@@ -118,6 +140,10 @@ fi
+ # Add Wave binary directory to PATH
+ set -x PATH {{.WSHBINDIR}} $PATH
+ 
++# Source dynamic script from wsh token (the echo is to prevent fish from complaining about empty input)
++wsh token "$WAVETERM_SWAPTOKEN" fish 2>/dev/null | source
++set -e WAVETERM_SWAPTOKEN
++
+ # Load Wave completions
+ wsh completion fish | source
+ `
+@@ -126,6 +152,14 @@ wsh completion fish | source
+ # We source this file with -NoExit -File
+ $env:PATH = {{.WSHBINDIR_PWSH}} + "{{.PATHSEP}}" + $env:PATH
+ 
++# Source dynamic script from wsh token
++$waveterm_swaptoken_output = wsh token $env:WAVETERM_SWAPTOKEN pwsh 2>$null
++if ($waveterm_swaptoken_output -and $waveterm_swaptoken_output -ne "") {
++    Invoke-Expression $waveterm_swaptoken_output
++}
++Remove-Variable -Name waveterm_swaptoken_output
++Remove-Item Env:WAVETERM_SWAPTOKEN
++
+ # Load Wave completions
+ wsh completion powershell | Out-String | Invoke-Expression
+ `
+diff --git a/pkg/util/shellutil/tokenswap.go b/pkg/util/shellutil/tokenswap.go
+new file mode 100644
+index 0000000000..89a16c6183
+--- /dev/null
++++ b/pkg/util/shellutil/tokenswap.go
+@@ -0,0 +1,150 @@
++// Copyright 2025, Command Line Inc.
++// SPDX-License-Identifier: Apache-2.0
++
++package shellutil
++
++import (
++	"encoding/base64"
++	"encoding/json"
++	"fmt"
++	"sync"
++	"time"
++
++	"github.com/wavetermdev/waveterm/pkg/wshrpc"
++)
++
++var tokenSwapMap map[string]*TokenSwapEntry = make(map[string]*TokenSwapEntry)
++var tokenMapLock = &sync.Mutex{}
++
++type TokenSwapEntry struct {
++	Token      string             `json:"token"`
++	SockName   string             `json:"sockname,omitempty"`
++	RpcContext *wshrpc.RpcContext `json:"rpccontext,omitempty"`
++	JwtToken   string             `json:"jwttoken,omitempty"`
++	Env        map[string]string  `json:"env,omitempty"`
++	ScriptText string             `json:"scripttext,omitempty"`
++	Exp        time.Time          `json:"-"`
++}
++
++type UnpackedTokenType struct {
++	Token      string             `json:"token"` // uuid
++	SockName   string             `json:"sockname,omitempty"`
++	RpcContext *wshrpc.RpcContext `json:"rpccontext,omitempty"`
++}
++
++func (t *UnpackedTokenType) Pack() (string, error) {
++	// convert to json, and then base64 encode
++	barr, err := json.Marshal(t)
++	if err != nil {
++		return "", err
++	}
++	return base64.StdEncoding.EncodeToString(barr), nil
++}
++
++func UnpackSwapToken(token string) (*UnpackedTokenType, error) {
++	// base64 decode, then convert from json
++	barr, err := base64.StdEncoding.DecodeString(token)
++	if err != nil {
++		return nil, err
++	}
++	var unpacked UnpackedTokenType
++	err = json.Unmarshal(barr, &unpacked)
++	if err != nil {
++		return nil, err
++	}
++	return &unpacked, nil
++}
++
++func (t *TokenSwapEntry) PackForClient() (string, error) {
++	unpackedToken := &UnpackedTokenType{
++		Token:      t.Token,
++		SockName:   t.SockName,
++		RpcContext: t.RpcContext,
++	}
++	return unpackedToken.Pack()
++}
++
++func removeExpiredTokens() {
++	now := time.Now()
++	tokenMapLock.Lock()
++	defer tokenMapLock.Unlock()
++	for k, v := range tokenSwapMap {
++		if v.Exp.Before(now) {
++			delete(tokenSwapMap, k)
++		}
++	}
++}
++
++func AddTokenSwapEntry(entry *TokenSwapEntry) error {
++	removeExpiredTokens()
++	if entry.Token == "" {
++		return fmt.Errorf("token cannot be empty")
++	}
++	tokenMapLock.Lock()
++	defer tokenMapLock.Unlock()
++	if _, ok := tokenSwapMap[entry.Token]; ok {
++		return fmt.Errorf("token already exists: %s", entry.Token)
++	}
++	tokenSwapMap[entry.Token] = entry
++	return nil
++}
++
++func GetAndRemoveTokenSwapEntry(token string) *TokenSwapEntry {
++	removeExpiredTokens()
++	tokenMapLock.Lock()
++	defer tokenMapLock.Unlock()
++	if entry, ok := tokenSwapMap[token]; ok {
++		delete(tokenSwapMap, token)
++		return entry
++	}
++	return nil
++}
++
++func encodeEnvVarsForBash(env map[string]string) (string, error) {
++	var encoded string
++	for k, v := range env {
++		// validate key
++		if !IsValidEnvVarName(k) {
++			return "", fmt.Errorf("invalid env var name: %q", k)
++		}
++		encoded += fmt.Sprintf("export %s=%s\n", k, HardQuote(v))
++	}
++	return encoded, nil
++}
++
++func encodeEnvVarsForFish(env map[string]string) (string, error) {
++	var encoded string
++	for k, v := range env {
++		// validate key
++		if !IsValidEnvVarName(k) {
++			return "", fmt.Errorf("invalid env var name: %q", k)
++		}
++		encoded += fmt.Sprintf("set -x %s %s\n", k, HardQuoteFish(v))
++	}
++	return encoded, nil
++}
++
++func encodeEnvVarsForPowerShell(env map[string]string) (string, error) {
++	var encoded string
++	for k, v := range env {
++		// validate key
++		if !IsValidEnvVarName(k) {
++			return "", fmt.Errorf("invalid env var name: %q", k)
++		}
++		encoded += fmt.Sprintf("$env:%s = %s\n", k, HardQuotePowerShell(v))
++	}
++	return encoded, nil
++}
++
++func EncodeEnvVarsForShell(shellType string, env map[string]string) (string, error) {
++	switch shellType {
++	case ShellType_bash, ShellType_zsh:
++		return encodeEnvVarsForBash(env)
++	case ShellType_fish:
++		return encodeEnvVarsForFish(env)
++	case ShellType_pwsh:
++		return encodeEnvVarsForPowerShell(env)
++	default:
++		return "", fmt.Errorf("unknown or unsupported shell type for env var encoding: %s", shellType)
++	}
++}
+diff --git a/pkg/waveapp/waveapp.go b/pkg/waveapp/waveapp.go
+index 9d4bfd4752..b05f852f10 100644
+--- a/pkg/waveapp/waveapp.go
++++ b/pkg/waveapp/waveapp.go
+@@ -181,7 +181,7 @@ func (client *Client) Connect() error {
+ 		return fmt.Errorf("error setting up domain socket rpc client: %v", err)
+ 	}
+ 	client.RpcClient = rpcClient
+-	authRtn, err := wshclient.AuthenticateCommand(client.RpcClient, jwtToken, &wshrpc.RpcOpts{NoResponse: true})
++	authRtn, err := wshclient.AuthenticateCommand(client.RpcClient, jwtToken, nil)
+ 	if err != nil {
+ 		return fmt.Errorf("error authenticating rpc connection: %v", err)
+ 	}
+diff --git a/pkg/wavebase/wavebase.go b/pkg/wavebase/wavebase.go
+index c0f4829bcb..019bfd9c11 100644
+--- a/pkg/wavebase/wavebase.go
++++ b/pkg/wavebase/wavebase.go
+@@ -26,13 +26,19 @@ var WaveVersion = "0.0.0"
+ var BuildTime = "0"
+ 
+ const (
+-	WaveConfigHomeEnvVar = "WAVETERM_CONFIG_HOME"
+-	WaveDataHomeEnvVar   = "WAVETERM_DATA_HOME"
+-	WaveAppPathVarName   = "WAVETERM_APP_PATH"
+-	WaveDevVarName       = "WAVETERM_DEV"
+-	WaveDevViteVarName   = "WAVETERM_DEV_VITE"
++	WaveConfigHomeEnvVar      = "WAVETERM_CONFIG_HOME"
++	WaveDataHomeEnvVar        = "WAVETERM_DATA_HOME"
++	WaveAppPathVarName        = "WAVETERM_APP_PATH"
++	WaveDevVarName            = "WAVETERM_DEV"
++	WaveDevViteVarName        = "WAVETERM_DEV_VITE"
++	WaveWshForceUpdateVarName = "WAVETERM_WSHFORCEUPDATE"
++
++	WaveJwtTokenVarName  = "WAVETERM_JWT"
++	WaveSwapTokenVarName = "WAVETERM_SWAPTOKEN"
+ )
+ 
++const NeedJwtConst = "NEED-JWT"
++
+ var ConfigHome_VarCache string // caches WAVETERM_CONFIG_HOME
+ var DataHome_VarCache string   // caches WAVETERM_DATA_HOME
+ var AppPath_VarCache string    // caches WAVETERM_APP_PATH
+diff --git a/pkg/wshrpc/wshclient/wshclient.go b/pkg/wshrpc/wshclient/wshclient.go
+index 02148642ca..17b18598f8 100644
+--- a/pkg/wshrpc/wshclient/wshclient.go
++++ b/pkg/wshrpc/wshclient/wshclient.go
+@@ -31,6 +31,12 @@ func AuthenticateCommand(w *wshutil.WshRpc, data string, opts *wshrpc.RpcOpts) (
+ 	return resp, err
+ }
+ 
++// command "authenticatetoken", wshserver.AuthenticateTokenCommand
++func AuthenticateTokenCommand(w *wshutil.WshRpc, data wshrpc.CommandAuthenticateTokenData, opts *wshrpc.RpcOpts) (wshrpc.CommandAuthenticateRtnData, error) {
++	resp, err := sendRpcRequestCallHelper[wshrpc.CommandAuthenticateRtnData](w, "authenticatetoken", data, opts)
++	return resp, err
++}
++
+ // command "blockinfo", wshserver.BlockInfoCommand
+ func BlockInfoCommand(w *wshutil.WshRpc, data string, opts *wshrpc.RpcOpts) (*wshrpc.BlockInfoData, error) {
+ 	resp, err := sendRpcRequestCallHelper[*wshrpc.BlockInfoData](w, "blockinfo", data, opts)
+diff --git a/pkg/wshrpc/wshremote/wshremote.go b/pkg/wshrpc/wshremote/wshremote.go
+index 26d6f66776..7ce96aed0c 100644
+--- a/pkg/wshrpc/wshremote/wshremote.go
++++ b/pkg/wshrpc/wshremote/wshremote.go
+@@ -196,7 +196,6 @@ func (impl *ServerImpl) RemoteStreamFileCommand(ctx context.Context, data wshrpc
+ 			if len(data) > 0 {
+ 				resp.Data64 = base64.StdEncoding.EncodeToString(data)
+ 			}
+-			log.Printf("callback -- sending response %d\n", len(resp.Data64))
+ 			ch <- wshrpc.RespOrErrorUnion[wshrpc.CommandRemoteStreamFileRtnData]{Response: resp}
+ 		})
+ 		if err != nil {
+diff --git a/pkg/wshrpc/wshrpctypes.go b/pkg/wshrpc/wshrpctypes.go
+index 28c69e20a0..18db5f94f0 100644
+--- a/pkg/wshrpc/wshrpctypes.go
++++ b/pkg/wshrpc/wshrpctypes.go
+@@ -28,11 +28,13 @@ const (
+ 	RpcType_Complex          = "complex"          // streaming request/response
+ )
+ 
++// TODO generate these constants from the interface
+ const (
+-	Command_Authenticate         = "authenticate"    // special
+-	Command_Dispose              = "dispose"         // special (disposes of the route, for multiproxy only)
+-	Command_RouteAnnounce        = "routeannounce"   // special (for routing)
+-	Command_RouteUnannounce      = "routeunannounce" // special (for routing)
++	Command_Authenticate         = "authenticate"      // special
++	Command_AuthenticateToken    = "authenticatetoken" // special
++	Command_Dispose              = "dispose"           // special (disposes of the route, for multiproxy only)
++	Command_RouteAnnounce        = "routeannounce"     // special (for routing)
++	Command_RouteUnannounce      = "routeunannounce"   // special (for routing)
+ 	Command_Message              = "message"
+ 	Command_GetMeta              = "getmeta"
+ 	Command_SetMeta              = "setmeta"
+@@ -110,6 +112,7 @@ type RespOrErrorUnion[T any] struct {
+ 
+ type WshRpcInterface interface {
+ 	AuthenticateCommand(ctx context.Context, data string) (CommandAuthenticateRtnData, error)
++	AuthenticateTokenCommand(ctx context.Context, data CommandAuthenticateTokenData) (CommandAuthenticateRtnData, error)
+ 	DisposeCommand(ctx context.Context, data CommandDisposeData) error
+ 	RouteAnnounceCommand(ctx context.Context) error   // (special) announces a new route to the main router
+ 	RouteUnannounceCommand(ctx context.Context) error // (special) unannounces a route to the main router
+@@ -263,6 +266,14 @@ func HackRpcContextIntoData(dataPtr any, rpcContext RpcContext) {
+ type CommandAuthenticateRtnData struct {
+ 	RouteId   string `json:"routeid"`
+ 	AuthToken string `json:"authtoken,omitempty"`
++
++	// these fields are only set when doing a token swap
++	Env            map[string]string `json:"env,omitempty"`
++	InitScriptText string            `json:"initscripttext,omitempty"`
++}
++
++type CommandAuthenticateTokenData struct {
++	Token string `json:"token"`
+ }
+ 
+ type CommandDisposeData struct {
+diff --git a/pkg/wshrpc/wshserver/wshserver.go b/pkg/wshrpc/wshserver/wshserver.go
+index 7473540fea..c6b3a1c8a1 100644
+--- a/pkg/wshrpc/wshserver/wshserver.go
++++ b/pkg/wshrpc/wshserver/wshserver.go
+@@ -710,7 +710,7 @@ func (ws *WshServer) ConnUpdateWshCommand(ctx context.Context, remoteInfo wshrpc
+ 	}
+ 
+ 	log.Printf("checking wsh version for connection %s (current: %s)", connName, remoteInfo.ClientVersion)
+-	upToDate, _, _, err := conncontroller.IsWshVersionUpToDate(remoteInfo.ClientVersion)
++	upToDate, _, _, err := conncontroller.IsWshVersionUpToDate(ctx, remoteInfo.ClientVersion)
+ 	if err != nil {
+ 		return false, fmt.Errorf("unable to compare wsh version: %w", err)
+ 	}
+diff --git a/pkg/wshutil/wshproxy.go b/pkg/wshutil/wshproxy.go
+index 6221b83761..c8a5c90201 100644
+--- a/pkg/wshutil/wshproxy.go
++++ b/pkg/wshutil/wshproxy.go
+@@ -6,9 +6,12 @@ package wshutil
+ import (
+ 	"encoding/json"
+ 	"fmt"
++	"log"
+ 	"sync"
+ 
+ 	"github.com/google/uuid"
++	"github.com/wavetermdev/waveterm/pkg/util/shellutil"
++	"github.com/wavetermdev/waveterm/pkg/util/utilfn"
+ 	"github.com/wavetermdev/waveterm/pkg/wshrpc"
+ )
+ 
+@@ -80,6 +83,44 @@ func (p *WshRpcProxy) sendAuthenticateResponse(msg RpcMessage, routeId string) {
+ 	p.SendRpcMessage(respBytes)
+ }
+ 
++func (p *WshRpcProxy) sendAuthenticateTokenResponse(msg RpcMessage, entry *shellutil.TokenSwapEntry) {
++	if msg.ReqId == "" {
++		// no response needed
++		return
++	}
++	routeId, _ := MakeRouteIdFromCtx(entry.RpcContext) // already validated so don't need to check error
++	resp := RpcMessage{
++		ResId: msg.ReqId,
++		Route: msg.Source,
++		Data: wshrpc.CommandAuthenticateRtnData{
++			RouteId:        routeId,
++			Env:            entry.Env,
++			InitScriptText: entry.ScriptText,
++		},
++	}
++	respBytes, _ := json.Marshal(resp)
++	p.SendRpcMessage(respBytes)
++}
++
++func validateRpcContextFromAuth(newCtx *wshrpc.RpcContext) (string, error) {
++	if newCtx == nil {
++		return "", fmt.Errorf("no context found in jwt token")
++	}
++	if newCtx.BlockId == "" && newCtx.Conn == "" {
++		return "", fmt.Errorf("no blockid or conn found in jwt token")
++	}
++	if newCtx.BlockId != "" {
++		if _, err := uuid.Parse(newCtx.BlockId); err != nil {
++			return "", fmt.Errorf("invalid blockId in jwt token")
++		}
++	}
++	routeId, err := MakeRouteIdFromCtx(newCtx)
++	if err != nil {
++		return "", fmt.Errorf("error making routeId from context: %w", err)
++	}
++	return routeId, nil
++}
++
+ func handleAuthenticationCommand(msg RpcMessage) (*wshrpc.RpcContext, string, error) {
+ 	if msg.Data == nil {
+ 		return nil, "", fmt.Errorf("no data in authenticate message")
+@@ -92,22 +133,35 @@ func handleAuthenticationCommand(msg RpcMessage) (*wshrpc.RpcContext, string, er
+ 	if err != nil {
+ 		return nil, "", fmt.Errorf("error validating token: %w", err)
+ 	}
+-	if newCtx == nil {
+-		return nil, "", fmt.Errorf("no context found in jwt token")
++	routeId, err := validateRpcContextFromAuth(newCtx)
++	if err != nil {
++		return nil, "", err
+ 	}
+-	if newCtx.BlockId == "" && newCtx.Conn == "" {
+-		return nil, "", fmt.Errorf("no blockid or conn found in jwt token")
++	return newCtx, routeId, nil
++}
++
++func handleAuthenticateTokenCommand(msg RpcMessage) (*shellutil.TokenSwapEntry, error) {
++	log.Printf("got AUTHENTICATETOKEN command %v\n", msg.Data)
++	if msg.Data == nil {
++		return nil, fmt.Errorf("no data in authenticatetoken message")
+ 	}
+-	if newCtx.BlockId != "" {
+-		if _, err := uuid.Parse(newCtx.BlockId); err != nil {
+-			return nil, "", fmt.Errorf("invalid blockId in jwt token")
+-		}
++	var tokenData wshrpc.CommandAuthenticateTokenData
++	err := utilfn.ReUnmarshal(&tokenData, msg.Data)
++	if err != nil {
++		return nil, fmt.Errorf("error unmarshalling token data: %w", err)
+ 	}
+-	routeId, err := MakeRouteIdFromCtx(newCtx)
++	if tokenData.Token == "" {
++		return nil, fmt.Errorf("no token in authenticatetoken message")
++	}
++	entry := shellutil.GetAndRemoveTokenSwapEntry(tokenData.Token)
++	if entry == nil {
++		return nil, fmt.Errorf("no token entry found")
++	}
++	_, err = validateRpcContextFromAuth(entry.RpcContext)
+ 	if err != nil {
+-		return nil, "", fmt.Errorf("error making routeId from context: %w", err)
++		return nil, err
+ 	}
+-	return newCtx, routeId, nil
++	return entry, nil
+ }
+ 
+ // runs on the client (stdio client)
+@@ -127,28 +181,30 @@ func (p *WshRpcProxy) HandleClientProxyAuth(router *WshRouter) (string, error) {
+ 			// this message is not allowed (protocol error at this point), ignore
+ 			continue
+ 		}
+-		// we only allow one command "authenticate", everything else returns an error
+-		if origMsg.Command != wshrpc.Command_Authenticate {
+-			respErr := fmt.Errorf("connection not authenticated")
+-			p.sendResponseError(origMsg, respErr)
+-			continue
++		if origMsg.Command == wshrpc.Command_Authenticate {
++			authRtn, err := router.HandleProxyAuth(origMsg.Data)
++			if err != nil {
++				respErr := fmt.Errorf("error handling proxy auth: %w", err)
++				p.sendResponseError(origMsg, respErr)
++				return "", respErr
++			}
++			p.SetAuthToken(authRtn.AuthToken)
++			announceMsg := RpcMessage{
++				Command:   wshrpc.Command_RouteAnnounce,
++				Source:    authRtn.RouteId,
++				AuthToken: authRtn.AuthToken,
++			}
++			announceBytes, _ := json.Marshal(announceMsg)
++			router.InjectMessage(announceBytes, authRtn.RouteId)
++			p.sendAuthenticateResponse(origMsg, authRtn.RouteId)
++			return authRtn.RouteId, nil
+ 		}
+-		authRtn, err := router.HandleProxyAuth(origMsg.Data)
+-		if err != nil {
+-			respErr := fmt.Errorf("error handling proxy auth: %w", err)
+-			p.sendResponseError(origMsg, respErr)
+-			return "", respErr
+-		}
+-		p.SetAuthToken(authRtn.AuthToken)
+-		announceMsg := RpcMessage{
+-			Command:   wshrpc.Command_RouteAnnounce,
+-			Source:    authRtn.RouteId,
+-			AuthToken: authRtn.AuthToken,
++		if origMsg.Command == wshrpc.Command_AuthenticateToken {
++
+ 		}
+-		announceBytes, _ := json.Marshal(announceMsg)
+-		router.InjectMessage(announceBytes, authRtn.RouteId)
+-		p.sendAuthenticateResponse(origMsg, authRtn.RouteId)
+-		return authRtn.RouteId, nil
++		respErr := fmt.Errorf("connection not authenticated")
++		p.sendResponseError(origMsg, respErr)
++		continue
+ 	}
+ }
+ 
+@@ -169,19 +225,27 @@ func (p *WshRpcProxy) HandleAuthentication() (*wshrpc.RpcContext, error) {
+ 			// this message is not allowed (protocol error at this point), ignore
+ 			continue
+ 		}
+-		// we only allow one command "authenticate", everything else returns an error
+-		if msg.Command != wshrpc.Command_Authenticate {
+-			respErr := fmt.Errorf("connection not authenticated")
+-			p.sendResponseError(msg, respErr)
+-			continue
++		if msg.Command == wshrpc.Command_Authenticate {
++			newCtx, routeId, err := handleAuthenticationCommand(msg)
++			if err != nil {
++				p.sendResponseError(msg, err)
++				continue
++			}
++			p.sendAuthenticateResponse(msg, routeId)
++			return newCtx, nil
+ 		}
+-		newCtx, routeId, err := handleAuthenticationCommand(msg)
+-		if err != nil {
+-			p.sendResponseError(msg, err)
+-			continue
++		if msg.Command == wshrpc.Command_AuthenticateToken {
++			entry, err := handleAuthenticateTokenCommand(msg)
++			if err != nil {
++				p.sendResponseError(msg, err)
++				continue
++			}
++			p.sendAuthenticateTokenResponse(msg, entry)
++			return entry.RpcContext, nil
+ 		}
+-		p.sendAuthenticateResponse(msg, routeId)
+-		return newCtx, nil
++		respErr := fmt.Errorf("connection not authenticated")
++		p.sendResponseError(msg, respErr)
++		continue
+ 	}
+ }
+ 
+diff --git a/pkg/wshutil/wshutil.go b/pkg/wshutil/wshutil.go
+index 6075a50dd8..3bdb17e6c3 100644
+--- a/pkg/wshutil/wshutil.go
++++ b/pkg/wshutil/wshutil.go
+@@ -46,7 +46,7 @@ const ESC = 0x1b
+ const DefaultOutputChSize = 32
+ const DefaultInputChSize = 32
+ 
+-const WaveJwtTokenVarName = "WAVETERM_JWT"
++const WaveJwtTokenVarName = wavebase.WaveJwtTokenVarName
+ 
+ // OSC escape types
+ // OSC 23198 ; (JSON | base64-JSON) ST

@@ -1,0 +1,820 @@
+diff --git a/src/Storages/ObjectStorageQueue/ObjectStorageQueueIFileMetadata.cpp b/src/Storages/ObjectStorageQueue/ObjectStorageQueueIFileMetadata.cpp
+index f8c4ceb91f48..2b8bbdc31f9b 100644
+--- a/src/Storages/ObjectStorageQueue/ObjectStorageQueueIFileMetadata.cpp
++++ b/src/Storages/ObjectStorageQueue/ObjectStorageQueueIFileMetadata.cpp
+@@ -7,6 +7,7 @@
+ #include <Poco/JSON/JSON.h>
+ #include <Poco/JSON/Object.h>
+ #include <Poco/JSON/Parser.h>
++#include <base/scope_guard.h>
+ 
+ 
+ namespace ProfileEvents
+@@ -225,9 +226,12 @@ bool ObjectStorageQueueIFileMetadata::setProcessing()
+     auto state = file_status->state.load();
+     if (state == FileStatus::State::Processing
+         || state == FileStatus::State::Processed
+-        || (state == FileStatus::State::Failed && file_status->retries >= max_loading_retries))
++        || (state == FileStatus::State::Failed
++            && file_status->retries
++            && file_status->retries >= max_loading_retries))
+     {
+-        LOG_TEST(log, "File {} has non-processable state `{}`", path, file_status->state.load());
++        LOG_TEST(log, "File {} has non-processable state `{}` (retries: {}/{})",
++                 path, file_status->state.load(), file_status->retries, max_loading_retries);
+         return false;
+     }
+ 
+@@ -260,13 +264,73 @@ void ObjectStorageQueueIFileMetadata::resetProcessing()
+     if (state != FileStatus::State::Processing)
+         throw Exception(ErrorCodes::LOGICAL_ERROR, "Cannot reset non-processing state: {}", state);
+ 
+-    resetProcessingImpl();
+-    file_status->reset();
+-}
++    SCOPE_EXIT({
++        file_status->reset();
++    });
+ 
+-void ObjectStorageQueueIFileMetadata::resetProcessingImpl()
+-{
+-    throw Exception(ErrorCodes::LOGICAL_ERROR, "resetProcessingImpl is not implemented");
++    if (!processing_id_version.has_value())
++    {
++        throw Exception(
++            ErrorCodes::LOGICAL_ERROR,
++            "No processing id version set, but state is `Processing` ({})",
++            node_metadata.toString());
++    }
++
++    static constexpr size_t check_processing_id_path_idx = 0;
++    static constexpr size_t remove_processing_id_path_idx = 1;
++    static constexpr size_t remove_processing_path_idx = 2;
++
++    Coordination::Requests requests;
++    requests.push_back(zkutil::makeRemoveRequest(processing_node_id_path, processing_id_version.value()));
++    requests.push_back(zkutil::makeRemoveRequest(processing_node_path, -1));
++
++    Coordination::Responses responses;
++    const auto zk_client = getZooKeeper();
++    const auto code = zk_client->tryMulti(requests, responses);
++    if (code == Coordination::Error::ZOK)
++        return;
++
++    auto is_request_failed = [&](size_t idx)
++    {
++        chassert(idx < responses.size());
++        return responses[idx]->error != Coordination::Error::ZOK;
++    };
++
++    bool unexpected_error = false;
++    std::string failure_reason;
++
++    if (Coordination::isHardwareError(code))
++    {
++        failure_reason = "Lost connection to keeper";
++    }
++    else if (is_request_failed(check_processing_id_path_idx))
++    {
++        /// This is normal in case of expired session with keeper.
++        failure_reason = "Version of processing id node changed";
++    }
++    else if (is_request_failed(remove_processing_id_path_idx))
++    {
++        /// Remove processing_id node should not actually fail
++        /// because we just checked in a previous keeper request that it exists and has a certain version.
++        unexpected_error = true;
++        failure_reason = "Failed to remove processing id path";
++    }
++    else if (is_request_failed(remove_processing_path_idx))
++    {
++        /// This is normal in case of expired session with keeper as this node is ephemeral.
++        failure_reason = "Failed to remove processing path";
++    }
++    else
++    {
++        /// Unreachable branch.
++        chassert(false);
++        unexpected_error = true;
++    }
++
++    if (unexpected_error)
++        throw Exception(ErrorCodes::LOGICAL_ERROR, "{}", failure_reason);
++
++    LOG_TRACE(log, "Cannot reset processing for {}. Code: {}. Reason: {}", path, code, failure_reason);
+ }
+ 
+ void ObjectStorageQueueIFileMetadata::setProcessed()
+@@ -292,15 +356,12 @@ void ObjectStorageQueueIFileMetadata::setProcessed()
+     LOG_TRACE(log, "Set file {} as processed (rows: {})", path, file_status->processed_rows);
+ }
+ 
+-void ObjectStorageQueueIFileMetadata::setFailed(const std::string & exception_message, bool reduce_retry_count, bool overwrite_status)
++void ObjectStorageQueueIFileMetadata::setFailed(const std::string & exception_message, bool reduce_retry_count)
+ {
+     LOG_TRACE(log, "Setting file {} as failed (path: {}, reduce retry count: {}, exception: {})",
+               path, failed_node_path, reduce_retry_count, exception_message);
+ 
+     ProfileEvents::increment(ProfileEvents::ObjectStorageQueueFailedFiles);
+-    if (overwrite_status || file_status->state != FileStatus::State::Failed)
+-        file_status->onFailed(exception_message);
+-
+     node_metadata.last_exception = exception_message;
+ 
+     if (reduce_retry_count)
+@@ -322,6 +383,12 @@ void ObjectStorageQueueIFileMetadata::setFailed(const std::string & exception_me
+             throw;
+         }
+     }
++    else
++    {
++        resetProcessing();
++    }
++
++    file_status->onFailed(exception_message);
+ 
+     processing_id.reset();
+     processing_id_version.reset();
+@@ -340,7 +407,7 @@ void ObjectStorageQueueIFileMetadata::setFailedNonRetriable()
+     const auto code = zk_client->tryMulti(requests, responses);
+     if (code == Coordination::Error::ZOK)
+     {
+-        LOG_TRACE(log, "File `{}` failed to process and will not be retried. ", path);
++        LOG_TRACE(log, "File {} failed to process and will not be retried. ({})", path, failed_node_path);
+         return;
+     }
+ 
+diff --git a/src/Storages/ObjectStorageQueue/ObjectStorageQueueIFileMetadata.h b/src/Storages/ObjectStorageQueue/ObjectStorageQueueIFileMetadata.h
+index d1d920ba10d8..5e0edfd31c5a 100644
+--- a/src/Storages/ObjectStorageQueue/ObjectStorageQueueIFileMetadata.h
++++ b/src/Storages/ObjectStorageQueue/ObjectStorageQueueIFileMetadata.h
+@@ -56,7 +56,7 @@ class ObjectStorageQueueIFileMetadata
+     bool setProcessing();
+     void setProcessed();
+     void resetProcessing();
+-    void setFailed(const std::string & exception_message, bool reduce_retry_count, bool overwrite_status);
++    void setFailed(const std::string & exception_message, bool reduce_retry_count);
+ 
+     virtual void setProcessedAtStartRequests(
+         Coordination::Requests & requests,
+@@ -81,7 +81,6 @@ class ObjectStorageQueueIFileMetadata
+ protected:
+     virtual std::pair<bool, FileStatus::State> setProcessingImpl() = 0;
+     virtual void setProcessedImpl() = 0;
+-    virtual void resetProcessingImpl();
+     void setFailedNonRetriable();
+     void setFailedRetriable();
+ 
+diff --git a/src/Storages/ObjectStorageQueue/ObjectStorageQueueOrderedFileMetadata.cpp b/src/Storages/ObjectStorageQueue/ObjectStorageQueueOrderedFileMetadata.cpp
+index c683b3fb9719..4f6af021f846 100644
+--- a/src/Storages/ObjectStorageQueue/ObjectStorageQueueOrderedFileMetadata.cpp
++++ b/src/Storages/ObjectStorageQueue/ObjectStorageQueueOrderedFileMetadata.cpp
+@@ -245,17 +245,63 @@ std::pair<bool, ObjectStorageQueueIFileMetadata::FileStatus::State> ObjectStorag
+ 
+     while (true)
+     {
+-        NodeMetadata processed_node;
++        std::optional<NodeMetadata> processed_node;
+         Coordination::Stat processed_node_stat;
+-        bool has_processed_node = getMaxProcessedFile(processed_node, &processed_node_stat, zk_client);
+-        if (has_processed_node)
++        if (zk_client->isFeatureEnabled(DB::KeeperFeatureFlag::MULTI_READ))
+         {
+-            LOG_TEST(log, "Current max processed file {} from path: {}",
+-                        processed_node.file_path, processed_node_path);
++            Coordination::Requests requests;
++            requests.push_back(zkutil::makeGetRequest(processed_node_path));
++            requests.push_back(zkutil::makeGetRequest(failed_node_path));
++
++            Coordination::Responses responses;
++            const auto code = zk_client->tryMulti(requests, responses);
++
++            if (!(code == Coordination::Error::ZOK || code == Coordination::Error::ZNONODE))
++                throw zkutil::KeeperException::fromPath(code, path);
++
++            if (responses[1]->error == Coordination::Error::ZOK)
++            {
++                LOG_TEST(log, "File {} is Failed", path);
++                return {false, FileStatus::State::Failed};
++            }
+ 
+-            if (!processed_node.file_path.empty() && path <= processed_node.file_path)
++            if (responses[0]->error == Coordination::Error::ZOK)
++            {
++                const auto * get_response = dynamic_cast<const Coordination::GetResponse *>(responses[0].get());
++                if (!get_response->data.empty())
++                {
++                    processed_node.emplace(NodeMetadata::fromString(get_response->data));
++                    processed_node_stat = get_response->stat;
++
++                    LOG_TEST(log, "Current max processed file {} from path: {}",
++                             processed_node->file_path, processed_node_path);
++
++                    if (!processed_node->file_path.empty() && path <= processed_node->file_path)
++                    {
++                        return {false, FileStatus::State::Processed};
++                    }
++                }
++            }
++        }
++        else
++        {
++            NodeMetadata node_metadata;
++            if (getMaxProcessedFile(node_metadata, &processed_node_stat, zk_client))
+             {
+-                return {false, FileStatus::State::Processed};
++                if (zk_client->exists(failed_node_path))
++                {
++                    LOG_TEST(log, "File {} is Failed", path);
++                    return {false, FileStatus::State::Failed};
++                }
++
++                processed_node.emplace(node_metadata);
++                LOG_TEST(log, "Current max processed file {} from path: {}",
++                         processed_node->file_path, processed_node_path);
++
++                if (!processed_node->file_path.empty() && path <= processed_node->file_path)
++                {
++                    return {false, FileStatus::State::Processed};
++                }
+             }
+         }
+ 
+@@ -290,7 +336,7 @@ std::pair<bool, ObjectStorageQueueIFileMetadata::FileStatus::State> ObjectStorag
+         /// so may be remove creation and check for processing_node_id if bucket_info is set?
+ 
+         auto check_max_processed_path = requests.size();
+-        if (has_processed_node)
++        if (processed_node.has_value())
+             requests.push_back(zkutil::makeCheckRequest(processed_node_path, processed_node_stat.version));
+         else
+             zkutil::addCheckNotExistsRequest(requests, *zk_client, processed_node_path);
+@@ -385,7 +431,6 @@ void ObjectStorageQueueOrderedFileMetadata::setProcessedRequests(
+ 
+     if (processing_id_version.has_value())
+     {
+-        requests.push_back(zkutil::makeCheckRequest(processing_node_id_path, processing_id_version.value()));
+         requests.push_back(zkutil::makeRemoveRequest(processing_node_id_path, processing_id_version.value()));
+         requests.push_back(zkutil::makeRemoveRequest(processing_node_path, -1));
+     }
+diff --git a/src/Storages/ObjectStorageQueue/ObjectStorageQueueSource.cpp b/src/Storages/ObjectStorageQueue/ObjectStorageQueueSource.cpp
+index 5fd1b2e2e2c5..ccc1f457f591 100644
+--- a/src/Storages/ObjectStorageQueue/ObjectStorageQueueSource.cpp
++++ b/src/Storages/ObjectStorageQueue/ObjectStorageQueueSource.cpp
+@@ -36,6 +36,7 @@ namespace ErrorCodes
+ {
+     extern const int NOT_IMPLEMENTED;
+     extern const int LOGICAL_ERROR;
++    extern const int QUERY_WAS_CANCELLED;
+ }
+ 
+ ObjectStorageQueueSource::ObjectStorageQueueObjectInfo::ObjectStorageQueueObjectInfo(
+@@ -470,11 +471,72 @@ Chunk ObjectStorageQueueSource::generateImpl()
+ {
+     while (true)
+     {
+-        if (!reader)
++        if (isCancelled())
++        {
++            if (reader)
++                reader->cancel();
++
++            /// Are there any started, but not finished files?
++            if (processed_files.empty() || processed_files.back().state != FileState::Processing)
++            {
++                /// No unfinished files, just stop processing.
++                break;
++            }
++
++            auto started_file = processed_files.back().metadata;
++            /// Something must have been already read.
++            chassert(started_file->getFileStatus()->processed_rows > 0);
++            /// Mark file as Cancelled, such files will not be set as Failed.
++            processed_files.back().state = FileState::Cancelled;
++            /// Throw exception to avoid inserting half processed file to destination table.
++            throw Exception(
++                ErrorCodes::QUERY_WAS_CANCELLED,
++                "Processing was cancelled (having unfinished file: {})", started_file->getPath());
++        }
++
++        if (shutdown_called)
++        {
++            LOG_TEST(log, "Shutdown was called");
++
++            /// Are there any started, but not finished files?
++            if (processed_files.empty() || processed_files.back().state != FileState::Processing)
++            {
++                /// No unfinished files, just stop processing.
++                break;
++            }
++
++            auto started_file = processed_files.back().metadata;
++            if (table_is_being_dropped)
++            {
++                /// Something must have been already read.
++                chassert(started_file->getFileStatus()->processed_rows > 0);
++                /// Mark file as Cancelled, such files will not be set as Failed.
++                processed_files.back().state = FileState::Cancelled;
++                /// Throw exception to avoid inserting half processed file to destination table.
++                throw Exception(
++                    ErrorCodes::QUERY_WAS_CANCELLED,
++                    "Table is being dropped (having unfinished file: {})", started_file->getPath());
++            }
++
++            LOG_DEBUG(log, "Shutdown called, but file {} is partially processed ({} rows). "
++                     "Will process the file fully and then shutdown",
++                     started_file->getPath(), started_file->getFileStatus()->processed_rows);
++        }
++
++        FileMetadataPtr file_metadata;
++        if (reader)
++        {
++            chassert(processed_files.back().state == FileState::Processing);
++            chassert(processed_files.back().metadata->getPath() == reader.getObjectInfo()->getPath());
++
++            file_metadata = processed_files.back().metadata;
++        }
++        else
+         {
+             if (shutdown_called)
+             {
+                 LOG_TEST(log, "Shutdown called");
++                /// Stop processing.
+                 break;
+             }
+ 
+@@ -499,65 +561,17 @@ Chunk ObjectStorageQueueSource::generateImpl()
+                 LOG_TEST(log, "No reader");
+                 break;
+             }
+-        }
+-
+-        const auto * object_info = dynamic_cast<const ObjectStorageQueueObjectInfo *>(reader.getObjectInfo().get());
+-        auto file_metadata = object_info->file_metadata;
+-        auto file_status = file_metadata->getFileStatus();
+-        const auto & path = reader.getObjectInfo()->getPath();
+-
+-        if (isCancelled())
+-        {
+-            reader->cancel();
+-
+-            if (file_status->processed_rows)
+-            {
+-                try
+-                {
+-                    file_metadata->setFailed("Cancelled", /* reduce_retry_count */true, /* overwrite_status */false);
+-                }
+-                catch (...)
+-                {
+-                    LOG_ERROR(log, "Failed to set file {} as failed: {}",
+-                             object_info->relative_path, getCurrentExceptionMessage(true));
+-                }
+-            }
+ 
+-            LOG_TEST(log, "Query is cancelled");
+-            break;
++            const auto * object_info = dynamic_cast<const ObjectStorageQueueObjectInfo *>(reader.getObjectInfo().get());
++            file_metadata = object_info->file_metadata;
++            processed_files.emplace_back(file_metadata);
++            progress->processed_files += 1;
+         }
+ 
+-        if (shutdown_called)
+-        {
+-            LOG_TEST(log, "Shutdown called");
+-
+-            if (file_status->processed_rows == 0)
+-                break;
+-
+-            if (table_is_being_dropped)
+-            {
+-                LOG_DEBUG(
+-                    log, "Table is being dropped, {} rows are already processed from {}, but file is not fully processed",
+-                    file_status->processed_rows, path);
+-
+-                try
+-                {
+-                    file_metadata->setFailed("Table is dropped", /* reduce_retry_count */true, /* overwrite_status */false);
+-                }
+-                catch (...)
+-                {
+-                    LOG_ERROR(log, "Failed to set file {} as failed: {}",
+-                              object_info->relative_path, getCurrentExceptionMessage(true));
+-                }
+-
+-                /// Leave the file half processed. Table is being dropped, so we do not care.
+-                break;
+-            }
++        auto file_status = file_metadata->getFileStatus();
++        const auto & path = file_metadata->getPath();
+ 
+-            LOG_DEBUG(log, "Shutdown called, but file {} is partially processed ({} rows). "
+-                     "Will process the file fully and then shutdown",
+-                     path, file_status->processed_rows);
+-        }
++        LOG_TEST(log, "Processing file: {}", path);
+ 
+         try
+         {
+@@ -587,30 +601,18 @@ Chunk ObjectStorageQueueSource::generateImpl()
+             const auto message = getCurrentExceptionMessage(true);
+             LOG_ERROR(log, "Got an error while pulling chunk. Will set file {} as failed. Error: {} ", path, message);
+ 
+-            failed_during_read_files.push_back(file_metadata);
+-            file_status->onFailed(getCurrentExceptionMessage(true));
++            processed_files.back().state = FileState::ErrorOnRead;
++            processed_files.back().exception_during_read = message;
+ 
+-            if (file_status->processed_rows == 0)
+-            {
+-                if (file_status->retries < file_metadata->getMaxTries())
+-                    file_iterator->returnForRetry(reader.getObjectInfo());
+-
+-                /// If we did not process any rows from the failed file,
+-                /// commit all previously processed files,
+-                /// not to lose the work already done.
+-                return {};
+-            }
+-
+-            throw;
++            /// Stop processing and commit what is already processed.
++            return {};
+         }
+ 
++        processed_files.back().state = FileState::Processed;
+         file_status->setProcessingEndTime();
+         file_status.reset();
+         reader = {};
+ 
+-        processed_files.push_back(file_metadata);
+-        progress->processed_files += 1;
+-
+         if (commit_settings.max_processed_files_before_commit
+             && progress->processed_files == commit_settings.max_processed_files_before_commit)
+         {
+@@ -651,39 +653,52 @@ Chunk ObjectStorageQueueSource::generateImpl()
+     return {};
+ }
+ 
+-void ObjectStorageQueueSource::commit(bool success, const std::string & exception_message)
++void ObjectStorageQueueSource::commit(bool insert_succeeded, const std::string & exception_message)
+ {
+-    LOG_TEST(log, "Having {} files to set as {}, failed files: {}",
+-             processed_files.size(), success ? "Processed" : "Failed", failed_during_read_files.size());
++    LOG_TEST(log, "Having {} files to commit (insert {}succeeded)", processed_files.size(), insert_succeeded ? "" : "hasn't ");
+ 
+-    for (const auto & file_metadata : processed_files)
++    for (const auto & [file_state, file_metadata, exception_during_read] : processed_files)
+     {
+-        if (success)
++        switch (file_state)
+         {
+-            applyActionAfterProcessing(file_metadata->getPath());
+-            file_metadata->setProcessed();
+-        }
+-        else
+-        {
+-            file_metadata->setFailed(
+-                exception_message,
+-                /* reduce_retry_count */false,
+-                /* overwrite_status */true);
++            case FileState::Processed:
++            {
++                if (insert_succeeded)
++                {
++                    applyActionAfterProcessing(file_metadata->getPath());
++                    file_metadata->setProcessed();
++                }
++                else
++                {
++                    file_metadata->setFailed(exception_message, /* reduce_retry_count */false);
++                }
++                break;
++            }
++            case FileState::Cancelled: [[fallthrough]];
++            case FileState::Processing:
++            {
++                if (insert_succeeded)
++                {
++                    throw Exception(
++                        ErrorCodes::LOGICAL_ERROR,
++                        "Unexpected state of file: {}", file_metadata->getPath());
++                }
+ 
++                file_metadata->setFailed(exception_message, /* reduce_retry_count */false);
++                break;
++            }
++            case FileState::ErrorOnRead:
++            {
++                chassert(!exception_during_read.empty());
++                file_metadata->setFailed(exception_during_read, /* reduce_retry_count */true);
++                break;
++            }
+         }
+-        appendLogElement(file_metadata->getPath(), *file_metadata->getFileStatus(), /* processed */success);
+-    }
+ 
+-    for (const auto & file_metadata : failed_during_read_files)
+-    {
+-        /// `exception` from commit args is from insertion to storage.
+-        /// Here we do not used it as failed_during_read_files were not inserted into storage, but skipped.
+-        file_metadata->setFailed(
+-            file_metadata->getFileStatus()->getException(),
+-            /* reduce_retry_count */true,
+-            /* overwrite_status */false);
+-
+-        appendLogElement(file_metadata->getPath(), *file_metadata->getFileStatus(), /* processed */false);
++        appendLogElement(
++            file_metadata->getPath(),
++            *file_metadata->getFileStatus(),
++            /* processed */insert_succeeded && file_state == FileState::Processed);
+     }
+ }
+ 
+diff --git a/src/Storages/ObjectStorageQueue/ObjectStorageQueueSource.h b/src/Storages/ObjectStorageQueue/ObjectStorageQueueSource.h
+index 10bfd1ea6d89..086873a9627d 100644
+--- a/src/Storages/ObjectStorageQueue/ObjectStorageQueueSource.h
++++ b/src/Storages/ObjectStorageQueue/ObjectStorageQueueSource.h
+@@ -24,14 +24,15 @@ class ObjectStorageQueueSource : public ISource, WithContext
+     using Source = StorageObjectStorageSource;
+     using BucketHolderPtr = ObjectStorageQueueOrderedFileMetadata::BucketHolderPtr;
+     using BucketHolder = ObjectStorageQueueOrderedFileMetadata::BucketHolder;
++    using FileMetadataPtr = ObjectStorageQueueMetadata::FileMetadataPtr;
+ 
+     struct ObjectStorageQueueObjectInfo : public Source::ObjectInfo
+     {
+         ObjectStorageQueueObjectInfo(
+             const Source::ObjectInfo & object_info,
+-            ObjectStorageQueueMetadata::FileMetadataPtr file_metadata_);
++            FileMetadataPtr file_metadata_);
+ 
+-        ObjectStorageQueueMetadata::FileMetadataPtr file_metadata;
++        FileMetadataPtr file_metadata;
+     };
+ 
+     class FileIterator : public StorageObjectStorageSource::IIterator
+@@ -143,7 +144,7 @@ class ObjectStorageQueueSource : public ISource, WithContext
+ 
+     /// Commit files after insertion into storage finished.
+     /// `success` defines whether insertion was successful or not.
+-    void commit(bool success, const std::string & exception_message = {});
++    void commit(bool insert_succeeded, const std::string & exception_message = {});
+ 
+ private:
+     const String name;
+@@ -165,11 +166,25 @@ class ObjectStorageQueueSource : public ISource, WithContext
+     const bool commit_once_processed;
+ 
+     LoggerPtr log;
++    Source::ReaderHolder reader;
+ 
+-    std::vector<ObjectStorageQueueMetadata::FileMetadataPtr> processed_files;
+-    std::vector<ObjectStorageQueueMetadata::FileMetadataPtr> failed_during_read_files;
++    enum class FileState
++    {
++        Processing,
++        ErrorOnRead,
++        Cancelled,
++        Processed,
++    };
++    struct ProcessedFile
++    {
++        explicit ProcessedFile(FileMetadataPtr metadata_)
++            : state(FileState::Processing), metadata(metadata_) {}
+ 
+-    Source::ReaderHolder reader;
++        FileState state;
++        FileMetadataPtr metadata;
++        std::string exception_during_read;
++    };
++    std::vector<ProcessedFile> processed_files;
+ 
+     Chunk generateImpl();
+     void applyActionAfterProcessing(const String & path);
+diff --git a/src/Storages/ObjectStorageQueue/ObjectStorageQueueUnorderedFileMetadata.cpp b/src/Storages/ObjectStorageQueue/ObjectStorageQueueUnorderedFileMetadata.cpp
+index 3f3ca6c42351..70e79aebf7d6 100644
+--- a/src/Storages/ObjectStorageQueue/ObjectStorageQueueUnorderedFileMetadata.cpp
++++ b/src/Storages/ObjectStorageQueue/ObjectStorageQueueUnorderedFileMetadata.cpp
+@@ -106,16 +106,6 @@ void ObjectStorageQueueUnorderedFileMetadata::setProcessedAtStartRequests(
+ }
+ 
+ void ObjectStorageQueueUnorderedFileMetadata::setProcessedImpl()
+-{
+-    setProcessedImpl(false);
+-}
+-
+-void ObjectStorageQueueUnorderedFileMetadata::resetProcessingImpl()
+-{
+-    setProcessedImpl(true);
+-}
+-
+-void ObjectStorageQueueUnorderedFileMetadata::setProcessedImpl(bool remove_processing_nodes_only)
+ {
+     /// In one zookeeper transaction do the following:
+     enum RequestType
+@@ -132,7 +122,6 @@ void ObjectStorageQueueUnorderedFileMetadata::setProcessedImpl(bool remove_proce
+ 
+     if (processing_id_version.has_value())
+     {
+-        requests.push_back(zkutil::makeCheckRequest(processing_node_id_path, processing_id_version.value()));
+         requests.push_back(zkutil::makeRemoveRequest(processing_node_id_path, processing_id_version.value()));
+         requests.push_back(zkutil::makeRemoveRequest(processing_node_path, -1));
+ 
+@@ -141,19 +130,16 @@ void ObjectStorageQueueUnorderedFileMetadata::setProcessedImpl(bool remove_proce
+         request_index[CHECK_PROCESSING_ID_PATH] = 0;
+         request_index[REMOVE_PROCESSING_ID_PATH] = 1;
+         request_index[REMOVE_PROCESSING_PATH] = 2;
+-
+-        if (!remove_processing_nodes_only)
+-            request_index[SET_PROCESSED_PATH] = 3;
++        request_index[SET_PROCESSED_PATH] = 3;
+     }
+-    else if (!remove_processing_nodes_only)
++    else
+     {
+         request_index[SET_PROCESSED_PATH] = 0;
+     }
+ 
+-    if (!remove_processing_nodes_only)
+-        requests.push_back(
+-            zkutil::makeCreateRequest(
+-                processed_node_path, node_metadata.toString(), zkutil::CreateMode::Persistent));
++    requests.push_back(
++        zkutil::makeCreateRequest(
++            processed_node_path, node_metadata.toString(), zkutil::CreateMode::Persistent));
+ 
+     Coordination::Responses responses;
+     auto is_request_failed = [&](RequestType type)
+@@ -167,9 +153,6 @@ void ObjectStorageQueueUnorderedFileMetadata::setProcessedImpl(bool remove_proce
+     const auto code = zk_client->tryMulti(requests, responses);
+     if (code == Coordination::Error::ZOK)
+     {
+-        if (remove_processing_nodes_only)
+-            return;
+-
+         if (max_loading_retries
+             && zk_client->tryRemove(failed_node_path + ".retriable", -1) == Coordination::Error::ZOK)
+         {
+@@ -204,7 +187,7 @@ void ObjectStorageQueueUnorderedFileMetadata::setProcessedImpl(bool remove_proce
+         /// This is normal in case of expired session with keeper as this node is ephemeral.
+         failure_reason = "Failed to remove processing path";
+     }
+-    else if (!remove_processing_nodes_only && is_request_failed(SET_PROCESSED_PATH))
++    else if (is_request_failed(SET_PROCESSED_PATH))
+     {
+         unexpected_error = true;
+         failure_reason = "Cannot create a persistent node in /processed since it already exists";
+@@ -215,8 +198,7 @@ void ObjectStorageQueueUnorderedFileMetadata::setProcessedImpl(bool remove_proce
+     if (unexpected_error)
+         throw Exception(ErrorCodes::LOGICAL_ERROR, "{}", failure_reason);
+ 
+-    if (!remove_processing_nodes_only)
+-        LOG_WARNING(log, "Cannot set file {} as processed: {}. Reason: {}", path, code, failure_reason);
++    LOG_WARNING(log, "Cannot set file {} as processed: {}. Reason: {}", path, code, failure_reason);
+ }
+ 
+ }
+diff --git a/src/Storages/ObjectStorageQueue/ObjectStorageQueueUnorderedFileMetadata.h b/src/Storages/ObjectStorageQueue/ObjectStorageQueueUnorderedFileMetadata.h
+index 8df838d07bb1..83eed3990b2b 100644
+--- a/src/Storages/ObjectStorageQueue/ObjectStorageQueueUnorderedFileMetadata.h
++++ b/src/Storages/ObjectStorageQueue/ObjectStorageQueueUnorderedFileMetadata.h
+@@ -27,7 +27,6 @@ class ObjectStorageQueueUnorderedFileMetadata : public ObjectStorageQueueIFileMe
+ private:
+     std::pair<bool, FileStatus::State> setProcessingImpl() override;
+     void setProcessedImpl() override;
+-    void resetProcessingImpl() override;
+ 
+     void setProcessedImpl(bool remove_processing_nodes_only);
+ };
+diff --git a/tests/integration/test_storage_s3_queue/configs/merge_tree.xml b/tests/integration/test_storage_s3_queue/configs/merge_tree.xml
+index 61eba8face7c..8b6d8c451173 100644
+--- a/tests/integration/test_storage_s3_queue/configs/merge_tree.xml
++++ b/tests/integration/test_storage_s3_queue/configs/merge_tree.xml
+@@ -1,5 +1,5 @@
+ <clickhouse>
+     <merge_tree>
+-        <parts_to_throw_insert>0</parts_to_throw_insert>
++        <parts_to_throw_insert>3</parts_to_throw_insert>
+     </merge_tree>
+ </clickhouse>
+diff --git a/tests/integration/test_storage_s3_queue/test.py b/tests/integration/test_storage_s3_queue/test.py
+index 6b8a9002163d..3921747afb67 100644
+--- a/tests/integration/test_storage_s3_queue/test.py
++++ b/tests/integration/test_storage_s3_queue/test.py
+@@ -1208,7 +1208,7 @@ def test_drop_table(started_cluster):
+     assert node.contains_in_log(
+         f"StorageS3Queue (default.{table_name}): Table is being dropped"
+     ) or node.contains_in_log(
+-        f"StorageS3Queue (default.{table_name}): Shutdown was called, stopping sync"
++        f"StorageS3Queue (default.{table_name}): Shutdown was called"
+     )
+ 
+ 
+@@ -1864,7 +1864,6 @@ def test_exception_during_insert(started_cluster):
+     dst_table_name = f"{table_name}_dst"
+     keeper_path = f"/clickhouse/test_{table_name}"
+     files_path = f"{table_name}_data"
+-    files_to_generate = 10
+ 
+     create_table(
+         started_cluster,
+@@ -1877,14 +1876,46 @@ def test_exception_during_insert(started_cluster):
+         },
+     )
+     node.rotate_logs()
+-    total_values = generate_random_files(
+-        started_cluster, files_path, files_to_generate, start_ind=0, row_num=1
+-    )
+ 
++    node.query("system stop merges")
+     create_mv(node, table_name, dst_table_name)
+ 
++    def get_count():
++        return int(node.query(f"SELECT count() FROM {dst_table_name}"))
++
++    def wait_for_rows(expected_rows):
++        for _ in range(20):
++            if expected_rows == get_count():
++                break
++            time.sleep(1)
++        assert expected_rows == get_count()
++
++    expected_rows = [0]
++
++    def generate(check_inserted):
++        files_to_generate = 11
++        row_num = 1000000
++        node.query(f"detach table {dst_table_name}_mv")
++        time.sleep(10)
++        total_values = generate_random_files(
++            started_cluster,
++            files_path,
++            files_to_generate,
++            start_ind=0,
++            row_num=row_num,
++            use_random_names=1,
++        )
++        node.query(f"attach table {dst_table_name}_mv")
++        expected_rows[0] += files_to_generate * row_num
++        if check_inserted:
++            wait_for_rows(expected_rows[0])
++
++    generate(True)
++    generate(True)
++    generate(False)
++
+     node.wait_for_log_line(
+-        "Failed to process data: Code: 252. DB::Exception: Too many parts"
++        "Merges are processing significantly slower than inserts: while pushing to view default.test_exception_during_insert_"
+     )
+ 
+     time.sleep(2)
+@@ -1893,32 +1924,10 @@ def test_exception_during_insert(started_cluster):
+     )
+     assert "Too many parts" in exception
+ 
+-    original_parts_to_throw_insert = 0
+-    modified_parts_to_throw_insert = 10
+-    node.replace_in_config(
+-        "/etc/clickhouse-server/config.d/merge_tree.xml",
+-        f"parts_to_throw_insert>{original_parts_to_throw_insert}",
+-        f"parts_to_throw_insert>{modified_parts_to_throw_insert}",
+-    )
+-    try:
+-        node.restart_clickhouse()
+-
+-        def get_count():
+-            return int(node.query(f"SELECT count() FROM {dst_table_name}"))
++    node.query("system start merges")
++    node.query(f"optimize table {dst_table_name} final")
+ 
+-        expected_rows = 10
+-        for _ in range(20):
+-            if expected_rows == get_count():
+-                break
+-            time.sleep(1)
+-        assert expected_rows == get_count()
+-    finally:
+-        node.replace_in_config(
+-            "/etc/clickhouse-server/config.d/merge_tree.xml",
+-            f"parts_to_throw_insert>{modified_parts_to_throw_insert}",
+-            f"parts_to_throw_insert>{original_parts_to_throw_insert}",
+-        )
+-        node.restart_clickhouse()
++    wait_for_rows(expected_rows[0])
+ 
+ 
+ def test_commit_on_limit(started_cluster):
+@@ -2013,6 +2022,12 @@ def get_failed_files():
+     assert 1 == int(
+         node.count_in_log(f"Setting file {files_path}/test_9999.csv as failed")
+     )
++    assert 1 == int(
++        node.count_in_log(
++            f"File {files_path}/test_9999.csv failed to process and will not be retried"
++        )
++    )
++
+     assert failed_files_event_before + 1 == int(
+         node.query(
+             "SELECT value FROM system.events WHERE name = 'ObjectStorageQueueFailedFiles' SETTINGS system_events_show_zero_values=1"
