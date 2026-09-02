@@ -27,7 +27,7 @@ THE DESIGN LAYER IS THE NEWEST CODE AND HAS HAD ALMOST NO REVIEW:
 
 [TRUNCATED HERE. The material is too large to pass on the command line, so the COMPLETE text -- including everything above and the entire body that follows it -- has been written to this file:
 
-    /home/mjarnold/.claude/jobs/1bfefee6/tmp/mini/.llm-panel-material/material-bd56dbc187dd.md
+    /home/user/.claude/jobs/1bfefee6/tmp/mini/.llm-panel-material/material-bd56dbc187dd.md
 
 READ THAT FILE NOW, before answering. You have read tools. Everything you need is in it; what you see above is only its opening. Answering from this excerpt alone will produce a wrong review.]
 

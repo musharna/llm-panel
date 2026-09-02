@@ -5,7 +5,7 @@
 # Every command runs for real; only the typing is simulated. Keys/PATH lines are machine-specific.
 # Terminal demo for the README. Every command below runs for real; only the typing is simulated.
 set -a; source ~/.config/secrets/api-keys.env; set +a
-export PATH="$HOME/.opencode/bin:$HOME/.local/bin:/home/mjarnold/.npm-global/bin:$PATH"
+export PATH="$HOME/.opencode/bin:$HOME/.local/bin:$HOME/.npm-global/bin:$PATH"
 cd ~/llm-panel
 type_cmd() {  # print a prompt, "type" the command, then run it
   printf '\033[1;32m$\033[0m '

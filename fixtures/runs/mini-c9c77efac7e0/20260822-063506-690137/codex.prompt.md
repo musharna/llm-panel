@@ -1526,12 +1526,12 @@ def main():
           f"{len(claims_of(run))} round-2 positions)")
 
     if a.open:
-        dl = pathlib.Path("/mnt/c/Users/a2b32/Downloads")
+        dl = pathlib.Path("/mnt/c/Users/user/Downloads")
         if not dl.is_dir():
             print(f"--open: {dl} not found; open {out} yourself", file=sys.stderr)
             return 0
         shutil.copy2(out, dl / out.name)
-        win = f"C:\\Users\\a2b32\\Downloads\\{out.name}"
+        win = f"C:\\Users\\user\\Downloads\\{out.name}"
         for exe, label in [
             (r"/mnt/c/Program Files/Mozilla Firefox/firefox.exe", "Firefox"),
             (r"/mnt/c/Program Files/Google/Chrome/Application/chrome.exe", "Chrome"),
