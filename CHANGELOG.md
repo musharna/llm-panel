@@ -1,6 +1,10 @@
 # Changelog
 
-## Unreleased
+## 0.1.3 — 2026-09-01
+
+A documentation release: the only code change is one word of `--rebut` help text
+("anonymised", matching the README) and the version line. It exists because PyPI
+renders the README it was uploaded with, and that was the 0.1.2 one.
 
 - README: the "What's here" diagram is a pre-rendered SVG (light and dark) instead of a
   mermaid block, and every link is absolute, so the PyPI page renders it — PyPI has no
