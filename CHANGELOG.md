@@ -5,6 +5,11 @@
 - The README's precision/recall chart is drawn by `docs/bench_chart.R` (ggplot2) from
   `docs/theme.R`, the one house style every figure in the repository sources; the
   matplotlib script it replaces is gone. Same numbers, same canvas, both colour schemes.
+- `opencode.jsonc`'s comment on `edit: deny` is corrected. Re-measured on opencode 1.18.26:
+  a primary agent with only that deny has no write tool and creates no file, so the
+  2026-08-20 "judge wrote a file under `edit: deny`" observation was the subagent
+  fallback, not a permission failure. The fallback itself is confirmed upstream on
+  1.18.26 with a write demonstration (anomalyco/opencode#36764).
 - `recall/benchmarks/README.md` no longer lists `checkouts/` as browsable (it is
   gitignored and rebuilt by `aacr-upstream checkout`) and says which `diffs-upstream/`
   diffs are committed. The 35-PR replication sample's 31 committable diffs are now in
