@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- `llm-panel --usage` shows the ChatGPT plan the `codex` judge spends: both rate-limit
+  windows with local reset times, the plan type, and the banked "Full reset (Weekly +
+  5 hr)" credits. `--reset-usage` redeems one credit after the word `RESET` is typed;
+  anything else on stdin sends no consume request, and the controls prove that against a
+  fake `codex` that logs every JSON-RPC method it receives. Both go through
+  `codex app-server` (`account/rateLimits/read`, `account/rateLimits/resetCredit/consume`),
+  which is where this data lives — `codex exec --json` never emits it. Verified on codex-cli
+  0.148.0 against a live Plus account.
 - The captured artifacts no longer name the author's machine. Benchmark `rundir` fields,
   `BINARIES.txt` ledgers, the replayed fixture runs (whose prompts embed the tool's own
   source), the demo recording and `docs/demo.sh` carried the private home path and Windows

@@ -58,7 +58,7 @@ citation-overlap tables show where the panel's attention landed (three judges re
 | `recall/aacr-upstream` | runs the panel over AACR-Bench PRs and hands the findings to **upstream's** evaluator  |
 | `recall/aacr-score`    | invokes that evaluator, and refuses to report a number from a judge that isn't running |
 | `claimlib.py`          | the one measurement boundary: reviews → span-grounded observations                     |
-| `*-controls`           | the regression suites — 890 controls, every one tied to a defect that shipped          |
+| `*-controls`           | the regression suites — 926 controls, every one tied to a defect that shipped          |
 
 ## Install
 
@@ -184,6 +184,13 @@ spots. Add it explicitly when that isn't the case — it is strong.
   the setting; `--timeout SECONDS` caps each judge, and a judge over the deadline is killed
   as a whole process group and reported `harness`. `-f FILE` reads the prompt from a file.
 - Long questions go via stdin: `llm-panel - <<'ASK' … ASK`.
+- `--usage` shows what the `codex` judge is spending: the ChatGPT plan's 5-hour and weekly
+  windows, when each resets, and the "Full reset (Weekly + 5 hr)" credits OpenAI banks on
+  the account. `--reset-usage` redeems **one** of those credits — it prints the same
+  screen, then asks you to type `RESET`, because a credit is finite and a script should not
+  be able to spend one by passing a flag. Both read the account through
+  `codex app-server`, the same channel the interactive `/status` screen uses, and cost
+  no quota themselves.
 
 Judges reading through `codex`/`opencode`/`claude` can **read your repo**. `ollama` judges
 answer from the prompt alone with no tool loop, so they cannot verify a claim against code.

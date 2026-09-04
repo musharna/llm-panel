@@ -1705,6 +1705,122 @@ with section("23.8 the rest, by source"):
           "fcntl = None" in _s23 and "if fcntl is None:" in _s23, True)
 
 
+# --- 24. --usage / --reset-usage: the ChatGPT plan's windows and banked resets ----------
+#
+# Codex banks "Full reset (Weekly + 5 hr)" credits on the account and exposes them only
+# through its app-server (`account/rateLimits/read`, `account/rateLimits/resetCredit/consume`).
+# A credit is finite, so redeeming one has to be an explicit act: `--reset-usage` reads the
+# word RESET from stdin and sends nothing otherwise. The fake `codex` below speaks the same
+# JSON-RPC over stdio and LOGS every method it was sent, so the negative control can assert
+# that no consume request left this process -- "it printed 'not reset'" would pass on a
+# build that consumed the credit and then printed that.
+import subprocess as _sp24, tempfile as _tf24
+_d24 = pathlib.Path(_tf24.mkdtemp())
+_log24 = _d24 / "methods.log"
+_fake24 = _d24 / "codex"
+_fake24.write_text(f'''#!{sys.executable}
+import json, os, sys
+# The real binary's `--version` is what --usage probes are NOT allowed to need; only the
+# app-server subcommand is spoken here.
+assert sys.argv[1:] == ["app-server"], sys.argv
+outcome = os.environ.get("FAKE_OUTCOME", "reset")
+credits = int(os.environ.get("FAKE_CREDITS", "2"))
+rl = {{"limitId": "codex", "primary": {{"usedPercent": 42, "windowDurationMins": 300, "resetsAt": 1788576506}},
+      "secondary": {{"usedPercent": 43, "windowDurationMins": 10080, "resetsAt": 1788799059}},
+      "planType": "plus", "rateLimitReachedType": None}}
+for line in sys.stdin:
+    req = json.loads(line)
+    with open({str(_log24)!r}, "a") as fh:
+        fh.write(req.get("method", "?") + "\\n")
+    if "id" not in req:
+        continue
+    m = req["method"]
+    if m == "initialize":
+        res = {{"userAgent": "fake"}}
+    elif m == "account/rateLimits/read":
+        res = {{"rateLimits": rl, "rateLimitResetCredits": {{"availableCount": credits, "credits": [
+            {{"id": "RateLimitResetCredit_abc", "resetType": "codexRateLimits", "status": "available",
+              "grantedAt": 1787353263, "expiresAt": 1789945263, "title": "Full reset (Weekly + 5 hr)"}}] * credits}}}}
+    elif m == "account/rateLimits/resetCredit/consume":
+        assert req["params"]["idempotencyKey"], req
+        res = {{"outcome": outcome}}
+    else:
+        sys.stdout.write(json.dumps({{"jsonrpc": "2.0", "id": req["id"], "error": {{"code": -32601, "message": "no such method " + m}}}}) + "\\n")
+        sys.stdout.flush(); continue
+    sys.stdout.write(json.dumps({{"jsonrpc": "2.0", "id": req["id"], "result": res}}) + "\\n")
+    sys.stdout.flush()
+''')
+_fake24.chmod(0o755)
+_env24 = dict(os.environ, PATH=f"{_d24}:{os.environ.get('PATH', '')}",
+              XDG_CACHE_HOME=str(_d24 / "cache"), TZ="America/New_York")
+
+
+def _methods24():
+    return _log24.read_text().split() if _log24.is_file() else []
+
+
+def _run24(args, stdin_text="", **env):
+    if _log24.is_file():
+        _log24.unlink()
+    return _sp24.run([sys.executable, str(SRC), *args], input=stdin_text, capture_output=True,
+                     text=True, timeout=120, env=dict(_env24, **env))
+
+
+with section("24.1 --usage shows both windows, the plan, and the banked resets"):
+    _r = _run24(["--usage"])
+    check("exit 0", _r.returncode, 0)
+    check("the 5-hour window with its percentage", "5-hour" in _r.stdout and "42%" in _r.stdout, True)
+    check("the weekly window with its percentage", "weekly" in _r.stdout and "43%" in _r.stdout, True)
+    check("reset times are local wall-clock, not epochs",
+          "10:48 PM" in _r.stdout and "1788576506" not in _r.stdout, True)
+    check("the plan", "plus" in _r.stdout, True)
+    check("the banked count and title", "2 banked" in _r.stdout and "Full reset (Weekly + 5 hr)" in _r.stdout, True)
+    check("credit expiry is a date", "Sep 20" in _r.stdout, True)
+    check("it only READ", _methods24(), ["initialize", "initialized", "account/rateLimits/read"])
+
+with section("24.2 --reset-usage without the word RESET on stdin consumes nothing"):
+    for _typed in ("", "yes\n", "reset\n", "y\n"):
+        _r = _run24(["--reset-usage"], stdin_text=_typed)
+        check(f"stdin {_typed!r}: exit 1", _r.returncode, 1)
+        check(f"stdin {_typed!r}: says nothing was redeemed", "not redeemed" in _r.stderr, True)
+        check(f"stdin {_typed!r}: no consume request was sent",
+              "account/rateLimits/resetCredit/consume" in _methods24(), False)
+    check("the prompt names what is being spent",
+          "Full reset (Weekly + 5 hr)" in _r.stdout and "RESET" in _r.stdout, True)
+
+with section("24.3 --reset-usage with RESET on stdin redeems one credit and re-reads"):
+    _r = _run24(["--reset-usage"], stdin_text="RESET\n")
+    check("exit 0", _r.returncode, 0)
+    check("the outcome is reported in the provider's word", "reset" in _r.stdout.lower(), True)
+    _m = _methods24()
+    check("exactly one consume request", _m.count("account/rateLimits/resetCredit/consume"), 1)
+    check("the windows are read again AFTER the consume so the user sees the new state",
+          _m.index("account/rateLimits/resetCredit/consume") < len(_m) - 1
+          and _m[-1] == "account/rateLimits/read", True)
+
+with section("24.4 the backend's other outcomes are surfaced, not flattened to success"):
+    _r = _run24(["--reset-usage"], stdin_text="RESET\n", FAKE_OUTCOME="noCredit", FAKE_CREDITS="0")
+    check("no credit: exit 1", _r.returncode, 1)
+    check("no credit: says so", "no" in _r.stderr.lower() and "credit" in _r.stderr.lower(), True)
+    check("no credit: never asked for confirmation on an empty bank",
+          "account/rateLimits/resetCredit/consume" in _methods24(), False)
+    _r = _run24(["--reset-usage"], stdin_text="RESET\n", FAKE_OUTCOME="nothingToReset")
+    check("nothing to reset: exit 1", _r.returncode, 1)
+    check("nothing to reset: the sentence", "nothing to reset" in _r.stderr, True)
+
+with section("24.5 codex missing or broken is a sentence, not a traceback or a hang"):
+    _r = _run24(["--usage"], PATH="/usr/bin:/bin")
+    check("no codex: exit 1", _r.returncode, 1)
+    check("no codex: names the binary and the install", "codex" in _r.stderr and "npm" in _r.stderr, True)
+    check("no traceback", "Traceback" in _r.stderr, False)
+    _dead = _d24 / "dead"; _dead.mkdir(exist_ok=True)
+    (_dead / "codex").write_text("#!/bin/sh\nexit 3\n"); (_dead / "codex").chmod(0o755)
+    _r = _run24(["--usage"], PATH=f"{_dead}:/usr/bin:/bin")
+    check("codex that exits: exit 1", _r.returncode, 1)
+    check("codex that exits: no traceback", "Traceback" in _r.stderr, False)
+    check("codex that exits: names the app-server", "app-server" in _r.stderr, True)
+
+
 print(f"\nFAILED ({len(FAILED)} of {COUNT} failing)" if FAILED else f"\nall {COUNT} controls green")
 for f in FAILED:
     print("  -", f)

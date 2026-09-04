@@ -2529,6 +2529,139 @@ def thread_key(name, repo):
     return f"{safe}-{hashlib.sha256(keyed.encode()).hexdigest()[:12]}"
 
 
+# --- the ChatGPT plan's usage windows and banked resets ----------------------------------
+#
+# The codex judge spends plan quota, and the plan has two windows (5-hour, weekly) plus
+# "Full reset (Weekly + 5 hr)" credits that OpenAI banks on the account. None of that is on
+# `codex exec`'s stdout: it lives behind the app-server's JSON-RPC (`account/rateLimits/read`
+# and `.../resetCredit/consume`), which is what the interactive `/status` screen reads. So
+# --usage asks the same thing the TUI does, and --reset-usage redeems one credit -- behind
+# the typed word RESET, because a credit is finite and a script must not be able to burn
+# one by passing a flag.
+def codex_rpc(calls, timeout=45):
+    """Send JSON-RPC requests to a fresh `codex app-server` and return {id: result}.
+
+    Each call is (method, params). An `error` member on any reply, an exit before every
+    reply landed, or the wall-clock guard is fatal with the provider's sentence: the caller
+    is a human at a terminal asking about their own account, and a half-answer is worse
+    than none."""
+    if not shutil.which(BINARY["codex"]):
+        die(f"`{BINARY['codex']}` is not on PATH; {INSTALL_HINT['codex']}")
+    try:
+        p = subprocess.Popen([BINARY["codex"], "app-server"], stdin=subprocess.PIPE,
+                             stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+                             env=scrubbed_env("codex"), start_new_session=True)
+    except OSError as e:
+        die(f"could not start `codex app-server`: {e}")
+    reqs = [{"jsonrpc": "2.0", "id": 1, "method": "initialize",
+             "params": {"clientInfo": {"name": "llm-panel", "title": "llm-panel",
+                                       "version": __version__}}},
+            {"jsonrpc": "2.0", "method": "initialized"}]
+    reqs += [{"jsonrpc": "2.0", "id": i + 2, "method": m, "params": ps}
+             for i, (m, ps) in enumerate(calls)]
+    want = {r["id"] for r in reqs if "id" in r}
+    got = {}
+    deadline = time.time() + timeout
+    try:
+        for r in reqs:
+            p.stdin.write(json.dumps(r) + "\n")
+        p.stdin.flush()
+        # `readline` is unbounded; poll the deadline through a thread so a wedged server
+        # cannot pin the terminal. The thread dies with the process.
+        def _reap():
+            if p.poll() is None:
+                time.sleep(max(0.0, deadline - time.time()))
+                if p.poll() is None:
+                    os.killpg(p.pid, signal.SIGKILL)
+        threading.Thread(target=_reap, daemon=True).start()
+        for line in p.stdout:
+            try:
+                ev = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if not isinstance(ev, dict) or ev.get("id") not in want:
+                continue
+            if "error" in ev:
+                msg = (ev["error"] or {}).get("message") if isinstance(ev["error"], dict) else ev["error"]
+                die(f"codex app-server refused {reqs[ev['id'] - 1]['method']}: {msg}")
+            got[ev["id"]] = ev.get("result")
+            if len(got) == len(want):
+                break
+    except BrokenPipeError:
+        pass
+    finally:
+        if p.poll() is None:
+            os.killpg(p.pid, signal.SIGKILL)
+        p.wait()
+    if len(got) != len(want):
+        err = p.stderr.read().strip()[:400] if p.stderr else ""
+        if time.time() >= deadline:
+            die(f"codex app-server did not answer within {timeout}s")
+        die(f"codex app-server exited {p.returncode} before answering"
+            + (f": {err}" if err else "") + " -- is `codex login` done?")
+    return {i - 2: got[i] for i in got if i >= 2}
+
+
+def _local_clock(epoch):
+    if not isinstance(epoch, (int, float)):
+        return "unknown"
+    return datetime.datetime.fromtimestamp(epoch).astimezone().strftime("%a %b %-d %-I:%M %p %Z")
+
+
+def codex_usage():
+    """The plan's rate-limit windows and banked reset credits, as the app-server reports them."""
+    return codex_rpc([("account/rateLimits/read", {})])[0] or {}
+
+
+def print_usage(u):
+    rl = u.get("rateLimits") or {}
+    win = {"5-hour": rl.get("primary"), "weekly": rl.get("secondary")}
+    print(f"plan: {rl.get('planType', 'unknown')}"
+          + (f"   LIMIT REACHED: {rl['rateLimitReachedType']}" if rl.get("rateLimitReachedType") else ""))
+    for label, w in win.items():
+        if not w:
+            print(f"{label:<8}window: not reported")
+            continue
+        print(f"{label:<8}window: {w.get('usedPercent', '?')}% used, resets {_local_clock(w.get('resetsAt'))}")
+    bank = u.get("rateLimitResetCredits") or {}
+    n = bank.get("availableCount", 0)
+    print(f"{n} banked reset{'s' if n != 1 else ''}"
+          + (":" if bank.get("credits") else "" if n == 0 else " (details not reported)"))
+    for c in bank.get("credits") or []:
+        exp = c.get("expiresAt")
+        print(f"  {c.get('title') or c.get('resetType') or c.get('id')}  [{c.get('status')}]"
+              + (f"  expires {_local_clock(exp)}" if exp else ""))
+
+
+def run_reset_usage():
+    """Redeem ONE banked reset, after showing what is being spent and reading RESET from stdin."""
+    u = codex_usage()
+    print_usage(u)
+    bank = u.get("rateLimitResetCredits") or {}
+    if not bank.get("availableCount"):
+        die("no banked reset credit on this account; nothing to redeem")
+    first = (bank.get("credits") or [{}])[0]
+    print(f"\nThis redeems one {first.get('title') or 'reset credit'}. It cannot be undone.")
+    print("Type RESET to confirm: ", end="", flush=True)
+    typed = sys.stdin.readline().strip()
+    if typed != "RESET":
+        die("not redeemed (confirmation was not the word RESET)")
+    key = str(__import__("uuid").uuid4())
+    out = codex_rpc([("account/rateLimits/resetCredit/consume", {"idempotencyKey": key}),
+                     ("account/rateLimits/read", {})])
+    outcome = (out.get(0) or {}).get("outcome")
+    print(f"\noutcome: {outcome}\n")
+    print_usage(out.get(1) or {})
+    if outcome == "reset":
+        return 0
+    if outcome == "nothingToReset":
+        die("the credit was not spent: the provider said there is nothing to reset "
+            "(no window is currently limited)")
+    if outcome == "noCredit":
+        die("the provider said there is no credit to redeem")
+    die(f"unexpected outcome from the provider: {outcome!r}")
+
+
 def run_check(judges, repo, timeout, agent):
     """Actually ping each judge. --list makes a claim; this one observes it."""
     sys.stderr.write(f"llm-panel: pinging {len(judges)} judges...\n")
@@ -2570,6 +2703,10 @@ def main():
                     help="print the roster config path and schema, then exit")
     ap.add_argument("--check", action="store_true",
                     help="ping every selected judge and report what actually happened")
+    ap.add_argument("--usage", action="store_true",
+                    help="show the ChatGPT plan's 5-hour and weekly windows and banked resets")
+    ap.add_argument("--reset-usage", action="store_true",
+                    help="redeem ONE banked reset credit (asks you to type RESET first)")
     ap.add_argument("--show", action="store_true")
     ap.add_argument("--runs", action="store_true",
                     help="list past panel runs for this repo (newest first) with their "
@@ -2725,6 +2862,11 @@ def main():
             print(f"accounts. Edit {CONFIG_PATH}")
             print("to add or drop judges; --help-config prints the schema.")
         return
+
+    if a.usage:
+        print_usage(codex_usage()); return
+    if a.reset_usage:
+        sys.exit(run_reset_usage())
 
     if a.show:
         last = sorted(outdir.glob("*/panel.md")) if outdir.exists() else []
