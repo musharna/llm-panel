@@ -10,7 +10,7 @@
 # -e and pipefail: with -u alone a failed POSITIVE leg ran straight into the NEGATIVE one
 # and printed ALL PANELS DONE, indistinguishable from a run that worked.
 set -euo pipefail
-R="$1"; TIMEOUT="${2:-900}"
+R="$1"; TIMEOUT="${2:-900}"; LIMIT="${3:-}"   # LIMIT: first N instances of each leg (a dry run)
 S="$(cd "$(dirname "$0")/.." && pwd)"
 mkdir -p "$R/bin/recall"
 cp "$S/llm-panel" "$S/claimlib.py" "$R/bin/"
@@ -25,12 +25,12 @@ chmod +x "$R/bin/llm-panel" "$R/bin/recall/aacr-upstream"
 cat "$R/BINARIES.txt"
 export PATH="$R/bin:$PATH"
 
-echo; echo "=== POSITIVE (20 instances, seed 42) ==="
+echo; echo "=== POSITIVE (${LIMIT:-20} of 20 instances, seed 42) ==="
 "$R/bin/recall/aacr-upstream" run \
   --instances "$S/recall/benchmarks/upstream/pos-seed42-n20.jsonl" \
-  --out "$R/pos" --judges codex,big-pickle,nemotron --effort high --timeout "$TIMEOUT"
-echo; echo "=== NEGATIVE (10 instances, seed 42) ==="
+  --out "$R/pos" --judges codex,big-pickle,nemotron --effort high --timeout "$TIMEOUT" ${LIMIT:+--limit "$LIMIT"}
+echo; echo "=== NEGATIVE (${LIMIT:-10} of 10 instances, seed 42) ==="
 "$R/bin/recall/aacr-upstream" run \
   --instances "$S/recall/benchmarks/upstream/neg-seed42-n10.jsonl" \
-  --out "$R/neg" --judges codex,big-pickle,nemotron --effort high --timeout "$TIMEOUT"
+  --out "$R/neg" --judges codex,big-pickle,nemotron --effort high --timeout "$TIMEOUT" ${LIMIT:+--limit "$LIMIT"}
 echo; date '+# finished %F %T %Z'; echo "=== ALL PANELS DONE ==="

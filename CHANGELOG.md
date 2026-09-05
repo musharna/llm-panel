@@ -1,5 +1,12 @@
 # Changelog
 
+## Unreleased
+
+- `recall/aacr-run.sh` takes an optional third argument, the number of instances per leg,
+  so a one-instance dry run exists. Measured 2026-09-05 with live judges: both legs wrote
+  their result files, and a failing leg aborts the script instead of printing ALL PANELS
+  DONE.
+
 ## 0.1.4 — 2026-09-04
 
 Two audits and a privacy scrub. The one behaviour change to plan for: a **claude judge is
