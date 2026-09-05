@@ -1689,6 +1689,9 @@ with section("23.7 --help lists the exit codes"):
     check("exit 0", _r.returncode, 0)
     check("an exit-codes section", "exit codes:" in _r.stdout, True)
     check("including the ones a first run hits", all(f"\n  {c}" in _r.stdout for c in ("4", "7", "9", "130")), True)
+    # 3 (--check found a harness failure), 10 (--thread lock held) and 13 (illegal judge
+    # name) were returned by the program and listed nowhere a script reading $? could find.
+    check("and the ones it did not list", all(f"\n  {c}" in _r.stdout for c in ("3", "10", "13")), True)
 
 with section("23.8 the rest, by source"):
     _s23 = SRC.read_text(encoding="utf-8")
@@ -1700,7 +1703,7 @@ with section("23.8 the rest, by source"):
     check("the run directory is owner-only", "os.chmod(rundir, 0o700)" in _s23, True)
     check("the temp-state fallback is re-checked against the tree",
           _s23.count("cache_is_inside(STATE, repo)") >= 3, True)
-    check("--diff has a size ceiling", "DIFF_MAX_CHARS" in _s23 and "len(diff) > DIFF_MAX_CHARS" in _s23, True)
+    check("--diff has a size ceiling", "DIFF_MAX_CHARS" in _s23 and "if too_big:" in _s23, True)
     check("Windows gets a sentence after --help/--version still work",
           "fcntl = None" in _s23 and "if fcntl is None:" in _s23, True)
 
@@ -1737,6 +1740,9 @@ for line in sys.stdin:
     m = req["method"]
     if m == "initialize":
         res = {{"userAgent": "fake"}}
+    elif m == "account/rateLimits/read" and os.environ.get("FAKE_FAIL_READ"):
+        sys.stdout.write(json.dumps({{"jsonrpc": "2.0", "id": req["id"], "error": {{"code": 401, "message": "not logged in"}}}}) + "\\n")
+        sys.stdout.flush(); continue
     elif m == "account/rateLimits/read":
         res = {{"rateLimits": rl, "rateLimitResetCredits": {{"availableCount": credits, "credits": [
             {{"id": "RateLimitResetCredit_abc", "resetType": "codexRateLimits", "status": "available",
@@ -1819,6 +1825,131 @@ with section("24.5 codex missing or broken is a sentence, not a traceback or a h
     check("codex that exits: exit 1", _r.returncode, 1)
     check("codex that exits: no traceback", "Traceback" in _r.stderr, False)
     check("codex that exits: names the app-server", "app-server" in _r.stderr, True)
+
+
+# --- 25. the second audit (2026-09-04) ------------------------------------------------
+import signal as _sig25, time as _time25
+
+with section("25.1 a refused RPC is blamed on the method that was refused"):
+    # reqs[id - 1] assumed one request per id; the `initialized` notification has no id,
+    # so id 2 (the first real call) indexed the notification and the message read
+    # "refused initialized". A credit-spending path deserves the right name.
+    _r = _run24(["--usage"], FAKE_FAIL_READ="1")
+    check("25.1 exit 1", _r.returncode, 1)
+    check("25.1 names account/rateLimits/read", "refused account/rateLimits/read" in _r.stderr, True)
+    check("25.1 not the notification", "initialized" in _r.stderr, False)
+    check("25.1 carries the backend's message", "not logged in" in _r.stderr, True)
+
+with section("25.2 SIGTERM leaves the tree clean and no judge running"):
+    # Cleanup was atexit-only, and atexit runs on sys.exit, not on a signal's default
+    # action. `kill`, `timeout`, a cancelled CI job: material stayed in the reviewed
+    # tree and the judge children ran on, spending quota for a panel nobody would read.
+    _d25 = pathlib.Path(_tf2.mkdtemp())
+    _repo25 = _d25 / "repo"; _repo25.mkdir()
+    _sp.run(["git", "-C", str(_repo25), "init", "-q"], check=True)
+    _pid25 = _d25 / "judge.pid"
+    _bin25 = _d25 / "bin"; _bin25.mkdir()
+    (_bin25 / "codex").write_text(f"""#!/bin/sh
+case "$1" in exec) sleep 300 & echo $! > {_pid25}; wait ;; *) echo codex-cli 0.148.0 ;; esac
+""")
+    (_bin25 / "codex").chmod(0o755)
+    _pf25 = _d25 / "q.md"
+    _pf25.write_text("review this\n" + "x" * 140_000, encoding="utf-8")   # >= MAX_ARGV_BYTES: spills material
+    _env25 = {"HOME": str(_d25), "XDG_CONFIG_HOME": str(_d25 / "cfg"), "XDG_CACHE_HOME": str(_d25 / "cache"),
+              "PATH": f"{_bin25}:/usr/bin:/bin"}
+    _p = _sp.Popen([sys.executable, str(SRC), "-f", str(_pf25), "--judges", "codex", "--cwd", str(_repo25)],
+                   env=_env25, stdout=_sp.PIPE, stderr=_sp.PIPE, text=True)
+    _mat25 = _repo25 / ".llm-panel-material"
+    for _ in range(300):
+        if _pid25.is_file() and _pid25.read_text().strip() and list(_mat25.glob("material-*.md")):
+            break
+        _time25.sleep(0.05)
+    check("25.2 (setup) the judge is running and material was spilled",
+          _pid25.is_file() and bool(list(_mat25.glob("material-*.md"))), True)
+    _gp = int(_pid25.read_text()) if _pid25.is_file() and _pid25.read_text().strip() else None
+    _p.send_signal(_sig25.SIGTERM)
+    try:
+        _out, _err = _p.communicate(timeout=20)
+    except _sp.TimeoutExpired:
+        _p.kill(); _out, _err = _p.communicate()
+    check("25.2 exit 130, the interrupted code", _p.returncode, 130)
+    check("25.2 material removed from the tree", list(_mat25.glob("material-*.md")), [])
+
+    def _alive25(pid, settle):
+        end = _time25.time() + settle
+        while True:
+            try:
+                _os.kill(pid, 0)
+            except ProcessLookupError:
+                return False
+            if _time25.time() >= end:
+                return True
+            _time25.sleep(0.05)
+    check("25.2 the judge's sleep is dead", _gp is not None and _alive25(_gp, 3.0), False)
+    if _gp is not None and _alive25(_gp, 0):
+        _os.kill(_gp, _sig25.SIGKILL)
+    check("25.2 says it was interrupted", "interrupted" in _err, True)
+    _runs25 = list((_d25 / "cache").glob("llm-panel/runs/*/*/panel.md"))
+    check("25.2 what landed is written as INTERRUPTED", bool(_runs25) and "INTERRUPTED" in _runs25[0].read_text(), True)
+
+with section("25.3 a tree with claude hooks or MCP servers is refused like an opencode one"):
+    # `claude -p` was measured (2026-09-04, this laptop) to run a project's SessionStart
+    # and UserPromptSubmit hooks from .claude/settings.json with no trust prompt. That is
+    # the opencode hazard exactly, and it got a NOTE while opencode got exit 9.
+    _t25 = pathlib.Path(_tf2.mkdtemp())
+    (_t25 / ".claude").mkdir()
+    (_t25 / ".claude" / "settings.json").write_text('{"hooks": {"SessionStart": [{"hooks": [{"type": "command", "command": "id"}]}]}}')
+    _r = _run23(["hello", "--judges", "claude-sonnet", "--cwd", str(_t25)], _env23)
+    check("25.3 exit 9", _r.returncode, 9)
+    check("25.3 names the file", "settings.json" in _r.stderr, True)
+    check("25.3 names the override", "--unsafe-agent" in _r.stderr, True)
+    check("25.3 no judge was asked", "asking" not in _r.stderr + _r.stdout, True)
+    _t25b = pathlib.Path(_tf2.mkdtemp())
+    (_t25b / ".mcp.json").write_text('{"mcpServers": {"x": {"command": "evil"}}}')
+    _r = _run23(["hello", "--judges", "claude-sonnet", "--cwd", str(_t25b)], _env23)
+    check("25.3 .mcp.json is refused too", _r.returncode, 9)
+    _r = _run23(["hello", "--judges", "claude-sonnet", "--cwd", str(_t25), "--unsafe-agent"], _env23)
+    check("25.3 --unsafe-agent gets past the gate", _r.returncode != 9, True)
+    _t25c = pathlib.Path(_tf2.mkdtemp())
+    (_t25c / ".claude").mkdir()
+    (_t25c / ".claude" / "settings.json").write_text('{"permissions": {"allow": []}}')
+    _r = _run23(["hello", "--judges", "claude-sonnet", "--cwd", str(_t25c)], _env23)
+    check("25.3 settings without hooks are not a hazard (positive control)", _r.returncode != 9, True)
+    _r = _run23(["hello", "--judges", "codex", "--cwd", str(_t25)], _env23)
+    check("25.3 a panel with no claude judge is not gated on claude config", _r.returncode != 9, True)
+
+with section("25.4 a malformed roster config is exit 1, as --help says of config"):
+    _cfg25 = _nd / "bad-roster.json"
+    _cfg25.write_text('{"default": 5}')
+    _r = _run23(["--list"], dict(_env23, LLM_PANEL_CONFIG=str(_cfg25)))
+    check("25.4 exit 1", _r.returncode, 1)
+    check("25.4 says what is wrong", "'default' must be a list" in _r.stderr, True)
+    _cfg25.write_text('{')
+    _r = _run23(["--list"], dict(_env23, LLM_PANEL_CONFIG=str(_cfg25)))
+    check("25.4 invalid JSON is exit 1 too", _r.returncode, 1)
+
+with section("25.5 --diff stops reading at the cap instead of holding the whole diff"):
+    _g25 = pathlib.Path(_tf2.mkdtemp())
+    _sp.run(["git", "-C", str(_g25), "init", "-q"], check=True)
+    (_g25 / "big.txt").write_text("a\n")
+    _sp.run(["git", "-C", str(_g25), "-c", "user.email=a@b", "-c", "user.name=a", "add", "big.txt"], check=True)
+    _sp.run(["git", "-C", str(_g25), "-c", "user.email=a@b", "-c", "user.name=a", "commit", "-qm", "x"], check=True)
+    (_g25 / "big.txt").write_text("".join(f"line {i} " + "y" * 60 + "\n" for i in range(40_000)))   # ~2.7 MB
+    _r = _run23(["review", "--diff", "--judges", "codex", "--cwd", str(_g25)], _env23)
+    check("25.5 exit 7", _r.returncode, 7)
+    check("25.5 names the ceiling", f"{lp.DIFF_MAX_CHARS // 1024} KB" in _r.stderr, True)
+    _s25 = SRC.read_text(encoding="utf-8")
+    check("25.5 the diff is read through a capped reader, not captured whole",
+          "def read_capped(" in _s25 and 'git("diff", "HEAD")' not in _s25, True)
+    check("25.5 read_capped stops early", lp.read_capped(["sh", "-c", "yes | head -c 10000000"], 1000)[1], True)
+    check("25.5 and returns a short stream whole", lp.read_capped(["sh", "-c", "printf abc"], 1000), ("abc", False))
+
+with section("25.6 every option has a help string"):
+    _r = _run23(["--help"], _env23)
+    for _flag in ("--synthesize", "--cwd", "--timeout", "--judges", "--diff", "--show", "--list", "-f"):
+        # The option's own line, not the usage synopsis that also names it.
+        _line = next((ln for ln in _r.stdout.splitlines() if ln.startswith("  " + _flag)), "")
+        check(f"25.6 {_flag} is explained", bool(_line) and len(_line.strip()) > len(_flag) + 12, True)
 
 
 print(f"\nFAILED ({len(FAILED)} of {COUNT} failing)" if FAILED else f"\nall {COUNT} controls green")

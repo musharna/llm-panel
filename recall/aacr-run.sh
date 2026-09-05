@@ -7,9 +7,12 @@
 # other half. `git rev-parse HEAD` does not identify what actually ran. This copies the
 # three files into the run directory, records their md5s, and executes THOSE -- so an edit
 # during the run cannot reach it.
-set -u
+# -e and pipefail: with -u alone a failed POSITIVE leg ran straight into the NEGATIVE one
+# and printed ALL PANELS DONE, indistinguishable from a run that worked.
+set -euo pipefail
 R="$1"; TIMEOUT="${2:-900}"
-S="$HOME/llm-panel"
+S="$(cd "$(dirname "$0")/.." && pwd)"
+mkdir -p "$R/bin/recall"
 cp "$S/llm-panel" "$S/claimlib.py" "$R/bin/"
 cp "$S/recall/aacr-upstream" "$R/bin/recall/"
 chmod +x "$R/bin/llm-panel" "$R/bin/recall/aacr-upstream"
@@ -24,10 +27,10 @@ export PATH="$R/bin:$PATH"
 
 echo; echo "=== POSITIVE (20 instances, seed 42) ==="
 "$R/bin/recall/aacr-upstream" run \
-  --instances "$HOME/panel-recall/benchmarks/upstream/pos-seed42-n20.jsonl" \
+  --instances "$S/recall/benchmarks/upstream/pos-seed42-n20.jsonl" \
   --out "$R/pos" --judges codex,big-pickle,nemotron --effort high --timeout "$TIMEOUT"
 echo; echo "=== NEGATIVE (10 instances, seed 42) ==="
 "$R/bin/recall/aacr-upstream" run \
-  --instances "$HOME/panel-recall/benchmarks/upstream/neg-seed42-n10.jsonl" \
+  --instances "$S/recall/benchmarks/upstream/neg-seed42-n10.jsonl" \
   --out "$R/neg" --judges codex,big-pickle,nemotron --effort high --timeout "$TIMEOUT"
 echo; date '+# finished %F %T %Z'; echo "=== ALL PANELS DONE ==="

@@ -588,7 +588,7 @@ def _own_section(name, matches, pm, d):
     if len(matches) == 1:
         return matches[0]
     f = d / f"{name}.md"
-    own = (f.read_text(encoding="utf-8").strip() if f.is_file() else "")
+    own = _text(f).strip()
     probe = " ".join(own.split())[:160]
     if probe:
         for m in matches:
@@ -597,6 +597,19 @@ def _own_section(name, matches, pm, d):
                 return m
     # No usable probe: keep the old behaviour rather than guess a different wrong one.
     return matches[0]
+
+
+def _text(p):
+    """A judge-written file, or "" when it is absent.
+
+    Read with errors="replace", never strict: llm-panel writes each of these in one
+    write_text, and a kill while that flushes (OOM, `timeout`, a lost WSL VM) leaves the
+    file cut inside a multi-byte character. The strict codec raised UnicodeDecodeError
+    out of load_run and NO html was written -- the whole report lost to one damaged
+    file. A number we cannot read is an absence; so is a byte we cannot decode.
+    panel-triage reads the same files the same way.
+    """
+    return p.read_text(encoding="utf-8", errors="replace") if p.is_file() else ""
 
 
 def load_run(d):
@@ -611,7 +624,7 @@ def load_run(d):
     else:
         source = "panel.md (this run predates run.json)"
 
-    pm = (d / "panel.md").read_text(encoding="utf-8") if (d / "panel.md").is_file() else ""
+    pm = _text(d / "panel.md")
     # `.get(k, default)` does NOT apply the default when the key EXISTS and is null,
     # and a serialiser writes null for "no judges yet". `{"judges": null}` therefore
     # raised TypeError out of this comprehension and NO html was written at all --
@@ -691,7 +704,7 @@ def load_run(d):
         marks = [(m.group(1), m.start(), m.end()) for m in JUDGE_HEAD_ANY.finditer(pm)
                  if m.group(1) in roster]
         sections = {}
-        for i, (nm, st, en) in enumerate(marks):
+        for i, (nm, _st, en) in enumerate(marks):
             # First occurrence wins, for the same reason: a heading a judge wrote inside its
             # own review must not replace the section the panel actually emitted, or the
             # status scan reads the forged body instead of the real one.
@@ -753,11 +766,9 @@ def load_run(d):
             j["secs"] = None            # absent, NOT 0.0 -- see the bench cell
 
     for name, j in judges.items():
-        j["review"] = (d / f"{name}.md").read_text(encoding="utf-8") if (d / f"{name}.md").is_file() else ""
-        rb = d / f"{name}.rebuttal.md"
-        j["rebuttal"] = rb.read_text(encoding="utf-8") if rb.is_file() else ""
-        j["shown"] = ((d / f"{name}.prompt.md").read_text(encoding="utf-8")
-                      if (d / f"{name}.prompt.md").is_file() else "")
+        j["review"] = _text(d / f"{name}.md")
+        j["rebuttal"] = _text(d / f"{name}.rebuttal.md")
+        j["shown"] = _text(d / f"{name}.prompt.md")
         # The run's own answer wins: FAMILY below can only cover the judges shipped with
         # the tool, and a roster config can name judges this file has never heard of.
         # `~N` repeats resolve to the base name, as everywhere else.
@@ -778,8 +789,7 @@ def load_run(d):
                 if mm:
                     letters[mm.group(1)] = mm.group(2)
 
-    prompt = meta.get("prompt") or ((d / "prompt.md").read_text(encoding="utf-8")
-                                    if (d / "prompt.md").is_file() else "")
+    prompt = meta.get("prompt") or _text(d / "prompt.md")
     # Stop at the next heading or the Cost block: with a bare (.*)$ under re.S this ran to
     # EOF and rendered the Cost section as part of the synthesis prose.
     # Stop at the next H2 only. `#{2,3}` also stopped at any `### ` SUBSECTION of the
@@ -1057,7 +1067,7 @@ def cited_symbols(text, defined):
     """Backticked identifiers in `text` that the material actually defines."""
     out = set()
     lines = (text or "").split("\n")
-    for ln, masked in zip(lines, _fence_mask(lines)):
+    for ln, masked in zip(lines, _fence_mask(lines), strict=True):
         if masked:
             continue
         for m in SYM_TICK.finditer(ln):
@@ -2074,12 +2084,16 @@ def main():
             if rj.is_file():
                 try:
                     m = json.loads(rj.read_text(encoding="utf-8"))
-                    when, n = m.get("when") or d.name[:15], len(m.get("judges", []))
+                    # An explicit null is not "missing": .get's default never applies to
+                    # it, and len(None) is a TypeError the ValueError arm does not catch.
+                    _mj = m.get("judges")
+                    when = m.get("when") or d.name[:15]
+                    n = len(_mj) if isinstance(_mj, list) else 0
                 except ValueError:
                     when, n = d.name[:15], "?"
             else:
                 pm = (d / "panel.md")
-                head = pm.read_text(encoding="utf-8")[:400] if pm.is_file() else ""
+                head = _text(pm)[:400]
                 first = head.split("\n")[0].replace("# Panel — ", "").strip()
                 jl = re.search(r"^Judges: (.+)$", head, re.M)
                 when = first or d.name[:15]

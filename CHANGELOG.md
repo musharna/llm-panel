@@ -2,6 +2,30 @@
 
 ## Unreleased
 
+- A second audit, every finding verified by execution before it was fixed:
+  - `SIGTERM` and `SIGHUP` now take the Ctrl-C path. Cleanup was atexit-only, and atexit
+    does not run on a signal's default action, so a `kill`, a `timeout` wrapper or a
+    cancelled job left the prompt material in the reviewed tree and every judge child
+    running on quota. Exit 130, what landed is kept.
+  - A claude judge is refused (exit 9) when the reviewed tree declares hooks in
+    `.claude/settings*.json` or ships `.mcp.json`, as an opencode judge already was for
+    `.opencode/`. Measured on this laptop: `claude -p` runs a never-trusted tree's
+    SessionStart and UserPromptSubmit hooks with no prompt. `--unsafe-agent` overrides.
+  - `panel-report` and `panel-triage` survive a run cut off mid-write: a file truncated
+    inside a multi-byte character raised `UnicodeDecodeError` through both (no html
+    written; triage exit 1 against its own "always 0"), and `--list` crashed on
+    `"judges": null`. Judge files go through one tolerant reader.
+  - `--diff` stops reading at its 400 KB ceiling instead of holding the whole diff first.
+  - `claimlib` no longer reads "the L2 cache" or "L1 regularization" as line 2 / line 1;
+    the `L42` shorthand needs a path, `at`, or the start of a bullet beside it.
+  - A refused `codex app-server` call is blamed on the method that was refused; the old
+    index landed on the id-less `initialized` notification. A server that exits between
+    poll and kill is no longer a traceback.
+  - Exit codes 3, 10 and 13 are listed; a malformed roster config exits 1 (config), not 2
+    (`--file`). Every option has a help string. `.gitignore` covers `.ruff_cache/`,
+    `.llm-panel-material/` and the two license-restricted upstream diffs PROVENANCE says
+    are never committed. `recall/aacr-run.sh` finds the repository from its own location
+    and runs under `set -euo pipefail`. 52 new controls (988 across the seven suites).
 - `llm-panel --usage` shows the ChatGPT plan the `codex` judge spends: both rate-limit
   windows with local reset times, the plan type, and the banked "Full reset (Weekly +
   5 hr)" credits. `--reset-usage` redeems one credit after the word `RESET` is typed;

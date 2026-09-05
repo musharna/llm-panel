@@ -1547,6 +1547,62 @@ with section("34. --list with no runs says where it looked, and exits 1"):
     check("  (pre-fix form printed nothing and exited 0)", _r34.stdout.strip(), "")
 
 
+# --- 41. a run cut off mid-write is a partial report, not a traceback ----------------
+# llm-panel writes every file in one write_text; killed while flushing (OOM, `timeout`,
+# a lost WSL VM) it leaves a file truncated inside a multi-byte character. Every judge
+# file was read with the strict codec, so ONE such file raised UnicodeDecodeError out of
+# load_run and no html was written -- the same absence-not-crash rule this file states
+# for numbers, broken for text. panel-triage already reads the same files with
+# errors="replace"; load_run now goes through the same kind of reader.
+with section("41.1 a truncated review still renders, with the readable part kept"):
+    import subprocess as _sp41
+    with tempfile.TemporaryDirectory() as _td:
+        _d = pathlib.Path(_td) / "run"
+        _d.mkdir()
+        (_d / "run.json").write_text(json.dumps({"when": "2026-09-04T22:02:00",
+                                                 "judges": [{"name": "j1", "status": "ok"}]}),
+                                     encoding="utf-8")
+        (_d / "j1.md").write_bytes(b"the review body caf\xc3")
+        _run = pr.load_run(_d)
+        check("41.1 the review text survived", "the review body caf" in _run["judges"]["j1"]["review"], True)
+        _out = pathlib.Path(_td) / "r.html"
+        _r = _sp41.run([sys.executable, str(SRC), str(_d), "--out", str(_out)],
+                       capture_output=True, text=True, timeout=60)
+        check("41.1 exit 0", _r.returncode, 0)
+        check("41.1 html written", _out.is_file(), True)
+
+with section("41.2 the same for panel.md, prompt.md, a rebuttal and a shown prompt"):
+    with tempfile.TemporaryDirectory() as _td:
+        _d = pathlib.Path(_td) / "run"
+        _d.mkdir()
+        (_d / "run.json").write_text(json.dumps({"when": "2026-09-04T22:02:00", "rebut": True,
+                                                 "judges": [{"name": "j1", "status": "ok"},
+                                                            {"name": "j2", "status": "ok"}]}),
+                                     encoding="utf-8")
+        for _f in ("panel.md", "prompt.md", "j1.md", "j2.md", "j1.rebuttal.md", "j1.prompt.md"):
+            (_d / _f).write_bytes(b"text caf\xc3")
+        _run = pr.load_run(_d)
+        check("41.2 loaded", _run["judges"]["j1"]["rebuttal"].startswith("text caf"), True)
+
+# `.get("judges", [])` does not apply its default to an EXPLICIT null; load_run learned
+# that (its comment is above) and --list did not: `len(None)` is a TypeError, which the
+# `except ValueError` beside it does not catch, so one such run.json in the newest 20
+# aborted the whole listing.
+with section("41.3 --list survives `\"judges\": null` and counts it as 0"):
+    import subprocess as _sp413
+    with tempfile.TemporaryDirectory() as _td:
+        _home = pathlib.Path(_td)
+        _r0 = _home / "cache" / "llm-panel" / "runs" / "repo" / "20260904-220100-2"
+        _r0.mkdir(parents=True)
+        (_r0 / "run.json").write_text('{"when": "2026-09-04T22:01:00", "judges": null}',
+                                      encoding="utf-8")
+        _r = _sp413.run([sys.executable, str(SRC), "--list"], capture_output=True, text=True,
+                        env={"HOME": str(_home), "XDG_CACHE_HOME": str(_home / "cache"),
+                             "PATH": "/usr/bin:/bin"}, timeout=60)
+        check("41.3 exit 0", _r.returncode, 0)
+        check("41.3 listed with 0 judges", " 0 judges " in _r.stdout, True)
+
+
 print(f"\nFAILED ({len(FAILED)} of {COUNT} failing)" if FAILED else f"\nall {COUNT} controls green")
 for f in FAILED:
     print("  -", f)

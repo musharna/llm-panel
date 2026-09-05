@@ -409,7 +409,7 @@ def run_judge(cmd, timeout, capture_output=False, **kw):
     except subprocess.TimeoutExpired:
         _kill_group(p)
         out, err = p.communicate()
-        raise subprocess.TimeoutExpired(cmd, timeout, output=out, stderr=err)
+        raise subprocess.TimeoutExpired(cmd, timeout, output=out, stderr=err) from None
     finally:
         _CHILDREN.discard(p)
     return subprocess.CompletedProcess(cmd, p.returncode, out, err)
@@ -576,7 +576,7 @@ SHIPPED_DEFAULT = list(DEFAULT)   # captured before a config can replace it
 try:
     DEFAULT = load_roster(CONFIG_PATH, ROSTER, DEFAULT, FAMILY_OF, FROM_CONFIG)
 except ValueError as e:
-    die(str(e), 2)
+    die(str(e))        # 1: "usage, config, or a failure of this program", as --help says
 
 
 def now():
@@ -991,13 +991,16 @@ exit codes:
   0   every judge answered
   1   usage, config, or a failure of this program
   2   --file could not be read
+  3   --check: at least one judge failed to answer at all (our plumbing, not the model)
   4   degraded panel: at least one judge never ran (our failure, not a refusal)
   7   --diff: not a git repository, git failed, or the diff is too large
   8   --diff: nothing uncommitted to review
   9   the opencode agent is not verified read-only, or the reviewed tree carries opencode
-      configuration the judges would run (--unsafe-agent overrides both)
+      or claude configuration the judges would run (--unsafe-agent overrides both)
+  10  --thread: another run holds this thread's lock
   11  --repeat out of range        12  a repeat suffix was supplied by hand
-  130 interrupted; what had landed is in the run directory"""
+  13  illegal judge name (names become file paths)
+  130 interrupted (Ctrl-C or SIGTERM); what had landed is in the run directory"""
 # What THIS process wrote. Cleanup used to glob `material-*.md` and unlink every match, so a
 # finishing run deleted a CONCURRENT run's file -- and that run's judges, each holding a 2 KB
 # excerpt ending in "READ THAT FILE NOW", got ENOENT and answered from the excerpt with
@@ -1968,6 +1971,51 @@ def run_rebuttals(judges, results, prompt, repo, timeout, agent, rundir, log, li
     return out, rebuts, letters
 
 
+def read_capped(cmd, cap):
+    """(stdout, truncated) of `cmd`, reading no more than `cap` bytes.
+
+    `git diff` was captured whole and THEN measured against DIFF_MAX_CHARS, so the size
+    ceiling protected the judges and nothing else: a multi-megabyte diff was fully
+    materialised in this process before the refusal. Stop at the cap and kill the writer.
+    """
+    p = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                         start_new_session=True)
+    chunks, size, truncated = [], 0, False
+    try:
+        while True:
+            chunk = p.stdout.read(65_536)
+            if not chunk:
+                break
+            chunks.append(chunk)
+            size += len(chunk)
+            if size > cap:
+                truncated = True
+                _kill_group(p)
+                break
+        p.stdout.close()
+        err = p.stderr.read()
+        p.wait()
+    finally:
+        p.stderr.close()
+    if p.returncode != 0 and not truncated:
+        die(f"{' '.join(cmd[cmd.index('-C') + 2:] if '-C' in cmd else cmd[1:])} failed: "
+            f"{err.decode('utf-8', 'replace').strip()[:300]}", 7)
+    return b"".join(chunks).decode("utf-8", "replace"), truncated
+
+
+def repo_claude_hazards(repo):
+    """Files in the reviewed tree that `claude -p` loads and acts on: settings with hooks,
+    and project MCP servers."""
+    out = []
+    for p in sorted((pathlib.Path(repo) / ".claude").glob("settings*.json")):
+        if p.is_file() and '"hooks"' in p.read_text(errors="replace"):
+            out.append(f"{p} declares hooks")
+    mcp = pathlib.Path(repo) / ".mcp.json"
+    if mcp.is_file():
+        out.append(f"{mcp} declares MCP servers")
+    return out
+
+
 def collect_diff(repo):
     def git(*a):
         r = subprocess.run(["git", "-C", repo, *a], capture_output=True, text=True)
@@ -1987,17 +2035,18 @@ def collect_diff(repo):
     # review a brand-new repository at all. Staged-vs-empty-tree works either way.
     has_head = subprocess.run(["git", "-C", repo, "rev-parse", "--verify", "HEAD"],
                               capture_output=True).returncode == 0
-    diff = git("diff", "HEAD") if has_head else git("diff", "--cached")
-    untracked = git("ls-files", "--others", "--exclude-standard")
-    if not diff.strip() and not untracked.strip():
-        die("--diff found no uncommitted changes; nothing to review", 8)
-    if len(diff) > DIFF_MAX_CHARS:
+    diff, too_big = read_capped(["git", "-C", repo, "diff"] + (["HEAD"] if has_head else ["--cached"]),
+                                DIFF_MAX_CHARS)
+    if too_big:
         # CLI transports spill an oversized prompt to a file; the HTTP ones (ollama, the
         # vision judges) would send the whole thing. A multi-megabyte lockfile diff is not
         # a review anyone asked for.
-        die(f"--diff is {len(diff) // 1024} KB, more than the {DIFF_MAX_CHARS // 1024} KB a "
-            f"panel will read; narrow it (review a branch, or `git add -p` and review the "
-            f"index) or write the material yourself and pass --file", 7)
+        die(f"--diff is more than the {DIFF_MAX_CHARS // 1024} KB a panel will read; narrow "
+            f"it (review a branch, or `git add -p` and review the index) or write the "
+            f"material yourself and pass --file", 7)
+    untracked = git("ls-files", "--others", "--exclude-standard")
+    if not diff.strip() and not untracked.strip():
+        die("--diff found no uncommitted changes; nothing to review", 8)
     out = ["Here are the uncommitted changes in this repository. Review them.", "",
            "```diff", diff.rstrip(), "```"]
     files = [f for f in untracked.splitlines() if f.strip()]
@@ -2560,6 +2609,10 @@ def codex_rpc(calls, timeout=45):
     reqs += [{"jsonrpc": "2.0", "id": i + 2, "method": m, "params": ps}
              for i, (m, ps) in enumerate(calls)]
     want = {r["id"] for r in reqs if "id" in r}
+    # By id, not by list position: the `initialized` notification sits at index 1 with no
+    # id, so reqs[id - 1] named it for id 2 -- the first real call -- and a refused read
+    # was reported as "refused initialized".
+    method_of = {r["id"]: r["method"] for r in reqs if "id" in r}
     got = {}
     deadline = time.time() + timeout
     try:
@@ -2583,15 +2636,17 @@ def codex_rpc(calls, timeout=45):
                 continue
             if "error" in ev:
                 msg = (ev["error"] or {}).get("message") if isinstance(ev["error"], dict) else ev["error"]
-                die(f"codex app-server refused {reqs[ev['id'] - 1]['method']}: {msg}")
+                die(f"codex app-server refused {method_of[ev['id']]}: {msg}")
             got[ev["id"]] = ev.get("result")
             if len(got) == len(want):
                 break
     except BrokenPipeError:
         pass
     finally:
+        # _kill_group, not a bare killpg: the server can exit between poll() and the
+        # kill, and ESRCH there turned "codex exited 3" into a traceback.
         if p.poll() is None:
-            os.killpg(p.pid, signal.SIGKILL)
+            _kill_group(p)
         p.wait()
     if len(got) != len(want):
         err = p.stderr.read().strip()[:400] if p.stderr else ""
@@ -2690,15 +2745,16 @@ def main():
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=EXIT_CODES_HELP)
     ap.add_argument("--version", action="version", version=f"%(prog)s {__version__}")
-    ap.add_argument("prompt", nargs="?")
-    ap.add_argument("-f", "--file")
-    ap.add_argument("--diff", action="store_true")
+    ap.add_argument("prompt", nargs="?", help="the question; `-` or no argument reads stdin")
+    ap.add_argument("-f", "--file", help="read the prompt from this file (`-` for stdin)")
+    ap.add_argument("--diff", action="store_true",
+                    help="append the working tree's uncommitted diff and untracked files")
     # default=None, not the roster string: the code needs to distinguish "user said
     # nothing" from "user chose these". Sniffing sys.argv for "--judges" missed the
     # equals form (--judges=codex), so --check silently re-expanded the roster AFTER
     # the write-safety check had already passed on a smaller set.
-    ap.add_argument("--judges", default=None)
-    ap.add_argument("--list", action="store_true")
+    ap.add_argument("--judges", default=None, help="comma-separated judge names (`a~2` repeats a)")
+    ap.add_argument("--list", action="store_true", help="show the roster and which transports are ready")
     ap.add_argument("--help-config", action="store_true",
                     help="print the roster config path and schema, then exit")
     ap.add_argument("--check", action="store_true",
@@ -2707,7 +2763,7 @@ def main():
                     help="show the ChatGPT plan's 5-hour and weekly windows and banked resets")
     ap.add_argument("--reset-usage", action="store_true",
                     help="redeem ONE banked reset credit (asks you to type RESET first)")
-    ap.add_argument("--show", action="store_true")
+    ap.add_argument("--show", action="store_true", help="reprint the latest panel for this repo")
     ap.add_argument("--runs", action="store_true",
                     help="list past panel runs for this repo (newest first) with their "
                          "judges and outcomes, and where each one is on disk")
@@ -2729,8 +2785,9 @@ def main():
                          "corpus they recovered nothing (25/27 either way).")
     ap.add_argument("--rebut", action="store_true",
                     help="round 2: each judge answers the others' findings (anonymised)")
-    ap.add_argument("--synthesize", metavar="JUDGE")
-    ap.add_argument("--cwd", default=os.getcwd())
+    ap.add_argument("--synthesize", metavar="JUDGE",
+                    help="after the round, ask JUDGE to synthesise every answer into one")
+    ap.add_argument("--cwd", default=os.getcwd(), help="the repository under review (default: here)")
     ap.add_argument("--agent", default="panelist",
                     help="opencode agent for judges; default denies edit/bash (see opencode.jsonc)")
     ap.add_argument("--live", action="store_true",
@@ -2761,7 +2818,8 @@ def main():
                          "(--variant, provider-specific). ollama models have no "
                          "equivalent and ignore it. Default: codex stays at high, "
                          "the others use their own defaults")
-    ap.add_argument("--timeout", type=int, default=None)
+    ap.add_argument("--timeout", type=int, default=None,
+                    help="seconds per judge before its process group is killed")
     a = ap.parse_args()
 
     global STATE, STREAM_ECHO
@@ -3060,15 +3118,17 @@ def main():
                 + "\nReviewing a repository means trusting its .opencode/ and opencode.json[c]. "
                   "Remove or inspect them, or pass --unsafe-agent if you really mean it.", 9)
     if any(ROSTER[j][0] == "claude" for j in judges):
-        # Not verified whether `claude -p` honours a project's hooks without a trust
-        # prompt; say what is there rather than guess either way.
-        _cl = [p for p in (pathlib.Path(repo) / ".claude").glob("settings*.json")
-               if p.is_file() and '"hooks"' in p.read_text(errors="replace")]
-        _cl += [p for p in [pathlib.Path(repo) / ".mcp.json"] if p.is_file()]
-        if _cl:
-            sys.stderr.write("llm-panel: NOTE the repository declares claude hooks/MCP servers "
-                             f"({', '.join(str(p) for p in _cl)}); a claude judge may load "
-                             "them. Inspect before trusting a tree you did not write.\n")
+        # Measured 2026-09-04 (claude-code on this laptop): `claude -p` in a tree it has
+        # never been trusted with ran that tree's SessionStart and UserPromptSubmit hooks
+        # from .claude/settings.json, no prompt. That is the opencode hazard exactly, and
+        # it used to get a NOTE on stderr where opencode gets a refusal.
+        _cl = repo_claude_hazards(repo)
+        if _cl and not a.unsafe_agent:
+            die("the repository under review carries claude configuration that a claude judge "
+                "would load and run as you:\n  - " + "\n  - ".join(_cl)
+                + "\nReviewing a repository means trusting its .claude/settings*.json hooks and "
+                  ".mcp.json. Remove or inspect them, or pass --unsafe-agent if you really "
+                  "mean it.", 9)
 
     # Snapshot the tree BEFORE any judge runs. The config guard above is advisory -- it
     # cannot see `OPENCODE_CONFIG_CONTENT`, tool defaults for names it does not enumerate,
@@ -3097,6 +3157,15 @@ def main():
     # left as it was found and no judge keeps running on quota after we are gone.
     atexit.register(_cleanup_material, repo)
     atexit.register(kill_children)
+    # atexit runs on sys.exit, not on a signal's default action: a `kill`, a `timeout`
+    # wrapper or a cancelled job used to end the process with the material still in the
+    # reviewed tree and every judge child still running on quota. Route both through the
+    # Ctrl-C path, which keeps what landed and exits 130.
+
+    def _terminated(signum, frame):
+        raise KeyboardInterrupt
+    for _s in (signal.SIGTERM, signal.SIGHUP):
+        signal.signal(_s, _terminated)
 
     sessions = {}
     if a.thread:

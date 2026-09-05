@@ -185,6 +185,33 @@ with section("5.2 an absent root is skipped, not fatal"):
         got = pt.runs([pathlib.Path("/nonexistent/root"), pathlib.Path(t1)])
         check("5.2 the real root still read", len(got), 1)
 
+
+# --- 6. a run.json cut off mid-character is REPORTED, like every other unreadable one --
+# load() caught OSError and JSONDecodeError, and a file truncated inside a multi-byte
+# character (llm-panel killed while write_text was flushing) raises UnicodeDecodeError --
+# a ValueError, neither of those. One such run anywhere under a root took the whole
+# triage down with a traceback, against the docstring's "exit code is 0 always".
+with section("6.1 a truncated run.json is reported as unreadable, not raised"):
+    with tempfile.TemporaryDirectory() as t1:
+        p = pathlib.Path(t1)
+        (p / "run.json").write_bytes(b'{"when":"2026","prompt":"caf\xc3')
+        got = pt.load(p)
+        check("6.1 unreadable, named", got.get("_unreadable", "").startswith("UnicodeDecodeError"), True)
+
+with section("6.2 and the tool as a whole still exits 0 with that run in a root"):
+    import subprocess as _sp
+    with tempfile.TemporaryDirectory() as t1:
+        home = pathlib.Path(t1)
+        r = home / "cache" / "llm-panel" / "runs" / "repo" / "20260904-220000-1"
+        r.mkdir(parents=True)
+        (r / "run.json").write_bytes(b'{"when":"2026","prompt":"caf\xc3')
+        out = _sp.run([sys.executable, str(SRC)], capture_output=True, text=True, timeout=60,
+                      env={"HOME": str(home), "XDG_CACHE_HOME": str(home / "cache"),
+                           "PATH": "/usr/bin:/bin"})
+        check("6.2 exit 0", out.returncode, 0)
+        check("6.2 the run is named as unreadable", "UnicodeDecodeError" in out.stdout, True)
+        check("6.2 no traceback", "Traceback" in out.stderr, False)
+
 print(f"\nFAILED ({len(FAILED)} of {COUNT} failing)" if FAILED else f"\nall {COUNT} controls green")
 for f in FAILED:
     print("  -", f)

@@ -22,7 +22,7 @@ python recall/aacr-upstream-controls && python recall/aacr-recut-controls && \
 python privacy-controls
 ```
 
-CI runs exactly these on 3.11 and 3.13.
+CI runs exactly these on 3.11, 3.12 and 3.13.
 
 **Failure classes are semantics, not logging.** `refused` (the provider said no) and
 `harness` (our plumbing broke) license opposite conclusions, and ambiguity must default

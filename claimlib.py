@@ -185,8 +185,10 @@ _LOCATED_BULLET = re.compile(
 # prompt tells judges to take line numbers from exactly here. `@@ -112,6 +112,10 @@` -> 112,
 # reading the NEW-file side, which is what a reviewer is looking at.
 _HUNK = re.compile(r"@@[^@\n]*?\+(\d{1,6})")
-# `Foo.py L42` / `L42` -- a common shorthand the prose form does not cover.
-_L_PREFIX = re.compile(r"\bL(\d{1,6})\b")
+# `Foo.py L42` / `foo.py:L42` / `at L42` / `- L42:` -- a common shorthand the prose form
+# does not cover. Anchored to a location cue: a bare `\bL\d+\b` scan read "the L2 cache"
+# and "L1 regularization" as lines 2 and 1 for findings that named no location at all.
+_L_PREFIX = re.compile(r"(?:(?:" + _PATH + r")`?[ \t]*:?[ \t]*|\bat[ \t]+|^[ \t]*(?:[-*+][ \t]+)?)L(\d{1,6})\b", re.M)
 _BACKTICK = re.compile(r"`([^`\n]{1,80})`")
 # `line 114`, `Line: 114`, `- **Line:** 114` -- the last is the shape this project's
 # own prompt ASKS for, and the original `line[ \t]+\d` could not read it because of the
