@@ -1,6 +1,11 @@
 # Changelog
 
-## Unreleased
+## 0.1.4 — 2026-09-04
+
+Two audits and a privacy scrub. The one behaviour change to plan for: a **claude judge is
+now refused (exit 9)** when the reviewed tree declares hooks in `.claude/settings*.json`
+or ships `.mcp.json`, exactly as an opencode judge already was for `.opencode/`;
+`--unsafe-agent` overrides. New: `--usage` and `--reset-usage`.
 
 - A second audit, every finding verified by execution before it was fixed:
   - `SIGTERM` and `SIGHUP` now take the Ctrl-C path. Cleanup was atexit-only, and atexit
