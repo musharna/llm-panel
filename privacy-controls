@@ -1,26 +1,26 @@
 #!/usr/bin/env python3
 """Privacy controls for the llm-panel repository.
 
-This repository is public, and its fixtures are real run directories copied verbatim.
-On 2026-09-02 a sweep found ~470 copies of the author's home directory, Windows profile
-and scratch paths in those artifacts -- `rundir` fields in benchmark results, BINARIES.txt
-ledgers, prompt files that embed the tool's own source, the demo recording -- every one
-committed since 2026-08-25 without anything in the tree able to notice. Nothing that only
-ever runs on the machine it was written on can catch a path that is normal there.
+This repository is public, and its fixtures are real run directories copied verbatim, so
+machine-specific paths and hostnames can leak into them without anything noticing.
 
 Each control here scans the GIT-TRACKED tree for a fixed set of identifiers that must
-never appear: the private home path, the Windows account name, hostnames, tailnet
-addresses and a session-trailer key. The set is closed on purpose (it names what leaked,
-not what might), so the structural control in panel-report-controls section 40 still
-carries the open-set case for the shipped source.
+never appear. The set is closed on purpose (it names what leaked, not what might), so the
+structural control in panel-report-controls section 40 still carries the open-set case for
+the shipped source.
 
-Every pattern is assembled from fragments at import time so this file is clean under its
-own scan -- it is tracked, and it is scanned like everything else.
+The identifiers themselves are not in the repository -- spelling them out, even in
+fragments, would publish them. They are read, one per line, from the environment variable
+LLM_PANEL_PRIVACY_FORBIDDEN (CI sets it from a repository secret) or else from the file
+~/.config/llm-panel/privacy-forbidden.txt. With neither, the suite exits 2 rather than
+pass on an empty list. Hits are reported by entry number, never by the matched text, so
+a CI log cannot print what it found.
 
     privacy-controls          # run them
     privacy-controls -v       # show each
 """
 import contextlib
+import os
 import pathlib
 import subprocess
 import sys
@@ -29,16 +29,14 @@ import tempfile
 VERBOSE = "-v" in sys.argv
 ROOT = pathlib.Path(__file__).resolve().parent
 
-# Assembled, never spelled: a literal here would be its own finding.
-FORBIDDEN = [
-    "/home/" + "mjar" + "nold",        # the private home path
-    "a2b" + "32",                      # the Windows account (C:\Users\..., /mnt/c/Users/...)
-    "mjar" + "nold" + "gt76",          # hostname
-    "100.113." + "204.41",             # tailnet address
-    "100.91." + "179.102",             # tailnet address
-    "tail" + "86d19d",                 # tailnet name
-    "Claude-" + "Session:",            # commit-trailer key that names a private session
-]
+_ENV = "LLM_PANEL_PRIVACY_FORBIDDEN"
+_FILE = pathlib.Path.home() / ".config/llm-panel/privacy-forbidden.txt"
+_raw = os.environ.get(_ENV) or (_FILE.read_text(encoding="utf-8") if _FILE.is_file() else "")
+FORBIDDEN = [line.strip() for line in _raw.splitlines() if line.strip()]
+if not FORBIDDEN:
+    print(f"privacy-controls: no forbidden list -- set {_ENV} or write {_FILE} (one identifier per line)",
+          file=sys.stderr)
+    sys.exit(2)
 
 FAILED = []
 COUNT = 0
@@ -71,7 +69,8 @@ def tracked_files(root):
 
 
 def scan(paths, patterns=FORBIDDEN, rel=None):
-    """Return ['file:line: pattern', ...] for every forbidden byte string in every file.
+    """Return ['file:line: #k', ...] for every forbidden byte string in every file, where k is
+    the pattern's 1-based position in `patterns` (the text itself is never echoed).
 
     Bytes, not text: a PNG or a mis-encoded fixture must be scanned, not skipped, and a
     decode error must not turn into a pass. Line numbers count b'\\n' so they match grep -n.
@@ -87,9 +86,9 @@ def scan(paths, patterns=FORBIDDEN, rel=None):
         if not any(n in data for n in needles):
             continue
         for lineno, line in enumerate(data.split(b"\n"), 1):
-            for n in needles:
+            for k, n in enumerate(needles, 1):
                 if n in line:
-                    hits.append(f"{path.relative_to(rel) if rel else path}:{lineno}: {n.decode('utf-8')}")
+                    hits.append(f"{path.relative_to(rel) if rel else path}:{lineno}: #{k}")
     return hits
 
 
@@ -108,7 +107,7 @@ with section("1. a planted hit is reported with file:line"):
               [h.startswith(f"{_bad}:{i}: ") for i, h in enumerate(_hits, 1)], [True] * len(FORBIDDEN))
         _png = pathlib.Path(_td) / "b.png"
         _png.write_bytes(b"\x89PNG\r\n\x1a\n\xff\xfe" + FORBIDDEN[0].encode() + b"\xff")
-        check("1.3 a binary file is scanned, not skipped", scan([_png]), [f"{_png}:3: {FORBIDDEN[0]}"])
+        check("1.3 a binary file is scanned, not skipped", scan([_png]), [f"{_png}:3: #1"])
         _clean = pathlib.Path(_td) / "clean.md"
         _clean.write_text("/home/user/.cache/llm-panel/runs\nC:\\Users\\user\\Downloads\n", encoding="utf-8")
         check("1.4 the generic replacement is not a hit", scan([_clean]), [])

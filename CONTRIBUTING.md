@@ -22,7 +22,9 @@ python recall/aacr-upstream-controls && python recall/aacr-recut-controls && \
 python privacy-controls
 ```
 
-CI runs exactly these on 3.11, 3.12 and 3.13.
+CI runs exactly these on 3.11, 3.12 and 3.13. `privacy-controls` needs its identifier list,
+which is kept out of the repository: CI reads it from the `PRIVACY_FORBIDDEN` secret, and
+locally it reads `~/.config/llm-panel/privacy-forbidden.txt`. Without either it exits 2.
 
 **Failure classes are semantics, not logging.** `refused` (the provider said no) and
 `harness` (our plumbing broke) license opposite conclusions, and ambiguity must default
