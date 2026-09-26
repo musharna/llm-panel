@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.1.9 — 2026-09-26
+
+- README numbers are traceable: the panel cost quotes the PR #3 comment it comes from; the
+  `broad` recall comparison names the pre-rewrite `defect` arm it was made against; "~2.5x"
+  is ~2x, as its source says; per-suite control counts are re-run; the rebuttal round is
+  described as optional and its anonymisation as best-effort.
+- `privacy-controls` reads its identifier list from `LLM_PANEL_PRIVACY_FORBIDDEN` (a CI secret)
+  or `~/.config/llm-panel/privacy-forbidden.txt` instead of spelling it out in the tree, exits 2
+  without one, and reports hits by entry number only.
+- The cost-cut note calls the benchmark 18 PRs, matching its scores.
+
 ## 0.1.8 — 2026-09-15
 
 - `--reset-usage` could not redeem a banked reset credit at all. codex renamed the
