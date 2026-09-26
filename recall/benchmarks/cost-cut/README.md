@@ -1,7 +1,7 @@
 # Cost-efficiency cut — what the recall results mean for the default prompt
 
 Declared before computation (`DECLARED.md`); all numbers from existing scores and run
-records, no new panels or evaluator passes. Raw n=35 table in `table.txt`. 20-PR arm
+records, no new panels or evaluator passes. Raw n=35 table in `table.txt`. 18-PR arm
 identities were verified against each rundir's recorded prompt text, not the score
 filename; the broad arm's 243 findings @ 13.2% reproduces the root README as a positive
 control.
@@ -17,7 +17,7 @@ volume > broad on all references is the one recall effect that clears the varian
 Attention = findings a reviewer reads per benchmark-validated hit — the product's scarce
 resource, since 2 of 3 roster slots are free models and the gpt slot is cents per PR.
 
-| arm              | 20-PR: findings, prec, attn | n=35 codex-run   | n=35 or-gpt-run  |
+| arm              | 18-PR: findings, prec, attn | n=35 codex-run   | n=35 or-gpt-run  |
 | ---------------- | --------------------------- | ---------------- | ---------------- |
 | defect (default) | 91, **16.5%**, 6.1          | not run          | not run          |
 | broad            | 243, 13.2%, 7.6             | 738, 9.6%, 10.4  | 671, 9.8%, 10.2  |
@@ -36,7 +36,7 @@ default was chosen to avoid. `--prompt-style volume` remains the right tool when
 worth any reading load (an audit before a release), and that is a per-run choice, not a
 default.
 
-The interesting margin is not volume but **broad**: on the 20-PR benchmark it doubles
+The interesting margin is not volume but **broad**: on the 18-PR benchmark it doubles
 recall (12.2% -> 26.0%) for a 25% rise in per-hit reading (6.1 -> 7.6) and a modest
 precision dip (16.5% -> 13.2%). If the default ever changes, the candidate is
 defect -> broad; it was outside this cut's declared question and would deserve its own

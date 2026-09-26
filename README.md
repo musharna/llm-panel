@@ -19,8 +19,10 @@ the panel is N readers who cannot see each other, a rebuttal round in which they
 withdraw, and a [recall benchmark](#on-real-prs-aacr-bench) that says what they miss.
 
 Judges run in parallel, never see each other's work, and answer from their own reading of
-your repo. An optional second round shows each of them the others' findings — anonymised —
-and asks them to defend or withdraw. The output is a single self-contained HTML page where
+your repo. An optional second round (`--rebut`) shows each of them the others' findings,
+relabelled as Reviewer A/B/C rather than by model name, and asks them to defend or
+withdraw. The relabelling is best-effort: a review that names its own model or vendor
+triggers a warning, not redaction. The output is a single self-contained HTML page where
 that second round is grouped **by the finding being argued about**, so comparing what five
 models said about one line of code doesn't mean holding five documents in your head.
 
@@ -44,7 +46,7 @@ one on a ChatGPT plan) landing as they finish, the scoreboard from `panel.md`, a
 The rebuttal round as rendered — every position each judge took on each finding, grouped
 by the finding under dispute, disagreements marked CONTESTED. This run: four free-tier
 judges asked to review llm-panel's own failure-classification code; one failed and is
-reported as `harness`, the other three upheld 7 findings, rejected 4, and missed 6:
+reported as `harness`:
 
 ![rebuttal round: positions grouped by the finding being argued about](https://raw.githubusercontent.com/musharna/llm-panel/main/docs/rebuttal.png)
 
@@ -71,7 +73,7 @@ reported as `harness`, the other three upheld 7 findings, rejected 4, and missed
 | `recall/aacr-upstream` | runs the panel over AACR-Bench PRs and hands the findings to **upstream's** evaluator  |
 | `recall/aacr-score`    | invokes that evaluator, and refuses to report a number from a judge that isn't running |
 | `claimlib.py`          | the one measurement boundary: reviews → span-grounded observations                     |
-| `*-controls`           | the regression suites — 1091 controls, every one tied to a defect that shipped         |
+| `*-controls`           | the regression suites — 1091 controls, most of them tied to a defect that shipped      |
 
 ## Beside the review bots
 
@@ -79,19 +81,18 @@ reported as `harness`, the other three upheld 7 findings, rejected 4, and missed
 | --- | --- | --- | --- | --- | --- |
 | **llm-panel** | N, independent, blind to each other; rebuttal round | every answer verbatim, grouped by finding | measured on AACR-Bench, low and [reproducible](#on-real-prs-aacr-bench) | CLI, GitHub Action | yours (subscriptions or API keys) |
 | [CodeRabbit](https://www.coderabbit.ai/pricing) | several, in a [pipeline by stage](https://www.coderabbit.ai/blog/behind-the-curtain-what-it-really-takes-to-bring-a-new-model-online-at-coderabbit) | filtered by a verification agent | [vendor-reported](https://www.coderabbit.ai/blog/coderabbit-tops-martian-code-review-benchmark) on Martian's bench | GitHub/GitLab app, CLI, IDE | hosted, [no model choice](https://www.coderabbit.ai/blog/why-users-shouldnt-choose-their-own-llm-models-choice-is-not-always-good) |
-| [Qodo PR-Agent](https://github.com/qodo-ai/pr-agent) (MIT) | one model per call, fallback on failure | structured summary, [3 findings by default](https://raw.githubusercontent.com/The-PR-Agent/pr-agent/main/pr_agent/settings/configuration.toml) | none for the OSS tool | GitHub Action, CLI, Docker | yours |
+| [PR-Agent](https://github.com/The-PR-Agent/pr-agent) (MIT; formerly Qodo's) | one model per call, fallback on failure | structured summary, [3 findings by default](https://raw.githubusercontent.com/The-PR-Agent/pr-agent/main/pr_agent/settings/configuration.toml) | none for the OSS tool | GitHub Action, CLI, Docker | yours |
 | [Copilot code review](https://docs.github.com/en/copilot/concepts/code-review/code-review) | "a mix of models", not switchable | filtered, severity-labelled | none stated | github.com, `gh`, IDE | hosted |
 
 The difference is not that the panel is better — on the numbers above it is not — but that
 it shows you everything the models said and tells you how much they miss. A filter that
 "validates each suggestion" is one more opinion, and the one most likely to drop a minority
-finding. Verified 2026-09-06 from each vendor's own pages; the smaller open-source
-council-style reviewers found had under 50 stars, and none publish a miss rate.
+finding. Verified 2026-09-06 from each vendor's own pages.
 
 ## Install
 
-Pure Python 3.11+ standard library on Linux, macOS or WSL — it needs POSIX file locks and
-process groups, and says so on Windows instead of tracing back. No dependencies, no build
+Pure Python 3.11+ standard library on Linux/WSL (CI: Ubuntu); macOS untested. It needs
+POSIX file locks and process groups, and says so on Windows instead of tracing back. No dependencies, no build
 step. Each tool is one readable file, so either install route runs identical code:
 
 ```sh
@@ -192,9 +193,10 @@ spots. Add it explicitly when that isn't the case — it is strong.
 
 - `--diff` attaches the working-tree diff, so nobody has to describe the change —
   including you, who would describe it favourably.
-- `--rebut` adds the anonymised second round. Worth it whenever a finding would trigger
-  real work: the first run of it killed three confident findings that were simply wrong.
-  To be precise about the report's grouping of that round: it keys on the rebuttal letter
+- `--rebut` adds the optional second round, in which judges see each other's findings
+  under Reviewer A/B/C labels instead of model names. The relabelling is best-effort: a
+  review that names its own model or vendor makes `llm-panel` print a warning; the text
+  is not redacted. Worth running whenever a finding would trigger real work. To be precise about the report's grouping of that round: it keys on the rebuttal letter
   each finding is given (A1, B2 …), so it collects the _discussion_ around one judge's
   finding. It is **not** semantic clustering — two judges independently raising the same
   underlying defect stay two findings, and without `--rebut` there is no grouping at all.
@@ -219,13 +221,9 @@ spots. Add it explicitly when that isn't the case — it is strong.
   opencode agent (default `panelist`) and `--keep-alive` the ollama model residency.
   `panel-report` takes `--repo SUBSTR` to pick a run root, `--out FILE`, `--webfonts` and
   `--max-image-kb`; `panel-triage` takes `--since HOURS`, `--repo`, `--limit` and `--json`.
-- `--usage` shows what the `codex` judge is spending: the ChatGPT plan's 5-hour and weekly
-  windows, when each resets, and the "Full reset (Weekly + 5 hr)" credits OpenAI banks on
-  the account. `--reset-usage` redeems **one** of those credits — it prints the same
-  screen, then asks you to type `RESET`, because a credit is finite and a script should not
-  be able to spend one by passing a flag. Both read the account through
-  `codex app-server`, the same channel the interactive `/status` screen uses, and cost
-  no quota themselves.
+- `--usage` / `--reset-usage` show, and redeem one of, the `codex` judge's plan limits as
+  `codex app-server` reports them; see
+  [`docs/codex-usage.md`](https://github.com/musharna/llm-panel/blob/main/docs/codex-usage.md).
 
 ### On pull requests
 
@@ -250,9 +248,11 @@ jobs:
 ```
 
 The default judges are the three OpenRouter ones, so one key is the whole setup. They
-read the checked-out tree, not just the diff: on this repository's own 9-file PR the three
-spent 300k–990k input tokens each and billed **$0.68 and $1.12 for the panel** on two
-runs, 4.5 minutes wall clock, with kimi-k3 the largest share both times. The job fails on
+read the checked-out tree, not just the diff: on this repository's own 8-file
+[PR #3](https://github.com/musharna/llm-panel/pull/3#issuecomment-5561530052) the three
+read 282k–1.13M input tokens each and the panel billed **$0.9733** in total, kimi-k3 the
+largest share ($0.55); the slowest judge took 266 s. That is one run, measured
+2026-09-06. The job fails on
 exit 9 — the PR's tree carries `.opencode/` or claude hooks the judges would run — and
 posts the panel on 0 or 4. This repository runs it on its own pull requests
 (`.github/workflows/panel.yml`, installing from source).
@@ -271,11 +271,6 @@ judge name · 14 none of the selected judges has its CLI installed, with the ros
 the message · 130 interrupted (Ctrl-C or SIGTERM), with whatever landed kept in the run
 directory.
 
-The rebuttal round as rendered — every position each judge took on each finding, grouped
-by the finding under dispute, disagreements marked CONTESTED. This run: four free-tier
-judges asked to review llm-panel's own failure-classification code; one failed and is
-reported as `harness`, the other three upheld 7 findings, rejected 4, and missed 6:
-
 The rendered report — the scoreboard counts spend and names who answered; the
 citation-overlap tables show where the panel's attention landed (three judges reviewing a
 [cline](https://github.com/cline/cline) PR, converging on one line of `TerminalProcess.ts`):
@@ -289,8 +284,9 @@ planted in real code, each one **proven to misbehave by execution**, so "the pan
 it" is a measurement rather than an impression.
 
 > **At least one of four independent passes (codex ×2 + claude-opus ×2) matched 25 of 27
-> known targets in this controlled, single-file Python corpus.** That is a keyword-matched
-> lower bound on an easy corpus — not an estimate of real-world code-review capability.
+> known targets in this controlled, single-file Python corpus** (grading inputs not
+> published). That is a keyword-matched lower bound on an easy corpus — not an estimate of
+> real-world code-review capability.
 > 95% CI 76.6–97.9%, and that is before accounting for defects clustering within fixtures.
 
 Hand-planted single-mechanism defects in ~40-line files are far easier than real defects
@@ -308,7 +304,8 @@ written up with their numbers in
 The real-world numbers come from running the panel over
 [AACR-Bench](https://github.com/alibaba/aacr-bench) PRs and scoring the findings with
 **upstream's own evaluator** — an LLM judge doing path → line → semantic matching, so the
-numbers are theirs, not a self-graded matcher's. 18 PRs, full roster, three prompt styles
+numbers are theirs, not a self-graded matcher's. 18 PRs, a three-judge panel (one
+subscription model, two free-tier), three prompt styles
 (`recall/aacr-upstream --prompt-style`). The default row is the shipped prompt measured at
 `e2ad666` (2026-09-06); the other two are re-measurements from 2026-08-28:
 
@@ -323,8 +320,11 @@ numbers are theirs, not a self-graded matcher's. 18 PRs, full roster, three prom
   <img alt="recall against precision for the three prompt styles; error bars are the ±2 pp re-run noise floor" src="https://raw.githubusercontent.com/musharna/llm-panel/main/docs/bench-light.png" width="660">
 </picture>
 
-`broad` doubles `defect`'s recall (McNemar p = 0.0005) for 25% more reading per validated
-hit; `volume` reaches the same recall by verbosity alone and halves precision. A declared
+Against the `defect` row above, `broad` has higher recall and fewer findings read per
+validated hit (7.6 vs 10.5). Its significance test is against an earlier arm: paired with
+the pre-rewrite `defect` prompt (12.2% recall, 6.1 findings read per hit), `broad` doubled
+recall (McNemar on paired references, p = 0.0005) for 25% more reading per hit (6.1 → 7.6).
+`volume` reaches `broad`'s recall by verbosity alone, at lower precision (7.9% vs 13.2%). A declared
 cost cut kept `defect` as the default for its precision and names `broad` the only
 candidate for a future change (`recall/benchmarks/cost-cut/README.md`).
 
@@ -350,7 +350,7 @@ sits at the low-recall end of that spread, `broad` sits inside the paper's recal
 better-than-paper precision, and nothing here has been measured on the full 200. The
 variance floor is measured (effects under ~5–7 pp are re-run noise at this n), three
 earlier readings were withdrawn on re-measurement and nothing above rests on one, and
-location agreement overstates semantic agreement ~2.5x — which is why scoring is
+location agreement overstates semantic agreement ~2x (22.8% vs 12.2% of references) — which is why scoring is
 delegated upstream. The full comparability caveats, every run ledger and the data
 licensing are in
 [`recall/benchmarks/README.md`](https://github.com/musharna/llm-panel/blob/main/recall/benchmarks/README.md).
@@ -359,10 +359,10 @@ licensing are in
 
 ```sh
 ./claimlib-controls              #  90
-./llm-panel-controls             # 427
-./panel-report-controls          # 319
-./panel-triage-controls          #  19
-./recall/aacr-upstream-controls  #  96
+./llm-panel-controls             # 466
+./panel-report-controls          # 353
+./panel-triage-controls          #  27
+./recall/aacr-upstream-controls  # 118
 ./recall/aacr-recut-controls     #  27
 ./privacy-controls               #  10
 cd recall && ./panel-recall selftest && python3 validate_corpus.py
@@ -370,9 +370,10 @@ cd recall && ./panel-recall selftest && python3 validate_corpus.py
 
 CI runs all seven suites on every push (Python 3.11, 3.12 and 3.13).
 
-Every control corresponds to a defect that **shipped**, and each asserts the fixed
-behaviour _and_ — where the pre-fix input is representable — that the broken version would
-have failed on it. An assertion that passes on both the broken and the fixed code tells you
+Most sections target a defect that **shipped**, and assert the fixed behaviour _and_ —
+where the pre-fix input is representable — that the broken version would have failed on
+it. The rest guard new behaviour (the roster loader, the re-cut's join) or are the positive
+and negative controls that keep the others honest. An assertion that passes on both the broken and the fixed code tells you
 nothing.
 
 ## Known limitations
